@@ -254,23 +254,49 @@ interface QueuedSubmission {
     return `<div class="field-card">${html}</div>`;
   }
 
+  /** 4-step progress indicator: Project → Milestone → Capture → Review. */
+  function stepsBar(current: number): string {
+    const labels = ["Project", "Milestone", "Capture", "Review"];
+    return `<div class="steps">${labels
+      .map((label, i) => {
+        const n = i + 1;
+        const cls = n < current ? "done" : n === current ? "current" : "";
+        const line = i > 0 ? `<span class="ln ${n <= current ? "done" : ""}"></span>` : "";
+        return `${line}<span class="s ${cls}"><span class="b">${n < current ? "✓" : n}</span><span class="t">${label}</span></span>`;
+      })
+      .join("")}</div>`;
+  }
+
+  function milestoneChip(status: string): string {
+    switch (status) {
+      case "RELEASED": return `<span class="fchip ok">Released</span>`;
+      case "APPROVED": return `<span class="fchip ok">Approved</span>`;
+      case "VERIFIED": return `<span class="fchip info">Verified</span>`;
+      case "UNDER_REVIEW": return `<span class="fchip info">Under review</span>`;
+      case "PENDING_EVIDENCE": return `<span class="fchip warn">Awaiting evidence</span>`;
+      default: return `<span class="fchip neutral">Not started</span>`;
+    }
+  }
+
   async function viewProjects(): Promise<void> {
     stopCamera();
-    app.innerHTML = card(
-      `<div class="field-step">Step 1 of 4 — Project</div>
+    app.innerHTML =
+      stepsBar(1) +
+      card(
+        `<div class="field-step">Step 1 of 4 — Project</div>
        <h3>Select project</h3>
        <div class="field-list">
          ${state.projects
            .map(
              (p, i) =>
                `<button class="field-item" data-i="${i}">
-                  <span class="t">${esc(p.name)}</span>
+                  <span class="row1"><span class="t">${esc(p.name)}</span></span>
                   <span class="d">${esc(p.location)}</span>
                 </button>`
            )
            .join("")}
        </div>`
-    );
+      );
     app.querySelectorAll<HTMLButtonElement>("[data-i]").forEach((btn) =>
       btn.addEventListener("click", () => {
         state.project = state.projects[Number(btn.dataset.i)];
@@ -289,27 +315,27 @@ interface QueuedSubmission {
 
   function viewMilestones(): void {
     const p = state.project!;
-    app.innerHTML = card(
-      `<div class="field-step">Step 2 of 4 — Milestone</div>
+    app.innerHTML =
+      stepsBar(2) +
+      card(
+        `<div class="field-step">Step 2 of 4 — Milestone</div>
        <h3>${esc(p.name)}</h3>
        <p class="sub">Select the milestone you are submitting evidence for.</p>
        <div class="field-list">
          ${p.milestones
            .map((m, i) => {
              const enabled = milestoneSelectable(m);
-             const badge = enabled
-               ? `<span class="badge warn">awaiting evidence</span>`
-               : `<span class="badge neutral">${esc(statusLabel(m.status))}</span>`;
-             return `<button class="field-item" data-i="${i}" ${enabled ? "" : "disabled"}>
-                ${badge}
-                <span class="t">M${m.seq} · ${esc(m.title)}</span>
-                <span class="d">Tranche ${money(m.trancheAmount)}</span>
+             const cls = enabled ? "eligible" : "dim";
+             return `<button class="field-item ${cls}" data-i="${i}" ${enabled ? "" : "disabled"}>
+                <span class="row1"><span class="t">M${m.seq} · ${esc(m.title)}</span>${milestoneChip(m.status)}</span>
+                <span class="d">${esc(m.requirement.length > 96 ? m.requirement.slice(0, 95) + "…" : m.requirement)}</span>
+                <span class="amt">Tranche ${money(m.trancheAmount)} · funds ${m.accountStatus === "RELEASED" ? "released" : "held"}</span>
               </button>`;
            })
            .join("")}
        </div>
        <div class="field-actions"><button class="btn ghost" id="back">← Projects</button></div>`
-    );
+      );
     app.querySelectorAll<HTMLButtonElement>("[data-i]").forEach((btn) =>
       btn.addEventListener("click", () => {
         state.milestone = p.milestones[Number(btn.dataset.i)];
@@ -323,8 +349,10 @@ interface QueuedSubmission {
 
   async function viewCapture(): Promise<void> {
     const m = state.milestone!;
-    app.innerHTML = card(
-      `<div class="field-step">Step 3 of 4 — Evidence photo</div>
+    app.innerHTML =
+      stepsBar(3) +
+      card(
+        `<div class="field-step">Step 3 of 4 — Evidence photo</div>
        <h3>M${m.seq} · ${esc(m.title)}</h3>
        <p class="sub" style="margin-top:8px"><b style="color:#cbd5e1">Requirement:</b> ${esc(m.requirement)}</p>
        <div id="camera-zone" style="margin-top:12px">
@@ -360,7 +388,7 @@ interface QueuedSubmission {
        </div>
        <p class="field-note">The camera and GPS of this device are the primary evidence
        path. Fallbacks exist so the demo never dead-ends on a permission screen.</p>`
-    );
+      );
 
     const video = document.getElementById("viewfinder") as HTMLVideoElement;
     const snapBtn = document.getElementById("snap")!;
@@ -446,13 +474,15 @@ interface QueuedSubmission {
   }
 
   async function acquireLocationThenConfirm(): Promise<void> {
-    app.innerHTML = card(
-      `<div class="field-step">Location</div>
+    app.innerHTML =
+      stepsBar(4) +
+      card(
+        `<div class="field-step">Location</div>
        <h3>Getting GPS fix…</h3>
        <div class="spin"></div>
        <p class="field-note" style="text-align:center">Requesting device location — you may
        be asked for permission.</p>`
-    );
+      );
     try {
       state.location = await getLocation();
       viewConfirm();
@@ -463,8 +493,10 @@ interface QueuedSubmission {
 
   function viewLocationFallback(): void {
     const p = state.project!;
-    app.innerHTML = card(
-      `<div class="field-step">Location</div>
+    app.innerHTML =
+      stepsBar(4) +
+      card(
+        `<div class="field-step">Location</div>
        <div class="field-warn">
          <b>GPS unavailable or permission denied.</b> Evidence needs coordinates to
          verify against the project geofence.
@@ -477,7 +509,7 @@ interface QueuedSubmission {
        <p class="field-note">Simulated coordinates point at the registered project site
        (${p.simulatedGps.latitude.toFixed(4)}, ${p.simulatedGps.longitude.toFixed(4)})
        and the submission is labelled DEMO FALLBACK.</p>`
-    );
+      );
     document.getElementById("simulate")!.addEventListener("click", () => {
       state.location = {
         latitude: p.simulatedGps.latitude,
@@ -508,14 +540,16 @@ interface QueuedSubmission {
     const loc = state.location!;
     const meta = deviceMetadata();
     const fallback = isFallbackSubmission();
-    app.innerHTML = card(
-      `<div class="field-step">Step 4 of 4 — Confirm submission</div>
+    app.innerHTML =
+      stepsBar(4) +
+      card(
+        `<div class="field-step">Step 4 of 4 — Review &amp; submit</div>
        <h3>M${m.seq} · ${esc(m.title)}</h3>
        ${fallback ? `<div class="field-warn"><b>DEMO FALLBACK</b> — this submission uses ${photo.kind === "demo" ? "a seeded demo photo, " : ""}${loc.simulated ? "simulated site GPS" : ""}${photo.simulatedTimestamp ? " and a simulated timestamp" : ""}. It will be labelled as such.</div>` : `<div class="field-ok">Live capture — real camera photo and device GPS.</div>`}
        ${photoPreviewHtml()}
+       <div class="gps-state"><span class="pulse"></span> GPS ${loc.simulated ? "simulated at project site" : "acquired from device"} · ${loc.latitude.toFixed(5)}, ${loc.longitude.toFixed(5)}</div>
        <dl class="field-kv" style="margin-top:12px">
-         <dt>GPS</dt><dd>${loc.latitude.toFixed(5)}, ${loc.longitude.toFixed(5)} ${loc.simulated ? "(simulated)" : "(device)"}</dd>
-         <dt>Captured</dt><dd>${esc(photo.capturedAt)} ${photo.simulatedTimestamp ? "(simulated)" : ""}</dd>
+         <dt>Captured</dt><dd>${esc(photo.capturedAt)} ${photo.simulatedTimestamp ? "(simulated)" : "(confirmed)"}</dd>
          <dt>Device</dt><dd>${esc(meta.platform)} · ${esc(meta.screen)} · ${esc(meta.language)}</dd>
          <dt>Submitted by</dt><dd>${esc(app.dataset.userName ?? "")}</dd>
        </dl>
@@ -523,7 +557,7 @@ interface QueuedSubmission {
          <button class="btn big" id="submit">Confirm &amp; submit evidence</button>
          <button class="btn ghost" id="back">← Start over</button>
        </div>`
-    );
+      );
     document.getElementById("back")!.addEventListener("click", viewCapture);
     document.getElementById("submit")!.addEventListener("click", submitEvidence);
   }
@@ -545,13 +579,15 @@ interface QueuedSubmission {
 
   async function submitEvidence(): Promise<void> {
     const payload = buildPayload();
-    app.innerHTML = card(
-      `<div class="field-step">Submitting</div>
+    app.innerHTML =
+      stepsBar(4) +
+      card(
+        `<div class="field-step">Submitting</div>
        <h3>Uploading evidence…</h3>
        <div class="spin"></div>
        <p class="field-note" style="text-align:center">Verification runs automatically on
        the server: photo vs requirement, geofence, and metadata integrity.</p>`
-    );
+      );
     try {
       const res = await fetch("/api/evidence", {
         method: "POST",

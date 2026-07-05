@@ -22,7 +22,8 @@ import type {
   Verification,
 } from "../../shared/types";
 
-async function seed(): Promise<void> {
+/** Reset and reseed the demo database. Also used by POST /api/demo/reset. */
+export async function seedDemo(): Promise<void> {
   resetDb();
 
   // ---- organizations ----
@@ -271,6 +272,22 @@ async function seed(): Promise<void> {
       createdAt: h.uploadedAt,
     };
     repo.insertApprovalRequest(approval);
+    repo.insertApprovalRecord({
+      id: `apr-${h.milestone.id}-funder`,
+      approvalRequestId: approval.id,
+      userId: "user-funder",
+      role: "FUNDER_REP",
+      decision: "APPROVED",
+      createdAt: h.approvedAt,
+    });
+    repo.insertApprovalRecord({
+      id: `apr-${h.milestone.id}-compliance`,
+      approvalRequestId: approval.id,
+      userId: "user-compliance",
+      role: "COMPLIANCE_REVIEWER",
+      decision: "APPROVED",
+      createdAt: h.approvedAt,
+    });
 
     await virtualAccountService.releaseTranche(h.milestone, h.releasedAt);
     repo.updateMilestoneStatus(h.milestone.id, "RELEASED");
@@ -310,7 +327,9 @@ async function seed(): Promise<void> {
   );
 }
 
-seed().catch((err) => {
-  console.error("Seed failed:", err);
-  process.exit(1);
-});
+if (require.main === module) {
+  seedDemo().catch((err) => {
+    console.error("Seed failed:", err);
+    process.exit(1);
+  });
+}

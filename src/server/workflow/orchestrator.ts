@@ -16,8 +16,10 @@
 import * as repo from "../db/repo";
 import { aiVerificationService } from "../services/AiVerificationService";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
+import { virtualAccountService } from "../services/VirtualAccountService";
 import { teamsNotifier } from "../services/TeamsNotifier";
 import type {
+  ApprovalRecord,
   ApprovalRequest,
   EvidenceItem,
   EvidenceSubmission,
@@ -174,4 +176,93 @@ export async function processEvidenceSubmission(
 
   const updatedMilestone = repo.getMilestone(milestone.id)!;
   return { evidence, verification, ledgerEntry, approvalRequest, milestone: updatedMilestone };
+}
+
+// ---------------------------------------------------------------------
+// Human approval decisions — the governance gate that controls release.
+// Uses the ApprovalRequest/ApprovalRecord model created in Prompt 0:
+// every role in requiredRoles must approve before the tranche releases.
+// ---------------------------------------------------------------------
+
+export interface ApprovalDecisionResult {
+  approvalRequest: ApprovalRequest;
+  records: ApprovalRecord[];
+  milestone: Milestone;
+  released: boolean;
+}
+
+export async function processApprovalDecision(
+  approvalRequestId: string,
+  userId: string,
+  decision: "APPROVED" | "REJECTED"
+): Promise<ApprovalDecisionResult> {
+  const request = repo.getApprovalRequest(approvalRequestId);
+  if (!request) throw new SubmissionError("Unknown approval request", 404);
+  if (request.status !== "PENDING") {
+    throw new SubmissionError("This approval request has already been resolved", 409);
+  }
+  const user = repo.getUser(userId);
+  if (!user) throw new SubmissionError("Select a demo user first", 401);
+  if (!request.requiredRoles.includes(user.role)) {
+    throw new SubmissionError(
+      `Role ${user.role} is not part of this approval (requires ${request.requiredRoles.join(", ")})`,
+      403
+    );
+  }
+  const existing = repo.listApprovalRecordsForRequest(request.id);
+  if (existing.some((r) => r.role === user.role)) {
+    throw new SubmissionError(`A ${user.role} decision has already been recorded`, 409);
+  }
+  const milestone = repo.getMilestone(request.milestoneId)!;
+
+  repo.insertApprovalRecord({
+    id: repo.newId(),
+    approvalRequestId: request.id,
+    userId: user.id,
+    role: user.role,
+    decision,
+    createdAt: new Date().toISOString(),
+  });
+  const records = repo.listApprovalRecordsForRequest(request.id);
+
+  let released = false;
+  if (decision === "REJECTED") {
+    repo.updateApprovalRequestStatus(request.id, "REJECTED");
+    // Rejected governance sends the milestone back for new field evidence.
+    repo.updateMilestoneStatus(milestone.id, "PENDING_EVIDENCE");
+    await teamsNotifier.notify(
+      "APPROVAL_REJECTED",
+      `${user.name} (${user.title}) rejected release for milestone ${milestone.seq} "${milestone.title}". Tranche of $${milestone.trancheAmount.toLocaleString("en-US")} remains HELD; new evidence required.`
+    );
+  } else {
+    const approvedRoles = new Set(
+      records.filter((r) => r.decision === "APPROVED").map((r) => r.role)
+    );
+    const complete = request.requiredRoles.every((role) => approvedRoles.has(role));
+    if (complete) {
+      repo.updateApprovalRequestStatus(request.id, "APPROVED");
+      repo.updateMilestoneStatus(milestone.id, "APPROVED");
+      // Governance satisfied — release the tranche on the virtual account.
+      await virtualAccountService.releaseTranche(milestone);
+      repo.updateMilestoneStatus(milestone.id, "RELEASED");
+      released = true;
+      await teamsNotifier.notify(
+        "TRANCHE_RELEASED",
+        `All approvals complete for milestone ${milestone.seq} "${milestone.title}". Tranche of $${milestone.trancheAmount.toLocaleString("en-US")} RELEASED on the virtual project account.`
+      );
+    } else {
+      const missing = request.requiredRoles.filter((role) => !approvedRoles.has(role));
+      await teamsNotifier.notify(
+        "APPROVAL_RECORDED",
+        `${user.name} (${user.title}) approved milestone ${milestone.seq} "${milestone.title}" (${approvedRoles.size} of ${request.requiredRoles.length}). Awaiting ${missing.join(", ")}. Funds remain HELD.`
+      );
+    }
+  }
+
+  return {
+    approvalRequest: repo.getApprovalRequest(request.id)!,
+    records,
+    milestone: repo.getMilestone(milestone.id)!,
+    released,
+  };
 }

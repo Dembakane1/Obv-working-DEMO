@@ -12,20 +12,40 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { getDb, WORM_DIR } from "../db/index";
 import * as repo from "../db/repo";
+import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { wormEvidenceStore } from "../services/WormEvidenceStore";
+import { teamsNotifier } from "../services/TeamsNotifier";
 import { polygonCentroid } from "../services/geo";
-import { processEvidenceSubmission, SubmissionError } from "../workflow/orchestrator";
 import {
+  processApprovalDecision,
+  processEvidenceSubmission,
+  SubmissionError,
+} from "../workflow/orchestrator";
+import {
+  ApprovalQueueItem,
+  ComplianceData,
   EvidenceBundle,
+  Insight,
   MilestoneRow,
-  renderDashboard,
+  OverviewMetrics,
+  ProjectCardData,
+  ProjectTab,
+  renderApprovals,
+  renderCompliance,
   renderError,
   renderFieldShell,
+  renderInsights,
+  renderLedger,
   renderMilestoneDetail,
+  renderMore,
+  renderOverview,
   renderProjectDetail,
+  renderProjects,
+  renderReports,
   renderUserSwitcher,
 } from "../view/pages";
+import type { NavContext } from "../view/components";
 import type { EvidenceSubmission, User } from "../../shared/types";
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -80,6 +100,10 @@ function readBody(req: http.IncomingMessage, limitBytes = 16 * 1024 * 1024): Pro
   });
 }
 
+function isFormPost(req: http.IncomingMessage): boolean {
+  return (req.headers["content-type"] ?? "").includes("application/x-www-form-urlencoded");
+}
+
 function sendHtml(res: http.ServerResponse, html: string, status = 200): void {
   res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
   res.end(html);
@@ -114,30 +138,209 @@ function serveStatic(res: http.ServerResponse, baseDir: string, relPath: string)
 
 // ------------------------------------------------------ page data
 
+function usersById(): Map<string, User> {
+  return new Map(repo.listUsers().map((u) => [u.id, u]));
+}
+
+function navFor(user: User, active: string): NavContext {
+  return {
+    user,
+    active,
+    pendingApprovals: repo.listPendingApprovalRequests().length,
+  };
+}
+
 function milestoneRows(projectId: string): MilestoneRow[] {
   return repo.listMilestones(projectId).map((milestone) => {
     const latestEvidence = repo.latestEvidenceForMilestone(milestone.id);
+    const approval = repo.getApprovalRequestForMilestone(milestone.id);
     return {
       milestone,
       latestEvidence,
       verification: latestEvidence ? repo.getVerificationForEvidence(latestEvidence.id) : null,
-      approval: repo.getApprovalRequestForMilestone(milestone.id),
+      approval,
+      approvalRecords: approval ? repo.listApprovalRecordsForRequest(approval.id) : [],
     };
   });
 }
 
 function evidenceBundlesForMilestone(milestoneId: string): EvidenceBundle[] {
   const milestone = repo.getMilestone(milestoneId)!;
+  const approval = repo.getApprovalRequestForMilestone(milestoneId);
   return repo.listEvidenceForMilestone(milestoneId).map((evidence) => ({
     evidence,
     verification: repo.getVerificationForEvidence(evidence.id),
     ledgerEntry: repo.getLedgerEntryForEvidence(evidence.id),
     milestone,
     submittedBy: repo.getUser(evidence.userId),
+    approval,
   }));
 }
 
-/** Cheap change fingerprint used by the dashboard's polling refresh. */
+async function projectCardData(projectId: string): Promise<ProjectCardData | null> {
+  const project = repo.getProject(projectId);
+  if (!project) return null;
+  const milestones = milestoneRows(project.id);
+  // Implementing agency: presentation-layer inference — the organization of
+  // the project's PROJECT_MANAGER user (no schema change for the demo).
+  const pm = repo.listUsers().find((u) => u.role === "PROJECT_MANAGER");
+  return {
+    project,
+    org: repo.getOrganization(project.organizationId),
+    implementingOrg: pm ? repo.getOrganization(pm.organizationId) : null,
+    milestones,
+    summary: await virtualAccountService.getProjectSummary(project.id),
+    pendingApprovals: milestones.filter((m) => m.approval?.status === "PENDING").length,
+  };
+}
+
+async function allProjectCards(): Promise<ProjectCardData[]> {
+  const out: ProjectCardData[] = [];
+  for (const project of repo.listProjects()) {
+    const d = await projectCardData(project.id);
+    if (d) out.push(d);
+  }
+  return out;
+}
+
+function overviewMetrics(projects: ProjectCardData[]): OverviewMetrics {
+  const allRows = projects.flatMap((p) => p.milestones);
+  const flagged = repo
+    .listAllVerifications()
+    .filter((v) => v.verdict !== "VERIFIED").length;
+  return {
+    totalBudget: projects.reduce((s, p) => s + p.summary.totalBudget, 0),
+    released: projects.reduce((s, p) => s + p.summary.released, 0),
+    held: projects.reduce((s, p) => s + p.summary.held, 0),
+    pendingApprovals: repo.listPendingApprovalRequests().length,
+    verifiedMilestones: allRows.filter((m) =>
+      ["VERIFIED", "APPROVED", "RELEASED"].includes(m.milestone.status)
+    ).length,
+    totalMilestones: allRows.length,
+    flaggedEvidence: flagged,
+  };
+}
+
+function approvalQueue(user: User): ApprovalQueueItem[] {
+  const items: ApprovalQueueItem[] = [];
+  const projects = new Map(repo.listProjects().map((p) => [p.id, p]));
+  for (const project of projects.values()) {
+    for (const approval of repo.listApprovalRequestsForProject(project.id)) {
+      const milestone = repo.getMilestone(approval.milestoneId)!;
+      const records = repo.listApprovalRecordsForRequest(approval.id);
+      const bundles = evidenceBundlesForMilestone(milestone.id);
+      const bundle =
+        bundles.find((b) => b.verification?.verdict === "VERIFIED") ?? bundles[0] ?? null;
+      const roleTaken = records.some((r) => r.role === user.role);
+      items.push({
+        approval,
+        records,
+        milestone,
+        project,
+        bundle,
+        canDecide:
+          approval.status === "PENDING" &&
+          approval.requiredRoles.includes(user.role) &&
+          !roleTaken,
+        alreadyDecided: roleTaken,
+      });
+    }
+  }
+  return items.sort((a, b) => (a.approval.createdAt < b.approval.createdAt ? 1 : -1));
+}
+
+function computeInsights(): Insight[] {
+  const insights: Insight[] = [];
+  const verifications = repo.listAllVerifications();
+  const evidence = new Map(repo.listAllEvidence().map((e) => [e.id, e]));
+  const milestoneOf = (evidenceId: string) => {
+    const ev = evidence.get(evidenceId);
+    return ev ? repo.getMilestone(ev.milestoneId) : null;
+  };
+
+  for (const v of verifications) {
+    if (v.verdict === "VERIFIED" && v.confidence < 0.75) {
+      const m = milestoneOf(v.evidenceItemId);
+      insights.push({
+        severity: "warn",
+        title: "Low-confidence verification",
+        detail: `Milestone ${m?.seq} "${m?.title}" verified at confidence ${v.confidence.toFixed(2)} — consider a spot check.`,
+        href: m ? `/milestone/${m.id}` : undefined,
+      });
+    }
+    const geo = v.checks.find((c) => c.name.toLowerCase().includes("geofence"));
+    if (geo && !geo.passed) {
+      const m = milestoneOf(v.evidenceItemId);
+      insights.push({
+        severity: "bad",
+        title: "Evidence outside expected geofence",
+        detail: `A submission for milestone ${m?.seq} "${m?.title}" was captured outside the registered site boundary.`,
+        href: m ? `/milestone/${m.id}` : undefined,
+      });
+    }
+  }
+
+  // Repeated NEEDS_REVIEW verdicts per milestone.
+  const reviewCounts = new Map<string, number>();
+  for (const v of verifications) {
+    if (v.verdict !== "NEEDS_REVIEW") continue;
+    const m = milestoneOf(v.evidenceItemId);
+    if (m) reviewCounts.set(m.id, (reviewCounts.get(m.id) ?? 0) + 1);
+  }
+  for (const [milestoneId, count] of reviewCounts) {
+    if (count >= 2) {
+      const m = repo.getMilestone(milestoneId)!;
+      insights.push({
+        severity: "warn",
+        title: "Repeated review flags",
+        detail: `Milestone ${m.seq} "${m.title}" has ${count} submissions flagged NEEDS_REVIEW.`,
+        href: `/milestone/${m.id}`,
+      });
+    }
+  }
+
+  // Unusual submission timing (upload long after capture).
+  for (const ev of evidence.values()) {
+    const gap = Date.parse(ev.uploadedAt) - Date.parse(ev.capturedAt);
+    if (gap > 24 * 3600_000) {
+      const m = repo.getMilestone(ev.milestoneId);
+      insights.push({
+        severity: "info",
+        title: "Delayed upload",
+        detail: `Evidence for milestone ${m?.seq} "${m?.title}" was uploaded ${Math.round(gap / 3600_000)}h after capture.`,
+        href: m ? `/milestone/${m.id}` : undefined,
+      });
+    }
+  }
+
+  // Approval bottlenecks.
+  for (const approval of repo.listPendingApprovalRequests()) {
+    const ageH = (Date.now() - Date.parse(approval.createdAt)) / 3600_000;
+    const m = repo.getMilestone(approval.milestoneId)!;
+    if (ageH > 48) {
+      insights.push({
+        severity: "warn",
+        title: "Approval bottleneck",
+        detail: `Release approval for milestone ${m.seq} "${m.title}" has been waiting ${Math.round(ageH / 24)} days.`,
+        href: "/approvals",
+      });
+    } else {
+      insights.push({
+        severity: "info",
+        title: "Approval in queue",
+        detail: `Milestone ${m.seq} "${m.title}" is verified and awaiting human approval (${money(m.trancheAmount)} held).`,
+        href: "/approvals",
+      });
+    }
+  }
+  return insights;
+}
+
+function money(amount: number): string {
+  return "$" + amount.toLocaleString("en-US");
+}
+
+/** Cheap change fingerprint used by the pages' polling refresh. */
 function stateFingerprint(): string {
   const db = getDb();
   const milestones = db
@@ -149,6 +352,7 @@ function stateFingerprint(): string {
               (SELECT COUNT(*) FROM verifications) AS v,
               (SELECT COUNT(*) FROM ledger_entries) AS l,
               (SELECT COUNT(*) FROM approval_requests) AS a,
+              (SELECT COUNT(*) FROM approval_records) AS ar,
               (SELECT COUNT(*) FROM notifications) AS n`
     )
     .get();
@@ -193,7 +397,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       "Set-Cookie",
       `obv_user=${encodeURIComponent(user.id)}; Path=/; SameSite=Lax; Max-Age=86400`
     );
-    redirect(res, user.role === "FIELD" ? "/field" : "/dashboard");
+    redirect(res, user.role === "FIELD" ? "/field" : "/overview");
     return;
   }
 
@@ -204,8 +408,6 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (method === "GET" && pathname === "/api/field-context") {
-    // Everything the field PWA needs in one payload: projects, milestones,
-    // demo fallback photos, and a simulated-GPS point inside each geofence.
     const projects = repo.listProjects().map((project) => {
       const centre = polygonCentroid(project.siteBoundary);
       return {
@@ -247,6 +449,60 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // Human approval decision — the governance gate.
+  const approvalMatch = /^\/api\/approvals\/([^/]+)\/decision$/.exec(pathname);
+  if (method === "POST" && approvalMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const body = (await readBody(req, 64 * 1024)).toString("utf8");
+    const decision = isFormPost(req)
+      ? new URLSearchParams(body).get("decision")
+      : JSON.parse(body || "{}").decision;
+    if (decision !== "APPROVED" && decision !== "REJECTED") {
+      sendJson(res, { error: "decision must be APPROVED or REJECTED" }, 400);
+      return;
+    }
+    const result = await processApprovalDecision(approvalMatch[1], user.id, decision);
+    if (isFormPost(req)) {
+      redirect(res, "/approvals");
+    } else {
+      sendJson(res, result);
+    }
+    return;
+  }
+
+  // Ledger integrity check on demand.
+  if (method === "POST" && pathname === "/api/ledger/verify") {
+    const chain = await wormEvidenceStore.verifyChain();
+    await teamsNotifier.notify(
+      "INTEGRITY_CHECK",
+      chain.valid
+        ? `Ledger integrity check run: ${chain.entries} entries verified — CHAIN INTACT.`
+        : `Ledger integrity check run: TAMPERING DETECTED AT ENTRY ${chain.brokenAt}.`
+    );
+    if (isFormPost(req) || (req.headers.accept ?? "").includes("text/html")) {
+      redirect(res, "/ledger?checked=1");
+    } else {
+      sendJson(res, chain);
+    }
+    return;
+  }
+
+  // Reset the demo database to its seeded state.
+  if (method === "POST" && pathname === "/api/demo/reset") {
+    await seedDemo();
+    await teamsNotifier.notify("DEMO_RESET", "Demo data reset to the seeded state.");
+    if (isFormPost(req) || (req.headers.accept ?? "").includes("text/html")) {
+      redirect(res, "/overview");
+    } else {
+      sendJson(res, { ok: true });
+    }
+    return;
+  }
+
   // ---- pages ----
   if (method === "GET" && pathname === "/") {
     const users = repo.listUsers();
@@ -257,54 +513,71 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  const PAGE_PREFIXES = [
+    "/overview", "/dashboard", "/projects", "/project/", "/milestone/",
+    "/approvals", "/ledger", "/reports", "/compliance", "/insights", "/more", "/field",
+  ];
+  const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
-  if (method === "GET" && (pathname === "/dashboard" || pathname.startsWith("/project/") || pathname.startsWith("/milestone/") || pathname === "/field")) {
-    if (!user) {
-      redirect(res, "/");
-      return;
-    }
+  if (method === "GET" && isPage && !user) {
+    redirect(res, "/");
+    return;
   }
 
-  if (method === "GET" && pathname === "/dashboard") {
-    const projects = [];
-    for (const project of repo.listProjects()) {
-      projects.push({
-        project,
-        org: repo.getOrganization(project.organizationId),
-        milestones: milestoneRows(project.id),
-        summary: await virtualAccountService.getProjectSummary(project.id),
-        pendingApprovals: repo
-          .listApprovalRequestsForProject(project.id)
-          .filter((a) => a.status === "PENDING"),
-      });
+  if (method === "GET" && (pathname === "/dashboard" || pathname === "/overview")) {
+    if (pathname === "/dashboard") {
+      redirect(res, "/overview", 302);
+      return;
     }
-    sendHtml(res, renderDashboard({ user: user!, projects, notifications: repo.listNotifications() }));
+    const projects = await allProjectCards();
+    sendHtml(
+      res,
+      renderOverview({
+        nav: navFor(user!, "overview"),
+        metrics: overviewMetrics(projects),
+        projects,
+        notifications: repo.listNotifications(),
+      })
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname === "/projects") {
+    sendHtml(
+      res,
+      renderProjects({ nav: navFor(user!, "projects"), projects: await allProjectCards() })
+    );
     return;
   }
 
   if (method === "GET" && pathname.startsWith("/project/")) {
-    const project = repo.getProject(pathname.slice("/project/".length));
-    if (!project) {
-      sendHtml(res, renderError(user, "Project not found", "No project exists at this address."), 404);
+    const data = await projectCardData(pathname.slice("/project/".length));
+    if (!data) {
+      sendHtml(res, renderError(navFor(user!, ""), "Project not found", "No project exists at this address."), 404);
       return;
     }
-    const rows = milestoneRows(project.id);
-    const bundles = rows.flatMap((r) => evidenceBundlesForMilestone(r.milestone.id));
+    const tabParam = (url.searchParams.get("tab") ?? "overview") as ProjectTab;
+    const tab: ProjectTab = ["overview", "milestones", "evidence", "approvals", "ledger", "activity"].includes(tabParam)
+      ? tabParam
+      : "overview";
     const chain = await wormEvidenceStore.verifyChain();
     sendHtml(
       res,
       renderProjectDetail({
-        user: user!,
-        project,
-        org: repo.getOrganization(project.organizationId),
-        milestones: rows,
-        summary: await virtualAccountService.getProjectSummary(project.id),
-        approvals: repo.listApprovalRequestsForProject(project.id),
+        nav: navFor(user!, "projects"),
+        tab,
+        data,
+        approvals: repo.listApprovalRequestsForProject(data.project.id).map((approval) => ({
+          approval,
+          records: repo.listApprovalRecordsForRequest(approval.id),
+          milestone: repo.getMilestone(approval.milestoneId)!,
+        })),
+        evidenceBundles: data.milestones.flatMap((r) => evidenceBundlesForMilestone(r.milestone.id)),
         ledger: repo.listLedgerEntries(),
         chainValid: chain.valid,
-        evidenceBundles: bundles,
-        accountEvents: repo.listAccountEventsForProject(project.id),
-        milestoneById: new Map(rows.map((r) => [r.milestone.id, r.milestone])),
+        accountEvents: repo.listAccountEventsForProject(data.project.id),
+        notifications: repo.listNotifications(30),
+        users: usersById(),
       })
     );
     return;
@@ -313,20 +586,104 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (method === "GET" && pathname.startsWith("/milestone/")) {
     const milestone = repo.getMilestone(pathname.slice("/milestone/".length));
     if (!milestone) {
-      sendHtml(res, renderError(user, "Milestone not found", "No milestone exists at this address."), 404);
+      sendHtml(res, renderError(navFor(user!, ""), "Milestone not found", "No milestone exists at this address."), 404);
       return;
     }
     const project = repo.getProject(milestone.projectId)!;
+    const rows = milestoneRows(project.id);
+    const row = rows.find((r) => r.milestone.id === milestone.id)!;
+    const canDecide = Boolean(
+      row.approval &&
+        row.approval.status === "PENDING" &&
+        row.approval.requiredRoles.includes(user!.role) &&
+        !row.approvalRecords.some((r) => r.role === user!.role)
+    );
     sendHtml(
       res,
       renderMilestoneDetail({
-        user: user!,
+        nav: navFor(user!, "projects"),
         project,
-        milestone,
-        approval: repo.getApprovalRequestForMilestone(milestone.id),
+        row,
         bundles: evidenceBundlesForMilestone(milestone.id),
+        users: usersById(),
+        canDecide,
       })
     );
+    return;
+  }
+
+  if (method === "GET" && pathname === "/approvals") {
+    sendHtml(
+      res,
+      renderApprovals({
+        nav: navFor(user!, "approvals"),
+        items: approvalQueue(user!),
+        users: usersById(),
+      })
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname === "/ledger") {
+    const chain = await wormEvidenceStore.verifyChain();
+    const milestones = repo.listProjects().flatMap((p) => repo.listMilestones(p.id));
+    sendHtml(
+      res,
+      renderLedger({
+        nav: navFor(user!, "ledger"),
+        ledger: repo.listLedgerEntries(),
+        chainValid: chain.valid,
+        brokenAt: chain.brokenAt,
+        milestoneById: new Map(milestones.map((m) => [m.id, m])),
+        projectById: new Map(repo.listProjects().map((p) => [p.id, p])),
+        checkedBanner: url.searchParams.get("checked")
+          ? chain.valid
+            ? `Integrity check complete: ${chain.entries} entries recomputed — CHAIN INTACT.`
+            : `Integrity check complete: TAMPERING DETECTED AT ENTRY ${chain.brokenAt}.`
+          : null,
+      })
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname === "/reports") {
+    sendHtml(res, renderReports({ nav: navFor(user!, "reports"), projects: repo.listProjects() }));
+    return;
+  }
+
+  if (method === "GET" && pathname === "/compliance") {
+    const chain = await wormEvidenceStore.verifyChain();
+    const bundles = repo
+      .listProjects()
+      .flatMap((p) => repo.listMilestones(p.id))
+      .flatMap((m) => evidenceBundlesForMilestone(m.id));
+    const projects = new Map(repo.listProjects().map((p) => [p.id, p]));
+    const data: ComplianceData = {
+      needsReview: bundles.filter((b) => b.verification?.verdict === "NEEDS_REVIEW"),
+      rejected: bundles.filter((b) => b.verification?.verdict === "REJECTED"),
+      awaitingApproval: repo.listPendingApprovalRequests().map((approval) => {
+        const milestone = repo.getMilestone(approval.milestoneId)!;
+        return {
+          approval,
+          milestone,
+          project: projects.get(milestone.projectId)!,
+          records: repo.listApprovalRecordsForRequest(approval.id),
+        };
+      }),
+      chainValid: chain.valid,
+      brokenAt: chain.brokenAt,
+    };
+    sendHtml(res, renderCompliance({ nav: navFor(user!, "compliance"), data, users: usersById() }));
+    return;
+  }
+
+  if (method === "GET" && pathname === "/insights") {
+    sendHtml(res, renderInsights({ nav: navFor(user!, "insights"), insights: computeInsights() }));
+    return;
+  }
+
+  if (method === "GET" && pathname === "/more") {
+    sendHtml(res, renderMore({ nav: navFor(user!, "more") }));
     return;
   }
 
@@ -335,7 +692,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
-  sendHtml(res, renderError(user, "Not found", `No page at ${pathname}.`), 404);
+  sendHtml(res, renderError(user ? navFor(user, "") : null, "Not found", `No page at ${pathname}.`), 404);
 }
 
 const server = http.createServer((req, res) => {

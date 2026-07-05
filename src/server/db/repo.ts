@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { getDb } from "./index";
 import type {
+  ApprovalRecord,
   ApprovalRequest,
   DemoFallbackPhoto,
   EvidenceItem,
@@ -345,6 +346,52 @@ export function getApprovalRequestForMilestone(milestoneId: string): ApprovalReq
   return r ? toApprovalRequest(r as Row) : null;
 }
 
+export function getApprovalRequest(id: string): ApprovalRequest | null {
+  const r = getDb().prepare("SELECT * FROM approval_requests WHERE id = ?").get(id);
+  return r ? toApprovalRequest(r as Row) : null;
+}
+
+export function listPendingApprovalRequests(): ApprovalRequest[] {
+  return getDb()
+    .prepare("SELECT * FROM approval_requests WHERE status = 'PENDING' ORDER BY created_at")
+    .all()
+    .map((r) => toApprovalRequest(r as Row));
+}
+
+export function updateApprovalRequestStatus(
+  id: string,
+  status: ApprovalRequest["status"]
+): void {
+  getDb().prepare("UPDATE approval_requests SET status = ? WHERE id = ?").run(status, id);
+}
+
+function toApprovalRecord(r: Row): ApprovalRecord {
+  return {
+    id: r.id as string,
+    approvalRequestId: r.approval_request_id as string,
+    userId: r.user_id as string,
+    role: r.role as ApprovalRecord["role"],
+    decision: r.decision as ApprovalRecord["decision"],
+    createdAt: r.created_at as string,
+  };
+}
+
+export function insertApprovalRecord(rec: ApprovalRecord): void {
+  getDb()
+    .prepare(
+      `INSERT INTO approval_records (id, approval_request_id, user_id, role, decision, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(rec.id, rec.approvalRequestId, rec.userId, rec.role, rec.decision, rec.createdAt);
+}
+
+export function listApprovalRecordsForRequest(approvalRequestId: string): ApprovalRecord[] {
+  return getDb()
+    .prepare("SELECT * FROM approval_records WHERE approval_request_id = ? ORDER BY created_at")
+    .all(approvalRequestId)
+    .map((r) => toApprovalRecord(r as Row));
+}
+
 // ---------- virtual account ----------
 
 export function insertAccountEvent(e: VirtualAccountEvent): void {
@@ -365,6 +412,20 @@ export function listAccountEventsForProject(projectId: string): VirtualAccountEv
     )
     .all(projectId)
     .map((r) => toAccountEvent(r as Row));
+}
+
+export function listAllVerifications(): Verification[] {
+  return getDb()
+    .prepare("SELECT * FROM verifications ORDER BY created_at DESC")
+    .all()
+    .map((r) => toVerification(r as Row));
+}
+
+export function listAllEvidence(): EvidenceItem[] {
+  return getDb()
+    .prepare("SELECT * FROM evidence_items ORDER BY uploaded_at DESC")
+    .all()
+    .map((r) => toEvidence(r as Row));
 }
 
 // ---------- notifications ----------

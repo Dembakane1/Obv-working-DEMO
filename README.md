@@ -51,6 +51,46 @@ npm run seed    # drop & recreate data/obv.db with the seeded project
 
 Switch users any time via **Switch user** in the top bar (or `/`).
 
+## What's new in v2 (frontend modernization + approval governance)
+
+The frontend was rebuilt as a modern institutional SaaS shell while preserving
+every piece of verification, ledger and financial-control logic:
+
+- **App shell** — desktop sidebar (Overview, Projects, Field Capture, Pending
+  Approvals, Evidence Ledger, Reports, Risk & Compliance, AI Insights) with the
+  current demo user + switch action at the bottom; mobile gets a bottom
+  navigation bar plus a More page. No desktop tables squeezed into phones.
+- **Overview** — summary metric cards (portfolio value, released, held, pending
+  approvals, verified milestones, flagged evidence), Base44-style project
+  cards (progress, budget figures, next milestone), recent-activity feed.
+- **Project detail** — tabbed (Overview / Milestones / Evidence / Approvals /
+  Ledger / Activity) over the same data.
+- **Milestone cards** — EVIDENCE → VERIFIED → APPROVAL → RELEASE pipeline
+  stepper makes the current position obvious (e.g. "APPROVAL 1 OF 2").
+- **Evidence Panel v2** — organized into Original evidence / Verification
+  checks / AI verification result / Proof integrity, with a chain-of-proof
+  rail: PHOTO → 3/3 CHECKS PASSED → 0.96 CONFIDENCE → VERIFIED → LEDGER #N →
+  HUMAN APPROVAL REQUIRED → FUNDS HELD.
+- **Approval workflow completed** (the one backend addition, using the
+  Prompt-0 ApprovalRequest/ApprovalRecord model): the Pending Approvals page
+  shows amount at stake, verdict, confidence, per-role progress (✓/○), and
+  the full evidence panel next to the approve/reject actions. Funder Rep and
+  Compliance Reviewer must both approve; on the final approval the
+  orchestrator releases the tranche via `VirtualAccountService.releaseTranche`
+  (VERIFIED → APPROVED → RELEASED). Rejection returns the milestone to
+  PENDING_EVIDENCE. Decisions are role-gated server-side.
+- **Evidence Ledger page** — institutional ledger with a "Verify integrity"
+  action: CHAIN INTACT or TAMPERING DETECTED AT ENTRY N.
+- **Risk & Compliance / AI Insights** — presentation layers over existing
+  verification data (flagged evidence, approval bottlenecks, geofence misses,
+  low-confidence verifications). Labelled as automated insights — no
+  generative-AI claims.
+- **Field PWA** — 4-step progress indicator, eligible milestone highlighted
+  with status chips and tranche amounts, camera button disabled until the
+  stream is live, explicit GPS-acquired state. Capture logic unchanged.
+- **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
+  restores the seeded state without restarting the server.
+
 ## Hero-loop demo script
 
 1. `npm run setup && npm start`, open http://localhost:3000.
@@ -73,18 +113,25 @@ Switch users any time via **Switch user** in the top bar (or `/`).
 8. On VERIFIED: a hash-chained ledger entry is appended (hash shown), an
    **ApprovalRequest** is created, and the $600,000 tranche **remains HELD** —
    release requires human approval (next release).
-9. Switch back to the funder. The dashboard/project page auto-refreshes by
-   polling and shows: M3 `VERIFIED` + `PENDING APPROVAL` + funds `HELD`, the
+9. Switch back to the funder. The overview/project pages auto-refresh by
+   polling and show: M3 `VERIFIED` + approval `0 of 2` + funds `HELD`, the
    new ledger entry with *Chain intact*, and the activity feed entry.
+10. Open **Pending Approvals**, review the evidence panel, and **Approve
+    release (1 of 2)** as the funder. Funds remain HELD.
+11. Switch to **Amina Ndlovu (Compliance Reviewer)** → Pending Approvals →
+    approve. The tranche releases: overview now shows $1,320,000 released.
+12. Open **Evidence Ledger** → **Verify integrity** → CHAIN INTACT.
+13. **Reset demo data** on the Overview page to restore the seeded state.
 
 If the device is offline at submit time, the capture is stored in an
 IndexedDB queue and auto-uploads when connectivity returns.
 
 ## Acceptance test
 
-`scripts/acceptance-test.js` drives the full hero loop in headless Chromium
-(17 assertions: dashboard state → field capture → verdict/checks/confidence →
-ledger hash → approval request → funds HELD → funder view auto-updates).
+`scripts/acceptance-test.js` drives the full 19-step regression in headless
+Chromium: overview state → field capture → verdict/checks/confidence → ledger
+hash → approval request → partial approval (funds HELD) → final approval →
+release → ledger integrity → demo reset → repeat loop.
 
 ```bash
 node scripts/acceptance-test.js fallback   # DEMO FALLBACK path
@@ -94,7 +141,8 @@ node scripts/acceptance-test.js camera     # real camera + GPS (fake media strea
 Requires the `playwright` npm package and a Chromium install (in the build
 environment: `NODE_PATH=/opt/node22/lib/node_modules`). Reseed between runs.
 
-**Status: passed 3/3 runs** (fallback, camera, fallback) before this commit.
+**Status: v2 regression passed in both modes** (fallback ×2, camera ×1)
+before this commit; the v1 hero loop passed 3/3 before the redesign.
 
 ---
 
@@ -203,8 +251,6 @@ without registry access.
 
 ## Known limitations
 
-- Approval governance is a stub: requests are created and displayed, but the
-  approve/reject action ships in the next release (button disabled).
 - Photo-content verification is simulated; geofence and integrity checks are
   real. No live AI call is made.
 - Demo "photos" for fallback are SVG stand-ins (no image tooling available
@@ -216,10 +262,9 @@ without registry access.
 
 ## Recommended next prompt
 
-> **Prompt 1 — Human approval governance.** Implement the multi-role approval
-> workflow on top of the existing `ApprovalRequest`/`ApprovalRecord` tables:
-> funder rep + compliance reviewer must both approve; on final approval the
-> orchestrator calls `VirtualAccountService.releaseTranche()` and the
-> milestone moves VERIFIED → APPROVED → RELEASED with full audit trail,
-> notifications, and dashboard/timeline updates. Include reject/regression
-> paths (back to PENDING_EVIDENCE) and role-based UI gating.
+> **Prompt 2 — Real AI verification.** Replace `MockAiVerificationService`
+> with a server-side multimodal model call (photo vs milestone requirement)
+> behind the existing interface, including confidence calibration, retry and
+> failure fallbacks to NEEDS_REVIEW, and per-check reasoning from the model.
+> Requires enabling network egress and adding API credentials via environment
+> variables — no application logic changes.
