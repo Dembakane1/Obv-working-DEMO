@@ -74,9 +74,9 @@ export function MilestoneStatusChip(props: { status: MilestoneStatus }): VNode {
 
 export function AccountChip(props: { status: AccountStatus }): VNode {
   return props.status === "RELEASED" ? (
-    <span className="chip ok">Funds released</span>
+    <span className="chip ok">Released</span>
   ) : (
-    <span className="chip warn">Funds held</span>
+    <span className="chip warn">Held</span>
   );
 }
 
@@ -98,8 +98,10 @@ export function ApprovalChip(props: { status: ApprovalStatus; progress?: string 
     props.status === "APPROVED"
       ? "Approved"
       : props.status === "REJECTED"
-        ? "Approval rejected"
-        : `Approval ${props.progress ?? "pending"}`;
+        ? "Rejected"
+        : props.progress
+          ? `Pending approval · ${props.progress}`
+          : "Pending approval";
   return <span className={`chip ${tone}`}>{label}</span>;
 }
 
@@ -239,7 +241,7 @@ export function MetricCard(props: {
       <span style="min-width:0">
         <span className="label" style="display:block">{props.label}</span>
         <span className="value" style="display:block">{props.value}</span>
-        {props.hint ? <span className="hint" style="display:block">{props.hint}</span> : null}
+        {props.hint ? <span className="hint">{props.hint}</span> : null}
       </span>
     </div>
   );
@@ -384,9 +386,15 @@ export function ApprovalProgress(props: {
         return (
           <div className={`row ${cls}`}>
             <span className="tick">{rec ? (rec.decision === "APPROVED" ? "✓" : "✕") : "○"}</span>
-            <span className="who">{roleLabel(role)}</span>
-            {person ? <span className="sub">· {person.name}</span> : !rec ? <span className="sub">· awaiting</span> : null}
-            {rec ? <span className="when">{fmtDate(rec.createdAt).slice(0, 16)}</span> : null}
+            <span className="who">
+              {roleLabel(role)}
+              {person ? <span className="sub" style="display:block;font-weight:400">{person.name}</span> : null}
+            </span>
+            {rec ? (
+              <span className="when">{fmtDate(rec.createdAt).slice(0, 16)}</span>
+            ) : (
+              <span className="when">awaiting</span>
+            )}
           </div>
         );
       })}
@@ -395,6 +403,124 @@ export function ApprovalProgress(props: {
 }
 
 // ------------------------------------------------------ evidence panel
+
+// --- Evidence panel building blocks (also composed by the approvals page) ---
+
+export function EvidenceStatusChips(props: {
+  verification: Verification | null;
+  isDemoFallback: boolean;
+}): VNode {
+  return (
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 10px">
+      {props.verification ? (
+        <VerdictChip verdict={props.verification.verdict} />
+      ) : (
+        <span className="chip neutral">Unverified</span>
+      )}
+      {props.isDemoFallback ? <span className="chip fallback">Demo fallback</span> : null}
+    </div>
+  );
+}
+
+export function EvidenceFacts(props: {
+  evidence: EvidenceItem;
+  requirement: string;
+  submittedBy?: User | null;
+}): VNode {
+  const { evidence } = props;
+  return (
+    <dl className="kv">
+      <dt>Requirement</dt>
+      <dd>{props.requirement}</dd>
+      <dt>Captured</dt>
+      <dd className="mono">{fmtDate(evidence.capturedAt)}</dd>
+      <dt>Uploaded</dt>
+      <dd className="mono">{fmtDate(evidence.uploadedAt)}</dd>
+      <dt>GPS</dt>
+      <dd className="mono">
+        {evidence.latitude.toFixed(5)}, {evidence.longitude.toFixed(5)}
+      </dd>
+      <dt>Device</dt>
+      <dd>
+        {evidence.deviceMetadata.platform} · {evidence.deviceMetadata.screen} ·{" "}
+        {evidence.deviceMetadata.language}
+      </dd>
+      {props.submittedBy ? (
+        <>
+          <dt>Submitted by</dt>
+          <dd>
+            {props.submittedBy.name} ({props.submittedBy.title})
+          </dd>
+        </>
+      ) : null}
+    </dl>
+  );
+}
+
+export function EvidenceChecks(props: { verification: Verification }): VNode {
+  const v = props.verification;
+  return (
+    <ul className="checks">
+      {v.checks.map((c) => (
+        <li className={c.passed ? "pass" : "fail"}>
+          <span className="mark">{c.passed ? "PASS" : v.verdict === "NEEDS_REVIEW" ? "REVIEW" : "FAIL"}</span>
+          <span>
+            <span className="name">{c.name}</span>
+            <span className="detail">{c.detail}</span>
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function EvidenceAiResult(props: { verification: Verification }): VNode {
+  const v = props.verification;
+  return (
+    <>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <VerdictChip verdict={v.verdict} />
+      </div>
+      <div className="confbar">
+        <span style="font-weight:650">Confidence</span>
+        <ConfidenceTrack confidence={v.confidence} />
+        <span className="mono">{v.confidence.toFixed(2)}</span>
+      </div>
+      <p className="sub" style="margin:4px 0 0">{v.reasoning}</p>
+    </>
+  );
+}
+
+export function EvidenceHashes(props: {
+  evidence: EvidenceItem;
+  ledgerEntry: LedgerEntry | null;
+}): VNode {
+  return (
+    <>
+      <div className="hashline">
+        <span className="lbl">Evidence hash (sha-256)</span>
+        {props.evidence.hash}
+      </div>
+      {props.ledgerEntry ? (
+        <>
+          <div className="hashline">
+            <span className="lbl">Previous ledger hash</span>
+            {props.ledgerEntry.previousHash}
+          </div>
+          <div className="hashline">
+            <span className="lbl">Ledger entry #{props.ledgerEntry.seq} — current hash</span>
+            {props.ledgerEntry.currentHash}
+          </div>
+        </>
+      ) : (
+        <div className="hashline">
+          <span className="lbl">Ledger</span>
+          Not entered — evidence is only ledgered once verified.
+        </div>
+      )}
+    </>
+  );
+}
 
 /**
  * Reusable Evidence Panel — the chain of proof for one evidence item.
@@ -421,138 +547,111 @@ export function EvidencePanel(props: {
         </div>
         <div className="facts">
           <div className="ev-sec">Original evidence</div>
-          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 10px">
-            {verification ? <VerdictChip verdict={verification.verdict} /> : <span className="chip neutral">Unverified</span>}
-            {evidence.isDemoFallback ? <span className="chip fallback">Demo fallback</span> : null}
-          </div>
-          <dl className="kv">
-            <dt>Requirement</dt>
-            <dd>{props.requirement}</dd>
-            <dt>Captured</dt>
-            <dd className="mono">{fmtDate(evidence.capturedAt)}</dd>
-            <dt>Uploaded</dt>
-            <dd className="mono">{fmtDate(evidence.uploadedAt)}</dd>
-            <dt>GPS</dt>
-            <dd className="mono">
-              {evidence.latitude.toFixed(5)}, {evidence.longitude.toFixed(5)}
-            </dd>
-            <dt>Device</dt>
-            <dd>
-              {evidence.deviceMetadata.platform} · {evidence.deviceMetadata.screen} ·{" "}
-              {evidence.deviceMetadata.language}
-            </dd>
-            {props.submittedBy ? (
-              <>
-                <dt>Submitted by</dt>
-                <dd>
-                  {props.submittedBy.name} ({props.submittedBy.title})
-                </dd>
-              </>
-            ) : null}
-          </dl>
+          <EvidenceStatusChips verification={verification} isDemoFallback={evidence.isDemoFallback} />
+          <EvidenceFacts evidence={evidence} requirement={props.requirement} submittedBy={props.submittedBy} />
 
           {verification ? (
             <>
               <div className="ev-sec">Verification checks</div>
-              <ul className="checks">
-                {verification.checks.map((c) => (
-                  <li className={c.passed ? "pass" : "fail"}>
-                    <span className="mark">{c.passed ? "PASS" : verification.verdict === "NEEDS_REVIEW" ? "REVIEW" : "FAIL"}</span>
-                    <span>
-                      <span className="name">{c.name}</span>
-                      <span className="detail">{c.detail}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-
+              <EvidenceChecks verification={verification} />
               <div className="ev-sec">AI verification result</div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <VerdictChip verdict={verification.verdict} />
-              </div>
-              <div className="confbar">
-                <span style="font-weight:650">Confidence</span>
-                <ConfidenceTrack confidence={verification.confidence} />
-                <span className="mono">{verification.confidence.toFixed(2)}</span>
-              </div>
-              <p className="sub" style="margin:4px 0 0">{verification.reasoning}</p>
+              <EvidenceAiResult verification={verification} />
             </>
           ) : null}
 
           <div className="ev-sec">Proof integrity</div>
-          <div className="hashline">
-            <span className="lbl">Evidence hash (sha-256)</span>
-            {evidence.hash}
-          </div>
-          {ledgerEntry ? (
-            <>
-              <div className="hashline">
-                <span className="lbl">Previous ledger hash</span>
-                {ledgerEntry.previousHash}
-              </div>
-              <div className="hashline">
-                <span className="lbl">Ledger entry #{ledgerEntry.seq} — current hash</span>
-                {ledgerEntry.currentHash}
-              </div>
-            </>
-          ) : (
-            <div className="hashline">
-              <span className="lbl">Ledger</span>
-              Not entered — evidence is only ledgered once verified.
-            </div>
-          )}
+          <EvidenceHashes evidence={evidence} ledgerEntry={ledgerEntry} />
         </div>
       </div>
 
-      <div className="proof-rail">
-        <span className="step">PHOTO</span>
-        <span className="arrow">→</span>
-        {verification ? (
-          <>
-            <span className={`step ${passed === total ? "ok" : "warn"}`}>
-              {passed}/{total} CHECKS PASSED
-            </span>
-            <span className="arrow">→</span>
-            <span className="step">{verification.confidence.toFixed(2)} CONFIDENCE</span>
-            <span className="arrow">→</span>
-            <span
-              className={`step ${verification.verdict === "VERIFIED" ? "ok" : "warn"}`}
-            >
-              {verification.verdict.replace(/_/g, " ")}
-            </span>
-          </>
-        ) : (
-          <span className="step">AWAITING VERIFICATION</span>
-        )}
-        {ledgerEntry ? (
-          <>
-            <span className="arrow">→</span>
-            <span className="step mono" title={ledgerEntry.currentHash}>
-              LEDGER #{ledgerEntry.seq} · {shortHash(ledgerEntry.currentHash, 10)}
-            </span>
-          </>
-        ) : null}
-        {props.approval ? (
-          <>
-            <span className="arrow">→</span>
-            <span className={`step ${props.approval.status === "APPROVED" ? "ok" : "warn"}`}>
-              {props.approval.status === "APPROVED"
-                ? "HUMAN APPROVED"
-                : props.approval.status === "REJECTED"
-                  ? "APPROVAL REJECTED"
-                  : "HUMAN APPROVAL REQUIRED"}
-            </span>
-          </>
-        ) : null}
-        {props.accountStatus ? (
-          <>
-            <span className="arrow">→</span>
-            <span className={`step ${props.accountStatus === "RELEASED" ? "ok" : "warn"}`}>
-              FUNDS {props.accountStatus}
-            </span>
-          </>
-        ) : null}
-      </div>
+      <ProofRail
+        verification={verification}
+        ledgerEntry={ledgerEntry}
+        approval={props.approval}
+        accountStatus={props.accountStatus}
+      />
+    </div>
+  );
+}
+
+/** E: chain-of-proof rail — the product story on one line. */
+export function ProofRail(props: {
+  verification: Verification | null;
+  ledgerEntry: LedgerEntry | null;
+  approval?: ApprovalRequest | null;
+  accountStatus?: AccountStatus;
+}): VNode {
+  const { verification, ledgerEntry } = props;
+  const passed = verification ? verification.checks.filter((c) => c.passed).length : 0;
+  const total = verification ? verification.checks.length : 0;
+  return (
+    <div className="proof-rail">
+      <span className="step">PHOTO</span>
+      <span className="arrow">→</span>
+      {verification ? (
+        <>
+          <span className={`step ${passed === total ? "ok" : "warn"}`}>
+            {passed}/{total} CHECKS PASSED
+          </span>
+          <span className="arrow">→</span>
+          <span className="step">{verification.confidence.toFixed(2)} CONFIDENCE</span>
+          <span className="arrow">→</span>
+          <span className={`step ${verification.verdict === "VERIFIED" ? "ok" : "warn"}`}>
+            {verification.verdict.replace(/_/g, " ")}
+          </span>
+        </>
+      ) : (
+        <span className="step">AWAITING VERIFICATION</span>
+      )}
+      {ledgerEntry ? (
+        <>
+          <span className="arrow">→</span>
+          <span className="step mono" title={ledgerEntry.currentHash}>
+            LEDGER #{ledgerEntry.seq} · {shortHash(ledgerEntry.currentHash, 10)}
+          </span>
+        </>
+      ) : null}
+      {props.approval ? (
+        <>
+          <span className="arrow">→</span>
+          <span className={`step ${props.approval.status === "APPROVED" ? "ok" : "warn"}`}>
+            {props.approval.status === "APPROVED"
+              ? "HUMAN APPROVED"
+              : props.approval.status === "REJECTED"
+                ? "APPROVAL REJECTED"
+                : "HUMAN APPROVAL REQUIRED"}
+          </span>
+        </>
+      ) : null}
+      {props.accountStatus ? (
+        <>
+          <span className="arrow">→</span>
+          <span className={`step ${props.accountStatus === "RELEASED" ? "ok" : "warn"}`}>
+            FUNDS {props.accountStatus}
+          </span>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** Subtle product-story cue used under page headers (not a marketing banner). */
+export function StoryStrip(): VNode {
+  const stages = [
+    "Physical evidence",
+    "Verification",
+    "Tamper-evident ledger",
+    "Human approval",
+    "Fund release",
+  ];
+  return (
+    <div className="story-strip">
+      {stages.map((s, i) => (
+        <>
+          {i > 0 ? <span className="arrow">→</span> : null}
+          <span>{s}</span>
+        </>
+      ))}
     </div>
   );
 }

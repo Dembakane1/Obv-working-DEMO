@@ -8,7 +8,12 @@ import {
   ApprovalChip,
   ApprovalProgress,
   EmptyState,
+  EvidenceAiResult,
+  EvidenceChecks,
+  EvidenceFacts,
+  EvidenceHashes,
   EvidencePanel,
+  EvidenceStatusChips,
   MetricCard,
   MilestoneCard,
   MilestoneCardData,
@@ -16,6 +21,8 @@ import {
   NavContext,
   PageHeader,
   Pipeline,
+  ProofRail,
+  StoryStrip,
   VerdictChip,
   approvalProgressLabel,
   fmtDate,
@@ -140,7 +147,7 @@ function ProjectCard(props: { data: ProjectCardData }): VNode {
           <span className="next">{icons.check()} All milestones complete</span>
         )}
         <span className="cta">
-          <a className="btn secondary sm" href={`/project/${d.project.id}`}>
+          <a className="btn sm" href={`/project/${d.project.id}`}>
             View project {icons.arrowRight()}
           </a>
         </span>
@@ -232,6 +239,7 @@ export function renderOverview(input: {
           </button>
         </form>
       </PageHeader>
+      <StoryStrip />
 
       <div className="metrics">
         <MetricCard label="Total portfolio value" value={money(metrics.totalBudget)} tone="blue" icon={icons.projects()} />
@@ -342,7 +350,8 @@ export function renderProjectDetail(input: {
 
       {tab === "overview" ? (
         <>
-          <div className="card card-pad">
+          <StoryStrip />
+          <div className="card card-pad" style="margin-top:12px">
             <h3 style="margin:0 0 6px;font-size:15px">About this project</h3>
             <p className="sub" style="margin:0;max-width:860px">{project.description}</p>
             <dl className="kv" style="margin-top:14px">
@@ -603,6 +612,70 @@ export function renderApprovals(input: {
           const missing = item.approval.requiredRoles.filter(
             (role) => !item.records.some((r) => r.role === role)
           );
+          const b = item.bundle;
+
+          // Approval audit trail — assembled from existing records only.
+          const trail: Array<{ tone: string; msg: VNode | string; when: string }> = [];
+          if (b) {
+            trail.push({
+              tone: "info",
+              msg: (
+                <>
+                  <b>Evidence submitted</b> by {b.submittedBy?.name ?? "field user"}
+                  {b.evidence.isDemoFallback ? " (demo fallback)" : ""}
+                </>
+              ),
+              when: b.evidence.uploadedAt,
+            });
+            if (b.verification) {
+              trail.push({
+                tone: b.verification.verdict === "VERIFIED" ? "ok" : "warn",
+                msg: (
+                  <>
+                    <b>AI verification: {b.verification.verdict.replace(/_/g, " ")}</b> · confidence{" "}
+                    {b.verification.confidence.toFixed(2)} ·{" "}
+                    {b.verification.checks.filter((c) => c.passed).length}/{b.verification.checks.length} checks passed
+                  </>
+                ),
+                when: b.verification.createdAt,
+              });
+            }
+            if (b.ledgerEntry) {
+              trail.push({
+                tone: "ok",
+                msg: (
+                  <>
+                    <b>Ledger entry #{b.ledgerEntry.seq} appended</b> ·{" "}
+                    <span className="mono">{shortHash(b.ledgerEntry.currentHash, 18)}</span>
+                  </>
+                ),
+                when: b.ledgerEntry.timestamp,
+              });
+            }
+          }
+          trail.push({
+            tone: "warn",
+            msg: (
+              <>
+                <b>Approval requested</b> — requires{" "}
+                {item.approval.requiredRoles.map(roleLabel).join(" + ")} · funds HELD
+              </>
+            ),
+            when: item.approval.createdAt,
+          });
+          for (const rec of item.records) {
+            trail.push({
+              tone: rec.decision === "APPROVED" ? "ok" : "bad",
+              msg: (
+                <>
+                  <b>{rec.decision === "APPROVED" ? "Approved" : "Rejected"}</b> by{" "}
+                  {input.users.get(rec.userId)?.name ?? roleLabel(rec.role)} ({roleLabel(rec.role)})
+                </>
+              ),
+              when: rec.createdAt,
+            });
+          }
+
           return (
             <div className="card" style="margin-bottom:16px">
               <div className="card-head">
@@ -611,18 +684,19 @@ export function renderApprovals(input: {
                 </h3>
                 <span className="right">
                   <span className="chip warn">HELD — {money(item.milestone.trancheAmount)}</span>
-                  {item.bundle?.verification ? (
-                    <>
-                      <VerdictChip verdict={item.bundle.verification.verdict} />
-                      <span className="mono">conf {item.bundle.verification.confidence.toFixed(2)}</span>
-                    </>
-                  ) : null}
+                  {b?.verification ? <VerdictChip verdict={b.verification.verdict} /> : null}
                 </span>
               </div>
-              <div className="card-pad" style="display:grid;grid-template-columns:280px 1fr;gap:20px">
-                <div>
+
+              <div className="approval-review">
+                <div className="col-decide">
+                  <div className="stake">
+                    <span className="l">Amount at stake</span>
+                    <span className="v">{money(item.milestone.trancheAmount)}</span>
+                    <span className="chip warn">Held until final approval</span>
+                  </div>
                   <ApprovalProgress approval={item.approval} records={item.records} users={input.users} />
-                  <p className="sub" style="margin:8px 0 0">
+                  <p className="sub" style="margin:8px 0 0;font-size:12.5px">
                     Submitted {fmtDate(item.approval.createdAt)}
                     {missing.length > 0 ? (
                       <>
@@ -632,14 +706,16 @@ export function renderApprovals(input: {
                     ) : null}
                   </p>
                   {item.canDecide ? (
-                    <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
-                      <form method="POST" action={`/api/approvals/${item.approval.id}/decision`}>
+                    <div style="display:flex;flex-direction:column;gap:9px;margin-top:14px">
+                      <form method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
                         <input type="hidden" name="decision" value="APPROVED" />
-                        <button className="btn" type="submit">Approve release ({approved + 1} of {item.approval.requiredRoles.length})</button>
+                        <button className="btn" type="submit" style="width:100%">
+                          Approve release ({approved + 1} of {item.approval.requiredRoles.length})
+                        </button>
                       </form>
-                      <form method="POST" action={`/api/approvals/${item.approval.id}/decision`}>
+                      <form method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
                         <input type="hidden" name="decision" value="REJECTED" />
-                        <button className="btn danger" type="submit">Reject</button>
+                        <button className="btn danger" type="submit" style="width:100%">Reject</button>
                       </form>
                     </div>
                   ) : item.alreadyDecided ? (
@@ -650,21 +726,68 @@ export function renderApprovals(input: {
                     </div>
                   )}
                 </div>
-                <div style="min-width:0">
-                  {item.bundle ? (
-                    <EvidencePanel
-                      evidence={item.bundle.evidence}
-                      verification={item.bundle.verification}
-                      ledgerEntry={item.bundle.ledgerEntry}
-                      requirement={item.milestone.requirement}
-                      submittedBy={item.bundle.submittedBy}
-                      approval={item.approval}
-                      accountStatus={item.milestone.accountStatus}
-                    />
+
+                <div className="col-photo">
+                  {b ? (
+                    <>
+                      <div className="approval-photo">
+                        <img src={b.evidence.photoPath} alt="Field evidence photo" />
+                      </div>
+                      <div style="margin-top:10px">
+                        <EvidenceStatusChips verification={b.verification} isDemoFallback={b.evidence.isDemoFallback} />
+                      </div>
+                    </>
                   ) : (
                     <div className="note">Evidence record unavailable.</div>
                   )}
                 </div>
+
+                <div className="col-facts">
+                  {b ? (
+                    <>
+                      <div className="ev-sec">Original evidence</div>
+                      <EvidenceFacts evidence={b.evidence} requirement={item.milestone.requirement} submittedBy={b.submittedBy} />
+                      {b.verification ? (
+                        <>
+                          <div className="ev-sec">Verification checks</div>
+                          <EvidenceChecks verification={b.verification} />
+                          <div className="ev-sec">AI verification result</div>
+                          <EvidenceAiResult verification={b.verification} />
+                        </>
+                      ) : null}
+                      <div className="ev-sec">Proof integrity</div>
+                      <EvidenceHashes evidence={b.evidence} ledgerEntry={b.ledgerEntry} />
+                    </>
+                  ) : null}
+                </div>
+              </div>
+
+              {b ? (
+                <ProofRail
+                  verification={b.verification}
+                  ledgerEntry={b.ledgerEntry}
+                  approval={item.approval}
+                  accountStatus={item.milestone.accountStatus}
+                />
+              ) : null}
+
+              <div className="audit-trail">
+                <div className="ev-sec" style="margin:0;padding:12px 20px 0">Approval audit trail</div>
+                <ul className="activity">
+                  {trail.map((t) => (
+                    <li>
+                      <span className={`ico ${t.tone}`}>
+                        {t.tone === "ok" ? icons.check() : t.tone === "bad" ? icons.x() : t.tone === "warn" ? icons.clock() : icons.activity()}
+                      </span>
+                      <span className="body">
+                        <span className="msg">{t.msg}</span>
+                        <span className="meta">
+                          <span className="when">{fmtDate(t.when)}</span>
+                        </span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             </div>
           );

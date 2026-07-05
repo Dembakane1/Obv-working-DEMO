@@ -122,8 +122,11 @@ async function main() {
   await funder.goto(BASE + "/approvals");
   await waitForText(funder, "Gravel base course");
   await waitForText(funder, "HELD — $600,000");
-  const evidenceVisible = await funder.locator(".evidence-panel").count();
-  if (evidenceVisible < 1) throw new Error("evidence panel not visible to approver");
+  const photoVisible = await funder.locator(".approval-photo img").count();
+  const checksVisible = await funder.locator(".approval-review .checks li").count();
+  if (photoVisible < 1 || checksVisible < 3) {
+    throw new Error("evidence photo/checks not visible to approver before deciding");
+  }
   pass("approval queue shows amount at stake, verdict, and full evidence context");
 
   await funder.getByRole("button", { name: /Approve release/ }).click();
