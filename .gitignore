@@ -1,0 +1,18 @@
+# build output
+dist/
+public/js/
+public/icons/
+
+# runtime data (SQLite db, WORM evidence objects, uploads)
+data/
+
+# dependencies — node_modules is ignored EXCEPT the vendored type stubs
+# below, which are committed because the build environment for this demo
+# has no access to the npm registry (see README, "Build environment
+# constraint").
+node_modules/*
+!node_modules/@types/
+!node_modules/undici-types/
+
+nohup.out
+*.log

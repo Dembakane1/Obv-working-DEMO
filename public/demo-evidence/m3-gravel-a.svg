@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+  <defs>
+    <linearGradient id="sky3a" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#93aec2"/><stop offset="1" stop-color="#d9e1e3"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="350" fill="url(#sky3a)"/>
+  <rect y="350" width="800" height="250" fill="#87755a"/>
+  <path d="M0 600 L300 350 L500 350 L800 600 Z" fill="#c4b190"/>
+  <path d="M55 600 L330 368 L470 368 L745 600 Z" fill="#d2c09e"/>
+  <path d="M120 600 L355 385 L445 385 L680 600 Z" fill="#c8b696"/>
+  <g fill="#a89679">
+    <circle cx="260" cy="500" r="5"/><circle cx="330" cy="470" r="4"/><circle cx="410" cy="520" r="6"/>
+    <circle cx="480" cy="460" r="4"/><circle cx="540" cy="510" r="5"/><circle cx="370" cy="555" r="6"/>
+  </g>
+  <g transform="translate(80,400)">
+    <rect x="0" y="30" width="150" height="44" rx="5" fill="#d8a413"/>
+    <rect x="96" y="-6" width="48" height="38" rx="4" fill="#c19412"/>
+    <rect x="104" y="0" width="22" height="18" fill="#dfe6ea"/>
+    <circle cx="34" cy="80" r="20" fill="#2b2b2b"/><circle cx="118" cy="80" r="20" fill="#2b2b2b"/>
+    <rect x="-52" y="34" width="56" height="16" fill="#c19412"/>
+    <rect x="-64" y="26" width="14" height="32" fill="#8b8b8b"/>
+  </g>
+  <ellipse cx="700" cy="340" rx="90" ry="26" fill="#5d6e4e"/>
+  <rect x="0" y="548" width="800" height="52" fill="#111827" opacity="0.82"/>
+  <text x="16" y="580" font-family="monospace" font-size="20" fill="#e5e7eb">R47 km 3+400 — gravel base course laid and graded · demo asset</text>
+</svg>

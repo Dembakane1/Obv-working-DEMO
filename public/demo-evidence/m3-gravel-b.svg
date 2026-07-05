@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+  <defs>
+    <linearGradient id="sky3b" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a4b8c6"/><stop offset="1" stop-color="#e0e5e5"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="370" fill="url(#sky3b)"/>
+  <rect y="370" width="800" height="230" fill="#827054"/>
+  <path d="M0 600 L260 370 L540 370 L800 600 Z" fill="#c9b691"/>
+  <path d="M90 600 L310 392 L490 392 L710 600 Z" fill="#d6c4a1"/>
+  <g transform="translate(430,410)">
+    <rect x="0" y="26" width="190" height="50" rx="6" fill="#3f6f9e"/>
+    <rect x="132" y="-14" width="54" height="44" rx="4" fill="#365f88"/>
+    <rect x="140" y="-6" width="24" height="20" fill="#dfe6ea"/>
+    <path d="M0 26 L-60 60 L0 76 Z" fill="#57606a"/>
+    <circle cx="40" cy="86" r="20" fill="#2b2b2b"/><circle cx="150" cy="86" r="20" fill="#2b2b2b"/>
+  </g>
+  <g transform="translate(150,430)">
+    <ellipse cx="60" cy="90" rx="110" ry="30" fill="#b9a67f"/>
+    <path d="M-20 90 Q60 -30 140 90 Z" fill="#cdbb96"/>
+  </g>
+  <ellipse cx="90" cy="358" rx="80" ry="24" fill="#5d6e4e"/>
+  <ellipse cx="740" cy="362" rx="70" ry="22" fill="#556647"/>
+  <rect x="0" y="548" width="800" height="52" fill="#111827" opacity="0.82"/>
+  <text x="16" y="580" font-family="monospace" font-size="20" fill="#e5e7eb">R47 km 9+100 — grader compacting base layer, stockpile at right of way · demo asset</text>
+</svg>

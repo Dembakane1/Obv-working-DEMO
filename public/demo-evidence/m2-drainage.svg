@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+  <defs>
+    <linearGradient id="sky2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9fb6c9"/><stop offset="1" stop-color="#dde3e4"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="360" fill="url(#sky2)"/>
+  <rect y="360" width="800" height="240" fill="#8f7d5c"/>
+  <path d="M0 600 L280 360 L520 360 L800 600 Z" fill="#a58e64"/>
+  <path d="M70 600 L320 380 L480 380 L730 600 Z" fill="#8c7a58"/>
+  <g transform="translate(250,430)">
+    <ellipse cx="150" cy="120" rx="230" ry="60" fill="#6e5f45"/>
+    <rect x="20" y="20" width="260" height="110" rx="8" fill="#9aa1a6"/>
+    <ellipse cx="150" cy="75" rx="70" ry="55" fill="#31383d"/>
+    <ellipse cx="150" cy="75" rx="58" ry="44" fill="#14181b"/>
+    <rect x="0" y="126" width="300" height="14" fill="#7b8288"/>
+  </g>
+  <ellipse cx="120" cy="345" rx="85" ry="24" fill="#5d6e4e"/>
+  <ellipse cx="690" cy="340" rx="95" ry="27" fill="#556647"/>
+  <g transform="translate(590,420)">
+    <rect x="0" y="0" width="16" height="90" fill="#c9541f"/>
+    <rect x="40" y="0" width="16" height="90" fill="#c9541f"/>
+    <rect x="-8" y="0" width="72" height="10" fill="#e8e3d8"/>
+  </g>
+  <rect x="0" y="548" width="800" height="52" fill="#111827" opacity="0.82"/>
+  <text x="16" y="580" font-family="monospace" font-size="20" fill="#e5e7eb">R47 km 6+850 — box culvert installed, backfill complete · demo asset</text>
+</svg>

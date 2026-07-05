@@ -1,0 +1,16 @@
+{
+  "name": "obv",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OBV (OpenBuild Verify) — the truth layer for physical projects. Demo build.",
+  "scripts": {
+    "build": "tsc -p tsconfig.server.json && tsc -p tsconfig.client.json && node scripts/gen-icons.js",
+    "seed": "node dist/server/db/seed.js --reset",
+    "start": "node dist/server/http/server.js",
+    "setup": "npm run build && npm run seed",
+    "dev": "npm run build && node dist/server/http/server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

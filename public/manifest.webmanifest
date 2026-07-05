@@ -1,0 +1,16 @@
+{
+  "name": "OBV Field Capture",
+  "short_name": "OBV Field",
+  "description": "Capture geo-tagged milestone evidence for OBV (OpenBuild Verify).",
+  "id": "/field",
+  "start_url": "/field",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
