@@ -187,3 +187,16 @@ export interface EvidenceSubmission {
   deviceMetadata: DeviceMetadata;
   isDemoFallback: boolean;
 }
+
+/** A generated funder-report artifact (PDF stored under data/reports/). */
+export interface Report {
+  id: string;
+  projectId: string;
+  reportType: string; // 'VERIFICATION_FUND_RELEASE'
+  filename: string;
+  generatedAt: string;
+  generatedBy: string; // user id
+  /** 'INTACT' or 'TAMPERED_AT:<seq>' — ledger state when generated. */
+  integrityStatus: string;
+  ledgerEntries: number;
+}

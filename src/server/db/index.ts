@@ -16,6 +16,7 @@ import * as path from "node:path";
 export const DATA_DIR = path.join(process.cwd(), "data");
 export const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 export const WORM_DIR = path.join(DATA_DIR, "worm");
+export const REPORTS_DIR = path.join(DATA_DIR, "reports");
 const DB_PATH = path.join(DATA_DIR, "obv.db");
 
 let db: DatabaseSync | null = null;
@@ -136,6 +137,18 @@ CREATE TABLE IF NOT EXISTS demo_fallback_photos (
   path TEXT NOT NULL,
   label TEXT NOT NULL
 );
+
+-- Generated funder-report artifacts (PDFs stored under data/reports/).
+CREATE TABLE IF NOT EXISTS reports (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  report_type TEXT NOT NULL DEFAULT 'VERIFICATION_FUND_RELEASE',
+  filename TEXT NOT NULL,
+  generated_at TEXT NOT NULL,
+  generated_by TEXT NOT NULL REFERENCES users(id),
+  integrity_status TEXT NOT NULL, -- 'INTACT' or 'TAMPERED_AT:<seq>'
+  ledger_entries INTEGER NOT NULL
+);
 `;
 
 export function getDb(): DatabaseSync {
@@ -143,6 +156,7 @@ export function getDb(): DatabaseSync {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
     fs.mkdirSync(WORM_DIR, { recursive: true });
+    fs.mkdirSync(REPORTS_DIR, { recursive: true });
     db = new DatabaseSync(DB_PATH);
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec("PRAGMA foreign_keys = ON;");
@@ -161,5 +175,6 @@ export function resetDb(): void {
   fs.rmSync(DB_PATH + "-shm", { force: true });
   fs.rmSync(UPLOADS_DIR, { recursive: true, force: true });
   fs.rmSync(WORM_DIR, { recursive: true, force: true });
+  fs.rmSync(REPORTS_DIR, { recursive: true, force: true });
   getDb();
 }

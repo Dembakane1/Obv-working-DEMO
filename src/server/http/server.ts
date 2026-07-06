@@ -9,8 +9,9 @@
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createHash } from "node:crypto";
-import { getDb, WORM_DIR } from "../db/index";
+import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { getDb, REPORTS_DIR, WORM_DIR } from "../db/index";
 import * as repo from "../db/repo";
 import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
@@ -46,10 +47,22 @@ import {
   renderUserSwitcher,
 } from "../view/pages";
 import type { NavContext } from "../view/components";
-import type { EvidenceSubmission, User } from "../../shared/types";
+import { assembleReportData, reportFilename } from "../report/data";
+import { renderFunderReport } from "../view/report";
+import type { EvidenceSubmission, Report, User } from "../../shared/types";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const PUBLIC_DIR = path.join(process.cwd(), "public");
+
+// PDF rendering: headless Chromium via the globally installed Playwright
+// (no npm dependency added). One-time token lets the renderer fetch the
+// report HTML without a demo session cookie.
+const RENDER_SCRIPT = path.join(process.cwd(), "scripts", "render-pdf.js");
+const PLAYWRIGHT_NODE_PATH =
+  process.env.OBV_PLAYWRIGHT_NODE_PATH ?? "/opt/node22/lib/node_modules";
+const previewToken = randomUUID();
+/** Report HTML cached between generate-request and Chromium fetch. */
+const pendingReportHtml = new Map<string, string>();
 
 const MIME: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
@@ -491,6 +504,137 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ---- funder report generation ----
+  if (method === "POST" && pathname === "/api/reports/generate") {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const body = (await readBody(req, 64 * 1024)).toString("utf8");
+    const projectId = isFormPost(req)
+      ? new URLSearchParams(body).get("projectId") ?? ""
+      : JSON.parse(body || "{}").projectId ?? "";
+
+    // Assemble once: the stored record and the PDF share the same snapshot
+    // (including the ledger integrity check run at generation time).
+    const data = await assembleReportData(projectId, user);
+    if (!data) {
+      sendJson(res, { error: "Unknown project" }, 404);
+      return;
+    }
+    const report: Report = {
+      id: repo.newId(),
+      projectId,
+      reportType: "VERIFICATION_FUND_RELEASE",
+      filename: reportFilename(data.project, data.generatedAt),
+      generatedAt: data.generatedAt,
+      generatedBy: user.id,
+      integrityStatus: data.integrity.valid
+        ? "INTACT"
+        : `TAMPERED_AT:${data.integrity.brokenAt}`,
+      ledgerEntries: data.integrity.entries,
+    };
+    pendingReportHtml.set(report.id, renderFunderReport(data));
+    try {
+      const outDir = path.join(REPORTS_DIR, report.id);
+      fs.mkdirSync(outDir, { recursive: true });
+      const outPath = path.join(outDir, report.filename);
+      const config = Buffer.from(
+        JSON.stringify({
+          url: `http://127.0.0.1:${PORT}/report-cache/${report.id}?token=${previewToken}`,
+          outPath,
+          projectName: data.project.name,
+          generatedAt: data.generatedAt.replace("T", " ").replace(/\.\d+Z$/, " UTC"),
+        })
+      ).toString("base64");
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          process.execPath,
+          [RENDER_SCRIPT, config],
+          { env: { ...process.env, NODE_PATH: PLAYWRIGHT_NODE_PATH }, timeout: 90_000 },
+          (err, _stdout, stderr) => (err ? reject(new Error(stderr || err.message)) : resolve())
+        );
+      });
+      if (!fs.existsSync(outPath)) throw new Error("Renderer produced no output file");
+      repo.insertReport(report);
+      await teamsNotifier.notify(
+        "REPORT_GENERATED",
+        `Funder report generated for "${data.project.name}" by ${user.name} (ledger: ${report.integrityStatus === "INTACT" ? "chain intact" : report.integrityStatus}).`
+      );
+      if (isFormPost(req)) {
+        redirect(res, `/reports/file/${report.id}`);
+      } else {
+        sendJson(res, { report }, 201);
+      }
+    } catch (err) {
+      console.error("[report] PDF generation failed:", (err as Error).message);
+      if (isFormPost(req)) {
+        redirect(res, `/reports?error=pdf&project=${encodeURIComponent(projectId)}`);
+      } else {
+        sendJson(res, { error: "PDF generation failed: " + (err as Error).message }, 500);
+      }
+    } finally {
+      pendingReportHtml.delete(report.id);
+    }
+    return;
+  }
+
+  // Cached report HTML fetched by the headless renderer (token-gated).
+  const cacheMatch = /^\/report-cache\/([^/]+)$/.exec(pathname);
+  if (method === "GET" && cacheMatch) {
+    const html = pendingReportHtml.get(cacheMatch[1]);
+    if (!html || url.searchParams.get("token") !== previewToken) {
+      sendJson(res, { error: "Not found" }, 404);
+      return;
+    }
+    sendHtml(res, html);
+    return;
+  }
+
+  // Live printable HTML preview (session-gated; also the graceful
+  // degradation path if Chromium is unavailable).
+  const previewMatch = /^\/report\/([^/]+)\/preview$/.exec(pathname);
+  if (method === "GET" && previewMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      redirect(res, "/");
+      return;
+    }
+    const data = await assembleReportData(previewMatch[1], user);
+    if (!data) {
+      sendHtml(res, renderError(navFor(user, ""), "Project not found", "No project exists at this address."), 404);
+      return;
+    }
+    sendHtml(res, renderFunderReport(data));
+    return;
+  }
+
+  // Download / open a generated report PDF.
+  const fileMatch = /^\/reports\/file\/([^/]+)$/.exec(pathname);
+  if (method === "GET" && fileMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      redirect(res, "/");
+      return;
+    }
+    const report = repo.getReport(fileMatch[1]);
+    const filePath = report ? path.join(REPORTS_DIR, report.id, report.filename) : "";
+    if (!report || !fs.existsSync(filePath)) {
+      sendHtml(res, renderError(navFor(user, "reports"), "Report not found", "This report is no longer available (demo data may have been reset). Generate a new one from the Reports page."), 404);
+      return;
+    }
+    const disposition = url.searchParams.get("dl") === "1" ? "attachment" : "inline";
+    res.writeHead(200, {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `${disposition}; filename="${report.filename}"`,
+      "Content-Length": fs.statSync(filePath).size,
+      "Cache-Control": "no-cache",
+    });
+    res.end(fs.readFileSync(filePath));
+    return;
+  }
+
   // Reset the demo database to its seeded state.
   if (method === "POST" && pathname === "/api/demo/reset") {
     await seedDemo();
@@ -647,7 +791,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (method === "GET" && pathname === "/reports") {
-    sendHtml(res, renderReports({ nav: navFor(user!, "reports"), projects: repo.listProjects() }));
+    sendHtml(
+      res,
+      renderReports({
+        nav: navFor(user!, "reports"),
+        projects: repo.listProjects(),
+        reports: repo.listReports(),
+        users: usersById(),
+        pdfError: url.searchParams.get("error") === "pdf",
+      })
+    );
     return;
   }
 

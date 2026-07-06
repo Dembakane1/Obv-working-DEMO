@@ -483,3 +483,46 @@ export function getDemoFallbackPhoto(id: string): DemoFallbackPhoto | null {
 export function newId(): string {
   return randomUUID();
 }
+
+// ---------- generated reports ----------
+
+import type { Report } from "../../shared/types";
+
+function toReport(r: Row): Report {
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    reportType: r.report_type as string,
+    filename: r.filename as string,
+    generatedAt: r.generated_at as string,
+    generatedBy: r.generated_by as string,
+    integrityStatus: r.integrity_status as string,
+    ledgerEntries: r.ledger_entries as number,
+  };
+}
+
+export function insertReport(report: Report): void {
+  getDb()
+    .prepare(
+      `INSERT INTO reports (id, project_id, report_type, filename, generated_at,
+         generated_by, integrity_status, ledger_entries)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      report.id, report.projectId, report.reportType, report.filename,
+      report.generatedAt, report.generatedBy, report.integrityStatus,
+      report.ledgerEntries
+    );
+}
+
+export function listReports(): Report[] {
+  return getDb()
+    .prepare("SELECT * FROM reports ORDER BY generated_at DESC")
+    .all()
+    .map((r) => toReport(r as Row));
+}
+
+export function getReport(id: string): Report | null {
+  const r = getDb().prepare("SELECT * FROM reports WHERE id = ?").get(id);
+  return r ? toReport(r as Row) : null;
+}
