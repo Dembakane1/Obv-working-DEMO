@@ -16,7 +16,8 @@ import * as repo from "../db/repo";
 import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { wormEvidenceStore } from "../services/WormEvidenceStore";
-import { teamsNotifier } from "../services/TeamsNotifier";
+import { TEAMS_CONFIG, teamsNotifier } from "../services/TeamsNotifier";
+import { integrityFailureCard } from "../services/teamsCards";
 import { polygonCentroid } from "../services/geo";
 import {
   processApprovalDecision,
@@ -512,12 +513,26 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   // Ledger integrity check on demand.
   if (method === "POST" && pathname === "/api/ledger/verify") {
     const chain = await wormEvidenceStore.verifyChain();
-    await teamsNotifier.notify(
-      "INTEGRITY_CHECK",
-      chain.valid
-        ? `Ledger integrity check run: ${chain.entries} entries verified — CHAIN INTACT.`
-        : `Ledger integrity check run: TAMPERING DETECTED AT ENTRY ${chain.brokenAt}.`
-    );
+    if (chain.valid) {
+      // Intact checks are routine — in-app record only, no Teams card
+      // (and therefore no possibility of a misleading success card).
+      await teamsNotifier.notify(
+        "INTEGRITY_CHECK",
+        `Ledger integrity check run: ${chain.entries} entries verified — CHAIN INTACT.`
+      );
+    } else {
+      await teamsNotifier.notify(
+        "LEDGER_INTEGRITY_FAILURE",
+        `Ledger integrity check run: TAMPERING DETECTED AT ENTRY ${chain.brokenAt}.`,
+        {
+          card: integrityFailureCard({
+            project: repo.listProjects()[0] ?? null,
+            brokenAt: chain.brokenAt,
+            checkedAt: new Date().toISOString(),
+          }),
+        }
+      );
+    }
     if (isFormPost(req) || (req.headers.accept ?? "").includes("text/html")) {
       redirect(res, "/ledger?checked=1");
     } else {
@@ -582,8 +597,23 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       repo.insertReport(report);
       await teamsNotifier.notify(
         "REPORT_GENERATED",
-        `Funder report generated for "${data.project.name}" by ${user.name} (ledger: ${report.integrityStatus === "INTACT" ? "chain intact" : report.integrityStatus}).`
+        `Funder report generated for "${data.project.name}" by ${user.name} (ledger: ${report.integrityStatus === "INTACT" ? "chain intact" : report.integrityStatus}).`,
+        { projectId: data.project.id }
       );
+      if (!data.integrity.valid) {
+        await teamsNotifier.notify(
+          "LEDGER_INTEGRITY_FAILURE",
+          `Integrity failure detected while generating the funder report: TAMPERING AT ENTRY ${data.integrity.brokenAt}.`,
+          {
+            projectId: data.project.id,
+            card: integrityFailureCard({
+              project: data.project,
+              brokenAt: data.integrity.brokenAt,
+              checkedAt: data.integrity.checkedAt,
+            }),
+          }
+        );
+      }
       if (isFormPost(req)) {
         redirect(res, `/reports/file/${report.id}`);
       } else {
@@ -705,6 +735,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         projects,
         notifications: repo.listNotifications(),
         chainValid: chain.valid,
+        teamsConfigured: TEAMS_CONFIG.configured(),
       })
     );
     return;

@@ -202,6 +202,25 @@ export async function assembleReportData(
         detail: n.type === "INTEGRITY_CHECK" ? (n.message.includes("INTACT") ? "chain intact" : "tampering detected") : null,
       });
     }
+    // Concise delivery lines for the two decision-critical notifications
+    // (only when actually delivered to Teams — no delivery-log clutter).
+    if (
+      n.deliveryMode === "TEAMS_WEBHOOK" &&
+      n.deliveryStatus === "SENT" &&
+      (n.type === "APPROVAL_RECORDED" || n.type === "TRANCHE_RELEASED")
+    ) {
+      const m = n.milestoneId ? repo.getMilestone(n.milestoneId) : null;
+      timeline.push({
+        timestamp: n.sentAt ?? n.createdAt,
+        event:
+          n.type === "TRANCHE_RELEASED"
+            ? "Release notification issued (Teams)"
+            : "Approval notification issued (Teams)",
+        actor: null,
+        context: m ? `M${m.seq}: ${m.title}` : "—",
+        detail: null,
+      });
+    }
   }
   timeline.sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
 

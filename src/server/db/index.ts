@@ -129,7 +129,13 @@ CREATE TABLE IF NOT EXISTS notifications (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   message TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  project_id TEXT,
+  milestone_id TEXT,
+  delivery_mode TEXT NOT NULL DEFAULT 'MOCK',      -- TEAMS_WEBHOOK | MOCK
+  delivery_status TEXT NOT NULL DEFAULT 'SKIPPED', -- SENT | FAILED | SKIPPED
+  sent_at TEXT,
+  failure_category TEXT                            -- sanitized, never secrets
 );
 
 CREATE TABLE IF NOT EXISTS demo_fallback_photos (
@@ -168,6 +174,21 @@ export function getDb(): DatabaseSync {
       db.exec("ALTER TABLE verifications ADD COLUMN source TEXT NOT NULL DEFAULT 'MOCK_DEFAULT'");
     } catch {
       /* column already present */
+    }
+    // Additive migration for notification delivery provenance.
+    for (const ddl of [
+      "ALTER TABLE notifications ADD COLUMN project_id TEXT",
+      "ALTER TABLE notifications ADD COLUMN milestone_id TEXT",
+      "ALTER TABLE notifications ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'MOCK'",
+      "ALTER TABLE notifications ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'SKIPPED'",
+      "ALTER TABLE notifications ADD COLUMN sent_at TEXT",
+      "ALTER TABLE notifications ADD COLUMN failure_category TEXT",
+    ]) {
+      try {
+        db.exec(ddl);
+      } catch {
+        /* column already present */
+      }
     }
   }
   return db;

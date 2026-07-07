@@ -232,6 +232,7 @@ export function renderOverview(input: {
   projects: ProjectCardData[];
   notifications: Notification[];
   chainValid: boolean;
+  teamsConfigured: boolean;
 }): string {
   const m = input.metrics;
   const releasedPct = m.totalBudget > 0 ? Math.round((m.released / m.totalBudget) * 100) : 0;
@@ -390,10 +391,17 @@ export function renderOverview(input: {
         </div>
       </div>
 
-      {/* Activity as a ruled register */}
+      {/* Activity as a ruled register with notification provenance */}
       <div className="doc-head">
         <h2>Activity register</h2>
-        <span className="right">most recent first</span>
+        <span className="right">
+          {input.teamsConfigured ? (
+            <span className="status info" style="margin-right:8px"><span className="g">●</span>Teams webhook configured</span>
+          ) : (
+            <span className="status" style="margin-right:8px"><span className="g">●</span>Demo notification mode</span>
+          )}
+          most recent first
+        </span>
       </div>
       <div className="reglist" style="margin-top:10px;border-radius:0 0 8px 8px;border-top:none">
         {input.notifications.length === 0 ? (
@@ -403,7 +411,20 @@ export function renderOverview(input: {
             <div className="reg-row">
               <span className="ts">{fmtDate(n.createdAt).slice(0, 16)}</span>
               <span className="ev">{n.message}</span>
-              <span className="tag-r">{n.type.replace(/_/g, " ")}</span>
+              <span className="tag-r">
+                {n.type.replace(/_/g, " ")}
+                <span style="display:block;text-align:right;font-size:8.5px;letter-spacing:0.05em">
+                  {n.deliveryMode === "TEAMS_WEBHOOK"
+                    ? n.deliveryStatus === "SENT"
+                      ? "teams · sent"
+                      : n.deliveryStatus === "FAILED"
+                        ? "teams · failed"
+                        : "in-app"
+                    : n.deliveryStatus === "SKIPPED"
+                      ? "demo mode"
+                      : "in-app"}
+                </span>
+              </span>
             </div>
           ))
         )}

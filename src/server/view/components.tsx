@@ -733,6 +733,8 @@ const ACTIVITY_META: Record<string, { tone: string; icon: () => VNode }> = {
   AI_VISUAL_VERIFICATION_SUCCEEDED: { tone: "ok", icon: () => icons.insights() },
   AI_VISUAL_FALLBACK_USED: { tone: "warn", icon: () => icons.alert() },
   VERIFICATION_AGGREGATED: { tone: "info", icon: () => icons.activity() },
+  APPROVAL_REQUEST_CREATED: { tone: "warn", icon: () => icons.approvals() },
+  LEDGER_INTEGRITY_FAILURE: { tone: "bad", icon: () => icons.shield() },
   DEMO_RESET: { tone: "", icon: () => icons.refresh() },
 };
 

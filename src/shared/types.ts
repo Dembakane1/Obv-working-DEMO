@@ -153,11 +153,23 @@ export interface VirtualAccountEvent {
   createdAt: string;
 }
 
+export type NotificationDeliveryMode = "TEAMS_WEBHOOK" | "MOCK";
+export type NotificationDeliveryStatus = "SENT" | "FAILED" | "SKIPPED";
+
 export interface Notification {
   id: string;
   type: string;
   message: string;
   createdAt: string;
+  /** Optional context for the notification provenance view. */
+  projectId?: string | null;
+  milestoneId?: string | null;
+  /** Delivery provenance — Teams is a notification channel only. */
+  deliveryMode: NotificationDeliveryMode;
+  deliveryStatus: NotificationDeliveryStatus;
+  sentAt?: string | null;
+  /** Sanitized failure category (never secrets or webhook URLs). */
+  failureCategory?: string | null;
 }
 
 /** Append-only, hash-chained evidence ledger entry. */

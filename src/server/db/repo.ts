@@ -433,8 +433,16 @@ export function listAllEvidence(): EvidenceItem[] {
 
 export function insertNotification(n: Notification): void {
   getDb()
-    .prepare("INSERT INTO notifications (id, type, message, created_at) VALUES (?, ?, ?, ?)")
-    .run(n.id, n.type, n.message, n.createdAt);
+    .prepare(
+      `INSERT INTO notifications (id, type, message, created_at, project_id,
+         milestone_id, delivery_mode, delivery_status, sent_at, failure_category)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      n.id, n.type, n.message, n.createdAt, n.projectId ?? null,
+      n.milestoneId ?? null, n.deliveryMode, n.deliveryStatus,
+      n.sentAt ?? null, n.failureCategory ?? null
+    );
 }
 
 export function listNotifications(limit = 20): Notification[] {
@@ -448,6 +456,12 @@ export function listNotifications(limit = 20): Notification[] {
         type: row.type as string,
         message: row.message as string,
         createdAt: row.created_at as string,
+        projectId: (row.project_id as string) ?? null,
+        milestoneId: (row.milestone_id as string) ?? null,
+        deliveryMode: ((row.delivery_mode as string) ?? "MOCK") as Notification["deliveryMode"],
+        deliveryStatus: ((row.delivery_status as string) ?? "SKIPPED") as Notification["deliveryStatus"],
+        sentAt: (row.sent_at as string) ?? null,
+        failureCategory: (row.failure_category as string) ?? null,
       };
     });
 }

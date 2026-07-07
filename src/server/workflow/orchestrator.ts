@@ -18,6 +18,15 @@ import { runVerificationPipeline } from "../services/verification/index";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { teamsNotifier } from "../services/TeamsNotifier";
+import {
+  approvalRecordedCard,
+  approvalRejectedCard,
+  approvalRequestCard,
+  milestoneVerifiedCard,
+  needsReviewCard,
+  rejectedCard,
+  trancheReleasedCard,
+} from "../services/teamsCards";
 import type {
   ApprovalRecord,
   ApprovalRequest,
@@ -146,21 +155,25 @@ export async function processEvidenceSubmission(
   };
   repo.insertVerification(verification);
 
-  // ---- audit events (sanitized; no payloads, no provider internals) ----
+  // ---- audit events (in-app only — low-value for a Teams channel) ----
+  const auditCtx = { projectId: project.id, milestoneId: milestone.id };
   if (result.source === "LIVE_AI") {
     await teamsNotifier.notify(
       "AI_VISUAL_VERIFICATION_SUCCEEDED",
-      `Live AI visual assessment completed for milestone ${milestone.seq} "${milestone.title}".`
+      `Live AI visual assessment completed for milestone ${milestone.seq} "${milestone.title}".`,
+      auditCtx
     );
   } else if (result.source === "MOCK_FALLBACK") {
     await teamsNotifier.notify(
       "AI_VISUAL_FALLBACK_USED",
-      `Live AI visual assessment unavailable (${result.fallbackNote ?? "provider failure"}); deterministic demo fallback used for milestone ${milestone.seq}.`
+      `Live AI visual assessment unavailable (${result.fallbackNote ?? "provider failure"}); deterministic demo fallback used for milestone ${milestone.seq}.`,
+      auditCtx
     );
   }
   await teamsNotifier.notify(
     "VERIFICATION_AGGREGATED",
-    `Verification aggregated for milestone ${milestone.seq}: ${result.verdict} (confidence ${result.confidence.toFixed(2)}; visual: ${result.checks[0].passed ? "pass" : "flag"}, geofence: ${result.checks[1].passed ? "pass" : "flag"}, metadata: ${result.checks[2].passed ? "pass" : "flag"}; source: ${result.source}).`
+    `Verification aggregated for milestone ${milestone.seq}: ${result.verdict} (confidence ${result.confidence.toFixed(2)}; visual: ${result.checks[0].passed ? "pass" : "flag"}, geofence: ${result.checks[1].passed ? "pass" : "flag"}, metadata: ${result.checks[2].passed ? "pass" : "flag"}; source: ${result.source}).`,
+    auditCtx
   );
 
   // ---- 4. Ledger entry (only successfully verified evidence enters the
@@ -193,20 +206,29 @@ export async function processEvidenceSubmission(
       repo.insertApprovalRequest(approvalRequest);
     }
     // Funds intentionally remain HELD: release requires human approval.
+    const cardCtx = { project, milestone, verification, submittedBy: user };
     await teamsNotifier.notify(
       "MILESTONE_VERIFIED",
-      `Milestone ${milestone.seq} "${milestone.title}" verified (confidence ${result.confidence}). Approval requested from Funder Rep + Compliance. Tranche of $${milestone.trancheAmount.toLocaleString("en-US")} remains HELD.`
+      `Milestone ${milestone.seq} "${milestone.title}" verified (confidence ${result.confidence}). Tranche of $${milestone.trancheAmount.toLocaleString("en-US")} remains HELD.`,
+      { ...auditCtx, card: milestoneVerifiedCard(cardCtx) }
+    );
+    await teamsNotifier.notify(
+      "APPROVAL_REQUEST_CREATED",
+      `Approval request created for milestone ${milestone.seq} "${milestone.title}" — requires ${approvalRequest.requiredRoles.join(" + ")}. Funds HELD.`,
+      { ...auditCtx, card: approvalRequestCard({ ...cardCtx, approval: approvalRequest }) }
     );
   } else if (verification.verdict === "NEEDS_REVIEW") {
     repo.updateMilestoneStatus(milestone.id, "UNDER_REVIEW");
     await teamsNotifier.notify(
       "EVIDENCE_NEEDS_REVIEW",
-      `Evidence for milestone ${milestone.seq} "${milestone.title}" was flagged for human review: ${result.reasoning}`
+      `Evidence for milestone ${milestone.seq} "${milestone.title}" was flagged for human review: ${result.reasoning}`,
+      { ...auditCtx, card: needsReviewCard({ project, milestone, verification, submittedBy: user }) }
     );
   } else {
     await teamsNotifier.notify(
       "EVIDENCE_REJECTED",
-      `Evidence for milestone ${milestone.seq} "${milestone.title}" was rejected: ${result.reasoning}`
+      `Evidence for milestone ${milestone.seq} "${milestone.title}" was rejected: ${result.reasoning}`,
+      { ...auditCtx, card: rejectedCard({ project, milestone, verification, submittedBy: user }) }
     );
   }
 
@@ -250,6 +272,7 @@ export async function processApprovalDecision(
     throw new SubmissionError(`A ${user.role} decision has already been recorded`, 409);
   }
   const milestone = repo.getMilestone(request.milestoneId)!;
+  const project = repo.getProject(milestone.projectId)!;
 
   repo.insertApprovalRecord({
     id: repo.newId(),
@@ -261,6 +284,7 @@ export async function processApprovalDecision(
   });
   const records = repo.listApprovalRecordsForRequest(request.id);
 
+  const notifyCtx = { projectId: project.id, milestoneId: milestone.id };
   let released = false;
   if (decision === "REJECTED") {
     repo.updateApprovalRequestStatus(request.id, "REJECTED");
@@ -268,7 +292,11 @@ export async function processApprovalDecision(
     repo.updateMilestoneStatus(milestone.id, "PENDING_EVIDENCE");
     await teamsNotifier.notify(
       "APPROVAL_REJECTED",
-      `${user.name} (${user.title}) rejected release for milestone ${milestone.seq} "${milestone.title}". Tranche of $${milestone.trancheAmount.toLocaleString("en-US")} remains HELD; new evidence required.`
+      `${user.name} (${user.title}) rejected release for milestone ${milestone.seq} "${milestone.title}". Tranche of $${milestone.trancheAmount.toLocaleString("en-US")} remains HELD; new evidence required.`,
+      {
+        ...notifyCtx,
+        card: approvalRejectedCard({ project, milestone, approval: request, records, actor: user, decision }),
+      }
     );
   } else {
     const approvedRoles = new Set(
@@ -279,18 +307,41 @@ export async function processApprovalDecision(
       repo.updateApprovalRequestStatus(request.id, "APPROVED");
       repo.updateMilestoneStatus(milestone.id, "APPROVED");
       // Governance satisfied — release the tranche on the virtual account.
+      // (Only this human-driven path may reach releaseTranche; the AI
+      // verification layer has no route here.)
       await virtualAccountService.releaseTranche(milestone);
       repo.updateMilestoneStatus(milestone.id, "RELEASED");
       released = true;
+      const latestEvidence = repo.latestEvidenceForMilestone(milestone.id);
+      const verification = latestEvidence
+        ? repo.getVerificationForEvidence(latestEvidence.id)
+        : null;
+      const chain = await wormEvidenceStore.verifyChain();
       await teamsNotifier.notify(
         "TRANCHE_RELEASED",
-        `All approvals complete for milestone ${milestone.seq} "${milestone.title}". Tranche of $${milestone.trancheAmount.toLocaleString("en-US")} RELEASED on the virtual project account.`
+        `All approvals complete for milestone ${milestone.seq} "${milestone.title}". Tranche of $${milestone.trancheAmount.toLocaleString("en-US")} RELEASED on the virtual project account.`,
+        {
+          ...notifyCtx,
+          card: trancheReleasedCard({
+            project,
+            milestone,
+            approval: repo.getApprovalRequest(request.id)!,
+            records,
+            approversByRecord: new Map(records.map((r) => [r.id, repo.getUser(r.userId) ?? undefined])),
+            verification,
+            chainValid: chain.valid,
+          }),
+        }
       );
     } else {
       const missing = request.requiredRoles.filter((role) => !approvedRoles.has(role));
       await teamsNotifier.notify(
         "APPROVAL_RECORDED",
-        `${user.name} (${user.title}) approved milestone ${milestone.seq} "${milestone.title}" (${approvedRoles.size} of ${request.requiredRoles.length}). Awaiting ${missing.join(", ")}. Funds remain HELD.`
+        `${user.name} (${user.title}) approved milestone ${milestone.seq} "${milestone.title}" (${approvedRoles.size} of ${request.requiredRoles.length}). Awaiting ${missing.join(", ")}. Funds remain HELD.`,
+        {
+          ...notifyCtx,
+          card: approvalRecordedCard({ project, milestone, approval: request, records, actor: user, decision }),
+        }
       );
     }
   }

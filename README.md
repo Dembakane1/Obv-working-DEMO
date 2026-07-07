@@ -125,6 +125,40 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Microsoft Teams notifications (v6)
+
+OBV can notify an institutional Teams channel on decision- and risk-relevant
+events. **Teams is a notification channel only** — it is not part of the
+trust boundary, cannot approve funds, and its failure never blocks
+verification, ledger writes, approvals, release transitions, or reports.
+
+- **Setup**: create an incoming webhook on a Teams channel (Channel → ⋯ →
+  Connectors/Workflows → Incoming Webhook), then set `TEAMS_WEBHOOK_URL` in
+  `.env` (server-side only, gitignored, never logged in full). Optional:
+  `TEAMS_NOTIFICATION_TIMEOUT_MS` (default 5000) and `OBV_PUBLIC_BASE_URL`
+  (adds an "Open in OBV" action to cards; omitted cleanly when unset).
+- **Events with Adaptive Cards**: Milestone Verified (with "Funds remain
+  HELD pending required human approval"), Evidence Needs Review, Evidence
+  Rejected, Approval Request Created, Approval Recorded (n-of-m + awaiting
+  role), Approval Rejected / Returned for Review, Tranche Released (approvers,
+  timestamps, ledger integrity, virtual-account state, and an explicit
+  demo-environment note — no real bank transfer is claimed), and Evidence
+  Ledger Integrity Alert. Routine internal events (AI provenance, aggregation,
+  intact integrity checks, resets) stay in-app only.
+- **Resilience**: `ResilientTeamsNotifier` wraps `WebhookTeamsNotifier` /
+  `MockTeamsNotifier` — short timeout, sanitized failure categories
+  (`timeout`, `http_4xx`, `http_5xx`, `network_failure`,
+  `invalid_webhook_url`), and it never throws into the business flow.
+- **Provenance**: every notification stores delivery mode
+  (`TEAMS_WEBHOOK`/`MOCK`), status (`SENT`/`FAILED`/`SKIPPED`), `sentAt`, and
+  project/milestone context. The Overview activity register shows the
+  delivery state per event and a quiet "Demo notification mode" indicator
+  when no webhook is configured.
+- **Tests**: `node scripts/teams-test.js` (8 checkpoints against a local stub
+  webhook: demo mode, full card flow, card content, review/reject paths,
+  approval rejection, tamper alert with no false success card, timeout and
+  5xx resilience).
+
 ## Hybrid live verification (v5)
 
 The verification engine is now a hybrid pipeline:

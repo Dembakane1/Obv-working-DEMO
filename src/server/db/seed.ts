@@ -307,6 +307,10 @@ export async function seedDemo(): Promise<void> {
       type: "TRANCHE_RELEASED",
       message: `Tranche of $${h.milestone.trancheAmount.toLocaleString("en-US")} released for milestone ${h.milestone.seq} "${h.milestone.title}" after funder and compliance approval.`,
       createdAt: h.releasedAt,
+      projectId: project.id,
+      milestoneId: h.milestone.id,
+      deliveryMode: "MOCK",
+      deliveryStatus: "SKIPPED",
     });
   }
 
