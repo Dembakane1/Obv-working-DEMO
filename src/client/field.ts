@@ -596,11 +596,25 @@ interface QueuedSubmission {
       stepsBar(4) +
       card(
         `<div class="field-step">Submitting</div>
-       <h3>Uploading evidence…</h3>
+       <h3 id="proc-title">Uploading evidence…</h3>
        <div class="spin"></div>
-       <p class="field-note" style="text-align:center">Verification runs automatically on
-       the server: photo vs requirement, geofence, and metadata integrity.</p>`
+       <p class="field-note" id="proc-status" style="text-align:center">Preparing submission…</p>`
       );
+    // Staged processing feedback (presentation only — one server request
+    // performs the whole pipeline; the server enforces short AI timeouts
+    // so this can never hang indefinitely).
+    const stages = [
+      "Analyzing physical evidence…",
+      "Checking project location…",
+      "Validating capture metadata…",
+      "Recording proof…",
+      "Creating approval request…",
+    ];
+    let stageIdx = 0;
+    const stageEl = document.getElementById("proc-status");
+    const stageTimer = window.setInterval(() => {
+      if (stageEl && stageIdx < stages.length) stageEl.textContent = stages[stageIdx++];
+    }, 900);
     try {
       const res = await fetch("/api/evidence", {
         method: "POST",
@@ -621,6 +635,8 @@ interface QueuedSubmission {
         savedAt: new Date().toISOString(),
       });
       viewQueued();
+    } finally {
+      window.clearInterval(stageTimer);
     }
   }
 

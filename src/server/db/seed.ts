@@ -11,7 +11,7 @@
  */
 import { resetDb } from "./index";
 import * as repo from "./repo";
-import { aiVerificationService } from "../services/AiVerificationService";
+import { runVerificationPipeline } from "../services/verification/index";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import type {
@@ -229,10 +229,19 @@ export async function seedDemo(): Promise<void> {
     repo.insertEvidence(evidence);
 
     const project_ = repo.getProject(project.id)!;
-    const result = await aiVerificationService.verify({
-      evidence,
+    // Seeded history always uses the deterministic mock path (never live).
+    const result = await runVerificationPipeline({
       milestone: h.milestone,
       project: project_,
+      photoPath: evidence.photoPath,
+      latitude: evidence.latitude,
+      longitude: evidence.longitude,
+      capturedAt: evidence.capturedAt,
+      uploadedAt: evidence.uploadedAt,
+      deviceMetadata: evidence.deviceMetadata,
+      seedHash: evidence.hash,
+      isDemoFallback: false,
+      forceMock: true,
     });
     if (result.verdict !== "VERIFIED") {
       throw new Error(
@@ -247,6 +256,7 @@ export async function seedDemo(): Promise<void> {
       checks: result.checks,
       reasoning: result.reasoning,
       createdAt: h.uploadedAt,
+      source: "MOCK_DEFAULT",
     };
     repo.insertVerification(verification);
 

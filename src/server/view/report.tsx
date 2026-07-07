@@ -407,7 +407,7 @@ export function renderFunderReport(d: FunderReportData): string {
                           <tr><td className="k">Submitted by</td><td>{e.submittedBy ? `${e.submittedBy.name} (${e.submittedBy.title})` : "—"}</td></tr>
                           <tr><td className="k">Captured</td><td className="mono">{ts(e.evidence.capturedAt)}</td></tr>
                           <tr><td className="k">Uploaded</td><td className="mono">{ts(e.evidence.uploadedAt)}</td></tr>
-                          <tr><td className="k">GPS</td><td className="mono">{e.evidence.latitude.toFixed(5)}, {e.evidence.longitude.toFixed(5)}</td></tr>
+                          <tr><td className="k">GPS</td><td className="mono">{e.evidence.latitude === null || e.evidence.longitude === null ? "— (no GPS fix)" : `${e.evidence.latitude.toFixed(5)}, ${e.evidence.longitude.toFixed(5)}`}</td></tr>
                           <tr><td className="k">Device</td><td>{e.evidence.deviceMetadata?.platform ?? "—"} · {e.evidence.deviceMetadata?.screen ?? "—"} · {e.evidence.deviceMetadata?.language ?? "—"}</td></tr>
                         </tbody>
                       </table>
@@ -415,6 +415,12 @@ export function renderFunderReport(d: FunderReportData): string {
                       {e.verification ? (
                         <>
                           <div className="sub-label">C · Verification results</div>
+                          <p className="small muted" style="margin:0 0 4pt">
+                            Method: {e.verification.source === "LIVE_AI"
+                              ? "Live multimodal visual assessment"
+                              : "Demo fallback visual assessment"}{" "}
+                            + deterministic geofence validation + deterministic metadata validation
+                          </p>
                           <ul className="checks">
                             {e.verification.checks.map((c) => (
                               <li>

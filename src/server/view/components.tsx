@@ -32,6 +32,11 @@ export function fmtDate(iso: string): string {
   return iso.replace("T", " ").replace(/\.\d+Z$/, " UTC").replace(/Z$/, " UTC");
 }
 
+export function fmtGps(lat: number | null, lng: number | null): string {
+  if (lat === null || lng === null) return "— (no GPS fix)";
+  return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
 export function roleLabel(role: UserRole): string {
   const map: Record<UserRole, string> = {
     FUNDER_REP: "Funder Representative",
@@ -516,9 +521,7 @@ export function EvidenceFacts(props: {
       <dt>Uploaded</dt>
       <dd className="mono">{fmtDate(evidence.uploadedAt)}</dd>
       <dt>GPS</dt>
-      <dd className="mono">
-        {evidence.latitude.toFixed(5)}, {evidence.longitude.toFixed(5)}
-      </dd>
+      <dd className="mono">{fmtGps(evidence.latitude, evidence.longitude)}</dd>
       <dt>Device</dt>
       <dd>
         {evidence.deviceMetadata.platform} · {evidence.deviceMetadata.screen} ·{" "}
@@ -555,6 +558,12 @@ export function EvidenceChecks(props: { verification: Verification }): VNode {
 
 export function EvidenceAiResult(props: { verification: Verification }): VNode {
   const v = props.verification;
+  const provenance =
+    v.source === "LIVE_AI"
+      ? "AI-assisted visual verification"
+      : v.source === "MOCK_FALLBACK"
+        ? "Demo verification fallback (live analysis unavailable)"
+        : "Demo verification (deterministic mock)";
   return (
     <>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -566,6 +575,9 @@ export function EvidenceAiResult(props: { verification: Verification }): VNode {
         <span className="mono">{v.confidence.toFixed(2)}</span>
       </div>
       <p className="sub" style="margin:4px 0 0">{v.reasoning}</p>
+      <p className="sub" style="margin:4px 0 0;font-size:11px;color:var(--ink-4)">
+        Visual assessment: {provenance} · location &amp; metadata checks: deterministic
+      </p>
     </>
   );
 }
@@ -718,6 +730,9 @@ const ACTIVITY_META: Record<string, { tone: string; icon: () => VNode }> = {
   TRANCHE_RELEASED: { tone: "ok", icon: () => icons.dollar() },
   INTEGRITY_CHECK: { tone: "info", icon: () => icons.shield() },
   REPORT_GENERATED: { tone: "info", icon: () => icons.reports() },
+  AI_VISUAL_VERIFICATION_SUCCEEDED: { tone: "ok", icon: () => icons.insights() },
+  AI_VISUAL_FALLBACK_USED: { tone: "warn", icon: () => icons.alert() },
+  VERIFICATION_AGGREGATED: { tone: "info", icon: () => icons.activity() },
   DEMO_RESET: { tone: "", icon: () => icons.refresh() },
 };
 

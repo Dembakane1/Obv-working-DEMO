@@ -64,8 +64,8 @@ CREATE TABLE IF NOT EXISTS evidence_items (
   milestone_id TEXT NOT NULL REFERENCES milestones(id),
   user_id TEXT NOT NULL REFERENCES users(id),
   photo_path TEXT NOT NULL,
-  latitude REAL NOT NULL,
-  longitude REAL NOT NULL,
+  latitude REAL,   -- null = no usable GPS fix (geofence check goes to REVIEW)
+  longitude REAL,
   captured_at TEXT NOT NULL,
   uploaded_at TEXT NOT NULL,
   device_metadata TEXT NOT NULL, -- JSON DeviceMetadata
@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS verifications (
   confidence REAL NOT NULL,
   checks TEXT NOT NULL,   -- JSON VerificationCheck[]
   reasoning TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'MOCK_DEFAULT' -- LIVE_AI | MOCK_FALLBACK | MOCK_DEFAULT
 );
 
 -- Append-only, hash-chained evidence ledger. Never UPDATE or DELETE rows.
@@ -161,6 +162,13 @@ export function getDb(): DatabaseSync {
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec("PRAGMA foreign_keys = ON;");
     db.exec(SCHEMA);
+    // Additive migration for databases created before verification
+    // provenance existed (fresh seeds already include the column).
+    try {
+      db.exec("ALTER TABLE verifications ADD COLUMN source TEXT NOT NULL DEFAULT 'MOCK_DEFAULT'");
+    } catch {
+      /* column already present */
+    }
   }
   return db;
 }

@@ -92,8 +92,9 @@ export interface EvidenceItem {
   milestoneId: string;
   userId: string;
   photoPath: string; // served URL path, e.g. /uploads/... or /demo-evidence/...
-  latitude: number;
-  longitude: number;
+  /** Null when the device provided no usable GPS fix (never silently passed). */
+  latitude: number | null;
+  longitude: number | null;
   capturedAt: string; // ISO 8601
   uploadedAt: string; // ISO 8601
   deviceMetadata: DeviceMetadata;
@@ -110,6 +111,9 @@ export interface VerificationCheck {
   detail: string;
 }
 
+/** Provenance of the visual assessment behind a Verification. */
+export type VerificationSource = "LIVE_AI" | "MOCK_FALLBACK" | "MOCK_DEFAULT";
+
 export interface Verification {
   id: string;
   evidenceItemId: string;
@@ -118,6 +122,8 @@ export interface Verification {
   checks: VerificationCheck[];
   reasoning: string;
   createdAt: string;
+  /** Whether the visual check came from the live model or the mock. */
+  source: VerificationSource;
 }
 
 export interface ApprovalRequest {

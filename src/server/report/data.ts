@@ -146,7 +146,10 @@ export async function assembleReportData(
         timeline.push({
           timestamp: e.verification.createdAt,
           event: "Verification completed",
-          actor: "AiVerificationService (mock)",
+          actor:
+            e.verification.source === "LIVE_AI"
+              ? "Live multimodal visual assessment"
+              : "Demo fallback visual assessment",
           context: ctx,
           detail: `${e.verification.verdict.replace(/_/g, " ")} · confidence ${e.verification.confidence.toFixed(2)}`,
         });

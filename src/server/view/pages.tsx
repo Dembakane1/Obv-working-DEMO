@@ -28,6 +28,7 @@ import {
   VerdictChip,
   approvalProgressLabel,
   fmtDate,
+  fmtGps,
   initials,
   milestoneNextAction,
   money,
@@ -1031,7 +1032,7 @@ export function renderApprovals(input: {
                         <div className="photo-meta">
                           <div className="row"><span className="k">Captured by</span><span className="v">{b.submittedBy?.name ?? "—"}</span></div>
                           <div className="row"><span className="k">Captured</span><span className="v mono">{fmtDate(b.evidence.capturedAt)}</span></div>
-                          <div className="row"><span className="k">GPS</span><span className="v mono">{b.evidence.latitude.toFixed(5)}, {b.evidence.longitude.toFixed(5)}</span></div>
+                          <div className="row"><span className="k">GPS</span><span className="v mono">{fmtGps(b.evidence.latitude, b.evidence.longitude)}</span></div>
                           <div className="row"><span className="k">Device</span><span className="v">{b.evidence.deviceMetadata.platform} · {b.evidence.deviceMetadata.screen}</span></div>
                           <div className="row"><span className="k">Capture mode</span><span className="v">{b.evidence.isDemoFallback ? "Demo fallback" : "Live capture"}</span></div>
                         </div>

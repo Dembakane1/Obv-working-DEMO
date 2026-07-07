@@ -56,8 +56,8 @@ function toEvidence(r: Row): EvidenceItem {
     milestoneId: r.milestone_id as string,
     userId: r.user_id as string,
     photoPath: r.photo_path as string,
-    latitude: r.latitude as number,
-    longitude: r.longitude as number,
+    latitude: (r.latitude as number) ?? null,
+    longitude: (r.longitude as number) ?? null,
     capturedAt: r.captured_at as string,
     uploadedAt: r.uploaded_at as string,
     deviceMetadata: JSON.parse(r.device_metadata as string),
@@ -76,6 +76,7 @@ function toVerification(r: Row): Verification {
     checks: JSON.parse(r.checks as string),
     reasoning: r.reasoning as string,
     createdAt: r.created_at as string,
+    source: ((r.source as string) ?? "MOCK_DEFAULT") as Verification["source"],
   };
 }
 
@@ -264,12 +265,12 @@ export function insertVerification(v: Verification): void {
   getDb()
     .prepare(
       `INSERT INTO verifications (id, evidence_item_id, verdict, confidence,
-         checks, reasoning, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+         checks, reasoning, created_at, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       v.id, v.evidenceItemId, v.verdict, v.confidence,
-      JSON.stringify(v.checks), v.reasoning, v.createdAt
+      JSON.stringify(v.checks), v.reasoning, v.createdAt, v.source
     );
 }
 

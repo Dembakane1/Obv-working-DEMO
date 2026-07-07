@@ -51,6 +51,22 @@ import { assembleReportData, reportFilename } from "../report/data";
 import { renderFunderReport } from "../view/report";
 import type { EvidenceSubmission, Report, User } from "../../shared/types";
 
+// Minimal .env loader (no dependency): KEY=VALUE lines, existing env wins.
+// Values are never logged. Used for ANTHROPIC_API_KEY / OBV_AI_* settings.
+try {
+  const envFile = path.join(process.cwd(), ".env");
+  if (fs.existsSync(envFile)) {
+    for (const line of fs.readFileSync(envFile, "utf8").split("\n")) {
+      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
+      if (m && !(m[1] in process.env)) {
+        process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+      }
+    }
+  }
+} catch {
+  /* .env is optional */
+}
+
 const PORT = Number(process.env.PORT ?? 3000);
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 

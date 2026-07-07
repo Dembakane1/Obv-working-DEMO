@@ -125,6 +125,54 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Hybrid live verification (v5)
+
+The verification engine is now a hybrid pipeline:
+
+> **AI evaluates the physical image. Code evaluates objective system facts.
+> Humans authorize financial release.**
+
+```
+PHYSICAL EVIDENCE → AI VISUAL ASSESSMENT (live → mock fallback)
+                  → DETERMINISTIC GEOFENCE CHECK
+                  → DETERMINISTIC METADATA CHECK
+                  → VERDICT AGGREGATOR → LEDGER → HUMAN GOVERNANCE → RELEASE
+```
+
+- **Enable live verification**: copy `.env.example` to `.env` (gitignored) and
+  set `ANTHROPIC_API_KEY`, or export it before `npm start`. The key is used
+  server-side only. Optional: `OBV_AI_MODEL` (default
+  `claude-haiku-4-5-20251001`), `OBV_AI_TIMEOUT_MS` (default 8000),
+  `OBV_AI_BASE_URL` (provider stays replaceable behind the
+  `AiVisualVerificationService` interface).
+- **Without a key** everything works exactly as before (deterministic mock,
+  provenance `MOCK_DEFAULT`).
+- **Resilience**: the live path has a hard timeout, strict schema validation
+  of model output (fences/prose/malformed JSON/bad types/out-of-range
+  confidence all rejected), one retry only for transient transport failures,
+  then automatic deterministic fallback (`MOCK_FALLBACK`). Provider errors
+  are sanitized; image payloads and keys are never logged. The hero loop
+  cannot break on provider behavior.
+- **The model's only job** is visual consistency of the photo with the
+  milestone requirement. Geofence inclusion (`services/verification/geofence.ts`)
+  and timestamp/metadata integrity (`metadata.ts`) are deterministic code;
+  offline delayed uploads are explicitly legitimate; missing GPS is never
+  silently passed (→ REVIEW). All verdict thresholds live in
+  `services/verification/config.ts`; the aggregator (`aggregator.ts`) is the
+  only place a verdict is computed. The model can never move money, approve
+  its own verification, or bypass the ApprovalRequest — VERIFIED still
+  requires the same human governance to release funds.
+- **Provenance** is stored per verification (`LIVE_AI` / `MOCK_FALLBACK` /
+  `MOCK_DEFAULT`), shown quietly on the Evidence Panel ("AI-assisted visual
+  verification" vs "Demo verification fallback"), included in the Funder
+  Report ("Verification method" per evidence section), and audited via
+  activity events (`AI_VISUAL_VERIFICATION_SUCCEEDED`,
+  `AI_VISUAL_FALLBACK_USED`, `VERIFICATION_AGGREGATED`).
+- **Tests**: `node scripts/verification-test.js` runs the server against a
+  local stub provider and covers no-key, live success, malformed output,
+  timeout, 5xx with single retry + sanitized errors, outside-geofence,
+  missing GPS, bad timestamps, and offline delayed sync (11 checkpoints).
+
 ## Funder Verification Report (v3)
 
 One-click, audit-grade PDF built entirely from live application data:

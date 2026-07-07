@@ -14,7 +14,7 @@
  *       services' interfaces.
  */
 import * as repo from "../db/repo";
-import { aiVerificationService } from "../services/AiVerificationService";
+import { runVerificationPipeline } from "../services/verification/index";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { teamsNotifier } from "../services/TeamsNotifier";
@@ -56,6 +56,7 @@ export async function processEvidenceSubmission(
   // ---- 1. Persist the photo into WORM evidence storage ----
   let photoPath: string;
   let photoBytes: Buffer | undefined;
+  let photoMediaType: string | undefined;
   let photoHash: string;
 
   if (submission.demoPhotoId) {
@@ -75,6 +76,7 @@ export async function processEvidenceSubmission(
       throw new SubmissionError("Photo too large (12 MB limit)", 413);
     }
     const ext = match[1] === "jpg" ? "jpeg" : match[1];
+    photoMediaType = `image/${ext}`;
     const stored = await wormEvidenceStore.storeObject(photoBytes, ext);
     photoPath = stored.path;
     photoHash = stored.hash;
@@ -83,6 +85,16 @@ export async function processEvidenceSubmission(
   }
 
   // ---- 2. Record the evidence item ----
+  // GPS is stored as-provided or null; missing GPS is never silently
+  // passed — the deterministic geofence check routes it to REVIEW.
+  const latitude =
+    typeof submission.latitude === "number" && Number.isFinite(submission.latitude)
+      ? submission.latitude
+      : null;
+  const longitude =
+    typeof submission.longitude === "number" && Number.isFinite(submission.longitude)
+      ? submission.longitude
+      : null;
   const previous = repo.latestEvidenceForMilestone(milestone.id);
   const uploadedAt = new Date().toISOString();
   const evidence: EvidenceItem = {
@@ -90,31 +102,37 @@ export async function processEvidenceSubmission(
     milestoneId: milestone.id,
     userId,
     photoPath,
-    latitude: submission.latitude,
-    longitude: submission.longitude,
+    latitude,
+    longitude,
     capturedAt: submission.capturedAt,
     uploadedAt,
     deviceMetadata: submission.deviceMetadata,
     hash: sha256(
-      JSON.stringify({
-        photoHash,
-        latitude: submission.latitude,
-        longitude: submission.longitude,
-        capturedAt: submission.capturedAt,
-        uploadedAt,
-      })
+      JSON.stringify({ photoHash, latitude, longitude, capturedAt: submission.capturedAt, uploadedAt })
     ),
     previousHash: previous?.hash ?? null,
     isDemoFallback: submission.isDemoFallback,
   };
   repo.insertEvidence(evidence);
 
-  // ---- 3. Verification ----
-  const result = await aiVerificationService.verify({
-    evidence,
+  // ---- 3. Hybrid verification pipeline ----
+  // AI assesses the image; geofence and metadata checks are deterministic
+  // application logic; the aggregator computes the verdict. The model can
+  // never move money or bypass governance — release stays behind the
+  // ApprovalRequest created in step 5.
+  const result = await runVerificationPipeline({
     milestone,
     project,
+    photoPath,
     photoBytes,
+    photoMediaType,
+    latitude,
+    longitude,
+    capturedAt: submission.capturedAt,
+    uploadedAt,
+    deviceMetadata: submission.deviceMetadata,
+    seedHash: evidence.hash,
+    isDemoFallback: submission.isDemoFallback,
   });
   const verification: Verification = {
     id: repo.newId(),
@@ -124,8 +142,26 @@ export async function processEvidenceSubmission(
     checks: result.checks,
     reasoning: result.reasoning,
     createdAt: new Date().toISOString(),
+    source: result.source,
   };
   repo.insertVerification(verification);
+
+  // ---- audit events (sanitized; no payloads, no provider internals) ----
+  if (result.source === "LIVE_AI") {
+    await teamsNotifier.notify(
+      "AI_VISUAL_VERIFICATION_SUCCEEDED",
+      `Live AI visual assessment completed for milestone ${milestone.seq} "${milestone.title}".`
+    );
+  } else if (result.source === "MOCK_FALLBACK") {
+    await teamsNotifier.notify(
+      "AI_VISUAL_FALLBACK_USED",
+      `Live AI visual assessment unavailable (${result.fallbackNote ?? "provider failure"}); deterministic demo fallback used for milestone ${milestone.seq}.`
+    );
+  }
+  await teamsNotifier.notify(
+    "VERIFICATION_AGGREGATED",
+    `Verification aggregated for milestone ${milestone.seq}: ${result.verdict} (confidence ${result.confidence.toFixed(2)}; visual: ${result.checks[0].passed ? "pass" : "flag"}, geofence: ${result.checks[1].passed ? "pass" : "flag"}, metadata: ${result.checks[2].passed ? "pass" : "flag"}; source: ${result.source}).`
+  );
 
   // ---- 4. Ledger entry (only successfully verified evidence enters the
   //         tamper-evident chain) ----
