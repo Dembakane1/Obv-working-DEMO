@@ -610,7 +610,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
               const m = milestones.find((ms) => ms.id === f.milestoneId)!;
               const approval = repo.getApprovalRequestForMilestone(m.id);
               const records = approval ? repo.listApprovalRecordsForRequest(approval.id) : [];
+              const evidence = repo.listEvidenceForMilestone(m.id);
+              const latestVerification = evidence[0]
+                ? repo.getVerificationForEvidence(evidence[0].id)
+                : null;
               return {
+                evidenceCount: evidence.length,
+                latestVerdict: latestVerification?.verdict ?? null,
                 id: f.id,
                 milestoneId: m.id,
                 seq: m.seq,

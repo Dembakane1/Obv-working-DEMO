@@ -1279,43 +1279,66 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
    ===================================================================== */
 
 /* ---- map ---- */
-.map-wrap { display: flex; flex-direction: column; gap: 10px; }
-.map-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.map-wrap { display: flex; flex-direction: column; gap: 8px; }
+.map-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; position: relative; }
 .map-layers { display: inline-flex; border: 1px solid var(--line-2); background: var(--surface); }
 .map-layers button {
-  border: 0; background: transparent; padding: 7px 14px; font: inherit; font-size: 11.5px;
+  border: 0; background: transparent; padding: 6px 13px; font: inherit; font-size: 11px;
   font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); cursor: pointer;
+  min-height: 30px;
 }
 .map-layers button.active { background: var(--navy); color: #fff; }
-.map-filters { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
-.map-filters select {
-  font: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--line-2);
-  background: var(--surface); color: var(--ink-2); max-width: 180px;
+.map-filters-btn {
+  display: none; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink-2);
+  font: inherit; font-size: 11.5px; font-weight: 600; padding: 6px 12px; min-height: 30px; cursor: pointer;
 }
-.map-stage { position: relative; display: flex; border: 1px solid var(--line-2); background: #dfe6ea; height: min(62vh, 560px); overflow: hidden; }
+.map-filters { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; align-items: center; }
+.map-filters-head { display: none; }
+.map-filters label { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
+.map-filters select {
+  font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid var(--line-2);
+  background: var(--surface); color: var(--ink-2); max-width: 170px;
+}
+.map-summary { font-size: 12px; color: var(--ink-3); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.map-summary .ms-t { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.map-summary b { color: var(--ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+.map-summary .ms-sep { color: var(--line-2); }
+.map-stage { position: relative; display: flex; border: 1px solid var(--line-2); background: #dfe6ea; height: min(68vh, 640px); overflow: hidden; }
 .map-canvas { position: relative; flex: 1; overflow: hidden; cursor: grab; touch-action: none; }
 .map-canvas:active { cursor: grabbing; }
 .map-canvas .tiles { position: absolute; inset: 0; }
-.map-canvas .tile { position: absolute; width: 256px; height: 256px; user-select: none; pointer-events: none; background: #e7e4dc; }
+.map-canvas .tile { position: absolute; width: 256px; height: 256px; user-select: none; pointer-events: none; background: transparent; }
 .map-canvas .tile.failed { opacity: 0; }
 .map-canvas .overlay { position: absolute; inset: 0; }
-.geo-boundary { fill: rgba(29, 63, 173, 0.05); stroke: #1d3fad; stroke-width: 1.5; stroke-dasharray: 6 4; pointer-events: none; }
-.geo-route { fill: none; stroke: rgba(13, 22, 38, 0.35); stroke-width: 2; pointer-events: none; }
-.geo-segment { fill: none; stroke-width: 6; stroke-linecap: round; opacity: .85; pointer-events: none; }
-.geo-segment.selected { stroke-width: 9; opacity: 1; }
-.geo-hit { fill: none; stroke: transparent; stroke-width: 26; cursor: pointer; }
-.geo-label { pointer-events: none;
-  font-size: 10px; font-weight: 700; letter-spacing: .06em; fill: #0d1626;
-  paint-order: stroke; stroke: rgba(255,255,255,.85); stroke-width: 3; text-anchor: middle; pointer-events: none;
+.geo-boundary { fill: rgba(29, 63, 173, 0.04); stroke: #35507c; stroke-width: 1.5; stroke-dasharray: 7 5; pointer-events: none; }
+.geo-route { fill: none; stroke: rgba(13, 22, 38, 0.3); stroke-width: 2; pointer-events: none; }
+/* light casing keeps the corridor readable over satellite imagery */
+.geo-casing { fill: none; stroke: rgba(255, 255, 255, 0.9); stroke-width: 11; stroke-linecap: round; pointer-events: none; }
+.geo-casing.selected { stroke: #0d1626; stroke-width: 13; }
+.geo-segment { fill: none; stroke-width: 7; stroke-linecap: round; pointer-events: none; }
+.geo-segment.selected { stroke-width: 9; }
+.geo-hit { fill: none; stroke: transparent; stroke-width: 28; cursor: pointer; }
+.geo-hit:focus-visible { outline: none; stroke: rgba(29, 63, 173, 0.25); }
+.geo-label {
+  pointer-events: none; font-size: 10px; font-weight: 700; letter-spacing: .06em; fill: #0d1626;
+  paint-order: stroke; stroke: rgba(255,255,255,.88); stroke-width: 3; text-anchor: middle;
 }
 .geo-marker { cursor: pointer; }
+.geo-marker:focus-visible { outline: none; }
+.geo-marker:focus-visible .dot { stroke: #1d3fad; stroke-width: 3.5; }
 .geo-marker .dot { stroke: #fff; stroke-width: 2.5; }
-.geo-marker .dot.selected { stroke: #0d1626; stroke-width: 3; }
+.geo-sel-ring { fill: none; stroke: #1d3fad; stroke-width: 2.5; }
 .geo-demo-dot { fill: #fff; pointer-events: none; }
 .geo-warn-ring { fill: none; stroke: #a92c21; stroke-width: 1.5; stroke-dasharray: 3 3; }
 .map-attr {
   position: absolute; right: 0; bottom: 0; font-size: 9.5px; color: var(--ink-3);
   background: rgba(255,255,255,.82); padding: 2px 6px; pointer-events: none; z-index: 3;
+}
+.map-note {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 4;
+  font-size: 11px; color: var(--ink-2); background: rgba(255,255,255,.94);
+  border: 1px solid var(--line-2); padding: 5px 12px; pointer-events: none; max-width: 90%;
+  text-align: center;
 }
 .map-zoom { position: absolute; left: 10px; top: 10px; display: flex; flex-direction: column; z-index: 3; border: 1px solid var(--line-2); }
 .map-zoom button {
@@ -1323,46 +1346,85 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
   cursor: pointer; line-height: 1;
 }
 .map-zoom button + button { border-top: 1px solid var(--line); }
+
+/* ---- inset legend (inside the viewport; collapsible on mobile) ---- */
+.map-legend {
+  position: absolute; left: 10px; bottom: 10px; z-index: 4; max-width: 240px;
+  background: rgba(255,255,255,.93); border: 1px solid var(--line-2); padding: 7px 10px 8px;
+}
+.legend-toggle {
+  display: none; border: 0; background: transparent; font: inherit; font-size: 10px;
+  font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3);
+  cursor: pointer; padding: 2px 0;
+}
+.legend-body { display: flex; flex-direction: column; gap: 3px; }
+.lg-row { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--ink-2); }
+.lg-line { width: 16px; height: 4px; border-radius: 2px; flex-shrink: 0; box-shadow: 0 0 0 1.5px rgba(255,255,255,.9); }
+.lg-dot { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid #fff; box-shadow: 0 0 0 1px var(--line-2); flex-shrink: 0; margin: 0 3.5px; }
+.lg-dot.lg-demo { background: var(--ink-4); position: relative; }
+.lg-dot.lg-demo::after { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: #fff; }
+.lg-boundary { width: 16px; height: 0; border-top: 2px dashed #35507c; flex-shrink: 0; }
+.lg-note { font-size: 9px; color: var(--ink-4); font-style: italic; margin-top: 3px; max-width: 200px; }
+
 .map-panel {
   width: 320px; flex-shrink: 0; border-left: 1px solid var(--line-2); background: var(--surface);
-  overflow-y: auto; padding: 14px;
+  overflow-y: auto; padding: 14px; position: relative;
 }
-.map-panel-empty { font-size: 12.5px; color: var(--ink-3); }
 .map-panel-close {
   display: none; position: absolute; right: 8px; top: 6px; border: 0; background: transparent;
-  font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; padding: 4px 8px; z-index: 2;
+  font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; padding: 4px 10px; z-index: 2;
+  min-height: 34px;
 }
+.map-panel-empty { font-size: 12.5px; color: var(--ink-3); }
 .mp-title { font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
 .mp-sub { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
-.mp-photo { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border: 1px solid var(--line); margin-bottom: 10px; background: var(--inset); }
+.mp-photo { width: 100%; max-height: 140px; object-fit: cover; border: 1px solid var(--line); margin-bottom: 10px; background: var(--inset); }
 .mp-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 2px; }
 .map-chip {
   font-size: 9.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
   border: 1px solid; padding: 2px 7px;
 }
+.mp-next {
+  margin-top: 9px; font-size: 12px; font-weight: 600; color: var(--ink-2);
+  border-left: 3px solid var(--line-2); padding: 3px 0 3px 9px;
+}
 .mp-kv { display: grid; grid-template-columns: 96px 1fr; gap: 6px 10px; margin: 12px 0 0; font-size: 12px; }
 .mp-kv dt { color: var(--ink-3); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
 .mp-kv dd { margin: 0; color: var(--ink-2); overflow-wrap: break-word; }
 .mp-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
-.map-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 10.5px; color: var(--ink-3); align-items: center; }
-.map-legend .sw { display: inline-block; width: 14px; height: 5px; margin-right: 5px; vertical-align: 2px; }
-.map-legend .sw.ok { background: var(--ok); }
-.map-legend .sw.info { background: var(--action); }
-.map-legend .sw.warn { background: var(--warn); }
-.map-legend .sw.bad { background: var(--bad); }
-.map-legend .sw.neutral { background: var(--ink-4); }
-.map-legend .note { margin-left: auto; font-style: italic; color: var(--ink-4); }
 
 @media (max-width: 860px) {
-  .map-stage { flex-direction: column; height: auto; }
-  /* base flex-basis 0% would win over height on the column main axis */
-  .map-canvas { flex: 0 0 auto; height: 52vh; }
-  .map-panel { width: auto; border-left: 0; border-top: 1px solid var(--line-2); max-height: 40vh; display: none; position: relative; }
-  .map-panel-close { display: block; }
+  .map-wrap { gap: 7px; }
+  /* one compact Filters control instead of three stacked dropdowns */
+  .map-filters-btn { display: inline-flex; align-items: center; }
+  .map-filters { display: none; }
+  .map-filters.open {
+    display: flex; flex-direction: column; align-items: stretch; gap: 10px;
+    position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30;
+    background: var(--surface); border: 1px solid var(--line-2); padding: 12px 14px 14px;
+    box-shadow: 0 10px 26px rgba(13, 22, 38, 0.14); margin-left: 0;
+  }
+  .map-filters-head { display: flex; align-items: center; justify-content: space-between; }
+  .map-filters-head span { font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
+  .map-filters-head button { border: 0; background: transparent; font-size: 19px; color: var(--ink-3); cursor: pointer; padding: 2px 8px; min-height: 34px; }
+  .map-filters label { justify-content: space-between; }
+  .map-filters select { max-width: 60%; min-width: 0; flex: 1; margin-left: 10px; }
+  /* the map owns the viewport; the inspector overlays as a bottom sheet */
+  .map-stage { display: block; height: calc(100dvh - 305px); min-height: 340px; }
+  .map-canvas { height: 100%; }
+  .map-panel {
+    display: none; position: absolute; left: 0; right: 0; bottom: 0; z-index: 20;
+    width: auto; max-height: 62%; border-left: 0; border-top: 1px solid var(--line-2);
+    box-shadow: 0 -10px 28px rgba(13, 22, 38, 0.16);
+  }
   .map-panel.open { display: block; }
-  .map-filters { margin-left: 0; width: 100%; }
-  .map-filters select { flex: 1; min-width: 0; }
-  .map-legend .note { margin-left: 0; width: 100%; }
+  .map-panel-close { display: block; }
+  /* collapsible legend chip */
+  .legend-toggle { display: block; }
+  .map-legend { max-width: 200px; padding: 5px 9px 7px; }
+  .map-legend.collapsed .legend-body { display: none; }
+  .map-legend.collapsed { padding: 3px 9px; }
+  .map-summary { font-size: 11.5px; }
 }
 
 /* ---- communications ---- */

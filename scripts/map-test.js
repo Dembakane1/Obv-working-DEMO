@@ -92,10 +92,43 @@ const assert = (c, m) => (c ? pass(m) : fail(m));
     const strokes = await page.locator(".geo-segment").evaluateAll((els) => els.map((e) => e.getAttribute("stroke")));
     assert(strokes.length === 5, "five milestone segments render");
     assert(
-      strokes.filter((s) => s === "#196138").length === 2 && // M1, M2 released
-        strokes.filter((s) => s === "#955104").length === 1 && // M3 awaiting evidence
-        strokes.filter((s) => s === "#6a7280").length === 2, // M4, M5 not started
+      strokes.filter((s) => s === "#196138").length === 2 && // M1, M2 released (green)
+        strokes.filter((s) => s === "#1d3fad").length === 1 && // M3 awaiting evidence (blue)
+        strokes.filter((s) => s === "#6a7280").length === 2, // M4, M5 not started (slate)
       "segment colors match milestone states (2 released, 1 awaiting evidence, 2 not started)"
+    );
+    assert(
+      (await page.locator(".geo-casing").count()) === 5,
+      "every segment has a light casing for satellite readability"
+    );
+
+    // Inset legend: visible, only currently-present states, boundary entry.
+    const legend = await page.locator("#legend-body").innerText();
+    assert(
+      legend.includes("Released") &&
+        legend.includes("Awaiting Evidence") &&
+        legend.includes("Not Started") &&
+        legend.includes("Project boundary") &&
+        !legend.includes("Rejected"),
+      "inset legend lists only present states plus the project boundary"
+    );
+
+    // Executive corridor summary from seeded demo km labels.
+    const summary = await page.locator("#map-summary").innerText();
+    assert(
+      summary.includes("7 km") && summary.includes("4 km") && summary.includes("3 km"),
+      "corridor summary shows 7 km verified · 4 km awaiting evidence · 3 km not started"
+    );
+
+    // Degraded base map is honest: tiles either load or the restrained
+    // notice appears (in this sandbox tile hosts are unreachable).
+    const noteVisible = await page.locator("#map-note").isVisible();
+    const loadedTiles = await page
+      .locator(".tile:not(.failed)")
+      .evaluateAll((els) => els.filter((e) => e.complete && e.naturalWidth > 0).length);
+    assert(
+      noteVisible || loadedTiles > 0,
+      "tile failure shows the geometry-still-available notice (or tiles loaded)"
     );
 
     // Segment panel content (pending area shows evidence/governance still
@@ -112,6 +145,10 @@ const assert = (c, m) => (c ? pass(m) : fail(m));
       /AWAITING EVIDENCE/.test(segPanel) && /\$600,000/.test(segPanel) && /km 7–11/.test(segPanel),
       "pending segment panel shows awaiting-evidence state, tranche and demo km label"
     );
+    assert(
+      segPanel.includes("Submit field evidence"),
+      "pending segment panel shows the next required action"
+    );
 
     // 9. Verdict filter works.
     await page.selectOption("#flt-verdict", "NEEDS_REVIEW");
@@ -119,13 +156,33 @@ const assert = (c, m) => (c ? pass(m) : fail(m));
     await page.selectOption("#flt-verdict", "all");
     assert((await page.locator(".geo-marker").count()) === 2, "clearing the filter restores markers");
 
-    // 10. Mobile interaction: bottom-sheet panel, no horizontal overflow.
+    // 10. Mobile interaction: clean first paint, compact filters, inset
+    //     legend, bottom-sheet inspector, no horizontal overflow.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload({ waitUntil: "domcontentloaded" }); // re-fit view to the mobile canvas
     await page.waitForSelector(".geo-marker");
-    await page.click("#map-panel-close"); // dismiss the boot project sheet
+    assert(
+      !(await page.locator("#map-panel.open").count()),
+      "mobile boot keeps the map clean (no auto-opened sheet)"
+    );
+    const legendInView = await page.evaluate(() => {
+      const r = document.getElementById("map-legend").getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= window.innerHeight && window.scrollY === 0;
+    });
+    assert(legendInView, "legend is visible inside the viewport without scrolling");
+    await page.click("#flt-btn");
+    assert(await page.locator("#map-filters.open").isVisible(), "Filters button opens the mobile filter sheet");
+    await page.selectOption("#flt-verdict", "VERIFIED");
+    assert((await page.locator("#flt-btn").innerText()).includes("1 active"), "filter button shows active count");
+    await page.selectOption("#flt-verdict", "all");
+    await page.click("#flt-close");
     await page.locator(".geo-marker").last().click();
     assert(await page.locator("#map-panel.open").isVisible(), "mobile marker tap opens the details sheet");
+    assert(
+      (await page.locator("#map-panel-body").innerText()).length > 0 &&
+        (await page.locator('#map-panel-body :text("Open thread")').count()) > 0,
+      "evidence sheet offers Open thread"
+    );
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth
     );

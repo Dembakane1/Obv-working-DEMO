@@ -13,6 +13,8 @@
  */
 
 interface MapSegment {
+  evidenceCount: number;
+  latestVerdict: string | null;
   id: string;
   milestoneId: string;
   seq: number;
@@ -89,22 +91,29 @@ interface MapProject {
   };
   let activeLayer: "map" | "satellite" = "map";
 
-  // Status palette (mirrors the app's semantic tokens).
+  // Status palette (mirrors the app's semantic tokens; `review` is a
+  // muted orange kept visually distinct from the governance amber).
   const TONE: Record<string, string> = {
     ok: "#196138",
     info: "#1d3fad",
     warn: "#955104",
+    review: "#c05621",
     bad: "#a92c21",
     neutral: "#6a7280",
   };
 
+  // Corridor state colors come from the ACTUAL product state model:
+  // milestone.status already encodes evidence -> verification ->
+  // governance -> financial progression (RELEASED is set only by the
+  // completed two-role approval releasing the tranche). A VERIFIED
+  // milestone with funds HELD shows as AWAITING GOVERNANCE, never green.
   function segmentTone(status: string): string {
     switch (status) {
       case "RELEASED":
       case "APPROVED": return TONE.ok;
-      case "VERIFIED": return TONE.info; // awaiting governance
-      case "UNDER_REVIEW":
-      case "PENDING_EVIDENCE": return TONE.warn;
+      case "VERIFIED": return TONE.warn; // verified, funds HELD — awaiting governance
+      case "UNDER_REVIEW": return TONE.review;
+      case "PENDING_EVIDENCE": return TONE.info;
       default: return TONE.neutral;
     }
   }
@@ -120,9 +129,14 @@ interface MapProject {
   }
   function evidenceTone(e: MapEvidence): string {
     if (e.verdict === "REJECTED" || e.insideBoundary === false) return TONE.bad;
-    if (e.verdict === "NEEDS_REVIEW" || e.geofencePassed === false) return TONE.warn;
+    if (e.verdict === "NEEDS_REVIEW" || e.geofencePassed === false) return TONE.review;
     if (e.verdict === "VERIFIED") return TONE.ok;
     return TONE.neutral;
+  }
+  function evidenceStateLabel(e: MapEvidence): string {
+    if (e.insideBoundary === false) return "OUTSIDE GEOFENCE";
+    if (!e.verdict) return "UNVERIFIED";
+    return e.verdict.replace(/_/g, " ");
   }
 
   // ---------------- Web-Mercator math ----------------
@@ -164,6 +178,18 @@ interface MapProject {
 
   const tiles = new Map<string, HTMLImageElement>();
 
+  // Degraded-base-map notice: if no tile of the active layer has loaded
+  // and several have failed, geometry stays fully usable and we say so
+  // honestly (no raw tile errors are ever surfaced).
+  let tilesLoaded = 0;
+  let tilesFailed = 0;
+  const mapNote = document.getElementById("map-note");
+  function tileOutcome(ok: boolean): void {
+    if (ok) tilesLoaded++;
+    else tilesFailed++;
+    if (mapNote) mapNote.hidden = !(tilesLoaded === 0 && tilesFailed >= 3);
+  }
+
   function renderTiles(): void {
     const layer = LAYERS[activeLayer];
     const c = worldPx(center.lng, center.lat, zoom);
@@ -189,7 +215,11 @@ interface MapProject {
           img.loading = "lazy";
           // A tile that fails (offline demo) stays as the neutral base —
           // geometry and markers remain fully usable.
-          img.addEventListener("error", () => img!.classList.add("failed"));
+          img.addEventListener("error", () => {
+            img!.classList.add("failed");
+            tileOutcome(false);
+          });
+          img.addEventListener("load", () => tileOutcome(true));
           img.src = layer.url(zoom, wx, ty);
           tiles.set(key, img);
           tileLayer.appendChild(img);
@@ -261,41 +291,67 @@ interface MapProject {
       svg.appendChild(el("path", { d: poly(project.route.geometry, false), class: "geo-route" }));
     }
 
-    // Milestone segments, colored by current milestone state.
+    // Milestone segments, colored by current milestone state. Each
+    // colored line sits on a light casing so the corridor stays readable
+    // over dark satellite imagery, pale roads and vegetation alike.
     for (const seg of project.segments) {
-      const hit = el("path", { d: poly(seg.geometry, false), class: "geo-hit" });
-      const line = el("path", {
-        d: poly(seg.geometry, false),
-        class: `geo-segment${selected?.kind === "segment" && selected.id === seg.id ? " selected" : ""}`,
-        stroke: segmentTone(seg.status),
+      const isSel = selected?.kind === "segment" && selected.id === seg.id;
+      const d = poly(seg.geometry, false);
+      svg.appendChild(el("path", { d, class: `geo-casing${isSel ? " selected" : ""}` }));
+      svg.appendChild(
+        el("path", { d, class: `geo-segment${isSel ? " selected" : ""}`, stroke: segmentTone(seg.status) })
+      );
+      const hit = el("path", { d, class: "geo-hit" });
+      hit.setAttribute("tabindex", "0");
+      hit.setAttribute("role", "button");
+      hit.setAttribute(
+        "aria-label",
+        `Milestone ${seg.seq}, ${seg.label}: ${segmentStateLabel(seg.status)}`
+      );
+      const pick = () => select({ kind: "segment", id: seg.id });
+      hit.addEventListener("click", pick);
+      hit.addEventListener("keydown", (ev) => {
+        if ((ev as KeyboardEvent).key === "Enter" || (ev as KeyboardEvent).key === " ") {
+          ev.preventDefault();
+          pick();
+        }
       });
-      hit.addEventListener("click", () => select({ kind: "segment", id: seg.id }));
-      svg.appendChild(line);
       svg.appendChild(hit);
       // Mid-segment km label.
       const mid = seg.geometry[Math.floor(seg.geometry.length / 2)];
-      const s = toScreen(mid[0], mid[1]);
-      const label = el("text", { x: String(s.x), y: String(s.y - 10), class: "geo-label" });
+      const sPt = toScreen(mid[0], mid[1]);
+      const label = el("text", { x: String(sPt.x), y: String(sPt.y - 10), class: "geo-label" });
       label.textContent = seg.label;
       svg.appendChild(label);
     }
 
-    // Evidence markers.
+    // Evidence markers: semantic center color + white outline; demo
+    // fallback keeps its inner white dot; selection adds a controlled
+    // blue outer ring. Keyboard-accessible on desktop.
     for (const e of filteredEvidence()) {
-      const s = toScreen(e.longitude, e.latitude);
-      const g = el("g", { class: "geo-marker", transform: `translate(${s.x},${s.y})` });
-      if (e.insideBoundary === false || e.geofencePassed === false) {
-        g.appendChild(el("circle", { r: "13", class: "geo-warn-ring" }));
-      }
-      g.appendChild(
-        el("circle", {
-          r: "8",
-          fill: evidenceTone(e),
-          class: `dot${selected?.kind === "evidence" && selected.id === e.id ? " selected" : ""}`,
-        })
+      const sPt = toScreen(e.longitude, e.latitude);
+      const isSel = selected?.kind === "evidence" && selected.id === e.id;
+      const g = el("g", { class: "geo-marker", transform: `translate(${sPt.x},${sPt.y})` });
+      g.setAttribute("tabindex", "0");
+      g.setAttribute("role", "button");
+      g.setAttribute(
+        "aria-label",
+        `M${e.seq} evidence: ${evidenceStateLabel(e)}${e.isDemoFallback ? ", demo fallback" : ""}`
       );
+      if (isSel) g.appendChild(el("circle", { r: "13", class: "geo-sel-ring" }));
+      if (e.insideBoundary === false || e.geofencePassed === false) {
+        g.appendChild(el("circle", { r: "15", class: "geo-warn-ring" }));
+      }
+      g.appendChild(el("circle", { r: "8", fill: evidenceTone(e), class: "dot" }));
       if (e.isDemoFallback) g.appendChild(el("circle", { r: "3", class: "geo-demo-dot" }));
-      g.addEventListener("click", () => select({ kind: "evidence", id: e.id }));
+      const pick = () => select({ kind: "evidence", id: e.id });
+      g.addEventListener("click", pick);
+      g.addEventListener("keydown", (ev) => {
+        if ((ev as KeyboardEvent).key === "Enter" || (ev as KeyboardEvent).key === " ") {
+          ev.preventDefault();
+          pick();
+        }
+      });
       svg.appendChild(g);
     }
   }
@@ -352,13 +408,29 @@ interface MapProject {
         seg.approvalStatus === "PENDING"
           ? `${seg.approvalsRecorded} of ${seg.approvalsRequired} approvals recorded`
           : seg.approvalStatus ?? "Not requested";
+      // Next required action, derived from the existing state fields only.
+      const nextAction =
+        seg.status === "RELEASED"
+          ? "Current state: Released"
+          : seg.status === "APPROVED"
+            ? "Release processing on the virtual account"
+            : seg.status === "VERIFIED"
+              ? `Next action: Awaiting governance approval (${seg.approvalsRecorded} of ${seg.approvalsRequired} recorded)`
+              : seg.status === "UNDER_REVIEW"
+                ? "Next action: Compliance review of flagged evidence"
+                : seg.status === "PENDING_EVIDENCE"
+                  ? "Next action: Submit field evidence"
+                  : "Not started";
       panelBody.innerHTML = `
         <div class="mp-title">M${seg.seq} · ${esc(seg.title)}</div>
         <div class="mp-sub">${esc(seg.label)} · demo corridor segment</div>
-        <div class="mp-chips">${chip(segmentStateLabel(seg.status), segmentTone(seg.status))}${chip(seg.accountStatus, seg.accountStatus === "RELEASED" ? TONE.ok : TONE.warn)}</div>
+        <div class="mp-chips">${chip(segmentStateLabel(seg.status), segmentTone(seg.status))}${chip("FUNDS " + seg.accountStatus, seg.accountStatus === "RELEASED" ? TONE.ok : TONE.warn)}</div>
+        <div class="mp-next">${esc(nextAction)}</div>
         <dl class="mp-kv">
           <dt>Requirement</dt><dd>${esc(seg.requirement)}</dd>
           <dt>Tranche</dt><dd class="num">${money(seg.trancheAmount)}</dd>
+          <dt>Evidence</dt><dd>${seg.evidenceCount} item${seg.evidenceCount === 1 ? "" : "s"}</dd>
+          <dt>Verification</dt><dd>${seg.latestVerdict ? esc(seg.latestVerdict.replace(/_/g, " ")) : "—"}</dd>
           <dt>Approval</dt><dd>${esc(approvalLine)}</dd>
         </dl>
         <div class="mp-actions">
@@ -392,7 +464,11 @@ interface MapProject {
         </dl>
         <div class="mp-actions">
           <a class="btn sm" href="/milestone/${esc(e.milestoneId)}">View evidence</a>
-          ${e.threadId ? `<a class="btn ghost sm" href="/communications?thread=${esc(e.threadId)}">Open thread</a>` : ""}
+          ${
+            e.threadId
+              ? `<a class="btn ghost sm" href="/communications?thread=${esc(e.threadId)}">Open thread</a>`
+              : `<form method="POST" action="/api/threads/open" style="margin:0;display:inline"><input type="hidden" name="milestoneId" value="${esc(e.milestoneId)}"><button class="btn ghost sm" type="submit">Open thread</button></form>`
+          }
         </div>`;
     }
   }
@@ -489,17 +565,47 @@ interface MapProject {
   function setLayer(layer: "map" | "satellite"): void {
     if (layer === activeLayer) return;
     activeLayer = layer;
+    zoom = Math.min(zoom, LAYERS[layer].maxZoom);
+    tilesLoaded = 0;
+    tilesFailed = 0;
     for (const [key, img] of tiles) {
       img.remove();
       tiles.delete(key);
     }
     btnMap.classList.toggle("active", layer === "map");
     btnSat.classList.toggle("active", layer === "satellite");
+    btnMap.setAttribute("aria-pressed", String(layer === "map"));
+    btnSat.setAttribute("aria-pressed", String(layer === "satellite"));
     render();
   }
   btnMap.addEventListener("click", () => setLayer("map"));
   btnSat.addEventListener("click", () => setLayer("satellite"));
 
+  const fltBtn = document.getElementById("flt-btn")!;
+  const fltPanel = document.getElementById("map-filters")!;
+  function activeFilterCount(): number {
+    return [filters.time, filters.milestone, filters.verdict].filter((v) => v !== "all").length;
+  }
+  function syncFilterButton(): void {
+    const n = activeFilterCount();
+    fltBtn.textContent = n > 0 ? `Filters · ${n} active` : "Filters";
+  }
+  function setFiltersOpen(open: boolean): void {
+    fltPanel.classList.toggle("open", open);
+    fltBtn.setAttribute("aria-expanded", String(open));
+    if (open) (document.getElementById("flt-time") as HTMLSelectElement).focus();
+  }
+  fltBtn.addEventListener("click", () => setFiltersOpen(!fltPanel.classList.contains("open")));
+  document.getElementById("flt-close")!.addEventListener("click", () => {
+    setFiltersOpen(false);
+    fltBtn.focus();
+  });
+  fltPanel.addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Escape") {
+      setFiltersOpen(false);
+      fltBtn.focus();
+    }
+  });
   for (const [id, key] of [
     ["flt-time", "time"],
     ["flt-milestone", "milestone"],
@@ -507,8 +613,85 @@ interface MapProject {
   ] as const) {
     document.getElementById(id)!.addEventListener("change", (e) => {
       filters[key] = (e.target as HTMLSelectElement).value;
+      syncFilterButton();
       renderOverlay();
     });
+  }
+
+  // ---------------- inset legend (only states actually present) --------
+  function buildLegend(): void {
+    const body = document.getElementById("legend-body");
+    if (!body || !project) return;
+    const line = (color: string, label: string) =>
+      `<span class="lg-row"><i class="lg-line" style="background:${color}"></i>${esc(label)}</span>`;
+    const dot = (color: string, label: string) =>
+      `<span class="lg-row"><i class="lg-dot" style="background:${color}"></i>${esc(label)}</span>`;
+    const parts: string[] = [];
+    const segStates = new Map<string, string>();
+    for (const seg of project.segments) {
+      segStates.set(segmentStateLabel(seg.status), segmentTone(seg.status));
+    }
+    for (const [label, color] of segStates) parts.push(line(color, titleCase(label)));
+    const evStates = new Map<string, string>();
+    for (const e of project.evidence) {
+      evStates.set(evidenceStateLabel(e), evidenceTone(e));
+    }
+    for (const [label, color] of evStates) parts.push(dot(color, "Evidence: " + titleCase(label)));
+    if (project.evidence.some((e) => e.isDemoFallback)) {
+      parts.push(
+        `<span class="lg-row"><i class="lg-dot lg-demo"></i>Demo fallback evidence</span>`
+      );
+    }
+    parts.push(`<span class="lg-row"><i class="lg-boundary"></i>Project boundary</span>`);
+    parts.push(`<span class="lg-note">Demo corridor geometry — km labels are demonstration metadata</span>`);
+    body.innerHTML = parts.join("");
+  }
+  function titleCase(v: string): string {
+    return v.charAt(0) + v.slice(1).toLowerCase().replace(/ ([a-z])/g, (m) => m.toUpperCase());
+  }
+  const legendToggle = document.getElementById("legend-toggle");
+  const legendBox = document.getElementById("map-legend");
+  legendToggle?.addEventListener("click", () => {
+    const collapsed = legendBox!.classList.toggle("collapsed");
+    legendToggle.setAttribute("aria-expanded", String(!collapsed));
+  });
+
+  // ---------------- executive corridor summary -------------------------
+  // Uses the seeded demo km labels ("km 7–11") when parseable; falls back
+  // to segment counts. No quantities are invented beyond that metadata.
+  function buildSummary(): void {
+    const target = document.getElementById("map-summary");
+    if (!target || !project) return;
+    const buckets = new Map<string, { km: number; count: number; order: number }>();
+    const ORDER: Record<string, number> = {
+      "VERIFIED": 0, "AWAITING GOVERNANCE": 1, "NEEDS REVIEW": 2,
+      "AWAITING EVIDENCE": 3, "NOT STARTED": 4,
+    };
+    let kmParsable = true;
+    for (const seg of project.segments) {
+      const label =
+        seg.status === "RELEASED" || seg.status === "APPROVED"
+          ? "VERIFIED"
+          : segmentStateLabel(seg.status);
+      const m = /km\s*([\d.]+)\s*[–-]\s*([\d.]+)/.exec(seg.label);
+      const km = m ? Number(m[2]) - Number(m[1]) : NaN;
+      if (Number.isNaN(km)) kmParsable = false;
+      const b = buckets.get(label) ?? { km: 0, count: 0, order: ORDER[label] ?? 9 };
+      b.km += Number.isNaN(km) ? 0 : km;
+      b.count += 1;
+      buckets.set(label, b);
+    }
+    const parts = [...buckets.entries()]
+      .sort((a, b) => a[1].order - b[1].order)
+      .map(([label, b]) =>
+        kmParsable
+          ? `<b>${fmtKm(b.km)} km</b> ${esc(label.toLowerCase())}`
+          : `<b>${b.count}</b> segment${b.count === 1 ? "" : "s"} ${esc(label.toLowerCase())}`
+      );
+    target.innerHTML = `<span class="ms-t">Corridor status</span> ${parts.join('<span class="ms-sep">·</span>')}`;
+  }
+  function fmtKm(n: number): string {
+    return Number.isInteger(n) ? String(n) : n.toFixed(1);
   }
 
   // ---------------- boot ----------------
@@ -551,7 +734,14 @@ interface MapProject {
       }
       fitToBoundary(project.boundary);
       render();
-      select({ kind: "project" });
+      buildLegend();
+      buildSummary();
+      syncFilterButton();
+      // On mobile the inspector is a bottom sheet over the map — keep the
+      // first paint clean and open it only on explicit selection.
+      if (window.matchMedia("(min-width: 861px)").matches) {
+        select({ kind: "project" });
+      }
     } catch {
       panelEmpty.textContent = "Map data unavailable — check your connection and reload.";
     }

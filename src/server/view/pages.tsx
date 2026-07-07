@@ -1830,28 +1830,49 @@ function MapShell(props: { projectId?: string }): VNode {
     <div className="map-wrap" id="map-wrap" data-project={props.projectId ?? ""}>
       <div className="map-toolbar">
         <div className="map-layers" role="group" aria-label="Map layer">
-          <button type="button" id="layer-map" className="active">Map</button>
-          <button type="button" id="layer-sat">Satellite</button>
+          <button type="button" id="layer-map" className="active" aria-pressed="true">Map</button>
+          <button type="button" id="layer-sat" aria-pressed="false">Satellite</button>
         </div>
-        <div className="map-filters">
-          <select id="flt-time" aria-label="Evidence time filter">
-            <option value="all">All evidence</option>
-            <option value="7">Last 7 days</option>
-            <option value="30">Last 30 days</option>
-          </select>
-          <select id="flt-milestone" aria-label="Milestone filter">
-            <option value="all">All milestones</option>
-          </select>
-          <select id="flt-verdict" aria-label="Verdict filter">
-            <option value="all">All verdicts</option>
-            <option value="VERIFIED">Verified</option>
-            <option value="NEEDS_REVIEW">Needs review</option>
-            <option value="REJECTED">Rejected</option>
-          </select>
+        <button type="button" className="map-filters-btn" id="flt-btn" aria-expanded="false" aria-controls="map-filters">
+          Filters
+        </button>
+        <div className="map-filters" id="map-filters" role="group" aria-label="Evidence filters">
+          <div className="map-filters-head">
+            <span>Filters</span>
+            <button type="button" id="flt-close" aria-label="Close filters">×</button>
+          </div>
+          <label>Time
+            <select id="flt-time" aria-label="Evidence time filter">
+              <option value="all">All evidence</option>
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+            </select>
+          </label>
+          <label>Milestone
+            <select id="flt-milestone" aria-label="Milestone filter">
+              <option value="all">All milestones</option>
+            </select>
+          </label>
+          <label>Verification
+            <select id="flt-verdict" aria-label="Verdict filter">
+              <option value="all">All verdicts</option>
+              <option value="VERIFIED">Verified</option>
+              <option value="NEEDS_REVIEW">Needs review</option>
+              <option value="REJECTED">Rejected</option>
+            </select>
+          </label>
         </div>
       </div>
+      <div className="map-summary" id="map-summary" aria-live="polite"></div>
       <div className="map-stage">
         <div className="map-canvas" id="map-canvas" aria-label="Project map"></div>
+        <div className="map-note" id="map-note" hidden>
+          Base map unavailable — project geometry still available
+        </div>
+        <div className="map-legend" id="map-legend" aria-label="Map legend">
+          <button type="button" className="legend-toggle" id="legend-toggle" aria-expanded="true">Legend</button>
+          <div className="legend-body" id="legend-body"></div>
+        </div>
         <aside className="map-panel" id="map-panel" aria-live="polite">
           <button type="button" className="map-panel-close" id="map-panel-close" aria-label="Close details">×</button>
           <div className="map-panel-empty" id="map-panel-empty">
@@ -1859,14 +1880,6 @@ function MapShell(props: { projectId?: string }): VNode {
           </div>
           <div id="map-panel-body"></div>
         </aside>
-      </div>
-      <div className="map-legend">
-        <span><i className="sw ok"></i>Verified / released</span>
-        <span><i className="sw info"></i>Awaiting governance</span>
-        <span><i className="sw warn"></i>Awaiting evidence / review</span>
-        <span><i className="sw bad"></i>Rejected / outside geofence</span>
-        <span><i className="sw neutral"></i>Not started</span>
-        <span className="note">Demo corridor geometry — segment km labels are demonstration metadata</span>
       </div>
       <script src="/js/map.js" defer></script>
     </div>
@@ -1878,7 +1891,7 @@ export function renderMap(input: { nav: NavContext; scope: "global" }): string {
     <AppShell title="Project Map" nav={input.nav}>
       <PageHeader
         title="Project Map"
-        sub="Spatial view of project boundaries, milestone corridor state and evidence capture locations — read from the live verification and governance records."
+        sub="Spatial view of project boundaries, milestone progress, and evidence capture locations."
       />
       <MapShell />
       <script src="/js/poll.js" defer></script>
