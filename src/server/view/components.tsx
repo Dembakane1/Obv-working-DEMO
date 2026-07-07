@@ -101,7 +101,7 @@ export function ApprovalChip(props: { status: ApprovalStatus; progress?: string 
   if (props.progress && props.progress[0] !== "0") {
     return <Status tone="warn" glyph="◐">Partially approved · {props.progress}</Status>;
   }
-  return <Status tone="warn" glyph="○">Pending · {props.progress ?? "approval"}</Status>;
+  return <Status tone="warn" glyph="○">Pending approval{props.progress ? ` · ${props.progress}` : ""}</Status>;
 }
 
 export function IntegrityChip(props: { valid: boolean; brokenAt?: number }): VNode {

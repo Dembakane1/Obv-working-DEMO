@@ -1129,3 +1129,147 @@ table.holdings .h-next .nl { display: block; font-size: 9.5px; color: var(--ink-
 /* hide inline mobile timestamp on desktop audit tables */
 .audit-table .ts-inline { display: none; }
 @media (max-width: 640px) { .audit-table .ts-inline { display: block; } }
+
+/* =====================================================================
+   v4.2 surgical polish — typography scale-up, button system, allocation
+   bar, mobile approval composition, structured audit table.
+   ===================================================================== */
+
+/* ---- P2: typography readability (raise the small floor) ---- */
+.sub { font-size: 13px; }
+.kv { font-size: 13px; }
+.kv dt { font-size: 12.5px; }
+.checks li { font-size: 13px; }
+.checks .detail { font-size: 12px; }
+table.data { font-size: 13px; }
+.activity .body { font-size: 13px; }
+.activity .meta { font-size: 11.5px; }
+.hashline { font-size: 11px; }
+.reg-row { font-size: 12.5px; }
+.reg-row .ts { font-size: 11px; }
+.photo-meta .row { font-size: 12.5px; }
+.photo-meta .v.mono { font-size: 11.5px; }
+.decision-note { font-size: 11.5px; }
+.stmt-fig .c { font-size: 11.5px; }
+.stmt-sub { font-size: 11.5px; }
+table.holdings { font-size: 13px; }
+table.holdings .h-sub { font-size: 12px; }
+table.holdings .h-next { font-size: 12px; }
+.ms-card .m-req { font-size: 12px; }
+.ms-card .m-next { font-size: 12px; }
+.side-kv { font-size: 13px; }
+.side-block .l { font-size: 10.5px; }
+.a-meta { font-size: 12px; }
+.money-strip .await { font-size: 12.5px; }
+.field-item .d { font-size: 12px; }
+.field-note { font-size: 12px; }
+.holding-m .hm-sub { font-size: 11.5px; }
+.audit-table { font-size: 12.5px; }
+.audit-table .ts { font-size: 10.5px; }
+.ledger-row { font-size: 13px; }
+.ledger-row .hash { font-size: 11px; }
+
+/* ---- P3: button system (consistent heights, clear hierarchy) ---- */
+.btn { font-size: 13.5px; min-height: 38px; }
+.btn.sm { font-size: 12.5px; min-height: 32px; padding: 5px 13px; }
+.btn.big { min-height: 50px; }
+.btn.approve { min-height: 46px; }
+.btn.danger.sm { min-height: 32px; }
+
+/* ---- P4: released vs held allocation bar ---- */
+.alloc { padding: 12px 0 2px; }
+.alloc .bar {
+  display: flex; height: 10px; border-radius: 3px; overflow: hidden;
+  border: 1px solid var(--line-2); background: var(--inset);
+}
+.alloc .seg-rel { background: var(--ok); }
+.alloc .seg-held { background: #e9d6ab; }
+.alloc .legend { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 12px; flex-wrap: wrap; }
+.alloc .legend .k { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.alloc .legend .sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; border: 1px solid rgba(0,0,0,0.08); }
+.alloc .legend b { font-weight: 650; }
+
+/* ---- P5: holdings hierarchy ---- */
+table.holdings .h-name { font-size: 15px; }
+table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
+
+/* ---- P6/P1: approval composition ---- */
+.approval-review .col-decide { display: flex; flex-direction: column; }
+.blk-actions { margin-top: auto; padding-top: 12px; }
+.evidence-cap {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin-top: 8px; font-size: 12.5px; color: var(--ink-2); font-weight: 600;
+}
+.evidence-cap .mono { font-size: 10.5px; color: var(--ink-4); font-weight: 500; }
+
+/* structured audit table */
+.audit-table .role { color: var(--ink-3); white-space: nowrap; font-size: 11.5px; }
+.audit-table td .st { white-space: nowrap; }
+
+/* decision actions: dominant primary, quieter secondary */
+.decision-actions { gap: 8px; }
+.decision-actions .btn.approve { order: 1; }
+.decision-actions .btn.danger { order: 2; min-height: 36px; font-size: 12.5px; }
+
+/* ---- P1: mobile approval order:
+   money strip (1, above grid) → progress → photo → checks → meta → proof
+   → sticky actions; audit trail follows the grid. ---- */
+@media (max-width: 700px) {
+  .approval-review { display: flex; flex-direction: column; }
+  .approval-review .col-decide,
+  .approval-review .col-photo,
+  .approval-review .col-facts { display: contents; }
+  .blk-progress { order: 1; padding: 14px 16px 4px; }
+  .blk-photo { order: 2; padding: 10px 16px 0; }
+  .blk-checks { order: 3; padding: 12px 16px 0; }
+  .blk-meta { order: 4; padding: 12px 16px 0; }
+  .blk-proof { order: 5; padding: 12px 16px 4px; }
+  .blk-actions {
+    order: 6;
+    position: sticky; bottom: 62px; z-index: 20;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    margin: 12px 0 0;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom) / 2);
+    display: flex; gap: 8px; align-items: stretch;
+  }
+  .blk-actions form { margin: 0; }
+  .blk-actions form.f-approve { flex: 1.7; order: 2; }
+  .blk-actions form.f-reject { flex: 1; order: 1; }
+  .blk-actions .btn { width: 100%; min-height: 48px; font-size: 13px; padding: 8px 10px; }
+  .blk-actions .decision-note-wrap { display: none; }
+  .blk-actions ~ * { order: 7; }
+  /* neutralize the old sticky rule */
+  .decision-actions { position: static; margin: 0; padding: 0; border: none; background: transparent; flex-direction: row; width: 100%; }
+  .money-strip { border-left-width: 3px; }
+  .money-strip .amt .v { font-size: 30px; }
+}
+
+/* ---- P7: brand header polish ---- */
+.sidebar-brand { padding: 20px 16px 15px; gap: 10px; border-bottom: 1px solid var(--navy-line); align-items: center; }
+.sidebar-brand .mark { width: 28px; height: 28px; border-radius: 6px; }
+.sidebar-brand .word .n { font-size: 13px; letter-spacing: 0.015em; }
+.sidebar-brand .word .s { font-size: 8.5px; letter-spacing: 0.18em; margin-top: 3px; }
+.sidebar-nav { padding-top: 10px; }
+
+/* ---- P9: mobile overview density ---- */
+@media (max-width: 640px) {
+  .content { padding-top: 12px; }
+  .page-head { margin-bottom: 12px; gap: 8px; }
+  .page-head .sub { font-size: 12px; }
+  .stmt-fig { padding-top: 8px; padding-bottom: 7px; }
+  .stmt-fig .v { font-size: 19px; }
+  .stmt-fig .l { margin-top: 2px; font-size: 9.5px; }
+  .stmt-fig .c { display: none; }
+  .stmt-sub { padding: 6px 0; gap: 4px 14px; }
+  .doc-head { margin-top: 16px; }
+  .alloc { padding: 9px 0 1px; }
+  .alloc .legend { font-size: 11.5px; }
+  .holding-m { padding: 11px 14px; }
+}
+
+/* mobile audit table: hide actor+role columns, keep inline context */
+@media (max-width: 640px) {
+  .audit-table th:nth-child(2), .audit-table td:nth-child(2),
+  .audit-table th:nth-child(3), .audit-table td:nth-child(3) { display: none; }
+}

@@ -241,7 +241,7 @@ export function renderOverview(input: {
         sub={`${input.projects.length} active project${input.projects.length === 1 ? "" : "s"} under milestone-based release governance.`}
       >
         <form method="POST" action="/api/demo/reset" style="margin:0">
-          <button className="btn ghost sm" type="submit" title="Restore the seeded demo state">
+          <button className="btn danger sm" type="submit" title="Restore the seeded demo state">
             Reset demo data
           </button>
         </form>
@@ -269,6 +269,17 @@ export function renderOverview(input: {
             <div className="v">{money(m.pendingValue)}</div>
             <div className="l">Pending governance</div>
             <div className="c">{m.pendingApprovals} approval request{m.pendingApprovals === 1 ? "" : "s"}</div>
+          </div>
+        </div>
+        {/* Released vs held allocation — one restrained visualization */}
+        <div className="alloc">
+          <div className="bar" role="img" aria-label={`Released ${releasedPct}%, held ${100 - releasedPct}%`}>
+            <span className="seg-rel" style={`width:${releasedPct}%`}></span>
+            <span className="seg-held" style={`width:${100 - releasedPct}%`}></span>
+          </div>
+          <div className="legend">
+            <span className="k"><span className="sw" style="background:var(--ok)"></span>Released <b>{money(m.released)}</b> · {releasedPct}%</span>
+            <span className="k"><span className="sw" style="background:#e9d6ab"></span>Held <b>{money(m.held)}</b> · {100 - releasedPct}%</span>
           </div>
         </div>
         <div className="stmt-sub">
@@ -341,7 +352,7 @@ export function renderOverview(input: {
                       )}
                     </td>
                     <td style="text-align:right;white-space:nowrap">
-                      <a href={`/project/${d.project.id}`} style="font-weight:600;font-size:12px">View →</a>
+                      <a className="btn sm" href={`/project/${d.project.id}`}>View project</a>
                     </td>
                   </tr>
                 );
@@ -370,7 +381,7 @@ export function renderOverview(input: {
                 </div>
                 <div className="hm-foot">
                   {next ? <span>Next: <b>M{next.milestone.seq} · {next.milestone.title}</b></span> : <span>All milestones complete</span>}
-                  <a href={`/project/${d.project.id}`}>View →</a>
+                  <a className="btn sm" href={`/project/${d.project.id}`}>View project</a>
                 </div>
               </div>
             );
@@ -502,7 +513,7 @@ export function renderProjectDetail(input: {
         <a className="crumb" href="/projects" style="font-size:12px;color:var(--ink-3)">← Projects</a>
         <form method="POST" action="/api/reports/generate" style="margin:0 0 0 auto">
           <input type="hidden" name="projectId" value={project.id} />
-          <button className="btn secondary sm" type="submit" title="Generate the Project Verification & Fund Release Report (PDF)">
+          <button className="btn sm" type="submit" title="Generate the Project Verification & Fund Release Report (PDF)">
             {icons.file(13)} Generate funder report
           </button>
         </form>
@@ -871,38 +882,61 @@ export function renderApprovals(input: {
           );
           const b = item.bundle;
 
-          const trail: Array<{ tone: string; msg: VNode | string; when: string }> = [];
+          // Structured audit trail: timestamp / actor / role / decision / status.
+          const trail: Array<{
+            when: string;
+            actor: string;
+            role: string;
+            event: VNode | string;
+            tone: string;
+            statusLabel: string;
+          }> = [];
           if (b) {
             trail.push({
-              tone: "info",
-              msg: (<><b>Evidence submitted</b> by {b.submittedBy?.name ?? "field user"}{b.evidence.isDemoFallback ? " (demo fallback)" : ""}</>),
               when: b.evidence.uploadedAt,
+              actor: b.submittedBy?.name ?? "Field user",
+              role: b.submittedBy ? roleLabel(b.submittedBy.role) : "—",
+              event: `Evidence submitted (${b.evidence.isDemoFallback ? "demo fallback" : "live capture"})`,
+              tone: "info",
+              statusLabel: "Submitted",
             });
             if (b.verification) {
               trail.push({
-                tone: b.verification.verdict === "VERIFIED" ? "ok" : "warn",
-                msg: (<><b>AI verification: {b.verification.verdict.replace(/_/g, " ")}</b> · confidence {b.verification.confidence.toFixed(2)} · {b.verification.checks.filter((c) => c.passed).length}/{b.verification.checks.length} checks passed</>),
                 when: b.verification.createdAt,
+                actor: "AiVerificationService",
+                role: "Automated check",
+                event: (<>Confidence {b.verification.confidence.toFixed(2)} · {b.verification.checks.filter((c) => c.passed).length}/{b.verification.checks.length} checks passed</>),
+                tone: b.verification.verdict === "VERIFIED" ? "ok" : "warn",
+                statusLabel: b.verification.verdict.replace(/_/g, " "),
               });
             }
             if (b.ledgerEntry) {
               trail.push({
-                tone: "ok",
-                msg: (<><b>Ledger entry #{b.ledgerEntry.seq} appended</b> · <span className="mono">{shortHash(b.ledgerEntry.currentHash, 18)}</span></>),
                 when: b.ledgerEntry.timestamp,
+                actor: "Evidence ledger",
+                role: "System",
+                event: (<>Entry #{b.ledgerEntry.seq} appended · <span className="mono">{shortHash(b.ledgerEntry.currentHash, 16)}</span></>),
+                tone: "ok",
+                statusLabel: "Chained",
               });
             }
           }
           trail.push({
-            tone: "warn",
-            msg: (<><b>Approval requested</b> — requires {item.approval.requiredRoles.map(roleLabel).join(" + ")} · funds HELD</>),
             when: item.approval.createdAt,
+            actor: "Governance",
+            role: "System",
+            event: `Approval requested — requires ${item.approval.requiredRoles.map(roleLabel).join(" + ")}`,
+            tone: "warn",
+            statusLabel: "Pending",
           });
           for (const rec of item.records) {
             trail.push({
-              tone: rec.decision === "APPROVED" ? "ok" : "bad",
-              msg: (<><b>{rec.decision === "APPROVED" ? "Approved" : "Rejected"}</b> by {input.users.get(rec.userId)?.name ?? roleLabel(rec.role)} ({roleLabel(rec.role)})</>),
               when: rec.createdAt,
+              actor: input.users.get(rec.userId)?.name ?? roleLabel(rec.role),
+              role: roleLabel(rec.role),
+              event: rec.decision === "APPROVED" ? "Release eligibility approved" : "Returned for review",
+              tone: rec.decision === "APPROVED" ? "ok" : "bad",
+              statusLabel: rec.decision,
             });
           }
 
@@ -942,51 +976,65 @@ export function renderApprovals(input: {
 
               <div className="approval-review">
                 <div className="col-decide">
-                  <div className="t-meta" style="margin-bottom:7px">Governance</div>
-                  <ApprovalProgress approval={item.approval} records={item.records} users={input.users} hideSummary={true} />
-                  {item.canDecide ? (
-                    <>
-                      <div className="decision-actions">
-                        <form method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
-                          <input type="hidden" name="decision" value="APPROVED" />
-                          <button className="btn approve" type="submit">
-                            Approve release eligibility
-                          </button>
-                        </form>
-                        <form method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
-                          <input type="hidden" name="decision" value="REJECTED" />
-                          <button className="btn danger" type="submit" style="width:100%">Reject / return for review</button>
-                        </form>
+                  <div className="blk-progress">
+                    <div className="t-meta" style="margin-bottom:7px">Governance</div>
+                    <ApprovalProgress approval={item.approval} records={item.records} users={input.users} hideSummary={true} />
+                  </div>
+                  <div className="blk-actions">
+                    {item.canDecide ? (
+                      <>
+                        <div className="decision-actions">
+                          <form className="f-approve" method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
+                            <input type="hidden" name="decision" value="APPROVED" />
+                            <button className="btn approve" type="submit">
+                              Approve release eligibility
+                            </button>
+                          </form>
+                          <form className="f-reject" method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
+                            <input type="hidden" name="decision" value="REJECTED" />
+                            <button className="btn danger" type="submit" style="width:100%">Return for review</button>
+                          </form>
+                        </div>
+                        <div className="decision-note-wrap">
+                          <p className="decision-note">
+                            Approving records your sign-off. The {money(item.milestone.trancheAmount)} tranche
+                            releases only when all required roles have approved.
+                          </p>
+                        </div>
+                      </>
+                    ) : item.alreadyDecided ? (
+                      <div className="banner info" style="margin:0">Your decision is recorded. Awaiting the remaining role(s).</div>
+                    ) : (
+                      <div className="banner info" style="margin:0">
+                        Sign in as one of the required roles to decide. Your current role is not part of this approval.
                       </div>
-                      <p className="decision-note">
-                        Approving records your sign-off. The {money(item.milestone.trancheAmount)} tranche
-                        releases only when all required roles have approved.
-                      </p>
-                    </>
-                  ) : item.alreadyDecided ? (
-                    <div className="banner info" style="margin:12px 0 0">Your decision is recorded. Awaiting the remaining role(s).</div>
-                  ) : (
-                    <div className="banner info" style="margin:12px 0 0">
-                      Sign in as one of the required roles to decide. Your current role is not part of this approval.
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
 
                 <div className="col-photo">
                   {b ? (
                     <>
-                      <div className="approval-photo">
-                        <img src={b.evidence.photoPath} alt="Field evidence photo" />
+                      <div className="blk-photo">
+                        <div className="approval-photo">
+                          <img src={b.evidence.photoPath} alt="Field evidence photo" />
+                        </div>
+                        <div className="evidence-cap">
+                          Field evidence — M{item.milestone.seq} · {item.milestone.title}
+                          <span className="mono">{fmtDate(b.evidence.capturedAt).slice(0, 16)}</span>
+                        </div>
+                        <div style="margin-top:7px">
+                          <EvidenceStatusChips verification={b.verification} isDemoFallback={b.evidence.isDemoFallback} />
+                        </div>
                       </div>
-                      <div style="margin-top:9px">
-                        <EvidenceStatusChips verification={b.verification} isDemoFallback={b.evidence.isDemoFallback} />
-                      </div>
-                      <div className="photo-meta">
-                        <div className="row"><span className="k">Captured by</span><span className="v">{b.submittedBy?.name ?? "—"}</span></div>
-                        <div className="row"><span className="k">Captured</span><span className="v mono">{fmtDate(b.evidence.capturedAt)}</span></div>
-                        <div className="row"><span className="k">GPS</span><span className="v mono">{b.evidence.latitude.toFixed(5)}, {b.evidence.longitude.toFixed(5)}</span></div>
-                        <div className="row"><span className="k">Device</span><span className="v">{b.evidence.deviceMetadata.platform} · {b.evidence.deviceMetadata.screen}</span></div>
-                        <div className="row"><span className="k">Capture mode</span><span className="v">{b.evidence.isDemoFallback ? "Demo fallback" : "Live capture"}</span></div>
+                      <div className="blk-meta">
+                        <div className="photo-meta">
+                          <div className="row"><span className="k">Captured by</span><span className="v">{b.submittedBy?.name ?? "—"}</span></div>
+                          <div className="row"><span className="k">Captured</span><span className="v mono">{fmtDate(b.evidence.capturedAt)}</span></div>
+                          <div className="row"><span className="k">GPS</span><span className="v mono">{b.evidence.latitude.toFixed(5)}, {b.evidence.longitude.toFixed(5)}</span></div>
+                          <div className="row"><span className="k">Device</span><span className="v">{b.evidence.deviceMetadata.platform} · {b.evidence.deviceMetadata.screen}</span></div>
+                          <div className="row"><span className="k">Capture mode</span><span className="v">{b.evidence.isDemoFallback ? "Demo fallback" : "Live capture"}</span></div>
+                        </div>
                       </div>
                     </>
                   ) : (
@@ -997,18 +1045,22 @@ export function renderApprovals(input: {
                 <div className="col-facts">
                   {b ? (
                     <>
-                      <div className="ev-sec">Requirement</div>
-                      <p style="margin:0;font-size:12.5px;color:var(--ink-2)">{item.milestone.requirement}</p>
-                      {b.verification ? (
-                        <>
-                          <div className="ev-sec">Verification checks</div>
-                          <EvidenceChecks verification={b.verification} />
-                          <div className="ev-sec">AI verification result</div>
-                          <EvidenceAiResult verification={b.verification} />
-                        </>
-                      ) : null}
-                      <div className="ev-sec">Proof integrity</div>
-                      <EvidenceHashes evidence={b.evidence} ledgerEntry={b.ledgerEntry} />
+                      <div className="blk-checks">
+                        <div className="ev-sec">Requirement</div>
+                        <p style="margin:0;font-size:13px;color:var(--ink-2)">{item.milestone.requirement}</p>
+                        {b.verification ? (
+                          <>
+                            <div className="ev-sec">Verification checks</div>
+                            <EvidenceChecks verification={b.verification} />
+                            <div className="ev-sec">AI verification result</div>
+                            <EvidenceAiResult verification={b.verification} />
+                          </>
+                        ) : null}
+                      </div>
+                      <div className="blk-proof">
+                        <div className="ev-sec">Proof integrity</div>
+                        <EvidenceHashes evidence={b.evidence} ledgerEntry={b.ledgerEntry} />
+                      </div>
                     </>
                   ) : null}
                 </div>
@@ -1019,17 +1071,28 @@ export function renderApprovals(input: {
                 <table className="audit-table" style="margin-top:8px">
                   <thead>
                     <tr>
-                      <th style="width:150px">Timestamp</th>
-                      <th>Record</th>
+                      <th style="width:140px">Timestamp</th>
+                      <th style="width:170px">Actor</th>
+                      <th style="width:150px">Role</th>
+                      <th>Decision / event</th>
+                      <th style="width:120px">Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {trail.map((t) => (
                       <tr>
                         <td className="ts">{fmtDate(t.when).slice(0, 19)}</td>
+                        <td className="who">{t.actor}</td>
+                        <td className="role">{t.role}</td>
                         <td>
-                          {t.msg}
-                          <span className="ts-inline">{fmtDate(t.when).slice(0, 19)}</span>
+                          {t.event}
+                          <span className="ts-inline">{fmtDate(t.when).slice(0, 19)} · {t.role}</span>
+                        </td>
+                        <td className="st">
+                          <span className={`status ${t.tone === "info" ? "" : t.tone}`}>
+                            <span className="g">{t.tone === "ok" ? "✓" : t.tone === "bad" ? "✕" : "●"}</span>
+                            {t.statusLabel}
+                          </span>
                         </td>
                       </tr>
                     ))}
