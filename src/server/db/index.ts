@@ -9,14 +9,25 @@
  *       The schema below maps one-to-one onto the entities in
  *       src/shared/types.ts, which the future Prisma schema should mirror.
  */
+import "../env";
 import { DatabaseSync } from "node:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export const DATA_DIR = path.join(process.cwd(), "data");
+// Storage roots. Everything the app writes lives under DATA_DIR:
+//   obv.db (+ WAL/SHM), uploads/, worm/ (immutable evidence), reports/.
+// On a hosted deployment, point OBV_DATA_DIR at a persistent volume mount
+// (e.g. /var/data) to survive restarts; without it, data is relative to the
+// working directory and the start command reseeds when the db is missing.
+// OBV_REPORT_STORAGE_PATH optionally relocates generated report PDFs only.
+export const DATA_DIR = process.env.OBV_DATA_DIR
+  ? path.resolve(process.env.OBV_DATA_DIR)
+  : path.join(process.cwd(), "data");
 export const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 export const WORM_DIR = path.join(DATA_DIR, "worm");
-export const REPORTS_DIR = path.join(DATA_DIR, "reports");
+export const REPORTS_DIR = process.env.OBV_REPORT_STORAGE_PATH
+  ? path.resolve(process.env.OBV_REPORT_STORAGE_PATH)
+  : path.join(DATA_DIR, "reports");
 const DB_PATH = path.join(DATA_DIR, "obv.db");
 
 let db: DatabaseSync | null = null;

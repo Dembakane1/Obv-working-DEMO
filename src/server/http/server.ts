@@ -6,17 +6,20 @@
  * (one function per method+path) so a future migration to Next.js App
  * Router route handlers is mechanical.
  */
+import "../env";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { getDb, REPORTS_DIR, WORM_DIR } from "../db/index";
 import * as repo from "../db/repo";
 import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { wormEvidenceStore } from "../services/WormEvidenceStore";
 import { TEAMS_CONFIG, teamsNotifier } from "../services/TeamsNotifier";
+import { AI_PROVIDER } from "../services/verification/config";
 import { integrityFailureCard } from "../services/teamsCards";
 import { polygonCentroid } from "../services/geo";
 import {
@@ -52,24 +55,24 @@ import { assembleReportData, reportFilename } from "../report/data";
 import { renderFunderReport } from "../view/report";
 import type { EvidenceSubmission, Report, User } from "../../shared/types";
 
-// Minimal .env loader (no dependency): KEY=VALUE lines, existing env wins.
-// Values are never logged. Used for ANTHROPIC_API_KEY / OBV_AI_* settings.
-try {
-  const envFile = path.join(process.cwd(), ".env");
-  if (fs.existsSync(envFile)) {
-    for (const line of fs.readFileSync(envFile, "utf8").split("\n")) {
-      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
-      if (m && !(m[1] in process.env)) {
-        process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
-      }
-    }
-  }
-} catch {
-  /* .env is optional */
-}
-
 const PORT = Number(process.env.PORT ?? 3000);
 const PUBLIC_DIR = path.join(process.cwd(), "public");
+
+// Optional deployment-level access protection. When OBV_ACCESS_CODE is set,
+// pages and APIs require a one-time code entry (cookie stores a hash of the
+// code, never the code itself). /api/health stays open for platform health
+// checks and /report-cache keeps its own single-use token gate. Static
+// assets are served before the gate (demo assets only — nothing sensitive).
+const ACCESS_CODE = process.env.OBV_ACCESS_CODE ?? "";
+const ACCESS_COOKIE_VALUE = ACCESS_CODE
+  ? createHash("sha256").update(`obv-access:${ACCESS_CODE}`).digest("hex")
+  : "";
+
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
 
 // PDF rendering: headless Chromium via the globally installed Playwright
 // (no npm dependency added). One-time token lets the renderer fetch the
@@ -80,6 +83,25 @@ const PLAYWRIGHT_NODE_PATH =
 const previewToken = randomUUID();
 /** Report HTML cached between generate-request and Chromium fetch. */
 const pendingReportHtml = new Map<string, string>();
+
+/**
+ * Whether the Playwright-based PDF renderer is usable in this environment.
+ * Checks module resolution the same way the render child process will:
+ * via OBV_PLAYWRIGHT_NODE_PATH and normal resolution from the app root.
+ * When unavailable, report generation degrades to the printable HTML
+ * preview (the renderer interface is unchanged).
+ */
+function pdfRendererAvailable(): boolean {
+  const req = createRequire(path.join(process.cwd(), "scripts", "render-pdf.js"));
+  try {
+    req.resolve("playwright", {
+      paths: [PLAYWRIGHT_NODE_PATH, path.join(process.cwd(), "node_modules")],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const MIME: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
@@ -376,6 +398,31 @@ function money(amount: number): string {
   return "$" + amount.toLocaleString("en-US");
 }
 
+/**
+ * Minimal access-code page shown when OBV_ACCESS_CODE is configured.
+ * Self-contained (inline styles) so it renders even before any asset loads.
+ */
+function renderAccessGate(failed: boolean): string {
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OBV — Access</title>
+</head>
+<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f4f0;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0d1626">
+<form method="POST" action="/api/access" style="width:min(340px,88vw);border:1px solid #d9d6cd;background:#fff;padding:28px 26px 26px">
+  <div style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#5b6b7f;margin-bottom:6px">OpenBuild Verify · Demo environment</div>
+  <div style="font-size:19px;font-weight:600;letter-spacing:-.01em;margin-bottom:14px">Enter access code</div>
+  <p style="font-size:12.5px;line-height:1.5;color:#3c4657;margin:0 0 16px">This demo deployment is protected by an access code. Ask the person who shared the link.</p>
+  ${failed ? `<p style="font-size:12.5px;color:#a03123;margin:0 0 10px">Incorrect code — try again.</p>` : ""}
+  <input name="code" type="password" autocomplete="off" autofocus required
+    style="width:100%;box-sizing:border-box;height:40px;border:1px solid #b9b5a9;background:#fbfaf7;padding:0 10px;font-size:15px;margin-bottom:12px">
+  <button type="submit"
+    style="width:100%;height:42px;border:0;background:#1d3fad;color:#fff;font-size:13.5px;font-weight:600;letter-spacing:.02em;cursor:pointer">Continue</button>
+</form>
+</body></html>`;
+}
+
 /** Cheap change fingerprint used by the pages' polling refresh. */
 function stateFingerprint(): string {
   const db = getDb();
@@ -405,11 +452,60 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   const { pathname } = url;
   const method = req.method ?? "GET";
 
+  // ---- deployment health check (always open; no secrets, no paths) ----
+  if (method === "GET" && pathname === "/api/health") {
+    let database = "connected";
+    try {
+      getDb().prepare("SELECT COUNT(*) AS c FROM projects").get();
+    } catch {
+      database = "unavailable";
+    }
+    sendJson(
+      res,
+      {
+        status: database === "connected" ? "ok" : "degraded",
+        database,
+        reportRenderer: pdfRendererAvailable() ? "pdf" : "html-fallback",
+        aiMode: AI_PROVIDER.apiKey() ? "live-capable" : "fallback-only",
+        teamsMode: TEAMS_CONFIG.configured() ? "configured" : "demo",
+        timestamp: new Date().toISOString(),
+      },
+      database === "connected" ? 200 : 503
+    );
+    return;
+  }
+
   // ---- static assets ----
   if (method === "GET") {
     if (pathname.startsWith("/worm/")) {
       if (serveStatic(res, WORM_DIR, pathname.slice("/worm/".length))) return;
     } else if (pathname !== "/" && serveStatic(res, PUBLIC_DIR, pathname.slice(1))) {
+      return;
+    }
+  }
+
+  // ---- optional deployment access gate ----
+  if (ACCESS_CODE && !pathname.startsWith("/report-cache/")) {
+    if (method === "POST" && pathname === "/api/access") {
+      const body = (await readBody(req, 4 * 1024)).toString("utf8");
+      const code = new URLSearchParams(body).get("code") ?? "";
+      if (safeEqual(code, ACCESS_CODE)) {
+        res.setHeader(
+          "Set-Cookie",
+          `obv_access=${ACCESS_COOKIE_VALUE}; Path=/; SameSite=Lax; HttpOnly; Max-Age=604800`
+        );
+        redirect(res, "/");
+      } else {
+        sendHtml(res, renderAccessGate(true), 401);
+      }
+      return;
+    }
+    if (!safeEqual(parseCookies(req)["obv_access"] ?? "", ACCESS_COOKIE_VALUE)) {
+      if (pathname.startsWith("/api/")) {
+        sendJson(res, { error: "Access code required" }, 401);
+      } else {
+        sendHtml(res, renderAccessGate(false), 401);
+      }
       return;
     }
   }

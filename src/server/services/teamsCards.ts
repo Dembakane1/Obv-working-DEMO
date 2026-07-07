@@ -63,7 +63,13 @@ function header(eventLabel: string, tone: "good" | "warning" | "attention" | "ac
 }
 
 function card(body: CardElement[], linkPath?: string): AdaptiveCard {
-  const base = (process.env.OBV_PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
+  // Explicit OBV_PUBLIC_BASE_URL wins; RENDER_EXTERNAL_URL is provided
+  // automatically by Render so links work without extra configuration.
+  const base = (
+    process.env.OBV_PUBLIC_BASE_URL ??
+    process.env.RENDER_EXTERNAL_URL ??
+    ""
+  ).replace(/\/$/, "");
   const actions =
     base && linkPath
       ? [{ type: "Action.OpenUrl", title: "Open in OBV", url: `${base}${linkPath}` }]

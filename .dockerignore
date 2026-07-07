@@ -1,0 +1,16 @@
+# Build context hygiene — the image compiles from source; nothing built,
+# runtime-generated, or secret should enter the Docker build context.
+.git
+.gitignore
+node_modules
+dist
+public/js
+public/icons
+data
+.env
+*.log
+nohup.out
+README.md
+render.yaml
+Dockerfile
+.dockerignore

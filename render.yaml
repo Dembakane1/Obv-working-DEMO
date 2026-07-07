@@ -1,27 +1,51 @@
-# Render Blueprint — free temporary demo deployment of OBV.
-# Deploy: render.com → New → Blueprint → connect this repo → apply.
+# Render Blueprint — public HTTPS deployment of OBV.
+# Deploy: render.com → New → Blueprint → connect this repo → Apply.
 #
-# Notes
-# - The app is one long-running node:http server (npm start) using the
-#   built-in node:sqlite — it needs Node >= 22.5 and a normal server
-#   process, which is why Render (web service) fits and serverless
-#   platforms (e.g. Vercel functions) do not.
-# - Build compiles TypeScript and seeds data/obv.db; on boot the start
-#   command reseeds only if the database file is missing. The free-tier
-#   disk is ephemeral: a restart/redeploy returns the demo to its seeded
-#   state, which is desirable for a demo.
-# - PDF report generation requires Chromium/Playwright, which the free
-#   tier does not provide; the app degrades gracefully to the printable
-#   HTML report preview. Everything else works fully.
+# Host selection (compatibility, not popularity):
+# - OBV is ONE long-running node:http process using the built-in
+#   node:sqlite and local-disk storage — it needs a real server process,
+#   Node >= 22.5, and writable disk. Serverless platforms (Vercel/Netlify
+#   functions) are architecturally incompatible: no long-lived process,
+#   no persistent local writes, request time limits vs. PDF rendering.
+# - PDF report generation needs headless Chromium + system libraries,
+#   which Render's native Node runtime does not provide. The Docker
+#   runtime below bakes Playwright + Chromium into the image, so reports
+#   render as real PDFs in production. Render Docker works on the free
+#   plan and terminates HTTPS automatically (required for phone camera
+#   and geolocation APIs).
+#
+# Persistence:
+# - Free plan disks are ephemeral: every restart/redeploy returns the demo
+#   to its seeded state (the start command reseeds only when the database
+#   file is missing — often acceptable, even desirable, for a demo).
+# - For restart-safe state, upgrade the instance (disks need a paid plan),
+#   uncomment the disk block below, and set OBV_DATA_DIR=/var/data.
 services:
   - type: web
     name: obv-demo
-    runtime: node
+    runtime: docker
     plan: free
     branch: claude/obv-demo-repo-structure-t0hjsc
-    buildCommand: npm install && npm run setup
-    startCommand: sh -c "[ -f data/obv.db ] || node dist/server/db/seed.js; node dist/server/http/server.js"
-    healthCheckPath: /
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
     envVars:
-      - key: NODE_VERSION
-        value: 22.16.0
+      # Optional access protection for the public demo. Set a value in the
+      # Render dashboard (sync: false means Render prompts; leaving it
+      # empty keeps the demo open).
+      - key: OBV_ACCESS_CODE
+        sync: false
+      # Optional integrations — set values in the Render dashboard only;
+      # never commit them to the repository:
+      #   ANTHROPIC_API_KEY   -> enables live AI visual verification
+      #   TEAMS_WEBHOOK_URL   -> enables Microsoft Teams notifications
+      #   OBV_PUBLIC_BASE_URL -> explicit public URL for Teams card links
+      #                          (defaults to Render's RENDER_EXTERNAL_URL)
+    # ---- persistent storage (requires a paid instance type) ----
+    # disk:
+    #   name: obv-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    # ...and add:
+    # envVars:
+    #   - key: OBV_DATA_DIR
+    #     value: /var/data

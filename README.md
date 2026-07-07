@@ -243,28 +243,149 @@ One-click, audit-grade PDF built entirely from live application data:
   reset behavior, 404s for stale files) — plus a manual tampering check
   (mutated ledger row → report states TAMPERING DETECTED AT ENTRY 1).
 
-## Free temporary deployment (Render)
+## Deployment (v7) — public HTTPS from a phone or laptop
 
-The Claude Code cloud sandbox cannot expose a public preview URL, so to try
-OBV in a real browser deploy it to Render's free tier (~3 minutes, works from
-a phone). Render fits this app because it runs one long-running `node:http`
-server with the built-in `node:sqlite` and local-disk writes — a normal server
-process. Vercel's serverless model cannot host it without a rewrite.
+### Deployability audit (what this app actually needs from a host)
 
-1. Open **https://render.com** and sign in (Sign in with GitHub is fastest).
+| Requirement | Detail |
+|---|---|
+| Process model | ONE long-running `node:http` server (`npm start`). Not serverless-compatible. |
+| Runtime | Node ≥ 22.5 (built-in `node:sqlite`). Zero runtime npm dependencies. |
+| Disk writes | Everything under one root (default `./data`): `obv.db` + WAL/SHM, `uploads/`, `worm/` (immutable evidence), `reports/` (generated PDFs). |
+| PDF rendering | Headless Chromium via Playwright, invoked as a child process (`scripts/render-pdf.js`). Needs Chromium **and its system libraries** — this is the requirement managed "native Node" runtimes don't meet. |
+| Build | `npm install && npm run build` (TypeScript → `dist/`, client JS, PWA icons), then seed-if-missing at boot. |
+| HTTPS | Mandatory for phone features: `getUserMedia` (camera), Geolocation, and service workers only work in secure contexts. |
+| Config | Environment variables only (see table below). None are required. |
+
+### Host selection — compatibility, not popularity
+
+- **Vercel / Netlify (serverless)** — incompatible: no long-lived process, no
+  persistent local disk, execution time limits vs. Chromium PDF rendering.
+- **Render, native Node runtime** — runs the app but cannot render PDFs
+  (no Chromium system libraries on the managed image).
+- **Render, Docker runtime (chosen)** — the included `Dockerfile` bakes
+  Playwright + Chromium into the image, so **PDF generation works in the
+  deployed environment**. Works on the free plan, automatic HTTPS, one-click
+  Blueprint deploy from this repo. Fly.io / Railway / any Docker host would
+  work with the same image; Render was chosen for the smallest number of
+  steps from GitHub to a URL.
+
+### Deploy it (≈5 minutes, phone-friendly steps)
+
+1. Open **https://render.com** and sign in (**Sign in with GitHub** is fastest).
 2. Tap **New → Blueprint**.
 3. Connect the **Dembakane1/Obv-working-DEMO** repository (grant access if asked).
-4. When asked for a branch, choose **claude/obv-demo-repo-structure-t0hjsc**
-   (the included `render.yaml` configures everything: Node 22, build, seed, start).
-5. Tap **Apply / Deploy** and wait for the build (~2–3 min).
-6. Open the generated URL, e.g. `https://obv-demo.onrender.com`, and pick a
-   demo user.
+4. Choose the branch **claude/obv-demo-repo-structure-t0hjsc** — the included
+   `render.yaml` + `Dockerfile` configure everything (Docker build, health
+   check at `/api/health`, seed-on-first-boot).
+5. When prompted for **OBV_ACCESS_CODE**, either type a code (visitors must
+   enter it once per browser) or leave it blank for an open demo.
+6. Tap **Apply / Deploy**. The first Docker build takes ~5–8 min (it installs
+   Chromium); later deploys are faster (cached layers).
+7. Open the generated URL, e.g. `https://obv-demo.onrender.com`, and pick a
+   demo user. Verify `https://<your-url>/api/health` shows
+   `"reportRenderer": "pdf"`.
 
-Free-tier notes: the instance sleeps after ~15 min idle (first request after
-that takes ~30–60 s to wake); the disk is ephemeral, so restarts return the
-demo to its seeded state (convenient for demos — "Reset demo data" also works
-any time); PDF report generation needs Chromium, which the free tier lacks —
-the Reports page falls back to the printable HTML preview automatically.
+**Redeploying after new GitHub commits:** Render auto-deploys the pinned
+branch on every push. Manual: Render dashboard → the `obv-demo` service →
+**Manual Deploy → Deploy latest commit**. To start truly fresh:
+**Manual Deploy → Clear build cache & deploy**.
+
+### Environment variables
+
+All optional — OBV boots and demos fully with zero configuration. Set values
+in the Render dashboard (or platform equivalent), **never in the repo**.
+`.env.example` mirrors this table; a local `.env` file (gitignored) works too.
+
+| Group | Variable | Effect |
+|---|---|---|
+| REQUIRED | *(none)* | `PORT` is injected by the platform (Docker default 10000, local 3000). |
+| OPTIONAL — AI | `ANTHROPIC_API_KEY` | Enables live AI visual verification (`aiMode: "live-capable"`). Without it: deterministic demo verification. Server-side only, never logged. |
+| | `OBV_AI_MODEL`, `OBV_AI_TIMEOUT_MS`, `OBV_AI_BASE_URL` | Provider overrides (sane defaults). |
+| OPTIONAL — TEAMS | `TEAMS_WEBHOOK_URL` | Enables Microsoft Teams governance notifications (`teamsMode: "configured"`). Without it: in-app demo notification mode. Never logged in full. |
+| | `TEAMS_NOTIFICATION_TIMEOUT_MS` | Delivery timeout (default 5000 ms). |
+| | `OBV_PUBLIC_BASE_URL` | Base URL for "Open in OBV" links on Teams cards. On Render, defaults to the platform-provided `RENDER_EXTERNAL_URL`. |
+| OPTIONAL — STORAGE | `OBV_DATA_DIR` | Root for ALL runtime data. Point at a persistent volume (e.g. `/var/data`) for restart-safe state. Default `./data` (ephemeral in containers). |
+| | `OBV_REPORT_STORAGE_PATH` | Relocates generated report PDFs only (default `<OBV_DATA_DIR>/reports`). |
+| OPTIONAL — DEPLOYMENT | `OBV_ACCESS_CODE` | Simple access gate for the public demo. Everything except `/api/health` requires the code once per browser; the cookie stores only a hash. |
+| | `OBV_PLAYWRIGHT_NODE_PATH` | Where the PDF child process resolves `playwright` (Docker image sets `/app/node_modules`). |
+
+### Persistence & demo reset
+
+- The start command seeds **only when `obv.db` is missing**, so restarts
+  never wipe a persistent volume — verified restart-safe.
+- Free plan: the filesystem is ephemeral; a restart/redeploy returns the demo
+  to its seeded state (often desirable). **More → Reset demo data** does the
+  same on demand at any time.
+- Restart-safe state: use a paid instance, uncomment the `disk:` block in
+  `render.yaml` (mounts at `/var/data`), and set `OBV_DATA_DIR=/var/data`.
+- A report row whose PDF file no longer exists (e.g. after redeploy without a
+  volume) returns a graceful "Report not found — generate a new one" page,
+  never a broken download.
+
+### Health endpoint
+
+`GET /api/health` (open even when the access gate is on; no secrets, no paths):
+
+```json
+{
+  "status": "ok",
+  "database": "connected",
+  "reportRenderer": "pdf",
+  "aiMode": "fallback-only",
+  "teamsMode": "demo",
+  "timestamp": "2026-07-07T16:59:47.585Z"
+}
+```
+
+`reportRenderer` honestly reports `"html-fallback"` where Chromium is
+unavailable; `aiMode`/`teamsMode` flip to `"live-capable"`/`"configured"`
+when the corresponding variables are set. Render uses this path for
+deploy-time health checks.
+
+### Phone checklist (iPhone Safari / Android Chrome)
+
+1. Open the deployed HTTPS URL → (enter access code if set) → pick
+   **Chikondi Banda (Field Engineer)**.
+2. Tap **Use camera** — Safari asks for camera permission. **Allow** shows
+   the live viewfinder; **Deny** shows a clear message and the DEMO FALLBACK
+   path remains fully usable.
+3. Location permission is requested for GPS capture. Deny → evidence submits
+   with "no usable GPS fix" and the geofence check goes to REVIEW (never a
+   silent pass).
+4. Install as app: Safari share sheet → **Add to Home Screen** (Android
+   Chrome: **Install app**). Launches standalone with the OBV icon.
+5. Offline queue: airplane mode → capture → submit → "queued" → back online →
+   the queued evidence uploads automatically.
+6. Reports: generate on a desktop role, then open the PDF from the phone —
+   it opens inline in Safari's PDF viewer and shares via the share sheet.
+
+### Deployment test matrix
+
+Automatable checks (≈21 assertions: health schema + honesty, access gate,
+role picker, session gating, seeded state, PWA assets, field API, polling
+API) run from any machine against the deployed URL:
+
+```bash
+node scripts/deploy-check.js https://your-app.onrender.com [access-code]
+```
+
+Full 12-test matrix — run against the **deployed** URL:
+
+| # | Test | How |
+|---|---|---|
+| 1 | Health endpoint schema + no secrets | `deploy-check.js` |
+| 2 | Role picker loads over HTTPS | `deploy-check.js` |
+| 3 | Session gating (pages redirect without a role) | `deploy-check.js` |
+| 4 | Seeded project + DEMO ENVIRONMENT indicator | `deploy-check.js` |
+| 5 | PWA assets (manifest, service worker, icons) | `deploy-check.js` |
+| 6 | Access gate blocks/unlocks (when code set) | `deploy-check.js` with code |
+| 7 | Phone camera permission + capture | manual — phone checklist 2 |
+| 8 | GPS permission + geofence honesty on denial | manual — phone checklist 3 |
+| 9 | Offline queue upload | manual — phone checklist 5 |
+| 10 | Full hero loop on the deployed app (capture → verify → approve ×2 → RELEASED) | manual: follow the hero-loop script below on the deployed URL |
+| 11 | PDF report generated and downloadable | Reports → Generate; confirm a real PDF opens (health shows `"reportRenderer": "pdf"`) |
+| 12 | Reset returns to seeded state | More → Reset demo data → overview shows $720,000 released |
 
 ## Hero-loop demo script
 
@@ -429,12 +550,15 @@ without registry access.
 
 ## Known limitations
 
-- Photo-content verification is simulated; geofence and integrity checks are
-  real. No live AI call is made.
+- Without `ANTHROPIC_API_KEY`, photo-content verification uses the
+  deterministic demo path (honestly labelled); geofence and integrity checks
+  are always real. With a key, the live AI path assesses the image only —
+  it can never move money or bypass human governance.
 - Demo "photos" for fallback are SVG stand-ins (no image tooling available
   in the build sandbox).
 - Single-node SQLite; fine for demo, not for production concurrency.
-- Demo session cookie is not real authentication.
+- Demo session cookie is not real authentication; `OBV_ACCESS_CODE` is
+  deployment-level demo protection, not a user-auth system.
 - The service worker caches the app shell; full offline navigation of
   dashboard pages is not a goal in this build.
 
