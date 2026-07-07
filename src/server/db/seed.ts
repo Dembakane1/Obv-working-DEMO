@@ -420,6 +420,11 @@ export async function seedDemo(): Promise<void> {
       messageType: "SYSTEM_EVENT",
       refId: null,
       deliveryStatus: "SENT",
+      origin: "OBV_LOCAL",
+      editedAt: null,
+      originalBody: null,
+      externalDeleted: false,
+      attachments: [],
       ...m,
     });
   // Project General: history mirroring the real M1/M2 record.

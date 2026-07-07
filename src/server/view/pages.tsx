@@ -41,6 +41,7 @@ import type {
   ChatMessage,
   ConversationThread,
   EvidenceItem,
+  ExternalThreadBinding,
   LedgerEntry,
   Milestone,
   Notification,
@@ -1969,6 +1970,18 @@ function MessageRefCard(props: { m: ChatMessage }): VNode | null {
   return null;
 }
 
+function bindingStatusLabel(b: ExternalThreadBinding | null, configured: boolean): string {
+  if (!configured) return "Demo mode";
+  if (!b || b.status === "DISCONNECTED") return "Disconnected";
+  if (b.status === "DEGRADED") return "Teams sync degraded";
+  return "Connected to Teams";
+}
+function bindingTone(b: ExternalThreadBinding | null, configured: boolean): string {
+  if (!configured) return "neutral";
+  if (!b || b.status === "DISCONNECTED") return "neutral";
+  return b.status === "DEGRADED" ? "warn" : "ok";
+}
+
 export function renderCommunications(input: {
   nav: NavContext;
   threads: ThreadListItem[];
@@ -1977,8 +1990,14 @@ export function renderCommunications(input: {
     messages: ChatMessage[];
     project: Project | null;
     milestone: Milestone | null;
+    binding: ExternalThreadBinding | null;
+    hasEvidence: boolean;
   } | null;
   users: Map<string, User>;
+  currentUser: User;
+  teamsSyncConfigured: boolean;
+  canManageTeams: boolean;
+  syncError: string | null;
 }): string {
   const { selected } = input;
   const sorted = [...input.threads].sort((a, b) => {
@@ -2023,6 +2042,9 @@ export function renderCommunications(input: {
                 <span className="s">
                   {selected.project?.name}
                   {selected.milestone ? ` · M${selected.milestone.seq}` : ""}
+                  <span className={`sync-tag ${bindingTone(selected.binding, input.teamsSyncConfigured)}`}>
+                    {bindingStatusLabel(selected.binding, input.teamsSyncConfigured)}
+                  </span>
                 </span>
               </span>
               <button type="button" className="btn ghost sm conv-ctx-toggle" id="ctx-toggle">Context</button>
@@ -2030,18 +2052,46 @@ export function renderCommunications(input: {
             <div className="conv-scroll" id="conv-scroll">
               {selected.messages.map((m) => {
                 const sender = m.senderUserId ? input.users.get(m.senderUserId) : null;
-                return m.senderUserId ? (
+                const isTeams = m.provider === "TEAMS";
+                const isOwn = m.senderUserId === input.currentUser.id;
+                return m.senderUserId || isTeams ? (
                   <div className="msg">
                     <span className="avatar" aria-hidden="true">{initials(m.senderDisplayName)}</span>
                     <span className="body">
                       <span className="who">
                         <b>{m.senderDisplayName}</b>
                         {sender ? <span className="role">{roleLabel(sender.role)}</span> : null}
-                        {m.provider !== "OBV" ? <span className="prov">{m.provider}</span> : null}
+                        {isTeams ? <span className="prov">via Microsoft Teams</span> : null}
                         <span className="when">{fmtDate(m.createdAt)}</span>
+                        {m.editedAt ? <span className="edited">edited in Teams</span> : null}
                       </span>
-                      <span className="text">{m.body}</span>
+                      {m.externalDeleted ? (
+                        <span className="text deleted">Message deleted in Microsoft Teams</span>
+                      ) : (
+                        <span className="text">{m.body}</span>
+                      )}
+                      {!m.externalDeleted && m.attachments.length > 0 ? (
+                        <span className="msg-attach">
+                          {m.attachments.map((a) =>
+                            a.url ? (
+                              <a href={a.url} target="_blank" rel="noopener noreferrer">📎 {a.name}</a>
+                            ) : (
+                              <span>📎 {a.name}</span>
+                            )
+                          )}
+                          <span className="note">Communication attachment — evidence is submitted only via Field Capture</span>
+                        </span>
+                      ) : null}
                       <MessageRefCard m={m} />
+                      {isOwn && selected.binding && selected.binding.status !== "DISCONNECTED" && m.origin === "OBV_LOCAL" ? (
+                        <span className={`msg-sync ${m.externalMessageId ? "ok" : m.deliveryStatus === "FAILED" ? "bad" : ""}`}>
+                          {m.externalMessageId
+                            ? "Sent to Teams"
+                            : m.deliveryStatus === "FAILED"
+                              ? "Teams delivery failed — kept in OBV"
+                              : ""}
+                        </span>
+                      ) : null}
                     </span>
                   </div>
                 ) : (
@@ -2080,7 +2130,14 @@ export function renderCommunications(input: {
           </section>
         )}
 
-        {selected ? <CommsContextPanel selected={selected} /> : null}
+        {selected ? (
+          <CommsContextPanel
+            selected={selected}
+            teamsSyncConfigured={input.teamsSyncConfigured}
+            canManageTeams={input.canManageTeams}
+            syncError={input.syncError}
+          />
+        ) : null}
       </div>
       <script src="/js/poll.js" defer></script>
       <script src="/js/comms.js" defer></script>
@@ -2089,9 +2146,18 @@ export function renderCommunications(input: {
 }
 
 function CommsContextPanel(props: {
-  selected: { thread: ConversationThread; project: Project | null; milestone: Milestone | null };
+  selected: {
+    thread: ConversationThread;
+    project: Project | null;
+    milestone: Milestone | null;
+    binding: ExternalThreadBinding | null;
+    hasEvidence: boolean;
+  };
+  teamsSyncConfigured: boolean;
+  canManageTeams: boolean;
+  syncError: string | null;
 }): VNode {
-  const { thread, project, milestone } = props.selected;
+  const { thread, project, milestone, binding } = props.selected;
   const ctx = milestone
     ? repoView.milestoneContext(milestone.id)
     : project
@@ -2126,9 +2192,86 @@ function CommsContextPanel(props: {
         {milestone ? <a className="btn ghost sm" href={`/milestone/${milestone.id}`}>View milestone</a> : null}
         {project && !milestone ? <a className="btn ghost sm" href={`/project/${project.id}`}>View project</a> : null}
       </div>
+
+      <div className="ctx-head" style="margin-top:8px;border-top:1px solid var(--line);padding-top:12px">
+        Microsoft Teams connection
+      </div>
+      {props.syncError ? (
+        <p className="sub" style="padding:8px 14px 0;color:var(--bad)">
+          Teams connection error: {props.syncError}. The OBV thread is unaffected.
+        </p>
+      ) : null}
+      {!props.teamsSyncConfigured ? (
+        <div style="padding:10px 14px">
+          <span className="sync-tag neutral">Teams conversation sync not configured</span>
+          <p className="ctx-note" style="padding:8px 0 0">
+            An administrator can enable it by configuring the Microsoft Graph
+            application credentials — see docs/TEAMS_CONVERSATION_SYNC.md.
+            OBV chat and Teams event notifications work fully without it.
+          </p>
+        </div>
+      ) : binding && binding.status !== "DISCONNECTED" ? (
+        <>
+          <dl className="ctx-kv">
+            <dt>Status</dt>
+            <dd><span className={`sync-tag ${bindingTone(binding, true)}`}>{bindingStatusLabel(binding, true)}</span></dd>
+            <dt>Team</dt><dd style="font-family:var(--mono, monospace);font-size:11px;overflow-wrap:anywhere">{binding.teamId}</dd>
+            <dt>Channel</dt><dd style="font-family:var(--mono, monospace);font-size:11px;overflow-wrap:anywhere">{binding.channelId}</dd>
+            <dt>Last sync</dt><dd>{binding.lastSyncAt ? fmtDate(binding.lastSyncAt) : "—"}</dd>
+            <dt>Subscription</dt>
+            <dd>{binding.subscriptionExpiresAt ? `expires ${fmtDate(binding.subscriptionExpiresAt)}` : "not active"}</dd>
+          </dl>
+          {props.canManageTeams ? (
+            <div className="ctx-links">
+              <form method="POST" action={`/api/threads/${thread.id}/teams-binding`} style="margin:0">
+                <input type="hidden" name="action" value="reconnect" />
+                <button className="btn ghost sm" type="submit">Reconnect</button>
+              </form>
+              <form method="POST" action={`/api/threads/${thread.id}/teams-binding`} style="margin:0">
+                <input type="hidden" name="action" value="disconnect" />
+                <button className="btn ghost sm" type="submit">Disconnect</button>
+              </form>
+              {props.selected.hasEvidence ? (
+                <form method="POST" action={`/api/threads/${thread.id}/share-evidence`} style="margin:0">
+                  <button className="btn ghost sm" type="submit" title="Share the latest evidence reference to the connected Teams channel">
+                    Share evidence to Teams
+                  </button>
+                </form>
+              ) : null}
+            </div>
+          ) : null}
+        </>
+      ) : props.canManageTeams ? (
+        <form
+          method="POST"
+          action={`/api/threads/${thread.id}/teams-binding`}
+          style="padding:10px 14px;display:flex;flex-direction:column;gap:8px"
+        >
+          <input type="hidden" name="action" value="connect" />
+          <label style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)">
+            Team ID
+            <input name="teamId" required style="width:100%;box-sizing:border-box;font:inherit;font-size:12px;padding:6px 8px;border:1px solid var(--line-2);margin-top:3px" />
+          </label>
+          <label style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)">
+            Channel ID
+            <input name="channelId" required style="width:100%;box-sizing:border-box;font:inherit;font-size:12px;padding:6px 8px;border:1px solid var(--line-2);margin-top:3px" />
+          </label>
+          <button className="btn sm" type="submit">Manage Teams Connection — Connect</button>
+          <p className="ctx-note" style="padding:0">
+            Connects this thread to one Teams channel for coordination-message
+            sync. Event notification cards (TeamsNotifier) are separate and
+            unaffected.
+          </p>
+        </form>
+      ) : (
+        <p className="sub" style="padding:10px 14px">
+          <span className="sync-tag neutral">Disconnected</span>
+        </p>
+      )}
       <p className="ctx-note">
         Formal decisions happen in their own workflows: evidence via Field Capture,
-        approvals via Pending Approvals. This thread is coordination only.
+        approvals via Pending Approvals. Messages — from OBV or Teams — never
+        authorize approvals or funds.
       </p>
     </aside>
   );

@@ -31,6 +31,17 @@ import {
   postMessage,
 } from "../services/chat";
 import {
+  canManageBindings,
+  connectThread,
+  disconnectThread,
+  maintainSubscriptions,
+  processNotificationItem,
+  syncConfigured,
+  syncOutbound,
+} from "../services/teamsSync/bridge";
+import { GRAPH_CONFIG } from "../services/teamsSync/config";
+import { ConversationSyncError } from "../services/teamsSync/types";
+import {
   processApprovalDecision,
   processEvidenceSubmission,
   SubmissionError,
@@ -448,6 +459,8 @@ function stateFingerprint(): string {
               (SELECT COUNT(*) FROM approval_records) AS ar,
               (SELECT COUNT(*) FROM notifications) AS n,
               (SELECT COUNT(*) FROM messages) AS msg,
+              (SELECT COUNT(*) FROM messages WHERE external_deleted = 1) AS msgdel,
+              (SELECT COALESCE(MAX(edited_at), '') FROM messages) AS msgedit,
               (SELECT COUNT(*) FROM conversation_threads) AS th`
     )
     .get();
@@ -497,7 +510,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   // ---- optional deployment access gate ----
-  if (ACCESS_CODE && !pathname.startsWith("/report-cache/")) {
+  if (ACCESS_CODE && !pathname.startsWith("/report-cache/") && pathname !== "/api/teams-sync/notifications") {
     if (method === "POST" && pathname === "/api/access") {
       const body = (await readBody(req, 4 * 1024)).toString("utf8");
       const code = new URLSearchParams(body).get("code") ?? "";
@@ -696,11 +709,205 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     const message = postMessage(thread, user, text);
+    // Outbound Teams sync (allowlisted human content only). Awaited so
+    // delivery state is visible on redirect, but it NEVER throws — a
+    // provider failure keeps the internal message and marks FAILED.
+    await syncOutbound(message, thread);
     if (isFormPost(req)) {
       redirect(res, `/communications?thread=${thread.id}`);
     } else {
-      sendJson(res, { message }, 201);
+      sendJson(res, { message: repo.getChatMessage(message.id) ?? message }, 201);
     }
+    return;
+  }
+
+  // ---- Teams conversation-sync: thread binding management ----
+  const bindingMatch = /^\/api\/threads\/([^/]+)\/teams-binding$/.exec(pathname);
+  if (method === "POST" && bindingMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const thread = repo.getThread(bindingMatch[1]);
+    if (!thread || !canAccessThread(user, thread)) {
+      sendJson(res, { error: "Thread not found" }, 404);
+      return;
+    }
+    if (!canManageBindings(user)) {
+      sendJson(res, { error: "Only a project manager or funder representative can manage Teams connections" }, 403);
+      return;
+    }
+    const body = (await readBody(req, 16 * 1024)).toString("utf8");
+    const params = isFormPost(req)
+      ? new URLSearchParams(body)
+      : new URLSearchParams(Object.entries(JSON.parse(body || "{}")) as [string, string][]);
+    const action = params.get("action") ?? "connect";
+    try {
+      if (action === "disconnect") {
+        await disconnectThread(thread);
+      } else {
+        if (!syncConfigured()) {
+          throw new ConversationSyncError("not-configured", false);
+        }
+        const teamId = params.get("teamId") ?? "";
+        const channelId = params.get("channelId") ?? "";
+        if (action === "connect" && (!teamId.trim() || !channelId.trim())) {
+          sendJson(res, { error: "teamId and channelId are required" }, 400);
+          return;
+        }
+        if (action === "reconnect") {
+          const existing = repo.getBindingForThread(thread.id);
+          if (!existing) {
+            sendJson(res, { error: "No existing connection to reconnect" }, 404);
+            return;
+          }
+          await connectThread(thread, { teamId: existing.teamId, channelId: existing.channelId, rootMessageId: existing.rootMessageId ?? undefined }, user);
+        } else {
+          await connectThread(thread, { teamId, channelId, rootMessageId: params.get("rootMessageId") ?? undefined }, user);
+        }
+      }
+    } catch (err) {
+      const category = err instanceof ConversationSyncError ? err.category : "unknown";
+      const msg =
+        category === "not-configured"
+          ? "Teams conversation sync is not configured on this deployment"
+          : `Teams connection failed (${category})`;
+      if (isFormPost(req)) {
+        redirect(res, `/communications?thread=${thread.id}&sync_error=${encodeURIComponent(category)}`);
+      } else {
+        sendJson(res, { error: msg }, category === "not-configured" ? 409 : 502);
+      }
+      return;
+    }
+    if (isFormPost(req)) {
+      redirect(res, `/communications?thread=${thread.id}`);
+    } else {
+      sendJson(res, { binding: repo.getBindingForThread(thread.id) });
+    }
+    return;
+  }
+
+  // Explicitly share the latest evidence of a milestone thread to Teams
+  // (a human-authored reference message — the only reference type that
+  // syncs outward; informational, with an OBV deep link, no actions).
+  const shareMatch = /^\/api\/threads\/([^/]+)\/share-evidence$/.exec(pathname);
+  if (method === "POST" && shareMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const thread = repo.getThread(shareMatch[1]);
+    if (!thread || !canAccessThread(user, thread)) {
+      sendJson(res, { error: "Thread not found" }, 404);
+      return;
+    }
+    const evidence = thread.milestoneId
+      ? repo.listEvidenceForMilestone(thread.milestoneId)[0] ?? null
+      : null;
+    if (!evidence) {
+      sendJson(res, { error: "No evidence to share on this thread" }, 404);
+      return;
+    }
+    const message = {
+      id: repo.newId(),
+      threadId: thread.id,
+      senderUserId: user.id,
+      senderDisplayName: user.name,
+      provider: "OBV" as const,
+      externalThreadId: null,
+      externalMessageId: null,
+      body: `Shared evidence reference for review.`,
+      messageType: "EVIDENCE_REFERENCE" as const,
+      refId: evidence.id,
+      createdAt: new Date().toISOString(),
+      deliveryStatus: "SENT" as const,
+      origin: "OBV_LOCAL" as const,
+      editedAt: null,
+      originalBody: null,
+      externalDeleted: false,
+      attachments: [],
+    };
+    repo.insertChatMessage(message);
+    await syncOutbound(message, thread);
+    if (isFormPost(req)) {
+      redirect(res, `/communications?thread=${thread.id}`);
+    } else {
+      sendJson(res, { message: repo.getChatMessage(message.id) }, 201);
+    }
+    return;
+  }
+
+  // ---- Graph change-notification webhook (session-free; authenticated
+  //      by the derived clientState on every notification) ----
+  if (pathname === "/api/teams-sync/notifications") {
+    // Subscription validation handshake: echo the token as text/plain.
+    const validationToken = url.searchParams.get("validationToken");
+    if (validationToken !== null) {
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(validationToken);
+      return;
+    }
+    if (method !== "POST") {
+      sendJson(res, { error: "Method not allowed" }, 405);
+      return;
+    }
+    let payload: { value?: Array<Record<string, unknown>> };
+    try {
+      payload = JSON.parse((await readBody(req, 512 * 1024)).toString("utf8"));
+      if (!Array.isArray(payload.value)) throw new Error("bad shape");
+    } catch {
+      sendJson(res, { error: "Malformed notification" }, 400);
+      return;
+    }
+    let rejected = 0;
+    for (const item of payload.value) {
+      try {
+        const resource = String(item.resource ?? "");
+        const resourceData = (item.resourceData ?? {}) as { id?: string };
+        const messageId =
+          resourceData.id ?? /messages\('([^']+)'\)/.exec(resource)?.[1] ?? "";
+        if (!messageId) continue;
+        await processNotificationItem({
+          subscriptionId: String(item.subscriptionId ?? ""),
+          clientState: String(item.clientState ?? ""),
+          changeType: String(item.changeType ?? "created"),
+          messageId,
+        });
+      } catch (err) {
+        if (err instanceof ConversationSyncError && err.category === "auth") {
+          rejected++;
+        } else {
+          console.error(
+            "[teams-sync] inbound processing failed:",
+            err instanceof ConversationSyncError ? err.category : "unknown"
+          );
+        }
+      }
+    }
+    // Invalid clientState across the board -> reject; otherwise 202 so
+    // Graph does not endlessly retry items we already handled.
+    if (rejected > 0 && rejected === payload.value.length) {
+      sendJson(res, { error: "Invalid notification" }, 401);
+    } else {
+      res.writeHead(202, { "Content-Type": "application/json; charset=utf-8" });
+      res.end("{}");
+    }
+    return;
+  }
+
+  // Subscription maintenance sweep (PM session, or external scheduler
+  // presenting the configured maintenance key).
+  if (method === "POST" && pathname === "/api/teams-sync/maintain") {
+    const user = currentUser(req);
+    const key = GRAPH_CONFIG.maintenanceKey();
+    const keyOk = key && req.headers["x-obv-maintenance-key"] === key;
+    if (!keyOk && !(user && canManageBindings(user))) {
+      sendJson(res, { error: "Not authorized" }, 403);
+      return;
+    }
+    sendJson(res, await maintainSubscriptions());
     return;
   }
 
@@ -1234,9 +1441,17 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
               messages: repo.listMessagesForThread(selected.id),
               project: selected.projectId ? repo.getProject(selected.projectId) : null,
               milestone: selected.milestoneId ? repo.getMilestone(selected.milestoneId) : null,
+              binding: repo.getBindingForThread(selected.id),
+              hasEvidence: selected.milestoneId
+                ? repo.listEvidenceForMilestone(selected.milestoneId).length > 0
+                : false,
             }
           : null,
         users: usersById(),
+        currentUser: user!,
+        teamsSyncConfigured: syncConfigured(),
+        canManageTeams: canManageBindings(user!),
+        syncError: url.searchParams.get("sync_error"),
       })
     );
     return;

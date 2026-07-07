@@ -127,6 +127,11 @@ export function postMessage(thread: ConversationThread, sender: User, body: stri
     refId: null,
     createdAt: new Date().toISOString(),
     deliveryStatus: "SENT",
+    origin: "OBV_LOCAL",
+    editedAt: null,
+    originalBody: null,
+    externalDeleted: false,
+    attachments: [],
   };
   repo.insertChatMessage(message);
   return message;
@@ -171,6 +176,11 @@ export function mirrorEvent(body: string, ctx: MirrorContext): ChatMessage | nul
     refId: ctx.refId ?? null,
     createdAt: new Date().toISOString(),
     deliveryStatus: "SENT",
+    origin: "OBV_LOCAL",
+    editedAt: null,
+    originalBody: null,
+    externalDeleted: false,
+    attachments: [],
   };
   repo.insertChatMessage(message);
   return message;

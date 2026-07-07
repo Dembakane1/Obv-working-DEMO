@@ -125,6 +125,27 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Teams ↔ OBV conversation sync (v9)
+
+Selected OBV project/milestone threads can bind to Microsoft Teams
+channels for two-way coordination-message sync via a provider-isolated
+TeamsConversationBridge (Microsoft Graph client-credentials, server-side
+only). Strictly separate from the TeamsNotifier event cards. Outbound:
+human messages and explicitly shared references sync once (external ids
+guard retries); inbound: an authenticated change-notification webhook
+(`/api/teams-sync/notifications`) with validation handshake, clientState
+verification, replay dedupe (DB-level unique index) and loop prevention
+via message origin. Explicit identity mapping (never name-guessed);
+Teams edits/deletes stay auditable ("edited in Teams" with original
+preserved, "Message deleted in Microsoft Teams"); attachments remain
+communication artifacts — never auto-evidence. **No message from any
+channel can approve or release funds** — proven by
+`scripts/teams-sync-test.js` (40 checkpoints against a Graph-compatible
+stub; real tenant validation still required — see
+`docs/TEAMS_CONVERSATION_SYNC.md` for app-registration setup). Without
+credentials everything runs in demo mode with sync shown as
+"not configured".
+
 ## Spatial map + contextual communications (v8)
 
 **Project Map** (`/map`, plus a Map tab in each project): an operational
@@ -475,6 +496,7 @@ node scripts/acceptance-test.js camera     # real camera + GPS (fake media strea
 node scripts/idempotency-test.js           # replay/double-submit protections (no Playwright needed)
 node scripts/map-test.js                   # spatial map: layers, geometry, markers, filters, mobile
 node scripts/chat-test.js                  # communications + proof that chat cannot approve/release
+node scripts/teams-sync-test.js            # Teams conversation sync vs Graph stub (dedupe, loops, governance)
 ```
 
 `scripts/idempotency-test.js` proves accidental repeats cannot duplicate

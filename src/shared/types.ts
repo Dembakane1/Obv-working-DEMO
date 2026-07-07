@@ -290,4 +290,70 @@ export interface ChatMessage {
   refId: string | null;
   createdAt: string;
   deliveryStatus: "SENT" | "PENDING" | "FAILED";
+  /** Loop-prevention origin (see MessageOrigin below). */
+  origin: MessageOrigin;
+  /** External edit audit: original body is preserved on first edit. */
+  editedAt: string | null;
+  originalBody: string | null;
+  /** Deleted in the external provider (content kept for audit). */
+  externalDeleted: boolean;
+  /** Communication attachments — never auto-promoted to evidence. */
+  attachments: MessageAttachment[];
+}
+
+// ---------------------------------------------------------------------
+// Teams conversation synchronization (additive).
+//
+// STRICT SEPARATION: TeamsNotifier stays the one-way EVENT NOTIFICATION
+// channel (workflow cards). The conversation bridge below synchronizes
+// COORDINATION MESSAGES only. Neither can create ApprovalRecords, touch
+// the VirtualAccountService, or turn chat content into evidence.
+// ---------------------------------------------------------------------
+
+/** Where a message originated — the loop-prevention anchor.
+ *  OBV_LOCAL messages may sync outbound once; TEAMS_INBOUND messages are
+ *  never echoed back. */
+export type MessageOrigin = "OBV_LOCAL" | "TEAMS_INBOUND";
+
+/** Communication attachment metadata (a chat artifact — NEVER evidence;
+ *  evidence enters only through the governed submission workflow). */
+export interface MessageAttachment {
+  name: string;
+  url: string | null;
+}
+
+export type BindingStatus = "ACTIVE" | "DEGRADED" | "DISCONNECTED";
+
+/** Maps one OBV thread to one Teams channel conversation target.
+ *  Contains identifiers only — never credentials, tokens or secrets. */
+export interface ExternalThreadBinding {
+  id: string;
+  threadId: string;
+  provider: "TEAMS";
+  tenantId: string;
+  teamId: string;
+  channelId: string;
+  rootMessageId: string | null;
+  subscriptionId: string | null;
+  subscriptionExpiresAt: string | null;
+  status: BindingStatus;
+  lastSyncAt: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Explicit Teams identity -> OBV user mapping. Never inferred from
+ *  display-name similarity; unmapped identities stay clearly external. */
+export interface ExternalIdentityMapping {
+  id: string;
+  provider: "TEAMS";
+  tenantId: string;
+  externalUserId: string;
+  obvUserId: string | null;
+  externalDisplayName: string;
+  externalEmail: string | null;
+  status: "MAPPED" | "UNMAPPED";
+  createdAt: string;
+  updatedAt: string;
 }

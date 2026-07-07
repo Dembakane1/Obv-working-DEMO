@@ -513,7 +513,7 @@ export function newId(): string {
 
 // ---------- generated reports ----------
 
-import type { Report, SpatialFeature, ConversationThread, ChatMessage } from "../../shared/types";
+import type { Report, SpatialFeature, ConversationThread, ChatMessage, ExternalThreadBinding, ExternalIdentityMapping } from "../../shared/types";
 
 function toReport(r: Row): Report {
   return {
@@ -659,6 +659,11 @@ function toChatMessage(r: Row): ChatMessage {
     refId: (r.ref_id as string) ?? null,
     createdAt: r.created_at as string,
     deliveryStatus: r.delivery_status as ChatMessage["deliveryStatus"],
+    origin: ((r.origin as string) ?? "OBV_LOCAL") as ChatMessage["origin"],
+    editedAt: (r.edited_at as string) ?? null,
+    originalBody: (r.original_body as string) ?? null,
+    externalDeleted: Boolean(r.external_deleted),
+    attachments: r.attachments ? JSON.parse(r.attachments as string) : [],
   };
 }
 
@@ -667,14 +672,201 @@ export function insertChatMessage(m: ChatMessage): void {
     .prepare(
       `INSERT INTO messages (id, thread_id, sender_user_id, sender_display_name,
          provider, external_thread_id, external_message_id, body, message_type,
-         ref_id, created_at, delivery_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         ref_id, created_at, delivery_status, origin, edited_at, original_body,
+         external_deleted, attachments)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       m.id, m.threadId, m.senderUserId, m.senderDisplayName, m.provider,
       m.externalThreadId, m.externalMessageId, m.body, m.messageType,
-      m.refId, m.createdAt, m.deliveryStatus
+      m.refId, m.createdAt, m.deliveryStatus, m.origin, m.editedAt,
+      m.originalBody, m.externalDeleted ? 1 : 0,
+      m.attachments.length ? JSON.stringify(m.attachments) : null
     );
+}
+
+export function getChatMessage(id: string): ChatMessage | null {
+  const r = getDb().prepare("SELECT * FROM messages WHERE id = ?").get(id);
+  return r ? toChatMessage(r as Row) : null;
+}
+
+/** Inbound dedupe + outbound echo detection: find any message already
+ *  carrying this provider message id in this thread. */
+export function findMessageByExternalId(
+  threadId: string,
+  externalMessageId: string
+): ChatMessage | null {
+  const r = getDb()
+    .prepare("SELECT * FROM messages WHERE thread_id = ? AND external_message_id = ? LIMIT 1")
+    .get(threadId, externalMessageId);
+  return r ? toChatMessage(r as Row) : null;
+}
+
+/** Sync-plumbing update ONLY (delivery state + external id). Message
+ *  content is never mutated through this path. */
+export function updateMessageExternalDelivery(
+  id: string,
+  externalMessageId: string | null,
+  deliveryStatus: ChatMessage["deliveryStatus"]
+): void {
+  getDb()
+    .prepare("UPDATE messages SET external_message_id = ?, delivery_status = ? WHERE id = ?")
+    .run(externalMessageId, deliveryStatus, id);
+}
+
+/** External EDIT audit: keep the original body on first edit, update the
+ *  display body, and record when. Only inbound provider edits use this. */
+export function applyExternalEdit(id: string, newBody: string, editedAt: string): void {
+  getDb()
+    .prepare(
+      `UPDATE messages
+         SET original_body = COALESCE(original_body, body), body = ?, edited_at = ?
+       WHERE id = ?`
+    )
+    .run(newBody, editedAt, id);
+}
+
+/** External DELETE audit: mark deleted, preserve content for audit. */
+export function applyExternalDelete(id: string): void {
+  getDb()
+    .prepare(
+      `UPDATE messages
+         SET external_deleted = 1, original_body = COALESCE(original_body, body)
+       WHERE id = ?`
+    )
+    .run(id);
+}
+
+// ---------- Teams thread bindings & identity mappings ----------
+
+function toBinding(r: Row): ExternalThreadBinding {
+  return {
+    id: r.id as string,
+    threadId: r.thread_id as string,
+    provider: "TEAMS",
+    tenantId: r.tenant_id as string,
+    teamId: r.team_id as string,
+    channelId: r.channel_id as string,
+    rootMessageId: (r.root_message_id as string) ?? null,
+    subscriptionId: (r.subscription_id as string) ?? null,
+    subscriptionExpiresAt: (r.subscription_expires_at as string) ?? null,
+    status: r.status as ExternalThreadBinding["status"],
+    lastSyncAt: (r.last_sync_at as string) ?? null,
+    createdBy: r.created_by as string,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function insertBinding(b: ExternalThreadBinding): void {
+  getDb()
+    .prepare(
+      `INSERT INTO external_thread_bindings (id, thread_id, provider, tenant_id,
+         team_id, channel_id, root_message_id, subscription_id,
+         subscription_expires_at, status, last_sync_at, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      b.id, b.threadId, b.provider, b.tenantId, b.teamId, b.channelId,
+      b.rootMessageId, b.subscriptionId, b.subscriptionExpiresAt, b.status,
+      b.lastSyncAt, b.createdBy, b.createdAt, b.updatedAt
+    );
+}
+
+export function getBindingForThread(threadId: string): ExternalThreadBinding | null {
+  const r = getDb()
+    .prepare("SELECT * FROM external_thread_bindings WHERE thread_id = ?")
+    .get(threadId);
+  return r ? toBinding(r as Row) : null;
+}
+
+export function getBindingBySubscription(subscriptionId: string): ExternalThreadBinding | null {
+  const r = getDb()
+    .prepare("SELECT * FROM external_thread_bindings WHERE subscription_id = ?")
+    .get(subscriptionId);
+  return r ? toBinding(r as Row) : null;
+}
+
+export function listBindings(status?: ExternalThreadBinding["status"]): ExternalThreadBinding[] {
+  const rows = status
+    ? getDb().prepare("SELECT * FROM external_thread_bindings WHERE status = ?").all(status)
+    : getDb().prepare("SELECT * FROM external_thread_bindings").all();
+  return rows.map((r) => toBinding(r as Row));
+}
+
+export function updateBinding(
+  id: string,
+  patch: Partial<
+    Pick<
+      ExternalThreadBinding,
+      "subscriptionId" | "subscriptionExpiresAt" | "status" | "lastSyncAt" | "rootMessageId"
+    >
+  >
+): void {
+  const b = getDb().prepare("SELECT * FROM external_thread_bindings WHERE id = ?").get(id);
+  if (!b) return;
+  const cur = toBinding(b as Row);
+  getDb()
+    .prepare(
+      `UPDATE external_thread_bindings
+         SET subscription_id = ?, subscription_expires_at = ?, status = ?,
+             last_sync_at = ?, root_message_id = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.subscriptionId !== undefined ? patch.subscriptionId : cur.subscriptionId,
+      patch.subscriptionExpiresAt !== undefined ? patch.subscriptionExpiresAt : cur.subscriptionExpiresAt,
+      patch.status ?? cur.status,
+      patch.lastSyncAt !== undefined ? patch.lastSyncAt : cur.lastSyncAt,
+      patch.rootMessageId !== undefined ? patch.rootMessageId : cur.rootMessageId,
+      new Date().toISOString(),
+      id
+    );
+}
+
+function toIdentityMapping(r: Row): ExternalIdentityMapping {
+  return {
+    id: r.id as string,
+    provider: "TEAMS",
+    tenantId: r.tenant_id as string,
+    externalUserId: r.external_user_id as string,
+    obvUserId: (r.obv_user_id as string) ?? null,
+    externalDisplayName: r.external_display_name as string,
+    externalEmail: (r.external_email as string) ?? null,
+    status: r.status as ExternalIdentityMapping["status"],
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function upsertIdentityMapping(m: ExternalIdentityMapping): void {
+  getDb()
+    .prepare(
+      `INSERT INTO external_identity_mappings (id, provider, tenant_id,
+         external_user_id, obv_user_id, external_display_name, external_email,
+         status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(provider, tenant_id, external_user_id) DO UPDATE SET
+         external_display_name = excluded.external_display_name,
+         updated_at = excluded.updated_at`
+    )
+    .run(
+      m.id, m.provider, m.tenantId, m.externalUserId, m.obvUserId,
+      m.externalDisplayName, m.externalEmail, m.status, m.createdAt, m.updatedAt
+    );
+}
+
+export function findIdentityMapping(
+  tenantId: string,
+  externalUserId: string
+): ExternalIdentityMapping | null {
+  const r = getDb()
+    .prepare(
+      `SELECT * FROM external_identity_mappings
+        WHERE provider = 'TEAMS' AND tenant_id = ? AND external_user_id = ?`
+    )
+    .get(tenantId, externalUserId);
+  return r ? toIdentityMapping(r as Row) : null;
 }
 
 export function listMessagesForThread(threadId: string): ChatMessage[] {

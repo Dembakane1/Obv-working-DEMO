@@ -199,7 +199,46 @@ CREATE TABLE IF NOT EXISTS messages (
   message_type TEXT NOT NULL DEFAULT 'TEXT',
   ref_id TEXT,
   created_at TEXT NOT NULL,
-  delivery_status TEXT NOT NULL DEFAULT 'SENT'
+  delivery_status TEXT NOT NULL DEFAULT 'SENT',
+  origin TEXT NOT NULL DEFAULT 'OBV_LOCAL',    -- loop-prevention anchor
+  edited_at TEXT,                              -- external edit audit
+  original_body TEXT,                          -- preserved on first edit
+  external_deleted INTEGER NOT NULL DEFAULT 0, -- deleted in provider (audit kept)
+  attachments TEXT                             -- JSON MessageAttachment[] (communication only)
+);
+
+-- Teams conversation-sync thread bindings. Identifiers only — NEVER
+-- credentials, tokens or webhook secrets. One binding per OBV thread.
+CREATE TABLE IF NOT EXISTS external_thread_bindings (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL UNIQUE REFERENCES conversation_threads(id),
+  provider TEXT NOT NULL DEFAULT 'TEAMS',
+  tenant_id TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  root_message_id TEXT,
+  subscription_id TEXT,
+  subscription_expires_at TEXT,
+  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','DEGRADED','DISCONNECTED')),
+  last_sync_at TEXT,
+  created_by TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Explicit external identity mapping (never inferred from display names).
+CREATE TABLE IF NOT EXISTS external_identity_mappings (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL DEFAULT 'TEAMS',
+  tenant_id TEXT NOT NULL,
+  external_user_id TEXT NOT NULL,
+  obv_user_id TEXT REFERENCES users(id),
+  external_display_name TEXT NOT NULL,
+  external_email TEXT,
+  status TEXT NOT NULL DEFAULT 'UNMAPPED' CHECK (status IN ('MAPPED','UNMAPPED')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (provider, tenant_id, external_user_id)
 );
 
 -- Generated funder-report artifacts (PDFs stored under data/reports/).
@@ -238,6 +277,28 @@ export function getDb(): DatabaseSync {
     } catch {
       /* column already present */
     }
+    // Additive migrations for Teams conversation sync on the messages
+    // table (origin/edit/delete audit + attachments).
+    for (const ddl of [
+      "ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'OBV_LOCAL'",
+      "ALTER TABLE messages ADD COLUMN edited_at TEXT",
+      "ALTER TABLE messages ADD COLUMN original_body TEXT",
+      "ALTER TABLE messages ADD COLUMN external_deleted INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE messages ADD COLUMN attachments TEXT",
+    ]) {
+      try {
+        db.exec(ddl);
+      } catch {
+        /* column already present */
+      }
+    }
+    // Database-level inbound dedupe: one Message per external message id
+    // per thread (notification replays hit this even if app checks race).
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_external
+         ON messages(thread_id, external_message_id)
+         WHERE external_message_id IS NOT NULL`
+    );
     // Additive migration for notification delivery provenance.
     for (const ddl of [
       "ALTER TABLE notifications ADD COLUMN project_id TEXT",

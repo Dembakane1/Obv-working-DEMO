@@ -121,15 +121,18 @@ const assert = (c, m) => (c ? pass(m) : fail(m));
     );
 
     // Degraded base map is honest: tiles either load or the restrained
-    // notice appears (in this sandbox tile hosts are unreachable).
-    const noteVisible = await page.locator("#map-note").isVisible();
-    const loadedTiles = await page
-      .locator(".tile:not(.failed)")
-      .evaluateAll((els) => els.filter((e) => e.complete && e.naturalWidth > 0).length);
-    assert(
-      noteVisible || loadedTiles > 0,
-      "tile failure shows the geometry-still-available notice (or tiles loaded)"
-    );
+    // notice appears (in this sandbox tile hosts are unreachable). Tile
+    // fetch outcomes can take a few seconds — poll for the settled state.
+    let degradedHonest = false;
+    for (let i = 0; i < 30 && !degradedHonest; i++) {
+      const noteVisible = await page.locator("#map-note").isVisible();
+      const loadedTiles = await page
+        .locator(".tile")
+        .evaluateAll((els) => els.filter((e) => e.complete && e.naturalWidth > 0).length);
+      degradedHonest = noteVisible || loadedTiles > 0;
+      if (!degradedHonest) await page.waitForTimeout(400);
+    }
+    assert(degradedHonest, "tile failure shows the geometry-still-available notice (or tiles loaded)");
 
     // Segment panel content (pending area shows evidence/governance still
     // required). Click a point ON the polyline (bbox centers of bent paths

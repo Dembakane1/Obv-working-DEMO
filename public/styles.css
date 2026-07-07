@@ -1515,3 +1515,20 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
   .comms:not(.has-selection) .comms-conv { display: none; }
   .conv-back { display: inline-block; }
 }
+
+/* ---- Teams conversation sync (v9) ---- */
+.sync-tag {
+  display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; padding: 1px 7px; border: 1px solid; margin-left: 8px;
+}
+.sync-tag.ok { color: var(--ok); border-color: var(--ok-line); background: var(--ok-bg); }
+.sync-tag.warn { color: var(--warn); border-color: var(--warn-line); background: var(--warn-bg); }
+.sync-tag.neutral { color: var(--slate); border-color: var(--slate-line); background: var(--slate-bg); }
+.msg .who .edited { color: var(--ink-4); font-size: 9.5px; font-style: italic; }
+.msg .text.deleted { color: var(--ink-4); font-style: italic; background: var(--inset); }
+.msg-sync { display: block; margin-top: 3px; font-size: 9.5px; color: var(--ink-4); }
+.msg-sync.ok { color: var(--ok); }
+.msg-sync.bad { color: var(--bad); }
+.msg-attach { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; font-size: 11.5px; }
+.msg-attach a { color: var(--action); font-weight: 600; }
+.msg-attach .note { font-size: 9.5px; color: var(--ink-4); font-style: italic; }
