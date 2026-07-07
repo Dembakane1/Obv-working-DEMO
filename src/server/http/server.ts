@@ -716,11 +716,17 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         sendJson(res, { report }, 201);
       }
     } catch (err) {
+      // Full renderer detail (may contain internal paths) stays in the
+      // server log; clients get an honest but generic message.
       console.error("[report] PDF generation failed:", (err as Error).message);
       if (isFormPost(req)) {
         redirect(res, `/reports?error=pdf&project=${encodeURIComponent(projectId)}`);
       } else {
-        sendJson(res, { error: "PDF generation failed: " + (err as Error).message }, 500);
+        sendJson(
+          res,
+          { error: "PDF generation failed — the printable HTML preview remains available on the Reports page" },
+          500
+        );
       }
     } finally {
       pendingReportHtml.delete(report.id);
@@ -1014,12 +1020,22 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
 const server = http.createServer((req, res) => {
   handle(req, res).catch((err) => {
-    const status = err instanceof SubmissionError ? err.statusCode : 500;
-    console.error(`[error] ${req.method} ${req.url}:`, err.message ?? err);
-    if (!res.headersSent) {
-      sendJson(res, { error: err.message ?? "Internal server error" }, status);
-    } else {
+    // SubmissionErrors carry intentional, user-safe messages. Anything
+    // else is logged server-side only and surfaced generically — no
+    // stack traces, no internal paths, no provider details.
+    const known = err instanceof SubmissionError;
+    const status = known ? err.statusCode : 500;
+    console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
+    const message = known ? err.message : "Internal server error";
+    if (res.headersSent) {
       res.end();
+      return;
+    }
+    if ((req.headers.accept ?? "").includes("text/html")) {
+      // Browser navigation (form post) — styled error page, never raw JSON.
+      sendHtml(res, renderError(null, "Something went wrong", message), status);
+    } else {
+      sendJson(res, { error: message }, status);
     }
   });
 });

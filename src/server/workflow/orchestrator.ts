@@ -104,6 +104,43 @@ export async function processEvidenceSubmission(
     typeof submission.longitude === "number" && Number.isFinite(submission.longitude)
       ? submission.longitude
       : null;
+  // ---- Offline-retry idempotency ----
+  // If the network drops after the server processed a submission but
+  // before the client saw the response, the field client queues the same
+  // payload and replays it on reconnect. The replayed payload is
+  // byte-identical (same photo, GPS, capture timestamp), so it derives
+  // the same key; return the already-recorded result instead of creating
+  // duplicate evidence / verification / ledger entries. A genuinely new
+  // capture always carries a new capturedAt and never collides.
+  // NOTE: the lookup below and insertEvidence further down execute with
+  // no await between them, so the check-then-insert is atomic on the
+  // single-threaded event loop.
+  const submissionKey = sha256(
+    JSON.stringify({
+      milestoneId: milestone.id,
+      photoHash,
+      latitude: submission.latitude ?? null,
+      longitude: submission.longitude ?? null,
+      capturedAt: submission.capturedAt,
+    })
+  );
+  const duplicate = repo.findEvidenceBySubmissionKey(submissionKey);
+  if (duplicate) {
+    const existingVerification = repo.getVerificationForEvidence(duplicate.id);
+    if (!existingVerification) {
+      // First attempt still mid-pipeline — tell the client to stand by
+      // rather than double-processing.
+      throw new SubmissionError("This submission is already being processed", 409);
+    }
+    return {
+      evidence: duplicate,
+      verification: existingVerification,
+      ledgerEntry: repo.getLedgerEntryForEvidence(duplicate.id),
+      approvalRequest: repo.getApprovalRequestForMilestone(milestone.id),
+      milestone: repo.getMilestone(milestone.id)!,
+    };
+  }
+
   const previous = repo.latestEvidenceForMilestone(milestone.id);
   const uploadedAt = new Date().toISOString();
   const evidence: EvidenceItem = {
@@ -122,7 +159,7 @@ export async function processEvidenceSubmission(
     previousHash: previous?.hash ?? null,
     isDemoFallback: submission.isDemoFallback,
   };
-  repo.insertEvidence(evidence);
+  repo.insertEvidence(evidence, submissionKey);
 
   // ---- 3. Hybrid verification pipeline ----
   // AI assesses the image; geofence and metadata checks are deterministic

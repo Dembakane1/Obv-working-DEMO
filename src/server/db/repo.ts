@@ -224,20 +224,32 @@ export function updateMilestoneAccountStatus(
 
 // ---------- evidence ----------
 
-export function insertEvidence(e: EvidenceItem): void {
+export function insertEvidence(e: EvidenceItem, submissionKey?: string): void {
   getDb()
     .prepare(
       `INSERT INTO evidence_items (id, milestone_id, user_id, photo_path,
          latitude, longitude, captured_at, uploaded_at, device_metadata,
-         hash, previous_hash, is_demo_fallback)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         hash, previous_hash, is_demo_fallback, submission_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       e.id, e.milestoneId, e.userId, e.photoPath,
       e.latitude, e.longitude, e.capturedAt, e.uploadedAt,
       JSON.stringify(e.deviceMetadata), e.hash, e.previousHash,
-      e.isDemoFallback ? 1 : 0
+      e.isDemoFallback ? 1 : 0, submissionKey ?? null
     );
+}
+
+/**
+ * Offline-retry idempotency lookup: an identical replayed submission
+ * (same milestone, photo, GPS and capture timestamp) maps to the same
+ * key. Seeded rows have no key and never match.
+ */
+export function findEvidenceBySubmissionKey(submissionKey: string): EvidenceItem | null {
+  const r = getDb()
+    .prepare("SELECT * FROM evidence_items WHERE submission_key = ? LIMIT 1")
+    .get(submissionKey);
+  return r ? toEvidence(r as Row) : null;
 }
 
 export function listEvidenceForMilestone(milestoneId: string): EvidenceItem[] {

@@ -535,7 +535,7 @@ export function renderProjectDetail(input: {
         <a className="crumb" href="/projects" style="font-size:12px;color:var(--ink-3)">← Projects</a>
         <form method="POST" action="/api/reports/generate" style="margin:0 0 0 auto">
           <input type="hidden" name="projectId" value={project.id} />
-          <button className="btn sm" type="submit" title="Generate the Project Verification & Fund Release Report (PDF)">
+          <button className="btn sm" type="submit" data-busy-label="Generating report…" title="Generate the Project Verification & Fund Release Report (PDF)">
             {icons.file(13)} Generate funder report
           </button>
         </form>
@@ -1344,7 +1344,7 @@ export function renderReports(input: {
                 <a className="btn ghost sm" href={`/report/${p.id}/preview`} target="_blank">Preview HTML</a>
                 <form method="POST" action="/api/reports/generate" style="margin:0">
                   <input type="hidden" name="projectId" value={p.id} />
-                  <button className="btn sm" type="submit">Generate report (PDF)</button>
+                  <button className="btn sm" type="submit" data-busy-label="Generating…">Generate report (PDF)</button>
                 </form>
               </span>
             </div>
@@ -1403,7 +1403,7 @@ export function renderReports(input: {
                         <a className="btn ghost sm" href={`/reports/file/${r.id}?dl=1`}>Download</a>{" "}
                         <form method="POST" action="/api/reports/generate" style="display:inline;margin:0">
                           <input type="hidden" name="projectId" value={r.projectId} />
-                          <button className="btn ghost sm" type="submit">Regenerate</button>
+                          <button className="btn ghost sm" type="submit" data-busy-label="Generating…">Regenerate</button>
                         </form>
                       </td>
                     </tr>

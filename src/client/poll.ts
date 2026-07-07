@@ -24,4 +24,23 @@
 
   tick();
   setInterval(tick, INTERVAL_MS);
+
+  // Double-submit guard: after any form submits (approve/reject, generate
+  // report, verify integrity, reset), disable its submit buttons so an
+  // accidental second tap cannot re-post the action while the navigation
+  // is in flight. Buttons with data-busy-label also show progress text
+  // for the longer operations (PDF generation).
+  document.addEventListener("submit", (e) => {
+    const form = e.target as HTMLFormElement;
+    if (!(form instanceof HTMLFormElement)) return;
+    window.setTimeout(() => {
+      form
+        .querySelectorAll<HTMLButtonElement>("button[type=submit], button:not([type])")
+        .forEach((btn) => {
+          btn.disabled = true;
+          const busy = btn.getAttribute("data-busy-label");
+          if (busy) btn.textContent = busy;
+        });
+    }, 0);
+  });
 })();

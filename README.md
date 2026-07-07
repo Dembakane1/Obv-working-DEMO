@@ -435,7 +435,15 @@ release → ledger integrity → demo reset → repeat loop.
 ```bash
 node scripts/acceptance-test.js fallback   # DEMO FALLBACK path
 node scripts/acceptance-test.js camera     # real camera + GPS (fake media stream)
+node scripts/idempotency-test.js           # replay/double-submit protections (no Playwright needed)
 ```
+
+`scripts/idempotency-test.js` proves accidental repeats cannot duplicate
+business records: an offline-queue replay of the same evidence payload
+returns the original result (one evidence item, one verification, one
+ledger entry); double-approve and approval replay are rejected 409; the
+HELD → RELEASED transition happens exactly once. See also
+`docs/DEMO_RUNBOOK.md` for the operational demo guide.
 
 Requires the `playwright` npm package and a Chromium install (in the build
 environment: `NODE_PATH=/opt/node22/lib/node_modules`). Reseed between runs.

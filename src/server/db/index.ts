@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS evidence_items (
   device_metadata TEXT NOT NULL, -- JSON DeviceMetadata
   hash TEXT NOT NULL,
   previous_hash TEXT,
-  is_demo_fallback INTEGER NOT NULL DEFAULT 0
+  is_demo_fallback INTEGER NOT NULL DEFAULT 0,
+  submission_key TEXT -- content-derived retry-dedupe key (null on seeded rows)
 );
 
 CREATE TABLE IF NOT EXISTS verifications (
@@ -183,6 +184,12 @@ export function getDb(): DatabaseSync {
     // provenance existed (fresh seeds already include the column).
     try {
       db.exec("ALTER TABLE verifications ADD COLUMN source TEXT NOT NULL DEFAULT 'MOCK_DEFAULT'");
+    } catch {
+      /* column already present */
+    }
+    // Additive migration for offline-retry idempotency (see orchestrator).
+    try {
+      db.exec("ALTER TABLE evidence_items ADD COLUMN submission_key TEXT");
     } catch {
       /* column already present */
     }
