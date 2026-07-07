@@ -38,6 +38,8 @@ import {
 import type {
   ApprovalRecord,
   ApprovalRequest,
+  ChatMessage,
+  ConversationThread,
   EvidenceItem,
   LedgerEntry,
   Milestone,
@@ -50,6 +52,63 @@ import type {
   VirtualAccountEvent,
 } from "../../shared/types";
 import type { ProjectAccountSummary } from "../services/VirtualAccountService";
+import * as repo from "../db/repo";
+
+/**
+ * Minimal read-only lookups for chat reference cards and thread context
+ * panels. Presentation only: no writes, no access to the approval
+ * workflow or virtual account mutations.
+ */
+const repoView = {
+  verificationForEvidence: (evidenceId: string) => repo.getVerificationForEvidence(evidenceId),
+  milestoneIdForEvidence: (evidenceId: string) => repo.getEvidence(evidenceId)?.milestoneId ?? null,
+  approval: (approvalId: string) => {
+    const a = repo.getApprovalRequest(approvalId);
+    if (!a) return null;
+    const m = repo.getMilestone(a.milestoneId);
+    const records = repo
+      .listApprovalRecordsForRequest(a.id)
+      .filter((r) => r.decision === "APPROVED").length;
+    return {
+      records,
+      required: a.requiredRoles.length,
+      amount: m?.trancheAmount ?? 0,
+      accountStatus: m?.accountStatus ?? "HELD",
+    };
+  },
+  milestoneContext: (milestoneId: string) => {
+    const evidence = repo.listEvidenceForMilestone(milestoneId);
+    const latest = evidence[0] ? repo.getVerificationForEvidence(evidence[0].id) : null;
+    const a = repo.getApprovalRequestForMilestone(milestoneId);
+    const recs = a
+      ? repo.listApprovalRecordsForRequest(a.id).filter((r) => r.decision === "APPROVED").length
+      : 0;
+    return {
+      requirement: true,
+      evidenceCount: evidence.length,
+      verdict: latest ? `${latest.verdict.replace(/_/g, " ")} · ${latest.confidence.toFixed(2)}` : null,
+      approvalLine: a
+        ? a.status === "PENDING"
+          ? `${recs} of ${a.requiredRoles.length} recorded · PENDING`
+          : a.status
+        : "Not requested",
+    };
+  },
+  projectContext: (projectId: string) => {
+    const ms = repo.listMilestones(projectId);
+    return {
+      released: ms
+        .filter((m) => m.accountStatus === "RELEASED")
+        .reduce((s, m) => s + m.trancheAmount, 0),
+      held: ms
+        .filter((m) => m.accountStatus !== "RELEASED")
+        .reduce((s, m) => s + m.trancheAmount, 0),
+      pendingApprovals: repo
+        .listApprovalRequestsForProject(projectId)
+        .filter((a) => a.status === "PENDING").length,
+    };
+  },
+};
 
 export interface MilestoneRow extends MilestoneCardData {
   latestEvidence: EvidenceItem | null;
@@ -455,7 +514,7 @@ export function renderProjects(input: { nav: NavContext; projects: ProjectCardDa
 
 // ------------------------------------------------------ project detail
 
-export type ProjectTab = "overview" | "milestones" | "evidence" | "approvals" | "ledger" | "activity";
+export type ProjectTab = "overview" | "milestones" | "evidence" | "approvals" | "ledger" | "activity" | "map" | "discussion";
 
 type LifecycleStage = "SETUP" | "EVIDENCE" | "VERIFICATION" | "GOVERNANCE" | "RELEASE";
 
@@ -509,6 +568,7 @@ export function renderProjectDetail(input: {
   accountEvents: VirtualAccountEvent[];
   notifications: Notification[];
   users: Map<string, User>;
+  threads: Array<{ thread: ConversationThread; latest: ChatMessage | null; milestone: Milestone | null }>;
 }): string {
   const { data, tab } = input;
   const { project } = data;
@@ -526,6 +586,8 @@ export function renderProjectDetail(input: {
     { key: "evidence", label: "Evidence" },
     { key: "approvals", label: "Approvals" },
     { key: "ledger", label: "Ledger" },
+    { key: "map", label: "Map" },
+    { key: "discussion", label: "Discussion" },
     { key: "activity", label: "Activity" },
   ];
 
@@ -719,6 +781,43 @@ export function renderProjectDetail(input: {
         />
       ) : null}
 
+      {tab === "map" ? <MapShell projectId={project.id} /> : null}
+
+      {tab === "discussion" ? (
+        <div className="panel">
+          <div className="panel-head">
+            <h3>Project discussion</h3>
+            <span className="right">Coordination only — approvals & evidence stay in their formal workflows</span>
+          </div>
+          {input.threads.length === 0 ? (
+            <p className="sub" style="padding:14px 16px">No threads yet.</p>
+          ) : (
+            input.threads.map((t, i) => (
+              <a
+                href={`/communications?thread=${t.thread.id}`}
+                style={`display:block;padding:12px 16px;color:var(--ink);${i > 0 ? "border-top:1px solid var(--line)" : ""}`}
+              >
+                <span style="font-weight:600;font-size:13px;display:block">{t.thread.title}</span>
+                {t.latest ? (
+                  <span className="sub" style="display:block;font-size:12px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                    {t.latest.senderDisplayName}: {t.latest.body.slice(0, 110)}
+                  </span>
+                ) : null}
+                <span className="sub" style="display:block;font-size:10.5px;margin-top:2px;color:var(--ink-4)">
+                  {t.latest ? fmtDate(t.latest.createdAt) : fmtDate(t.thread.createdAt)}
+                </span>
+              </a>
+            ))
+          )}
+          <div style="padding:10px 16px;border-top:1px solid var(--line)">
+            <form method="POST" action="/api/threads/open" style="margin:0">
+              <input type="hidden" name="projectId" value={project.id} />
+              <button className="btn secondary sm" type="submit">Open project thread</button>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
       {tab === "activity" ? (
         <>
           <div className="panel">
@@ -802,6 +901,13 @@ export function renderMilestoneDetail(input: {
         </div>
         <div className="ev-sec" style="margin-top:14px">Evidence requirement</div>
         <p style="margin:0;font-size:13px;color:var(--ink-2)">{milestone.requirement}</p>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+          <form method="POST" action="/api/threads/open" style="margin:0">
+            <input type="hidden" name="milestoneId" value={milestone.id} />
+            <button className="btn ghost sm" type="submit">{icons.chat(13)} Open thread</button>
+          </form>
+          <a className="btn ghost sm" href={`/project/${project.id}?tab=map`}>{icons.map(13)} View on map</a>
+        </div>
       </div>
 
       {approval ? (
@@ -1591,6 +1697,8 @@ export function renderInsights(input: { nav: NavContext; insights: Insight[] }):
 export function renderMore(input: { nav: NavContext }): string {
   const { user } = input.nav;
   const items = [
+    { href: "/map", label: "Project Map", icon: icons.map, desc: "Spatial project intelligence" },
+    { href: "/communications", label: "Communications", icon: icons.chat, desc: "Project-linked coordination threads" },
     { href: "/field", label: "Field Capture", icon: icons.camera, desc: "Mobile evidence capture" },
     { href: "/reports", label: "Reports", icon: icons.reports, desc: "Document registry & exports" },
     { href: "/compliance", label: "Risk & Compliance", icon: icons.shield, desc: "Open review items and integrity" },
@@ -1705,5 +1813,310 @@ export function renderError(nav: NavContext | null, title: string, message: stri
       <PageHeader title={title} sub={message} />
       <a className="btn secondary" href="/overview">Back to overview</a>
     </AppShell>
+  );
+}
+
+// ------------------------------------------------------ spatial map
+
+/**
+ * Shared map shell — the interactive engine lives in /js/map.js (a
+ * zero-dependency slippy map behind a tile-provider adapter; standard
+ * tiles from OpenStreetMap, satellite from Esri World Imagery — public,
+ * token-free sources, so there is no map secret to leak). The map only
+ * PRESENTS state read from /api/map-context; it never computes verdicts.
+ */
+function MapShell(props: { projectId?: string }): VNode {
+  return (
+    <div className="map-wrap" id="map-wrap" data-project={props.projectId ?? ""}>
+      <div className="map-toolbar">
+        <div className="map-layers" role="group" aria-label="Map layer">
+          <button type="button" id="layer-map" className="active">Map</button>
+          <button type="button" id="layer-sat">Satellite</button>
+        </div>
+        <div className="map-filters">
+          <select id="flt-time" aria-label="Evidence time filter">
+            <option value="all">All evidence</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <select id="flt-milestone" aria-label="Milestone filter">
+            <option value="all">All milestones</option>
+          </select>
+          <select id="flt-verdict" aria-label="Verdict filter">
+            <option value="all">All verdicts</option>
+            <option value="VERIFIED">Verified</option>
+            <option value="NEEDS_REVIEW">Needs review</option>
+            <option value="REJECTED">Rejected</option>
+          </select>
+        </div>
+      </div>
+      <div className="map-stage">
+        <div className="map-canvas" id="map-canvas" aria-label="Project map"></div>
+        <aside className="map-panel" id="map-panel" aria-live="polite">
+          <button type="button" className="map-panel-close" id="map-panel-close" aria-label="Close details">×</button>
+          <div className="map-panel-empty" id="map-panel-empty">
+            Select the project, a milestone segment, or an evidence marker.
+          </div>
+          <div id="map-panel-body"></div>
+        </aside>
+      </div>
+      <div className="map-legend">
+        <span><i className="sw ok"></i>Verified / released</span>
+        <span><i className="sw info"></i>Awaiting governance</span>
+        <span><i className="sw warn"></i>Awaiting evidence / review</span>
+        <span><i className="sw bad"></i>Rejected / outside geofence</span>
+        <span><i className="sw neutral"></i>Not started</span>
+        <span className="note">Demo corridor geometry — segment km labels are demonstration metadata</span>
+      </div>
+      <script src="/js/map.js" defer></script>
+    </div>
+  );
+}
+
+export function renderMap(input: { nav: NavContext; scope: "global" }): string {
+  return renderDocument(
+    <AppShell title="Project Map" nav={input.nav}>
+      <PageHeader
+        title="Project Map"
+        sub="Spatial view of project boundaries, milestone corridor state and evidence capture locations — read from the live verification and governance records."
+      />
+      <MapShell />
+      <script src="/js/poll.js" defer></script>
+    </AppShell>
+  );
+}
+
+// ------------------------------------------------ communications
+
+/**
+ * Contextual project communications. CHAT COORDINATES — nothing here can
+ * approve or release; reference cards link to the formal screens where
+ * governance actually happens.
+ */
+export interface ThreadListItem {
+  thread: ConversationThread;
+  latest: ChatMessage | null;
+  project: Project | null;
+  milestone: Milestone | null;
+}
+
+function threadStamp(iso: string): string {
+  const ms = Date.now() - Date.parse(iso);
+  if (ms < 90_000) return "just now";
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)} h ago`;
+  return fmtDate(iso);
+}
+
+function MessageRefCard(props: { m: ChatMessage }): VNode | null {
+  const { m } = props;
+  if (m.messageType === "EVIDENCE_REFERENCE" && m.refId) {
+    const v = repoView.verificationForEvidence(m.refId);
+    return (
+      <span className="msg-ref">
+        <span className="k">EVIDENCE</span>
+        {v ? (
+          <span className="s">{v.verdict.replace(/_/g, " ")} · {v.confidence.toFixed(2)} confidence</span>
+        ) : null}
+        <a href={`/milestone/${repoView.milestoneIdForEvidence(m.refId) ?? ""}`}>View evidence</a>
+        <a href={`/map`}>View on map</a>
+      </span>
+    );
+  }
+  if (m.messageType === "APPROVAL_REFERENCE" && m.refId) {
+    const a = repoView.approval(m.refId);
+    return (
+      <span className="msg-ref">
+        <span className="k">APPROVAL REQUEST</span>
+        {a ? (
+          <span className="s">
+            {a.records} of {a.required} complete · {money(a.amount)} {a.accountStatus}
+          </span>
+        ) : null}
+        <a href="/approvals">View approval</a>
+      </span>
+    );
+  }
+  if (m.messageType === "MILESTONE_REFERENCE" && m.refId) {
+    return (
+      <span className="msg-ref">
+        <span className="k">MILESTONE</span>
+        <a href={`/milestone/${m.refId}`}>View milestone</a>
+      </span>
+    );
+  }
+  if (m.messageType === "REPORT_REFERENCE" && m.refId) {
+    return (
+      <span className="msg-ref">
+        <span className="k">REPORT</span>
+        <a href={`/reports/file/${m.refId}`}>Open report</a>
+      </span>
+    );
+  }
+  return null;
+}
+
+export function renderCommunications(input: {
+  nav: NavContext;
+  threads: ThreadListItem[];
+  selected: {
+    thread: ConversationThread;
+    messages: ChatMessage[];
+    project: Project | null;
+    milestone: Milestone | null;
+  } | null;
+  users: Map<string, User>;
+}): string {
+  const { selected } = input;
+  const sorted = [...input.threads].sort((a, b) => {
+    const at = a.latest?.createdAt ?? a.thread.createdAt;
+    const bt = b.latest?.createdAt ?? b.thread.createdAt;
+    return at < bt ? 1 : -1;
+  });
+  return renderDocument(
+    <AppShell title="Communications" nav={input.nav} context={selected?.thread.title}>
+      <div className={`comms ${selected ? "has-selection" : ""}`}>
+        <section className="comms-list" aria-label="Threads">
+          <div className="comms-list-head">
+            <h3>Threads</h3>
+            <span className="sub">Project-linked coordination</span>
+          </div>
+          {sorted.map((t) => (
+            <a
+              className={`thread-row ${selected?.thread.id === t.thread.id ? "active" : ""}`}
+              href={`/communications?thread=${t.thread.id}`}
+            >
+              <span className="t">{t.thread.title}</span>
+              <span className="p">{t.project?.name ?? "Organization"}</span>
+              {t.latest ? (
+                <span className="prev">
+                  {t.latest.messageType === "TEXT" ? `${t.latest.senderDisplayName}: ` : ""}
+                  {t.latest.body.slice(0, 96)}
+                </span>
+              ) : (
+                <span className="prev sub">No messages yet.</span>
+              )}
+              <span className="when">{threadStamp(t.latest?.createdAt ?? t.thread.createdAt)}</span>
+            </a>
+          ))}
+        </section>
+
+        {selected ? (
+          <section className="comms-conv" aria-label="Conversation">
+            <div className="conv-head">
+              <a className="conv-back" href="/communications" aria-label="Back to threads">←</a>
+              <span className="t">
+                <b>{selected.thread.title}</b>
+                <span className="s">
+                  {selected.project?.name}
+                  {selected.milestone ? ` · M${selected.milestone.seq}` : ""}
+                </span>
+              </span>
+              <button type="button" className="btn ghost sm conv-ctx-toggle" id="ctx-toggle">Context</button>
+            </div>
+            <div className="conv-scroll" id="conv-scroll">
+              {selected.messages.map((m) => {
+                const sender = m.senderUserId ? input.users.get(m.senderUserId) : null;
+                return m.senderUserId ? (
+                  <div className="msg">
+                    <span className="avatar" aria-hidden="true">{initials(m.senderDisplayName)}</span>
+                    <span className="body">
+                      <span className="who">
+                        <b>{m.senderDisplayName}</b>
+                        {sender ? <span className="role">{roleLabel(sender.role)}</span> : null}
+                        {m.provider !== "OBV" ? <span className="prov">{m.provider}</span> : null}
+                        <span className="when">{fmtDate(m.createdAt)}</span>
+                      </span>
+                      <span className="text">{m.body}</span>
+                      <MessageRefCard m={m} />
+                    </span>
+                  </div>
+                ) : (
+                  <div className="msg system">
+                    <span className="body">
+                      <span className="text">{m.body}</span>
+                      <MessageRefCard m={m} />
+                      <span className="when">{fmtDate(m.createdAt)}</span>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <form className="composer" method="POST" action={`/api/threads/${selected.thread.id}/messages`}>
+              <input
+                type="text"
+                name="body"
+                placeholder="Write a coordination message… (messages never authorize approvals or funds)"
+                autocomplete="off"
+                maxlength="4000"
+                required
+              />
+              <button className="btn" type="submit">Send</button>
+            </form>
+          </section>
+        ) : (
+          <section className="comms-conv empty" aria-label="Conversation">
+            <div className="comms-empty">
+              <p><b>Select a thread.</b></p>
+              <p className="sub">
+                Chat coordinates. Evidence proves. Humans authorize. The ledger records.
+                Nothing written here can approve a release — governance stays on the
+                Approvals screen.
+              </p>
+            </div>
+          </section>
+        )}
+
+        {selected ? <CommsContextPanel selected={selected} /> : null}
+      </div>
+      <script src="/js/poll.js" defer></script>
+      <script src="/js/comms.js" defer></script>
+    </AppShell>
+  );
+}
+
+function CommsContextPanel(props: {
+  selected: { thread: ConversationThread; project: Project | null; milestone: Milestone | null };
+}): VNode {
+  const { thread, project, milestone } = props.selected;
+  const ctx = milestone
+    ? repoView.milestoneContext(milestone.id)
+    : project
+      ? repoView.projectContext(project.id)
+      : null;
+  return (
+    <aside className="comms-ctx" id="comms-ctx" aria-label="Thread context">
+      <div className="ctx-head">Linked context</div>
+      {milestone && ctx && "requirement" in ctx ? (
+        <dl className="ctx-kv">
+          <dt>Milestone</dt><dd>M{milestone.seq} · {milestone.title}</dd>
+          <dt>Requirement</dt><dd>{milestone.requirement}</dd>
+          <dt>Tranche</dt><dd className="num">{money(milestone.trancheAmount)} · {milestone.accountStatus}</dd>
+          <dt>Evidence</dt><dd>{ctx.evidenceCount} item{ctx.evidenceCount === 1 ? "" : "s"}</dd>
+          <dt>Verification</dt><dd>{ctx.verdict ?? "—"}</dd>
+          <dt>Approval</dt><dd>{ctx.approvalLine}</dd>
+        </dl>
+      ) : project && ctx && "released" in ctx ? (
+        <dl className="ctx-kv">
+          <dt>Project</dt><dd>{project.name}</dd>
+          <dt>Location</dt><dd>{project.location}</dd>
+          <dt>Budget</dt><dd className="num">{money(project.totalBudget)}</dd>
+          <dt>Released</dt><dd className="num">{money(ctx.released)}</dd>
+          <dt>Held</dt><dd className="num">{money(ctx.held)}</dd>
+          <dt>Pending approvals</dt><dd>{ctx.pendingApprovals}</dd>
+        </dl>
+      ) : (
+        <p className="sub" style="padding:0 14px">Organization-scope thread.</p>
+      )}
+      <div className="ctx-links">
+        {project ? <a className="btn ghost sm" href={`/project/${project.id}?tab=map`}>View project map</a> : null}
+        {milestone ? <a className="btn ghost sm" href={`/milestone/${milestone.id}`}>View milestone</a> : null}
+        {project && !milestone ? <a className="btn ghost sm" href={`/project/${project.id}`}>View project</a> : null}
+      </div>
+      <p className="ctx-note">
+        Formal decisions happen in their own workflows: evidence via Field Capture,
+        approvals via Pending Approvals. This thread is coordination only.
+      </p>
+    </aside>
   );
 }

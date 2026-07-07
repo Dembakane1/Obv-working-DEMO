@@ -18,6 +18,7 @@ import { runVerificationPipeline } from "../services/verification/index";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { teamsNotifier } from "../services/TeamsNotifier";
+import { mirrorEvent } from "../services/chat";
 import {
   approvalRecordedCard,
   approvalRejectedCard,
@@ -213,6 +214,17 @@ export async function processEvidenceSubmission(
     auditCtx
   );
 
+  // Mirror into the project/milestone discussion thread (informational
+  // system events only — chat never drives any workflow state).
+  mirrorEvent(
+    `Evidence submitted for M${milestone.seq} by ${user.name}${evidence.isDemoFallback ? " (demo fallback)" : ""}.`,
+    { projectId: project.id, milestoneId: milestone.id, refType: "EVIDENCE_REFERENCE", refId: evidence.id }
+  );
+  mirrorEvent(
+    `Verification completed: ${result.verdict.replace(/_/g, " ")} · confidence ${result.confidence.toFixed(2)}.`,
+    { projectId: project.id, milestoneId: milestone.id }
+  );
+
   // ---- 4. Ledger entry (only successfully verified evidence enters the
   //         tamper-evident chain) ----
   let ledgerEntry: LedgerEntry | null = null;
@@ -253,6 +265,10 @@ export async function processEvidenceSubmission(
       "APPROVAL_REQUEST_CREATED",
       `Approval request created for milestone ${milestone.seq} "${milestone.title}" — requires ${approvalRequest.requiredRoles.join(" + ")}. Funds HELD.`,
       { ...auditCtx, card: approvalRequestCard({ ...cardCtx, approval: approvalRequest }) }
+    );
+    mirrorEvent(
+      `Approval request created — requires ${approvalRequest.requiredRoles.map((r) => r.replace(/_/g, " ").toLowerCase()).join(" + ")}. $${milestone.trancheAmount.toLocaleString("en-US")} remains HELD.`,
+      { projectId: project.id, milestoneId: milestone.id, refType: "APPROVAL_REFERENCE", refId: approvalRequest.id }
     );
   } else if (verification.verdict === "NEEDS_REVIEW") {
     repo.updateMilestoneStatus(milestone.id, "UNDER_REVIEW");
@@ -335,6 +351,10 @@ export async function processApprovalDecision(
         card: approvalRejectedCard({ project, milestone, approval: request, records, actor: user, decision }),
       }
     );
+    mirrorEvent(
+      `${user.name} (${user.title}) rejected release for M${milestone.seq}. Funds remain HELD; new evidence required.`,
+      { projectId: project.id, milestoneId: milestone.id, refType: "APPROVAL_REFERENCE", refId: request.id }
+    );
   } else {
     const approvedRoles = new Set(
       records.filter((r) => r.decision === "APPROVED").map((r) => r.role)
@@ -370,6 +390,10 @@ export async function processApprovalDecision(
           }),
         }
       );
+      mirrorEvent(
+        `All approvals complete for M${milestone.seq}. Tranche of $${milestone.trancheAmount.toLocaleString("en-US")} RELEASED on the virtual project account.`,
+        { projectId: project.id, milestoneId: milestone.id, refType: "APPROVAL_REFERENCE", refId: request.id }
+      );
     } else {
       const missing = request.requiredRoles.filter((role) => !approvedRoles.has(role));
       await teamsNotifier.notify(
@@ -379,6 +403,10 @@ export async function processApprovalDecision(
           ...notifyCtx,
           card: approvalRecordedCard({ project, milestone, approval: request, records, actor: user, decision }),
         }
+      );
+      mirrorEvent(
+        `${user.name} (${user.title}) approved M${milestone.seq} (${approvedRoles.size} of ${request.requiredRoles.length}). Awaiting ${missing.map((r) => r.replace(/_/g, " ").toLowerCase()).join(", ")}. Funds remain HELD.`,
+        { projectId: project.id, milestoneId: milestone.id, refType: "APPROVAL_REFERENCE", refId: request.id }
       );
     }
   }

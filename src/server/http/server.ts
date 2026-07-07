@@ -21,7 +21,15 @@ import { wormEvidenceStore } from "../services/WormEvidenceStore";
 import { TEAMS_CONFIG, teamsNotifier } from "../services/TeamsNotifier";
 import { AI_PROVIDER } from "../services/verification/config";
 import { integrityFailureCard } from "../services/teamsCards";
-import { polygonCentroid } from "../services/geo";
+import { pointInPolygon, polygonCentroid } from "../services/geo";
+import {
+  canAccessThread,
+  ensureMilestoneThread,
+  ensureProjectThread,
+  listThreadsForUser,
+  mirrorEvent,
+  postMessage,
+} from "../services/chat";
 import {
   processApprovalDecision,
   processEvidenceSubmission,
@@ -42,6 +50,8 @@ import {
   renderFieldShell,
   renderInsights,
   renderLedger,
+  renderCommunications,
+  renderMap,
   renderMilestoneDetail,
   renderMore,
   renderOverview,
@@ -436,7 +446,9 @@ function stateFingerprint(): string {
               (SELECT COUNT(*) FROM ledger_entries) AS l,
               (SELECT COUNT(*) FROM approval_requests) AS a,
               (SELECT COUNT(*) FROM approval_records) AS ar,
-              (SELECT COUNT(*) FROM notifications) AS n`
+              (SELECT COUNT(*) FROM notifications) AS n,
+              (SELECT COUNT(*) FROM messages) AS msg,
+              (SELECT COUNT(*) FROM conversation_threads) AS th`
     )
     .get();
   return createHash("sha256")
@@ -563,6 +575,173 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // Spatial context for the map (session-gated; presentation data only —
+  // every state shown is read from the primary verification/governance
+  // records, never computed by the map).
+  if (method === "GET" && pathname === "/api/map-context") {
+    if (!currentUser(req)) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const projects = await Promise.all(
+      repo.listProjects().map(async (project) => {
+        const features = repo.listSpatialFeatures(project.id);
+        const summary = await virtualAccountService.getProjectSummary(project.id);
+        const chain = await wormEvidenceStore.verifyChain();
+        const milestones = repo.listMilestones(project.id);
+        const pendingApprovals = repo
+          .listApprovalRequestsForProject(project.id)
+          .filter((a) => a.status === "PENDING").length;
+        return {
+          id: project.id,
+          name: project.name,
+          location: project.location,
+          boundary: project.siteBoundary,
+          route: features.find((f) => f.kind === "ROUTE") ?? null,
+          totalBudget: summary.totalBudget,
+          released: summary.released,
+          held: summary.held,
+          milestoneCount: milestones.length,
+          pendingApprovals,
+          chainValid: chain.valid,
+          segments: features
+            .filter((f) => f.kind === "SEGMENT")
+            .map((f) => {
+              const m = milestones.find((ms) => ms.id === f.milestoneId)!;
+              const approval = repo.getApprovalRequestForMilestone(m.id);
+              const records = approval ? repo.listApprovalRecordsForRequest(approval.id) : [];
+              return {
+                id: f.id,
+                milestoneId: m.id,
+                seq: m.seq,
+                title: m.title,
+                requirement: m.requirement,
+                label: f.label,
+                geometry: f.geometry,
+                status: m.status,
+                accountStatus: m.accountStatus,
+                trancheAmount: m.trancheAmount,
+                approvalStatus: approval?.status ?? null,
+                approvalsRecorded: records.filter((r) => r.decision === "APPROVED").length,
+                approvalsRequired: approval?.requiredRoles.length ?? 0,
+                threadId: repo.findThreadForMilestone(m.id)?.id ?? null,
+              };
+            }),
+          evidence: milestones.flatMap((m) =>
+            repo
+              .listEvidenceForMilestone(m.id)
+              .filter((e) => e.latitude !== null && e.longitude !== null)
+              .map((e) => {
+                const v = repo.getVerificationForEvidence(e.id);
+                const ledger = repo.getLedgerEntryForEvidence(e.id);
+                return {
+                  id: e.id,
+                  milestoneId: m.id,
+                  seq: m.seq,
+                  milestoneTitle: m.title,
+                  latitude: e.latitude,
+                  longitude: e.longitude,
+                  capturedAt: e.capturedAt,
+                  uploadedAt: e.uploadedAt,
+                  capturedBy: repo.getUser(e.userId)?.name ?? "—",
+                  photoPath: e.photoPath,
+                  isDemoFallback: e.isDemoFallback,
+                  verdict: v?.verdict ?? null,
+                  confidence: v?.confidence ?? null,
+                  source: v?.source ?? null,
+                  geofencePassed:
+                    v?.checks.find((c) => c.name.toLowerCase().includes("geofence"))?.passed ?? null,
+                  insideBoundary: pointInPolygon(e.longitude!, e.latitude!, project.siteBoundary),
+                  approvalStatus: repo.getApprovalRequestForMilestone(m.id)?.status ?? null,
+                  accountStatus: m.accountStatus,
+                  ledgerSeq: ledger?.seq ?? null,
+                  threadId: repo.findThreadForMilestone(m.id)?.id ?? null,
+                };
+              })
+          ),
+        };
+      })
+    );
+    sendJson(res, { projects });
+    return;
+  }
+
+  // ---- communications APIs (chat coordinates — it can never approve or
+  //      release; only the ApprovalRequest workflow changes those states) ----
+  const messageMatch = /^\/api\/threads\/([^/]+)\/messages$/.exec(pathname);
+  if (method === "POST" && messageMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const thread = repo.getThread(messageMatch[1]);
+    if (!thread || !canAccessThread(user, thread)) {
+      // 404 for unauthorized too: don't reveal other tenants' thread ids.
+      sendJson(res, { error: "Thread not found" }, 404);
+      return;
+    }
+    const body = (await readBody(req, 64 * 1024)).toString("utf8");
+    const text = isFormPost(req)
+      ? new URLSearchParams(body).get("body") ?? ""
+      : JSON.parse(body || "{}").body ?? "";
+    if (!text.trim()) {
+      sendJson(res, { error: "Message body required" }, 400);
+      return;
+    }
+    const message = postMessage(thread, user, text);
+    if (isFormPost(req)) {
+      redirect(res, `/communications?thread=${thread.id}`);
+    } else {
+      sendJson(res, { message }, 201);
+    }
+    return;
+  }
+
+  // Find-or-create the discussion thread for a milestone or project.
+  if (method === "POST" && pathname === "/api/threads/open") {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const body = (await readBody(req, 16 * 1024)).toString("utf8");
+    const params = isFormPost(req)
+      ? new URLSearchParams(body)
+      : new URLSearchParams(Object.entries(JSON.parse(body || "{}")) as [string, string][]);
+    const milestoneId = params.get("milestoneId");
+    const projectId = params.get("projectId");
+    let thread = null;
+    if (milestoneId) {
+      const milestone = repo.getMilestone(milestoneId);
+      const project = milestone ? repo.getProject(milestone.projectId) : null;
+      if (!milestone || !project) {
+        sendJson(res, { error: "Unknown milestone" }, 404);
+        return;
+      }
+      thread = ensureMilestoneThread(milestoneId, user);
+    } else if (projectId) {
+      if (!repo.getProject(projectId)) {
+        sendJson(res, { error: "Unknown project" }, 404);
+        return;
+      }
+      thread = ensureProjectThread(projectId, user);
+    } else {
+      sendJson(res, { error: "milestoneId or projectId required" }, 400);
+      return;
+    }
+    if (!canAccessThread(user, thread)) {
+      sendJson(res, { error: "Thread not found" }, 404);
+      return;
+    }
+    if (isFormPost(req)) {
+      redirect(res, `/communications?thread=${thread.id}`);
+    } else {
+      sendJson(res, { thread }, 201);
+    }
+    return;
+  }
+
   if (method === "POST" && pathname === "/api/evidence") {
     const user = currentUser(req);
     if (!user) {
@@ -628,6 +807,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           }),
         }
       );
+      const p = repo.listProjects()[0];
+      if (p) {
+        mirrorEvent(
+          `LEDGER INTEGRITY ALERT: tampering detected at entry ${chain.brokenAt}. Evidence chain requires investigation.`,
+          { projectId: p.id }
+        );
+      }
     }
     if (isFormPost(req) || (req.headers.accept ?? "").includes("text/html")) {
       redirect(res, "/ledger?checked=1");
@@ -814,6 +1000,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   const PAGE_PREFIXES = [
     "/overview", "/dashboard", "/projects", "/project/", "/milestone/",
     "/approvals", "/ledger", "/reports", "/compliance", "/insights", "/more", "/field",
+    "/map", "/communications",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -858,7 +1045,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     const tabParam = (url.searchParams.get("tab") ?? "overview") as ProjectTab;
-    const tab: ProjectTab = ["overview", "milestones", "evidence", "approvals", "ledger", "activity"].includes(tabParam)
+    const tab: ProjectTab = ["overview", "milestones", "evidence", "approvals", "ledger", "activity", "map", "discussion"].includes(tabParam)
       ? tabParam
       : "overview";
     const chain = await wormEvidenceStore.verifyChain();
@@ -879,6 +1066,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         accountEvents: repo.listAccountEventsForProject(data.project.id),
         notifications: repo.listNotifications(30),
         users: usersById(),
+        threads: listThreadsForUser(user!)
+          .filter((t) => t.projectId === data.project.id)
+          .map((t) => ({
+            thread: t,
+            latest: repo.latestMessageForThread(t.id),
+            milestone: t.milestoneId ? repo.getMilestone(t.milestoneId) : null,
+          })),
       })
     );
     return;
@@ -1002,6 +1196,43 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   if (method === "GET" && pathname === "/insights") {
     sendHtml(res, renderInsights({ nav: navFor(user!, "insights"), insights: computeInsights() }));
+    return;
+  }
+
+  if (method === "GET" && pathname === "/map") {
+    sendHtml(res, renderMap({ nav: navFor(user!, "map"), scope: "global" }));
+    return;
+  }
+
+  if (method === "GET" && pathname === "/communications") {
+    const threads = listThreadsForUser(user!);
+    const selectedId = url.searchParams.get("thread");
+    const selected = selectedId ? threads.find((t) => t.id === selectedId) ?? null : null;
+    if (selectedId && !selected) {
+      sendHtml(res, renderError(navFor(user!, "comms"), "Thread not found", "This conversation does not exist or is outside your organization's projects."), 404);
+      return;
+    }
+    sendHtml(
+      res,
+      renderCommunications({
+        nav: navFor(user!, "comms"),
+        threads: threads.map((t) => ({
+          thread: t,
+          latest: repo.latestMessageForThread(t.id),
+          project: t.projectId ? repo.getProject(t.projectId) : null,
+          milestone: t.milestoneId ? repo.getMilestone(t.milestoneId) : null,
+        })),
+        selected: selected
+          ? {
+              thread: selected,
+              messages: repo.listMessagesForThread(selected.id),
+              project: selected.projectId ? repo.getProject(selected.projectId) : null,
+              milestone: selected.milestoneId ? repo.getMilestone(selected.milestoneId) : null,
+            }
+          : null,
+        users: usersById(),
+      })
+    );
     return;
   }
 

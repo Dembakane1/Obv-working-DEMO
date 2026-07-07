@@ -16,7 +16,9 @@ import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import type {
   ApprovalRequest,
+  ChatMessage,
   EvidenceItem,
+  GeoPolygon,
   Milestone,
   Project,
   Verification,
@@ -332,6 +334,144 @@ export async function seedDemo(): Promise<void> {
     milestoneId: "ms-3",
     path: "/demo-evidence/m3-gravel-c.svg",
     label: "Surfaced section with km marker (km 12+000)",
+  });
+
+  // ---- spatial demo geometry (presentation only) ----
+  // DEMONSTRATION corridor centerline for the seeded R47 project — not
+  // real-world engineering geometry. It stays inside the registered site
+  // boundary and passes near the seeded evidence coordinates so the map
+  // reads coherently. Segment km labels are explicit demo metadata.
+  const route: GeoPolygon = [
+    [33.5560, -11.9120], // Mzimba Boma end (km 0)
+    [33.5714, -11.9021], // near M1 evidence capture
+    [33.5860, -11.8890],
+    [33.5960, -11.8710],
+    [33.6012, -11.8544], // near M2 culvert evidence capture
+    [33.6050, -11.8400],
+    [33.6180, -11.8210],
+    [33.6350, -11.8050],
+    [33.6520, -11.7880], // Kafukule trading centre end (km 14)
+  ];
+  repo.insertSpatialFeature({
+    id: "geo-route",
+    projectId: project.id,
+    milestoneId: null,
+    kind: "ROUTE",
+    label: "R47 corridor centerline (demo geometry)",
+    geometry: route,
+  });
+  // Sequential corridor segments, one per milestone. Slices share their
+  // boundary vertex so segments join seamlessly.
+  const segments: Array<{ milestoneId: string; label: string; slice: [number, number] }> = [
+    { milestoneId: "ms-1", label: "km 0–2", slice: [0, 2] },
+    { milestoneId: "ms-2", label: "km 2–7", slice: [1, 5] },
+    { milestoneId: "ms-3", label: "km 7–11", slice: [4, 7] },
+    { milestoneId: "ms-4", label: "km 11–12.5", slice: [6, 8] },
+    { milestoneId: "ms-5", label: "km 12.5–14", slice: [7, 9] },
+  ];
+  for (const s of segments) {
+    repo.insertSpatialFeature({
+      id: `geo-${s.milestoneId}`,
+      projectId: project.id,
+      milestoneId: s.milestoneId,
+      kind: "SEGMENT",
+      label: s.label,
+      geometry: route.slice(s.slice[0], s.slice[1] + 1),
+    });
+  }
+
+  // ---- seeded communications (chat coordinates; it never authorizes) ----
+  // Two default threads with realistic history consistent with the seeded
+  // state: M1/M2 released, M3 awaiting evidence. No message claims an
+  // approval or upload that the governance/evidence records don't show.
+  repo.insertThread({
+    id: "thread-project",
+    organizationId: "org-cdfc",
+    projectId: project.id,
+    milestoneId: null,
+    evidenceItemId: null,
+    approvalRequestId: null,
+    title: "Project General",
+    scope: "PROJECT",
+    createdAt: "2026-02-03T08:00:00.000Z",
+    createdBy: "user-pm",
+  });
+  repo.insertThread({
+    id: "thread-m3",
+    organizationId: "org-cdfc",
+    projectId: project.id,
+    milestoneId: "ms-3",
+    evidenceItemId: null,
+    approvalRequestId: null,
+    title: "M3 · Gravel Base Course Review",
+    scope: "MILESTONE",
+    createdAt: "2026-06-28T07:30:00.000Z",
+    createdBy: "user-pm",
+  });
+  const msg = (
+    m: Pick<ChatMessage, "id" | "threadId" | "body" | "createdAt"> & Partial<ChatMessage>
+  ): void =>
+    repo.insertChatMessage({
+      senderUserId: null,
+      senderDisplayName: "OBV",
+      provider: "OBV",
+      externalThreadId: null,
+      externalMessageId: null,
+      messageType: "SYSTEM_EVENT",
+      refId: null,
+      deliveryStatus: "SENT",
+      ...m,
+    });
+  // Project General: history mirroring the real M1/M2 record.
+  msg({
+    id: "pmsg-1", threadId: "thread-project",
+    senderUserId: "user-pm", senderDisplayName: "Daniel Phiri", messageType: "TEXT",
+    body: "Welcome to the R47 project workspace. Coordination happens here; evidence and approvals stay in their formal OBV workflows.",
+    createdAt: "2026-02-03T08:05:00.000Z",
+  });
+  msg({
+    id: "pmsg-2", threadId: "thread-project",
+    body: "Verification completed: VERIFIED — M1 site mobilization & vegetation clearing.",
+    refId: "ev-ms-1", messageType: "EVIDENCE_REFERENCE",
+    createdAt: "2026-03-11T10:06:00.000Z",
+  });
+  msg({
+    id: "pmsg-3", threadId: "thread-project",
+    body: "All approvals complete for M1. Tranche of $240,000 RELEASED on the virtual project account.",
+    refId: "ap-ms-1", messageType: "APPROVAL_REFERENCE",
+    createdAt: "2026-03-14T09:00:00.000Z",
+  });
+  msg({
+    id: "pmsg-4", threadId: "thread-project",
+    body: "All approvals complete for M2. Tranche of $480,000 RELEASED on the virtual project account.",
+    refId: "ap-ms-2", messageType: "APPROVAL_REFERENCE",
+    createdAt: "2026-05-22T09:00:00.000Z",
+  });
+  msg({
+    id: "pmsg-5", threadId: "thread-project",
+    senderUserId: "user-funder", senderDisplayName: "Margaret Osei", messageType: "TEXT",
+    body: "Thanks all — disbursement register is up to date through M2. M3 gravel base is the next verification gate.",
+    createdAt: "2026-05-22T10:12:00.000Z",
+  });
+  // M3 review thread: coordination consistent with PENDING_EVIDENCE
+  // (nobody claims evidence or approvals that don't exist).
+  msg({
+    id: "m3msg-1", threadId: "thread-m3",
+    senderUserId: "user-field", senderDisplayName: "Chikondi Banda", messageType: "TEXT",
+    body: "Gravel base compaction is complete from km 9–14. I will capture and submit evidence through OBV field capture from the site so GPS and metadata are attached.",
+    createdAt: "2026-06-28T07:42:00.000Z",
+  });
+  msg({
+    id: "m3msg-2", threadId: "thread-m3",
+    senderUserId: "user-pm", senderDisplayName: "Daniel Phiri", messageType: "TEXT",
+    body: "Received. Submit against the M3 requirement (full carriageway width, km marker or grading equipment visible) and it will route to verification automatically.",
+    createdAt: "2026-06-28T08:15:00.000Z",
+  });
+  msg({
+    id: "m3msg-3", threadId: "thread-m3",
+    senderUserId: "user-compliance", senderDisplayName: "Amina Ndlovu", messageType: "TEXT",
+    body: "Please confirm the compaction test certificate is attached to the project file before final sign-off. Reminder: release still requires the formal two-role approval in OBV — nothing in this thread authorizes funds.",
+    createdAt: "2026-06-28T09:03:00.000Z",
   });
 
   const chain = await wormEvidenceStore.verifyChain();

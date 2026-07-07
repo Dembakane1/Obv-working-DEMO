@@ -218,3 +218,76 @@ export interface Report {
   integrityStatus: string;
   ledgerEntries: number;
 }
+
+// ---------------------------------------------------------------------
+// Spatial project intelligence (additive; presentation-layer data only —
+// the map reads existing verification/governance state, never computes it)
+// ---------------------------------------------------------------------
+
+/**
+ * Demonstration geometry for the seeded project: the road corridor
+ * centerline (ROUTE) and per-milestone corridor segments (SEGMENT).
+ * Labels are explicit demo metadata (e.g. "km 0–2"); OBV does not infer
+ * engineering quantities from geometry.
+ */
+export interface SpatialFeature {
+  id: string;
+  projectId: string;
+  milestoneId: string | null; // null for the project ROUTE
+  kind: "ROUTE" | "SEGMENT";
+  label: string;
+  geometry: GeoPolygon; // [lng, lat] vertices (open polyline for routes)
+}
+
+// ---------------------------------------------------------------------
+// Contextual project communications (additive)
+//
+// CHAT COORDINATES. MAP EXPLAINS WHERE. EVIDENCE PROVES. VERIFICATION
+// ASSESSES. HUMANS AUTHORIZE. LEDGER RECORDS.
+//
+// Messages NEVER change financial or governance state. Only the existing
+// ApprovalRequest workflow can create release eligibility.
+// ---------------------------------------------------------------------
+
+export type ThreadScope = "ORGANIZATION" | "PROJECT" | "MILESTONE" | "EVIDENCE" | "APPROVAL";
+
+/** OBV is the real internal provider; TEAMS/WHATSAPP are architecture-
+ *  ready seams for future sync (see docs/COMMUNICATIONS_INTEGRATION.md). */
+export type MessageProvider = "OBV" | "TEAMS" | "WHATSAPP";
+
+export type ChatMessageType =
+  | "TEXT"
+  | "SYSTEM_EVENT"
+  | "EVIDENCE_REFERENCE"
+  | "MILESTONE_REFERENCE"
+  | "APPROVAL_REFERENCE"
+  | "REPORT_REFERENCE";
+
+export interface ConversationThread {
+  id: string;
+  organizationId: string;
+  projectId: string | null;
+  milestoneId: string | null;
+  evidenceItemId: string | null;
+  approvalRequestId: string | null;
+  title: string;
+  scope: ThreadScope;
+  createdAt: string;
+  createdBy: string; // user id
+}
+
+export interface ChatMessage {
+  id: string;
+  threadId: string;
+  senderUserId: string | null; // null for SYSTEM_EVENT
+  senderDisplayName: string;
+  provider: MessageProvider;
+  externalThreadId: string | null; // future Teams/WhatsApp mapping
+  externalMessageId: string | null;
+  body: string;
+  messageType: ChatMessageType;
+  /** Referenced record id for *_REFERENCE types (evidence/milestone/approval/report). */
+  refId: string | null;
+  createdAt: string;
+  deliveryStatus: "SENT" | "PENDING" | "FAILED";
+}

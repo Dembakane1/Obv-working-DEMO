@@ -157,6 +157,51 @@ CREATE TABLE IF NOT EXISTS demo_fallback_photos (
   label TEXT NOT NULL
 );
 
+-- Demonstration spatial geometry (route centerline + milestone segments).
+-- Presentation-layer only: the map reads verification/governance state
+-- from the primary tables; geometry never drives any decision.
+CREATE TABLE IF NOT EXISTS spatial_features (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  milestone_id TEXT REFERENCES milestones(id),
+  kind TEXT NOT NULL CHECK (kind IN ('ROUTE','SEGMENT')),
+  label TEXT NOT NULL,
+  geometry TEXT NOT NULL -- JSON [lng,lat][] polyline
+);
+
+-- Contextual project communications. Chat coordinates; it can NEVER
+-- create approvals or move funds — no code path from these tables
+-- reaches the approval workflow or VirtualAccountService.
+CREATE TABLE IF NOT EXISTS conversation_threads (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  milestone_id TEXT REFERENCES milestones(id),
+  evidence_item_id TEXT REFERENCES evidence_items(id),
+  approval_request_id TEXT REFERENCES approval_requests(id),
+  title TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('ORGANIZATION','PROJECT','MILESTONE','EVIDENCE','APPROVAL')),
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL REFERENCES users(id)
+);
+
+-- No UPDATE/DELETE is exposed for messages (no editing in the demo);
+-- this is an auditable communications timeline, NOT the evidence ledger.
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES conversation_threads(id),
+  sender_user_id TEXT REFERENCES users(id),
+  sender_display_name TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'OBV' CHECK (provider IN ('OBV','TEAMS','WHATSAPP')),
+  external_thread_id TEXT,
+  external_message_id TEXT,
+  body TEXT NOT NULL,
+  message_type TEXT NOT NULL DEFAULT 'TEXT',
+  ref_id TEXT,
+  created_at TEXT NOT NULL,
+  delivery_status TEXT NOT NULL DEFAULT 'SENT'
+);
+
 -- Generated funder-report artifacts (PDFs stored under data/reports/).
 CREATE TABLE IF NOT EXISTS reports (
   id TEXT PRIMARY KEY,

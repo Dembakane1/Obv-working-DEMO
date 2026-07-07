@@ -41,6 +41,10 @@ export const icons = {
     icon('<path d="M12 3.5c2.6 1.4 5 2 7.5 2.2 0 6.6-2.4 11.4-7.5 14.8-5.1-3.4-7.5-8.2-7.5-14.8C7 5.5 9.4 4.9 12 3.5Z"/>'),
   insights: () =>
     icon('<path d="M4 17.5 9.5 12l3.5 3.5 7-7.5"/><path d="M15.5 8H20v4.5"/>'),
+  map: (size = 16) =>
+    icon('<path d="M9 4.5 4 6.5v13l5-2 6 2 5-2v-13l-5 2zM9 4.5v13M15 6.5v13"/>', size),
+  chat: (size = 16) =>
+    icon('<path d="M4 5.5h16v11H10l-4 3.5v-3.5H4z"/><path d="M8 9.5h8M8 12.5h5"/>', size),
   activity: () => icon('<path d="M3.5 12h4l2.5 6.5 4-13 2.5 6.5h4"/>'),
   check: (size = 16) => icon('<path d="M4.5 12.5 10 18 19.5 6.5"/>', size),
   x: (size = 16) => icon('<path d="M6 6l12 12M18 6 6 18"/>', size),

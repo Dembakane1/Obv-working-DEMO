@@ -125,6 +125,43 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Spatial map + contextual communications (v8)
+
+**Project Map** (`/map`, plus a Map tab in each project): an operational
+GIS view driven entirely by existing records — the map presents state, it
+never computes it. Zero-dependency Web-Mercator engine (~450 lines,
+`src/client/map.ts`) behind a tile-provider adapter; standard tiles from
+OpenStreetMap and satellite from Esri World Imagery — both public and
+token-free, so no map key exists anywhere. Shows the registered site
+boundary (dashed), the demo corridor centerline, per-milestone segments
+colored by live milestone state (labels like "km 7–11" are explicit
+demonstration metadata seeded in `spatial_features`), and evidence markers
+colored by verification verdict (with demo-fallback and outside-geofence
+treatments). Selecting the project / a segment / a marker opens an
+inspector panel (bottom sheet on mobile) with budget/held/released,
+requirement/tranche/approval progress, or the evidence photo, checks,
+confidence, GPS, fund state and ledger reference — with cross-links to the
+full records and threads. Filters: time (all/7/30 days), milestone,
+verdict. Tests: `scripts/map-test.js` (16 checkpoints).
+
+**Communications** (`/communications`, plus a Discussion tab per project
+and "Open thread" on milestones): real internal project-linked messaging —
+thread list, conversation, and a linked-context panel (drawer on mobile).
+Threads scope to organization/project/milestone/evidence/approval; two are
+seeded (Project General, M3 · Gravel Base Course Review) with history
+consistent with the seeded governance state. Important product events
+(evidence submitted, verification completed, approval requested/recorded/
+rejected, tranche released, integrity alerts) mirror into the most
+specific existing thread as visually distinct system events with compact
+evidence/approval reference cards. **Chat coordinates — it cannot
+authorize:** no code path from messages reaches the approval workflow or
+VirtualAccountService, and `scripts/chat-test.js` (16 checkpoints) proves
+"approved"/"release funds" messages change nothing, plus tenant-boundary
+enforcement and reset consistency. Teams/WhatsApp are architecture-ready
+seams only (provider enum + external id columns) — see
+`docs/COMMUNICATIONS_INTEGRATION.md`. TeamsNotifier remains the separate,
+unchanged notification channel.
+
 ## Microsoft Teams notifications (v6)
 
 OBV can notify an institutional Teams channel on decision- and risk-relevant
@@ -436,6 +473,8 @@ release → ledger integrity → demo reset → repeat loop.
 node scripts/acceptance-test.js fallback   # DEMO FALLBACK path
 node scripts/acceptance-test.js camera     # real camera + GPS (fake media stream)
 node scripts/idempotency-test.js           # replay/double-submit protections (no Playwright needed)
+node scripts/map-test.js                   # spatial map: layers, geometry, markers, filters, mobile
+node scripts/chat-test.js                  # communications + proof that chat cannot approve/release
 ```
 
 `scripts/idempotency-test.js` proves accidental repeats cannot duplicate

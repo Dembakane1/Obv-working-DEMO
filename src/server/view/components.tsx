@@ -134,7 +134,9 @@ export interface NavContext {
 const NAV_ITEMS: Array<{ key: string; href: string; label: string; icon: () => VNode }> = [
   { key: "overview", href: "/overview", label: "Overview", icon: icons.overview },
   { key: "projects", href: "/projects", label: "Projects", icon: icons.projects },
+  { key: "map", href: "/map", label: "Project Map", icon: icons.map },
   { key: "field", href: "/field", label: "Field Capture", icon: icons.camera },
+  { key: "comms", href: "/communications", label: "Communications", icon: icons.chat },
   { key: "approvals", href: "/approvals", label: "Pending Approvals", icon: icons.approvals },
   { key: "ledger", href: "/ledger", label: "Evidence Ledger", icon: icons.ledger },
   { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },

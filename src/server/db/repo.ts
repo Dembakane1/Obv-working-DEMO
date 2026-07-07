@@ -513,7 +513,7 @@ export function newId(): string {
 
 // ---------- generated reports ----------
 
-import type { Report } from "../../shared/types";
+import type { Report, SpatialFeature, ConversationThread, ChatMessage } from "../../shared/types";
 
 function toReport(r: Row): Report {
   return {
@@ -552,4 +552,151 @@ export function listReports(): Report[] {
 export function getReport(id: string): Report | null {
   const r = getDb().prepare("SELECT * FROM reports WHERE id = ?").get(id);
   return r ? toReport(r as Row) : null;
+}
+
+// ---------- spatial features (demo geometry; presentation only) ----------
+
+function toSpatialFeature(r: Row): SpatialFeature {
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    milestoneId: (r.milestone_id as string) ?? null,
+    kind: r.kind as SpatialFeature["kind"],
+    label: r.label as string,
+    geometry: JSON.parse(r.geometry as string),
+  };
+}
+
+export function insertSpatialFeature(f: SpatialFeature): void {
+  getDb()
+    .prepare(
+      `INSERT INTO spatial_features (id, project_id, milestone_id, kind, label, geometry)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(f.id, f.projectId, f.milestoneId, f.kind, f.label, JSON.stringify(f.geometry));
+}
+
+export function listSpatialFeatures(projectId: string): SpatialFeature[] {
+  return getDb()
+    .prepare("SELECT * FROM spatial_features WHERE project_id = ? ORDER BY kind, id")
+    .all(projectId)
+    .map((r) => toSpatialFeature(r as Row));
+}
+
+// ---------- conversation threads & messages ----------
+// Chat coordinates; nothing here can reach the approval workflow or the
+// virtual account. No UPDATE/DELETE is exposed for messages.
+
+function toThread(r: Row): ConversationThread {
+  return {
+    id: r.id as string,
+    organizationId: r.organization_id as string,
+    projectId: (r.project_id as string) ?? null,
+    milestoneId: (r.milestone_id as string) ?? null,
+    evidenceItemId: (r.evidence_item_id as string) ?? null,
+    approvalRequestId: (r.approval_request_id as string) ?? null,
+    title: r.title as string,
+    scope: r.scope as ConversationThread["scope"],
+    createdAt: r.created_at as string,
+    createdBy: r.created_by as string,
+  };
+}
+
+export function insertThread(t: ConversationThread): void {
+  getDb()
+    .prepare(
+      `INSERT INTO conversation_threads (id, organization_id, project_id, milestone_id,
+         evidence_item_id, approval_request_id, title, scope, created_at, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      t.id, t.organizationId, t.projectId, t.milestoneId, t.evidenceItemId,
+      t.approvalRequestId, t.title, t.scope, t.createdAt, t.createdBy
+    );
+}
+
+export function getThread(id: string): ConversationThread | null {
+  const r = getDb().prepare("SELECT * FROM conversation_threads WHERE id = ?").get(id);
+  return r ? toThread(r as Row) : null;
+}
+
+export function listThreads(): ConversationThread[] {
+  return getDb()
+    .prepare("SELECT * FROM conversation_threads ORDER BY created_at")
+    .all()
+    .map((r) => toThread(r as Row));
+}
+
+export function findThreadForMilestone(milestoneId: string): ConversationThread | null {
+  const r = getDb()
+    .prepare(
+      "SELECT * FROM conversation_threads WHERE milestone_id = ? AND scope = 'MILESTONE' LIMIT 1"
+    )
+    .get(milestoneId);
+  return r ? toThread(r as Row) : null;
+}
+
+export function findProjectThread(projectId: string): ConversationThread | null {
+  const r = getDb()
+    .prepare(
+      "SELECT * FROM conversation_threads WHERE project_id = ? AND scope = 'PROJECT' LIMIT 1"
+    )
+    .get(projectId);
+  return r ? toThread(r as Row) : null;
+}
+
+function toChatMessage(r: Row): ChatMessage {
+  return {
+    id: r.id as string,
+    threadId: r.thread_id as string,
+    senderUserId: (r.sender_user_id as string) ?? null,
+    senderDisplayName: r.sender_display_name as string,
+    provider: r.provider as ChatMessage["provider"],
+    externalThreadId: (r.external_thread_id as string) ?? null,
+    externalMessageId: (r.external_message_id as string) ?? null,
+    body: r.body as string,
+    messageType: r.message_type as ChatMessage["messageType"],
+    refId: (r.ref_id as string) ?? null,
+    createdAt: r.created_at as string,
+    deliveryStatus: r.delivery_status as ChatMessage["deliveryStatus"],
+  };
+}
+
+export function insertChatMessage(m: ChatMessage): void {
+  getDb()
+    .prepare(
+      `INSERT INTO messages (id, thread_id, sender_user_id, sender_display_name,
+         provider, external_thread_id, external_message_id, body, message_type,
+         ref_id, created_at, delivery_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      m.id, m.threadId, m.senderUserId, m.senderDisplayName, m.provider,
+      m.externalThreadId, m.externalMessageId, m.body, m.messageType,
+      m.refId, m.createdAt, m.deliveryStatus
+    );
+}
+
+export function listMessagesForThread(threadId: string): ChatMessage[] {
+  return getDb()
+    .prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at")
+    .all(threadId)
+    .map((r) => toChatMessage(r as Row));
+}
+
+export function latestMessageForThread(threadId: string): ChatMessage | null {
+  const r = getDb()
+    .prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+    .get(threadId);
+  return r ? toChatMessage(r as Row) : null;
+}
+
+export function countChatRows(): { threads: number; messages: number } {
+  const r = getDb()
+    .prepare(
+      `SELECT (SELECT COUNT(*) FROM conversation_threads) AS threads,
+              (SELECT COUNT(*) FROM messages) AS messages`
+    )
+    .get() as Row;
+  return { threads: r.threads as number, messages: r.messages as number };
 }
