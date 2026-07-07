@@ -131,7 +131,7 @@ async function main() {
 
   await funder.getByRole("button", { name: /Approve release/ }).click();
   await funder.waitForURL("**/approvals");
-  await waitForText(funder, "1 of 2 approvals");
+  await waitForText(funder, "1 OF 2");
   await waitForText(funder, "Your decision is recorded");
   pass("partial approval recorded — 1 of 2 shown, awaiting Compliance Reviewer");
 
@@ -144,7 +144,7 @@ async function main() {
   const complianceCtx = await browser.newContext();
   const compliance = await signIn(complianceCtx, "Amina Ndlovu", "**/overview");
   await compliance.goto(BASE + "/approvals");
-  await waitForText(compliance, "1 of 2 approvals");
+  await waitForText(compliance, "1 OF 2");
   await compliance.getByRole("button", { name: /Approve release/ }).click();
   await compliance.waitForURL("**/approvals");
   await waitForText(compliance, "Nothing awaiting approval");

@@ -991,3 +991,141 @@ video.viewfinder, img.preview {
 }
 .footer-note { margin-top: 28px; font-size: 11px; color: var(--ink-4); }
 img { max-width: 100%; }
+
+/* =====================================================================
+   v4.1 recomposition — Portfolio Overview + Approval Decision screens.
+   Statement bands and registers instead of floating cards.
+   ===================================================================== */
+
+/* --- financial statement band: ruled, sits on the canvas, not a card --- */
+.statement { border-top: 2px solid var(--ink); border-bottom: 1px solid var(--line-2); margin-top: 6px; }
+.stmt-row { display: grid; grid-template-columns: repeat(4, 1fr); }
+.stmt-fig { padding: 14px 22px 12px 0; margin-left: 22px; border-left: 1px solid var(--line-2); padding-left: 22px; }
+.stmt-fig:first-child { border-left: none; margin-left: 0; padding-left: 0; }
+.stmt-fig .v { font-size: 29px; font-weight: 650; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; line-height: 1.1; color: var(--ink); }
+.stmt-fig .v.green { color: var(--ok); }
+.stmt-fig .v.amber { color: var(--warn); }
+.stmt-fig .l { font-size: 10px; font-weight: 650; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); margin-top: 4px; }
+.stmt-fig .c { font-size: 11px; color: var(--ink-4); margin-top: 1px; font-variant-numeric: tabular-nums; }
+.stmt-sub { border-top: 1px solid var(--line-2); display: flex; flex-wrap: wrap; gap: 6px 26px; padding: 8px 0; font-size: 11px; color: var(--ink-3); }
+.stmt-sub .it { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.stmt-sub .it b { color: var(--ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+.stmt-sub .g { font-size: 7.5px; position: relative; top: -1.5px; }
+.stmt-sub .g.ok { color: var(--ok); } .stmt-sub .g.warn { color: var(--warn); }
+.stmt-sub .g.bad { color: var(--bad); } .stmt-sub .g.idle { color: var(--ink-4); }
+@media (max-width: 860px) {
+  .stmt-row { grid-template-columns: 1fr 1fr; }
+  .stmt-fig { padding: 10px 14px 9px 0; margin-left: 0; padding-left: 0; border-left: none; }
+  .stmt-fig:nth-child(even) { border-left: 1px solid var(--line-2); padding-left: 14px; }
+  .stmt-fig:nth-child(n + 3) { border-top: 1px solid var(--line); }
+  .stmt-fig .v { font-size: 20px; }
+  .stmt-sub { gap: 5px 16px; }
+}
+
+/* --- document-style section heading --- */
+.doc-head { display: flex; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--ink); padding-bottom: 5px; margin: 26px 0 0; }
+.doc-head h2 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.doc-head .right { margin-left: auto; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* --- portfolio holdings table (desktop) --- */
+.sheet { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+table.holdings { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.holdings th {
+  text-align: left; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); font-weight: 650; padding: 8px 14px;
+  border-bottom: 1px solid var(--line-2); background: var(--surface-2); white-space: nowrap;
+}
+table.holdings td { padding: 13px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.holdings tr:last-child td { border-bottom: none; }
+table.holdings .h-name { font-size: 14px; font-weight: 650; letter-spacing: -0.01em; }
+table.holdings .h-name a { color: var(--ink); }
+table.holdings .h-sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+table.holdings td.fig { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; text-align: right; }
+table.holdings td.fig .pct-sub { display: block; font-size: 10px; color: var(--ink-4); font-weight: 500; }
+table.holdings td.fig.green { color: var(--ok); }
+table.holdings td.fig.amber { color: var(--warn); }
+table.holdings .h-next { font-size: 11.5px; color: var(--ink-2); max-width: 170px; }
+table.holdings .h-next .nl { display: block; font-size: 9.5px; color: var(--ink-4); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 650; }
+.microbar { display: inline-flex; align-items: center; gap: 7px; }
+.microbar .tr { width: 56px; height: 3px; background: var(--line-2); border-radius: 2px; overflow: hidden; display: inline-block; }
+.microbar .fl { height: 100%; background: var(--action); display: block; }
+
+/* mobile holding rows */
+.holding-m { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.holding-m:last-child { border-bottom: none; }
+.holding-m .hm-name { font-size: 14px; font-weight: 650; }
+.holding-m .hm-name a { color: var(--ink); }
+.holding-m .hm-sub { font-size: 11px; color: var(--ink-3); margin-top: 1px; }
+.holding-m .hm-figs { display: flex; gap: 16px; margin-top: 9px; font-variant-numeric: tabular-nums; }
+.holding-m .hm-figs .f { min-width: 0; }
+.holding-m .hm-figs .f .v { font-size: 13px; font-weight: 650; display: block; }
+.holding-m .hm-figs .f .v.green { color: var(--ok); } .holding-m .hm-figs .f .v.amber { color: var(--warn); }
+.holding-m .hm-figs .f .l { font-size: 9px; color: var(--ink-4); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 650; }
+.holding-m .hm-foot { display: flex; align-items: center; gap: 10px; margin-top: 9px; font-size: 11.5px; color: var(--ink-2); flex-wrap: wrap; }
+.holding-m .hm-foot a { margin-left: auto; font-weight: 600; }
+
+/* --- register list (print-register styling for activity/history) --- */
+.reglist { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.reg-row { display: flex; gap: 14px; padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 12px; align-items: baseline; }
+.reg-row:last-child { border-bottom: none; }
+.reg-row .ts { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); white-space: nowrap; flex-shrink: 0; width: 128px; }
+.reg-row .ev { color: var(--ink-2); min-width: 0; }
+.reg-row .ev b { color: var(--ink); font-weight: 600; }
+.reg-row .tag-r { margin-left: auto; flex-shrink: 0; font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-4); white-space: nowrap; }
+@media (max-width: 640px) {
+  .reg-row { flex-wrap: wrap; gap: 2px 10px; }
+  .reg-row .ts { width: auto; }
+  .reg-row .tag-r { margin-left: 0; width: 100%; }
+}
+
+/* --- approval decision document --- */
+.money-strip {
+  display: flex; align-items: flex-end; gap: 20px 36px; flex-wrap: wrap;
+  padding: 16px 20px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+}
+.money-strip .amt .v { font-size: 34px; font-weight: 650; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; line-height: 1; color: var(--ink); }
+.money-strip .amt .s { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: var(--warn); margin-top: 5px; display: block; }
+.money-strip .gp { margin-left: auto; text-align: right; }
+.money-strip .gp .v { font-size: 19px; font-weight: 650; letter-spacing: 0.01em; font-variant-numeric: tabular-nums; }
+.money-strip .gp .l { font-size: 9.5px; font-weight: 650; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-4); margin-top: 2px; }
+.money-strip .await { font-size: 12px; color: var(--ink-3); }
+.money-strip .await b { color: var(--ink-2); }
+@media (max-width: 640px) {
+  .money-strip { padding: 13px 14px 12px; gap: 10px 20px; }
+  .money-strip .amt .v { font-size: 27px; }
+  .money-strip .gp { margin-left: 0; text-align: left; }
+}
+
+/* tighten the decision grid for the document composition */
+.approval-review { grid-template-columns: 264px minmax(0, 1.2fr) minmax(0, 1fr); }
+.approval-review .col-decide { background: var(--surface); }
+.approval-review .col-photo { padding: 16px 18px; }
+.approval-review .col-facts { padding: 14px 18px; }
+
+/* register-style metadata under the evidence image */
+.photo-meta .row { font-family: inherit; }
+.photo-meta .v.mono { font-size: 10.5px; }
+
+/* audit trail as a ruled register table */
+.audit-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.audit-table th {
+  text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); font-weight: 700; padding: 7px 18px;
+  border-bottom: 1px solid var(--line-2); background: var(--surface-2);
+}
+.audit-table td { padding: 7px 18px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.audit-table tr:last-child td { border-bottom: none; }
+.audit-table .ts { font-family: var(--mono); font-size: 10px; color: var(--ink-3); white-space: nowrap; }
+.audit-table .who { font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+@media (max-width: 640px) {
+  .audit-table th:nth-child(1), .audit-table td:nth-child(1) { display: none; }
+  .audit-table td { padding: 7px 14px; }
+  .audit-table td .ts-inline { display: block; font-family: var(--mono); font-size: 9.5px; color: var(--ink-4); margin-top: 1px; }
+}
+
+/* hide inline mobile timestamp on desktop audit tables */
+.audit-table .ts-inline { display: none; }
+@media (max-width: 640px) { .audit-table .ts-inline { display: block; } }

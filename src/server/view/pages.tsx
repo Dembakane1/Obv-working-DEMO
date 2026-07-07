@@ -247,32 +247,154 @@ export function renderOverview(input: {
         </form>
       </PageHeader>
 
-      <FinancialBand
-        cells={[
-          { value: money(m.totalBudget), label: "Portfolio value", context: `${input.projects.length} project${input.projects.length === 1 ? "" : "s"} · ${m.totalMilestones} milestones` },
-          { value: money(m.released), label: "Released", context: `${releasedPct}% of portfolio`, tone: "green" },
-          { value: money(m.held), label: "Held", context: "pending verification & governance", tone: "amber" },
-          { value: money(m.pendingValue), label: "Pending governance", context: `${m.pendingApprovals} approval request${m.pendingApprovals === 1 ? "" : "s"}` },
-        ]}
-      />
+      {/* Financial statement band — ruled figures on the page, not cards */}
+      <div className="statement">
+        <div className="stmt-row">
+          <div className="stmt-fig">
+            <div className="v">{money(m.totalBudget)}</div>
+            <div className="l">Portfolio value</div>
+            <div className="c">{input.projects.length} project{input.projects.length === 1 ? "" : "s"} · {m.totalMilestones} milestones</div>
+          </div>
+          <div className="stmt-fig">
+            <div className="v green">{money(m.released)}</div>
+            <div className="l">Released</div>
+            <div className="c">{releasedPct}% of portfolio</div>
+          </div>
+          <div className="stmt-fig">
+            <div className="v amber">{money(m.held)}</div>
+            <div className="l">Held</div>
+            <div className="c">pending verification &amp; governance</div>
+          </div>
+          <div className="stmt-fig">
+            <div className="v">{money(m.pendingValue)}</div>
+            <div className="l">Pending governance</div>
+            <div className="c">{m.pendingApprovals} approval request{m.pendingApprovals === 1 ? "" : "s"}</div>
+          </div>
+        </div>
+        <div className="stmt-sub">
+          <span className="it"><span className={`g ${m.verifiedMilestones > 0 ? "ok" : "idle"}`}>●</span><b>{m.verifiedMilestones}/{m.totalMilestones}</b> milestones verified</span>
+          <span className="it"><span className={`g ${m.pendingApprovals > 0 ? "warn" : "idle"}`}>●</span><b>{m.pendingApprovals}</b> pending approval{m.pendingApprovals === 1 ? "" : "s"}</span>
+          <span className="it"><span className={`g ${m.flaggedEvidence > 0 ? "bad" : "ok"}`}>●</span><b>{m.flaggedEvidence}</b> flagged evidence</span>
+          <span className="it"><span className={`g ${input.chainValid ? "ok" : "bad"}`}>●</span>ledger <b>{input.chainValid ? "chain intact" : "integrity alert"}</b></span>
+        </div>
+      </div>
 
-      <OperationalStatus
-        items={[
-          { tone: m.verifiedMilestones > 0 ? "ok" : "idle", value: `${m.verifiedMilestones}/${m.totalMilestones}`, label: "milestones verified" },
-          { tone: m.pendingApprovals > 0 ? "warn" : "idle", value: String(m.pendingApprovals), label: "pending approvals" },
-          { tone: m.flaggedEvidence > 0 ? "bad" : "ok", value: String(m.flaggedEvidence), label: "flagged evidence" },
-          { tone: input.chainValid ? "ok" : "bad", value: input.chainValid ? "Intact" : "Alert", label: "ledger integrity" },
-        ]}
-      />
+      {/* Portfolio as a holdings register */}
+      <div className="doc-head">
+        <h2>Project portfolio</h2>
+        <span className="right">{input.projects.length} holding{input.projects.length === 1 ? "" : "s"} · {money(m.totalBudget)} committed</span>
+      </div>
+      <div className="sheet" style="margin-top:10px;border-radius:0 0 8px 8px;border-top:none">
+        <div className="desktop-only">
+          <table className="holdings">
+            <thead>
+              <tr>
+                <th style="width:30%">Project</th>
+                <th style="text-align:right">Budget</th>
+                <th style="text-align:right">Released</th>
+                <th style="text-align:right">Held</th>
+                <th>Progress</th>
+                <th>Next milestone</th>
+                <th>Governance</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {input.projects.map((d) => {
+                const pct = projectProgressPct(d);
+                const next = nextMilestone(d);
+                return (
+                  <tr>
+                    <td>
+                      <span className="h-name"><a href={`/project/${d.project.id}`}>{d.project.name}</a></span>
+                      <span className="h-sub" style="display:block">
+                        {d.project.location} · {d.project.projectType.replace(/_/g, " ")} · {d.org?.name ?? "—"}
+                      </span>
+                    </td>
+                    <td className="fig">{money(d.summary.totalBudget)}</td>
+                    <td className="fig green">{money(d.summary.released)}</td>
+                    <td className="fig amber">{money(d.summary.held)}</td>
+                    <td>
+                      <span className="microbar">
+                        <span className="tr"><span className="fl" style={`width:${pct}%`}></span></span>
+                        <span className="num" style="font-weight:650;font-size:11.5px">{pct}%</span>
+                      </span>
+                      <span style="display:block;font-size:10px;color:var(--ink-4)">
+                        {d.milestones.filter((x) => x.milestone.status === "RELEASED").length}/{d.milestones.length} released
+                      </span>
+                    </td>
+                    <td className="h-next">
+                      {next ? (
+                        <>
+                          <span className="nl">M{next.milestone.seq}</span>
+                          {next.milestone.title}
+                        </>
+                      ) : (
+                        "All complete"
+                      )}
+                    </td>
+                    <td>
+                      {d.pendingApprovals > 0 ? (
+                        <span className="status warn"><span className="g">●</span>{d.pendingApprovals} pending</span>
+                      ) : (
+                        <span className="status ok"><span className="g">✓</span>Clear</span>
+                      )}
+                    </td>
+                    <td style="text-align:right;white-space:nowrap">
+                      <a href={`/project/${d.project.id}`} style="font-weight:600;font-size:12px">View →</a>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="mobile-only">
+          {input.projects.map((d) => {
+            const pct = projectProgressPct(d);
+            const next = nextMilestone(d);
+            return (
+              <div className="holding-m">
+                <div style="display:flex;gap:8px;align-items:baseline">
+                  <span className="hm-name" style="min-width:0;flex:1"><a href={`/project/${d.project.id}`}>{d.project.name}</a></span>
+                  {d.pendingApprovals > 0 ? (
+                    <span className="status warn" style="flex-shrink:0"><span className="g">●</span>{d.pendingApprovals}</span>
+                  ) : null}
+                </div>
+                <div className="hm-sub">{d.project.location} · {d.org?.name ?? ""}</div>
+                <div className="hm-figs">
+                  <span className="f"><span className="v">{money(d.summary.totalBudget)}</span><span className="l">Budget</span></span>
+                  <span className="f"><span className="v green">{money(d.summary.released)}</span><span className="l">Released</span></span>
+                  <span className="f"><span className="v amber">{money(d.summary.held)}</span><span className="l">Held</span></span>
+                  <span className="f"><span className="v">{pct}%</span><span className="l">Progress</span></span>
+                </div>
+                <div className="hm-foot">
+                  {next ? <span>Next: <b>M{next.milestone.seq} · {next.milestone.title}</b></span> : <span>All milestones complete</span>}
+                  <a href={`/project/${d.project.id}`}>View →</a>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
 
-      <h2 className="section">Project portfolio</h2>
-      {input.projects.map((p) => (
-        <ProjectAsset data={p} />
-      ))}
-
-      <h2 className="section">Recent activity</h2>
-      <div className="panel">
-        <ActivityFeed notifications={input.notifications} />
+      {/* Activity as a ruled register */}
+      <div className="doc-head">
+        <h2>Activity register</h2>
+        <span className="right">most recent first</span>
+      </div>
+      <div className="reglist" style="margin-top:10px;border-radius:0 0 8px 8px;border-top:none">
+        {input.notifications.length === 0 ? (
+          <div className="reg-row"><span className="ev sub">No recorded activity yet.</span></div>
+        ) : (
+          input.notifications.map((n) => (
+            <div className="reg-row">
+              <span className="ts">{fmtDate(n.createdAt).slice(0, 16)}</span>
+              <span className="ev">{n.message}</span>
+              <span className="tag-r">{n.type.replace(/_/g, " ")}</span>
+            </div>
+          ))
+        )}
       </div>
 
       <p className="footer-note">
@@ -785,7 +907,7 @@ export function renderApprovals(input: {
           }
 
           return (
-            <div className="panel" style="margin-bottom:14px">
+            <div className="panel" style="margin-bottom:16px">
               <div className="panel-head">
                 <h3>
                   {item.project.name} — M{item.milestone.seq}: {item.milestone.title}
@@ -796,28 +918,39 @@ export function renderApprovals(input: {
                 </span>
               </div>
 
+              {/* Dominant money-control statement — the financial consequence
+                  is understood before any button is reachable. */}
+              <div className="money-strip">
+                <span className="amt">
+                  <span className="v">{money(item.milestone.trancheAmount)}</span>
+                  <span className="s">● HELD — RELEASE REQUIRES GOVERNANCE</span>
+                </span>
+                <span className="await">
+                  Submitted {fmtDate(item.approval.createdAt).slice(0, 16)}
+                  {missing.length > 0 ? (
+                    <>
+                      <br />
+                      Awaiting: <b>{missing.map(roleLabel).join(", ")}</b>
+                    </>
+                  ) : null}
+                </span>
+                <span className="gp">
+                  <span className="v" style="display:block">{approved} OF {item.approval.requiredRoles.length}</span>
+                  <span className="l" style="display:block">Approvals recorded</span>
+                </span>
+              </div>
+
               <div className="approval-review">
                 <div className="col-decide">
-                  <div className="stake">
-                    <span className="l">Amount at stake</span>
-                    <span className="v">{money(item.milestone.trancheAmount)}</span>
-                    <span className={`state ${item.milestone.accountStatus === "RELEASED" ? "released" : "held"}`}>
-                      ● {item.milestone.accountStatus} — pending governance
-                    </span>
-                    <div className="progress-line num">{approved} OF {item.approval.requiredRoles.length} APPROVALS</div>
-                  </div>
+                  <div className="t-meta" style="margin-bottom:7px">Governance</div>
                   <ApprovalProgress approval={item.approval} records={item.records} users={input.users} hideSummary={true} />
-                  <p className="sub" style="margin:8px 0 0;font-size:11.5px">
-                    Submitted {fmtDate(item.approval.createdAt)}
-                    {missing.length > 0 ? (<><br />Awaiting: <b>{missing.map(roleLabel).join(", ")}</b></>) : null}
-                  </p>
                   {item.canDecide ? (
                     <>
                       <div className="decision-actions">
                         <form method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
                           <input type="hidden" name="decision" value="APPROVED" />
                           <button className="btn approve" type="submit">
-                            Approve release eligibility ({approved + 1} of {item.approval.requiredRoles.length})
+                            Approve release eligibility
                           </button>
                         </form>
                         <form method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
@@ -881,30 +1014,27 @@ export function renderApprovals(input: {
                 </div>
               </div>
 
-              {b ? (
-                <ProofRail
-                  verification={b.verification}
-                  ledgerEntry={b.ledgerEntry}
-                  approval={item.approval}
-                  accountStatus={item.milestone.accountStatus}
-                />
-              ) : null}
-
               <div className="audit-trail">
                 <div className="lbl">Approval audit trail</div>
-                <ul className="activity">
-                  {trail.map((t) => (
-                    <li>
-                      <span className={`ico ${t.tone}`}>
-                        {t.tone === "ok" ? icons.check() : t.tone === "bad" ? icons.x() : t.tone === "warn" ? icons.clock() : icons.activity()}
-                      </span>
-                      <span className="body">
-                        <span className="msg">{t.msg}</span>
-                        <span className="meta"><span className="when">{fmtDate(t.when)}</span></span>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+                <table className="audit-table" style="margin-top:8px">
+                  <thead>
+                    <tr>
+                      <th style="width:150px">Timestamp</th>
+                      <th>Record</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trail.map((t) => (
+                      <tr>
+                        <td className="ts">{fmtDate(t.when).slice(0, 19)}</td>
+                        <td>
+                          {t.msg}
+                          <span className="ts-inline">{fmtDate(t.when).slice(0, 19)}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           );
