@@ -254,7 +254,7 @@ interface QueuedSubmission {
     return `<div class="field-card">${html}</div>`;
   }
 
-  /** 4-step progress indicator: Project → Milestone → Capture → Review. */
+  /** Numbered 4-step rail: 01 PROJECT → 02 MILESTONE → 03 CAPTURE → 04 REVIEW. */
   function stepsBar(current: number): string {
     const labels = ["Project", "Milestone", "Capture", "Review"];
     return `<div class="steps">${labels
@@ -262,9 +262,20 @@ interface QueuedSubmission {
         const n = i + 1;
         const cls = n < current ? "done" : n === current ? "current" : "";
         const line = i > 0 ? `<span class="ln ${n <= current ? "done" : ""}"></span>` : "";
-        return `${line}<span class="s ${cls}"><span class="b">${n < current ? "✓" : n}</span><span class="t">${label}</span></span>`;
+        return `${line}<span class="s ${cls}"><span class="b">${n < current ? "✓" : "0" + n}</span><span class="t">${label}</span></span>`;
       })
       .join("")}</div>`;
+  }
+
+  /** Operational status strip: connectivity + capture state. */
+  function statusStrip(opts: { gps?: "pending" | "acquired" | "simulated"; time?: boolean }): string {
+    const online = navigator.onLine;
+    const gps = opts.gps ?? "pending";
+    return `<div class="fstat">
+      <span><span class="d ${online ? "on" : "warn"}"></span>${online ? "Online" : "Offline — will queue"}</span>
+      <span><span class="d ${gps === "pending" ? "" : "on"}"></span>GPS ${gps === "pending" ? "on submit" : gps}</span>
+      ${opts.time ? `<span><span class="d on"></span>Timestamp captured</span>` : ""}
+    </div>`;
   }
 
   function milestoneChip(status: string): string {
@@ -357,6 +368,7 @@ interface QueuedSubmission {
        <p class="sub" style="margin-top:8px"><b style="color:#cbd5e1">Requirement:</b> ${esc(m.requirement)}</p>
        <div id="camera-zone" style="margin-top:12px">
          <video class="viewfinder" id="viewfinder" playsinline muted></video>
+         ${statusStrip({})}
          <div class="field-actions">
            <button class="btn big" id="snap" disabled>Starting camera…</button>
          </div>
@@ -469,7 +481,7 @@ interface QueuedSubmission {
       document.getElementById("fallback-zone")!.style.display = "block";
     } else {
       snapButton.disabled = false;
-      snapButton.textContent = "Capture photo";
+      snapButton.textContent = "Capture evidence";
     }
   }
 
@@ -547,6 +559,7 @@ interface QueuedSubmission {
        <h3>M${m.seq} · ${esc(m.title)}</h3>
        ${fallback ? `<div class="field-warn"><b>DEMO FALLBACK</b> — this submission uses ${photo.kind === "demo" ? "a seeded demo photo, " : ""}${loc.simulated ? "simulated site GPS" : ""}${photo.simulatedTimestamp ? " and a simulated timestamp" : ""}. It will be labelled as such.</div>` : `<div class="field-ok">Live capture — real camera photo and device GPS.</div>`}
        ${photoPreviewHtml()}
+       ${statusStrip({ gps: loc.simulated ? "simulated" : "acquired", time: true })}
        <div class="gps-state"><span class="pulse"></span> GPS ${loc.simulated ? "simulated at project site" : "acquired from device"} · ${loc.latitude.toFixed(5)}, ${loc.longitude.toFixed(5)}</div>
        <dl class="field-kv" style="margin-top:12px">
          <dt>Captured</dt><dd>${esc(photo.capturedAt)} ${photo.simulatedTimestamp ? "(simulated)" : "(confirmed)"}</dd>

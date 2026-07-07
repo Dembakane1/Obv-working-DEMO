@@ -1,6 +1,6 @@
-/** Server-rendered pages — OBV design system v2. */
+/** Server-rendered pages — OBV design system v3 (institutional). */
 import { h, Fragment, VNode, renderDocument } from "./jsx";
-import { icons } from "./icons";
+import { brandMark, icons } from "./icons";
 import {
   AccountChip,
   ActivityFeed,
@@ -14,19 +14,22 @@ import {
   EvidenceHashes,
   EvidencePanel,
   EvidenceStatusChips,
-  MetricCard,
+  FallbackChip,
+  FinancialBand,
+  IntegrityChip,
   MilestoneCard,
   MilestoneCardData,
   MilestoneStatusChip,
   NavContext,
+  OperationalStatus,
   PageHeader,
   Pipeline,
   ProofRail,
-  StoryStrip,
   VerdictChip,
   approvalProgressLabel,
   fmtDate,
   initials,
+  milestoneNextAction,
   money,
   roleLabel,
   shortHash,
@@ -77,80 +80,80 @@ function projectProgressPct(d: ProjectCardData): number {
     : 0;
 }
 
-function nextMilestone(d: ProjectCardData): Milestone | null {
+function nextMilestone(d: ProjectCardData): MilestoneRow | null {
   return (
     d.milestones.find((m) =>
       ["PENDING_EVIDENCE", "UNDER_REVIEW", "VERIFIED", "APPROVED"].includes(m.milestone.status)
-    )?.milestone ??
-    d.milestones.find((m) => m.milestone.status === "NOT_STARTED")?.milestone ??
+    ) ??
+    d.milestones.find((m) => m.milestone.status === "NOT_STARTED") ??
     null
   );
 }
 
-function ProjectCard(props: { data: ProjectCardData }): VNode {
+function projectRisk(d: ProjectCardData): { tone: string; label: string } {
+  const flagged = d.milestones.some(
+    (m) => m.verification && m.verification.verdict !== "VERIFIED"
+  );
+  if (flagged) return { tone: "warn", label: "Attention" };
+  return { tone: "ok", label: "On track" };
+}
+
+/** Dense portfolio asset row. */
+function ProjectAsset(props: { data: ProjectCardData }): VNode {
   const d = props.data;
   const pct = projectProgressPct(d);
   const next = nextMilestone(d);
+  const risk = projectRisk(d);
   return (
-    <div className="card project-card">
-      <div className="top">
-        <span style="min-width:0">
-          <h3>
-            <a href={`/project/${d.project.id}`}>{d.project.name}</a>
-          </h3>
-          <span className="meta">
-            <span>{icons.mapPin()} {d.project.location}</span>
-            <span>{icons.building()} {d.org?.name ?? "—"}</span>
-            {d.implementingOrg ? <span>Implementing: {d.implementingOrg.name}</span> : null}
-          </span>
-        </span>
-        <span className="chips">
-          <span className="chip info">{d.project.projectType.replace(/_/g, " ")}</span>
+    <div className="panel asset">
+      <div className="a-head">
+        <h3><a href={`/project/${d.project.id}`}>{d.project.name}</a></h3>
+        <span className="flags">
           {d.pendingApprovals > 0 ? (
-            <span className="chip warn">{d.pendingApprovals} approval{d.pendingApprovals > 1 ? "s" : ""} pending</span>
+            <span className="status warn"><span className="g">●</span>{d.pendingApprovals} approval{d.pendingApprovals > 1 ? "s" : ""} pending</span>
           ) : null}
+          <span className={`status ${risk.tone}`}><span className="g">●</span>{risk.label}</span>
         </span>
       </div>
-
-      <div className="progress-row">
-        <span className="track"><span className="fill" style={`width:${pct}%;display:block`}></span></span>
-        <span className="pct">{pct}%</span>
-        <span className="sub">of budget released</span>
+      <div className="a-meta">
+        <span>{icons.mapPin(13)} {d.project.location}</span>
+        <span>{d.project.projectType.replace(/_/g, " ")}</span>
+        <span>{icons.building(13)} {d.org?.name ?? "—"}</span>
+        {d.implementingOrg ? <span>Implementing: {d.implementingOrg.name}</span> : null}
       </div>
-
-      <div className="figures">
-        <div className="figure">
-          <span className="l" style="display:block">Total budget</span>
-          <span className="v" style="display:block">{money(d.summary.totalBudget)}</span>
+      <div className="a-figs">
+        <div className="a-fig">
+          <span className="l" style="display:block">Progress</span>
+          <span className="progress">
+            <span className="track"><span className="fill" style={`width:${pct}%`}></span></span>
+            <span className="pct">{pct}%</span>
+          </span>
         </div>
-        <div className="figure">
+        <div className="a-fig">
+          <span className="l" style="display:block">Budget</span>
+          <span className="v num" style="display:block">{money(d.summary.totalBudget)}</span>
+        </div>
+        <div className="a-fig">
           <span className="l" style="display:block">Released</span>
-          <span className="v green" style="display:block">{money(d.summary.released)}</span>
+          <span className="v green num" style="display:block">{money(d.summary.released)}</span>
         </div>
-        <div className="figure">
+        <div className="a-fig">
           <span className="l" style="display:block">Held</span>
-          <span className="v amber" style="display:block">{money(d.summary.held)}</span>
+          <span className="v amber num" style="display:block">{money(d.summary.held)}</span>
         </div>
-        <div className="figure">
-          <span className="l" style="display:block">Milestones</span>
-          <span className="v" style="display:block">
-            {d.milestones.filter((m) => m.milestone.status === "RELEASED").length} of {d.milestones.length} released
+        <div className="a-fig">
+          <span className="l" style="display:block">Next milestone</span>
+          <span className="v small" style="display:block">
+            {next ? `M${next.milestone.seq} · ${next.milestone.title}` : "All complete"}
           </span>
         </div>
       </div>
-
-      <div className="foot">
-        {next ? (
-          <span className="next">
-            {icons.clock()} Next: M{next.seq} · {next.title}
-          </span>
-        ) : (
-          <span className="next">{icons.check()} All milestones complete</span>
-        )}
+      <div className="a-foot">
+        <span>
+          {d.milestones.filter((m) => m.milestone.status === "RELEASED").length} of {d.milestones.length} milestones released
+        </span>
         <span className="cta">
-          <a className="btn sm" href={`/project/${d.project.id}`}>
-            View project {icons.arrowRight()}
-          </a>
+          <a className="btn sm" href={`/project/${d.project.id}`}>View project {icons.arrowRight(13)}</a>
         </span>
       </div>
     </div>
@@ -165,25 +168,25 @@ export function renderUserSwitcher(users: User[], orgs: Map<string, Organization
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Select demo user — OBV</title>
+        <title>Sign in — OBV</title>
         <link rel="stylesheet" href="/styles.css" />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
-        <meta name="theme-color" content="#16233b" />
+        <meta name="theme-color" content="#0d1626" />
       </head>
       <body>
         <div className="auth-wrap">
           <div className="auth-box">
             <div className="auth-brand">
-              <span className="mark">{icons.logo(24)}</span>
+              <span className="mark">{brandMark(22)}</span>
               <span>
                 <span className="name" style="display:block">OpenBuild Verify</span>
-                <span className="sub" style="display:block">The truth layer for physical projects</span>
+                <span className="tagline" style="display:block">The truth layer for physical projects</span>
               </span>
             </div>
-            <p className="sub" style="max-width:620px">
-              Demo mode — pick a seeded user to explore their view of the platform. No
-              passwords required; full authentication arrives with the production build.
+            <p className="sub" style="max-width:600px;margin-top:10px">
+              Demo environment — select a seeded role to explore its view of the platform.
+              No credentials required; production authentication replaces this screen.
             </p>
             <div className="roles">
               {users.map((u) => (
@@ -199,8 +202,8 @@ export function renderUserSwitcher(users: User[], orgs: Map<string, Organization
               ))}
             </div>
             <p className="footer-note">
-              Office roles land on the portfolio overview. The field engineer lands in the
-              mobile capture app.
+              Office roles open the portfolio overview · the field engineer opens the mobile
+              capture application.
             </p>
           </div>
         </div>
@@ -216,6 +219,7 @@ export interface OverviewMetrics {
   released: number;
   held: number;
   pendingApprovals: number;
+  pendingValue: number;
   verifiedMilestones: number;
   totalMilestones: number;
   flaggedEvidence: number;
@@ -226,13 +230,15 @@ export function renderOverview(input: {
   metrics: OverviewMetrics;
   projects: ProjectCardData[];
   notifications: Notification[];
+  chainValid: boolean;
 }): string {
-  const { metrics } = input;
+  const m = input.metrics;
+  const releasedPct = m.totalBudget > 0 ? Math.round((m.released / m.totalBudget) * 100) : 0;
   return renderDocument(
     <AppShell title="Overview" nav={input.nav}>
       <PageHeader
         title="Portfolio overview"
-        sub="Verified physical progress and governed fund release across active projects."
+        sub={`${input.projects.length} active project${input.projects.length === 1 ? "" : "s"} under milestone-based release governance.`}
       >
         <form method="POST" action="/api/demo/reset" style="margin:0">
           <button className="btn ghost sm" type="submit" title="Restore the seeded demo state">
@@ -240,30 +246,38 @@ export function renderOverview(input: {
           </button>
         </form>
       </PageHeader>
-      <StoryStrip />
 
-      <div className="metrics">
-        <MetricCard label="Total portfolio value" value={money(metrics.totalBudget)} tone="blue" icon={icons.projects()} />
-        <MetricCard label="Funds released" value={money(metrics.released)} tone="green" icon={icons.dollar()} />
-        <MetricCard label="Funds held" value={money(metrics.held)} tone="amber" icon={icons.dollar()} hint="pending verification & approval" />
-        <MetricCard label="Pending approvals" value={String(metrics.pendingApprovals)} tone={metrics.pendingApprovals > 0 ? "amber" : "slate"} icon={icons.approvals()} hint="awaiting human sign-off" />
-        <MetricCard label="Verified milestones" value={`${metrics.verifiedMilestones} / ${metrics.totalMilestones}`} tone="blue" icon={icons.check()} />
-        <MetricCard label="Flagged evidence" value={String(metrics.flaggedEvidence)} tone={metrics.flaggedEvidence > 0 ? "red" : "slate"} icon={icons.alert()} hint="needs review or rejected" />
-      </div>
+      <FinancialBand
+        cells={[
+          { value: money(m.totalBudget), label: "Portfolio value", context: `${input.projects.length} project${input.projects.length === 1 ? "" : "s"} · ${m.totalMilestones} milestones` },
+          { value: money(m.released), label: "Released", context: `${releasedPct}% of portfolio`, tone: "green" },
+          { value: money(m.held), label: "Held", context: "pending verification & governance", tone: "amber" },
+          { value: money(m.pendingValue), label: "Pending governance", context: `${m.pendingApprovals} approval request${m.pendingApprovals === 1 ? "" : "s"}` },
+        ]}
+      />
 
-      <h2 className="section">Active projects</h2>
+      <OperationalStatus
+        items={[
+          { tone: m.verifiedMilestones > 0 ? "ok" : "idle", value: `${m.verifiedMilestones}/${m.totalMilestones}`, label: "milestones verified" },
+          { tone: m.pendingApprovals > 0 ? "warn" : "idle", value: String(m.pendingApprovals), label: "pending approvals" },
+          { tone: m.flaggedEvidence > 0 ? "bad" : "ok", value: String(m.flaggedEvidence), label: "flagged evidence" },
+          { tone: input.chainValid ? "ok" : "bad", value: input.chainValid ? "Intact" : "Alert", label: "ledger integrity" },
+        ]}
+      />
+
+      <h2 className="section">Project portfolio</h2>
       {input.projects.map((p) => (
-        <ProjectCard data={p} />
+        <ProjectAsset data={p} />
       ))}
 
       <h2 className="section">Recent activity</h2>
-      <div className="card">
+      <div className="panel">
         <ActivityFeed notifications={input.notifications} />
       </div>
 
       <p className="footer-note">
-        Held/released figures are the virtual project account ledger — project-level
-        financial control state. No real bank movement occurs in this demo.
+        Held/released figures are the virtual project account ledger — governed release
+        eligibility, not real bank movement.
       </p>
       <script src="/js/poll.js" defer></script>
     </AppShell>
@@ -277,7 +291,7 @@ export function renderProjects(input: { nav: NavContext; projects: ProjectCardDa
     <AppShell title="Projects" nav={input.nav}>
       <PageHeader title="Projects" sub="All projects under milestone-based financial governance." />
       {input.projects.map((p) => (
-        <ProjectCard data={p} />
+        <ProjectAsset data={p} />
       ))}
       <script src="/js/poll.js" defer></script>
     </AppShell>
@@ -287,6 +301,47 @@ export function renderProjects(input: { nav: NavContext; projects: ProjectCardDa
 // ------------------------------------------------------ project detail
 
 export type ProjectTab = "overview" | "milestones" | "evidence" | "approvals" | "ledger" | "activity";
+
+type LifecycleStage = "SETUP" | "EVIDENCE" | "VERIFICATION" | "GOVERNANCE" | "RELEASE";
+
+function projectLifecycleStage(d: ProjectCardData): LifecycleStage {
+  if (d.milestones.every((m) => m.milestone.status === "RELEASED")) return "RELEASE";
+  const front = d.milestones.find((m) => m.milestone.status !== "RELEASED")!;
+  switch (front.milestone.status) {
+    case "UNDER_REVIEW": return "VERIFICATION";
+    case "VERIFIED": return "GOVERNANCE";
+    case "APPROVED": return "RELEASE";
+    default: return "EVIDENCE";
+  }
+}
+
+function LifecycleStrip(props: { stage: LifecycleStage; anyReleased: boolean }): VNode {
+  const stages: Array<{ key: LifecycleStage; label: string }> = [
+    { key: "SETUP", label: "PROJECT SETUP" },
+    { key: "EVIDENCE", label: "FIELD EVIDENCE" },
+    { key: "VERIFICATION", label: "VERIFICATION" },
+    { key: "GOVERNANCE", label: "GOVERNANCE" },
+    { key: "RELEASE", label: "RELEASE" },
+  ];
+  const order = stages.map((s) => s.key);
+  const idx = order.indexOf(props.stage);
+  return (
+    <div className="lifecycle">
+      {stages.map((s, i) => {
+        const cls = i < idx || (s.key === "SETUP") ? "done" : i === idx ? "current" : "";
+        return (
+          <>
+            {i > 0 ? <span className={`ln ${i <= idx ? "done" : ""}`}></span> : null}
+            <span className={`lc ${cls}`}>
+              <span className="d"></span>
+              {s.label}
+            </span>
+          </>
+        );
+      })}
+    </div>
+  );
+}
 
 export function renderProjectDetail(input: {
   nav: NavContext;
@@ -303,9 +358,12 @@ export function renderProjectDetail(input: {
   const { data, tab } = input;
   const { project } = data;
   const pct = projectProgressPct(data);
+  const stage = projectLifecycleStage(data);
   const flagged = data.milestones.filter(
     (m) => m.verification && m.verification.verdict !== "VERIFIED"
   ).length;
+  const bottleneck = data.milestones.find((m) => m.approval?.status === "PENDING");
+  const front = nextMilestone(data);
 
   const tabs: Array<{ key: ProjectTab; label: string }> = [
     { key: "overview", label: "Overview" },
@@ -317,80 +375,141 @@ export function renderProjectDetail(input: {
   ];
 
   return renderDocument(
-    <AppShell title={project.name} nav={input.nav}>
-      <PageHeader
-        title={project.name}
-        sub={`${project.location} · funded by ${data.org?.name ?? "—"}${data.implementingOrg ? ` · implementing agency: ${data.implementingOrg.name}` : ""}`}
-        crumb={{ href: "/projects", label: "Projects" }}
-      >
-        <span className="chip info">{project.projectType.replace(/_/g, " ")}</span>
-        <span className={`chip ${input.chainValid ? "ok" : "bad"}`}>
-          {input.chainValid ? "Evidence chain intact" : "Chain integrity alert"}
-        </span>
-        {flagged > 0 ? <span className="chip warn">{flagged} flagged verification{flagged > 1 ? "s" : ""}</span> : null}
-        <form method="POST" action="/api/reports/generate" style="margin:0">
+    <AppShell title={project.name} nav={input.nav} context={project.name}>
+      <div style="display:flex;align-items:center;gap:12px;margin:2px 0 10px">
+        <a className="crumb" href="/projects" style="font-size:12px;color:var(--ink-3)">← Projects</a>
+        <form method="POST" action="/api/reports/generate" style="margin:0 0 0 auto">
           <input type="hidden" name="projectId" value={project.id} />
-          <button className="btn sm" type="submit" title="Generate the Project Verification & Fund Release Report (PDF)">
-            Generate funder report
+          <button className="btn secondary sm" type="submit" title="Generate the Project Verification & Fund Release Report (PDF)">
+            {icons.file(13)} Generate funder report
           </button>
         </form>
-      </PageHeader>
+      </div>
 
-      <div className="metrics">
-        <MetricCard label="Total budget" value={money(data.summary.totalBudget)} tone="blue" icon={icons.dollar()} />
-        <MetricCard label="Released" value={money(data.summary.released)} tone="green" icon={icons.dollar()} />
-        <MetricCard label="Held" value={money(data.summary.held)} tone="amber" icon={icons.dollar()} />
-        <MetricCard label="Progress" value={`${pct}%`} tone="slate" icon={icons.activity()} hint="of budget released" />
-        <MetricCard label="Pending approvals" value={String(data.pendingApprovals)} tone={data.pendingApprovals > 0 ? "amber" : "slate"} icon={icons.approvals()} />
+      <div className="proj-head">
+        <div className="ph-top">
+          <div className="ph-id">
+            <span className="code">{project.id.toUpperCase()} · {project.projectType.replace(/_/g, " ")}</span>
+            <h1>{project.name}</h1>
+            <div className="meta">
+              {project.location}
+              <br />
+              Funder: <b style="color:var(--ink-2);font-weight:600">{data.org?.name ?? "—"}</b>
+              {data.implementingOrg ? <> · Implementing: {data.implementingOrg.name}</> : null}
+            </div>
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+              <span className={`status ${project.status === "ACTIVE" ? "ok" : ""}`}><span className="g">●</span>{project.status}</span>
+              <IntegrityChip valid={input.chainValid} />
+              {flagged > 0 ? <span className="status warn"><span className="g">!</span>{flagged} flagged</span> : null}
+            </div>
+          </div>
+          <div className="ph-figs">
+            <div className="ph-fig">
+              <div className="v num">{money(data.summary.totalBudget)}</div>
+              <div className="l">Total budget</div>
+            </div>
+            <div className="ph-fig">
+              <div className="v green num">{money(data.summary.released)}</div>
+              <div className="l">Released</div>
+            </div>
+            <div className="ph-fig">
+              <div className="v amber num">{money(data.summary.held)}</div>
+              <div className="l">Held</div>
+            </div>
+            <div className="ph-fig">
+              <div className="v num">{pct}%</div>
+              <div className="l">Physical progress</div>
+            </div>
+          </div>
+        </div>
+        <LifecycleStrip stage={stage} anyReleased={data.summary.released > 0} />
       </div>
 
       <nav className="tabs">
         {tabs.map((t) => (
-          <a
-            href={`/project/${project.id}?tab=${t.key}`}
-            className={tab === t.key ? "active" : ""}
-          >
+          <a href={`/project/${project.id}?tab=${t.key}`} className={tab === t.key ? "active" : ""}>
             {t.label}
           </a>
         ))}
       </nav>
 
       {tab === "overview" ? (
-        <>
-          <StoryStrip />
-          <div className="card card-pad" style="margin-top:12px">
-            <h3 style="margin:0 0 6px;font-size:15px">About this project</h3>
-            <p className="sub" style="margin:0;max-width:860px">{project.description}</p>
-            <dl className="kv" style="margin-top:14px">
-              <dt>Site geofence</dt>
-              <dd>{project.siteBoundary.length - 1}-point boundary polygon</dd>
-              <dt>Status</dt>
-              <dd>{project.status}</dd>
-            </dl>
+        <div className="op-grid">
+          <div>
+            <div className="panel panel-pad">
+              <h3 style="margin:0 0 4px;font-size:13px;font-weight:650">About this project</h3>
+              <p className="sub" style="margin:0">{project.description}</p>
+            </div>
+            {bottleneck ? (
+              <div className="banner warn" style="margin:12px 0 0">
+                <b>Approval bottleneck:</b> M{bottleneck.milestone.seq} "{bottleneck.milestone.title}" is verified —{" "}
+                {milestoneNextAction(bottleneck)?.toLowerCase()}. <a href="/approvals">Review →</a>
+              </div>
+            ) : null}
+            <h2 className="section">Milestones</h2>
+            <div className="ms-list">
+              {data.milestones.map((row) => (
+                <MilestoneCard data={row} />
+              ))}
+            </div>
           </div>
-          <h2 className="section">Milestones</h2>
-          {data.milestones.map((row) => (
-            <MilestoneCard data={row} />
-          ))}
-        </>
+
+          <div className="panel" style="position:sticky;top:calc(var(--topbar-h) + 14px)">
+            <div className="side-block">
+              <div className="l">Financial state</div>
+              <div className="side-kv"><span className="k">Total budget</span><span className="v">{money(data.summary.totalBudget)}</span></div>
+              <div className="side-kv"><span className="k">Released</span><span className="v green">{money(data.summary.released)}</span></div>
+              <div className="side-kv"><span className="k">Held</span><span className="v amber">{money(data.summary.held)}</span></div>
+              <div className="side-kv"><span className="k">Release progress</span><span className="v">{pct}%</span></div>
+            </div>
+            <div className="side-block">
+              <div className="l">Ledger integrity</div>
+              <IntegrityChip valid={input.chainValid} />
+              <div className="sub" style="margin-top:5px">{input.ledger.length} hash-chained entries · <a href="/ledger">register →</a></div>
+            </div>
+            <div className="side-block">
+              <div className="l">Risk indicators</div>
+              <div className="side-kv"><span className="k">Flagged verifications</span><span className="v">{flagged}</span></div>
+              <div className="side-kv"><span className="k">Pending approvals</span><span className="v">{data.pendingApprovals}</span></div>
+              <div className="side-kv"><span className="k">Rejected approvals</span><span className="v">{input.approvals.filter((a) => a.approval.status === "REJECTED").length}</span></div>
+            </div>
+            <div className="side-block">
+              <div className="l">Next required action</div>
+              <p style="margin:0;font-size:12.5px;color:var(--ink-2);font-weight:550">
+                {bottleneck
+                  ? milestoneNextAction(bottleneck)
+                  : front
+                    ? milestoneNextAction(front) ?? "Begin next milestone"
+                    : "All milestones released"}
+              </p>
+              {bottleneck ? (
+                <a className="btn sm" href="/approvals" style="margin-top:9px">Open approval queue</a>
+              ) : front && front.milestone.status === "PENDING_EVIDENCE" ? (
+                <a className="btn secondary sm" href="/field" style="margin-top:9px">Open field capture</a>
+              ) : null}
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {tab === "milestones" ? (
-        <>{data.milestones.map((row) => <MilestoneCard data={row} />)}</>
+        <div className="ms-list">
+          {data.milestones.map((row) => (
+            <MilestoneCard data={row} />
+          ))}
+        </div>
       ) : null}
 
       {tab === "evidence" ? (
         input.evidenceBundles.length === 0 ? (
-          <div className="card">
-            <EmptyState icon={icons.camera()} title="No evidence yet" message="Field submissions will appear here with their full chain of proof." />
+          <div className="panel">
+            <EmptyState icon={icons.camera()} title="No evidence yet" message="Field submissions appear here with their full chain of proof." />
           </div>
         ) : (
           <>
             {input.evidenceBundles.map((b) => (
-              <div style="margin-bottom:16px">
-                <p className="sub" style="margin:0 0 7px;font-weight:650">
-                  Milestone {b.milestone.seq}: {b.milestone.title}
-                </p>
+              <div style="margin-bottom:14px">
+                <p className="t-meta" style="margin:0 0 6px">Milestone {b.milestone.seq} · {b.milestone.title}</p>
                 <EvidencePanel
                   evidence={b.evidence}
                   verification={b.verification}
@@ -408,26 +527,26 @@ export function renderProjectDetail(input: {
 
       {tab === "approvals" ? (
         input.approvals.length === 0 ? (
-          <div className="card">
+          <div className="panel">
             <EmptyState icon={icons.approvals()} title="No approval requests" message="Approval requests are created automatically when a milestone is verified." />
           </div>
         ) : (
           <>
             {input.approvals.map(({ approval, records, milestone }) => (
-              <div className="card card-pad">
+              <div className="panel panel-pad">
                 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-                  <h3 style="margin:0;font-size:15px">
+                  <h3 style="margin:0;font-size:13.5px;font-weight:650">
                     M{milestone.seq} · {milestone.title}
                   </h3>
-                  <ApprovalChip status={approval.status} />
-                  <span style="margin-left:auto;font-weight:800;font-variant-numeric:tabular-nums">
-                    {money(milestone.trancheAmount)}
-                  </span>
+                  <ApprovalChip
+                    status={approval.status}
+                    progress={`${records.filter((r) => r.decision === "APPROVED").length} of ${approval.requiredRoles.length}`}
+                  />
+                  <span className="num" style="margin-left:auto;font-weight:650">{money(milestone.trancheAmount)}</span>
                 </div>
                 <ApprovalProgress approval={approval} records={records} users={input.users} />
-                <p className="sub" style="margin:10px 0 0">
-                  Requested {fmtDate(approval.createdAt)} ·{" "}
-                  <a href={`/approvals`}>Review in approval queue →</a>
+                <p className="sub" style="margin:9px 0 0">
+                  Requested {fmtDate(approval.createdAt)} · <a href="/approvals">Review in approval queue →</a>
                 </p>
               </div>
             ))}
@@ -447,10 +566,10 @@ export function renderProjectDetail(input: {
 
       {tab === "activity" ? (
         <>
-          <div className="card">
-            <div className="card-head">
+          <div className="panel">
+            <div className="panel-head">
               <h3>Virtual account — tranche ledger</h3>
-              <span className="right">Financial control state · not cryptocurrency · no real bank movement</span>
+              <span className="right">Governed release eligibility · no real bank movement</span>
             </div>
             <ul className="activity">
               {input.accountEvents.map((e) => {
@@ -460,11 +579,11 @@ export function renderProjectDetail(input: {
                     <span className={`ico ${e.type === "RELEASED" ? "ok" : "warn"}`}>{icons.dollar()}</span>
                     <span className="body">
                       <span className="msg">
-                        <b>{e.type === "RELEASED" ? "Released" : "Held"}</b> — Milestone {m?.seq}: {m?.title}
+                        <b>{e.type === "RELEASED" ? "Released" : "Held"}</b> — M{m?.seq}: {m?.title}
                       </span>
                       <span className="meta">
                         <span className="when">{fmtDate(e.createdAt)}</span>
-                        <span style="font-weight:700">{money(e.amount)}</span>
+                        <span className="num" style="font-weight:650;color:var(--ink-2)">{money(e.amount)}</span>
                       </span>
                     </span>
                   </li>
@@ -473,7 +592,7 @@ export function renderProjectDetail(input: {
             </ul>
           </div>
           <h2 className="section">Events</h2>
-          <div className="card">
+          <div className="panel">
             <ActivityFeed notifications={input.notifications} />
           </div>
         </>
@@ -497,70 +616,74 @@ export function renderMilestoneDetail(input: {
   const { project, row } = input;
   const { milestone, approval, approvalRecords } = row;
   return renderDocument(
-    <AppShell title={`Milestone ${milestone.seq}`} nav={input.nav}>
+    <AppShell title={`Milestone ${milestone.seq}`} nav={input.nav} context={`${project.name} · M${milestone.seq}`}>
       <PageHeader
-        title={`Milestone ${milestone.seq}: ${milestone.title}`}
+        title={`M${milestone.seq} · ${milestone.title}`}
         sub={project.location}
         crumb={{ href: `/project/${project.id}`, label: project.name }}
       >
         <MilestoneStatusChip status={milestone.status} />
-        {row.verification ? <VerdictChip verdict={row.verification.verdict} /> : null}
-        {approval ? <ApprovalChip status={approval.status} progress={approvalProgressLabel(row)} /> : null}
         <AccountChip status={milestone.accountStatus} />
       </PageHeader>
 
-      <div className="card card-pad">
-        <Pipeline
-          milestone={milestone}
-          verification={row.verification}
-          approval={approval}
-          approvalProgress={approvalProgressLabel(row)}
-        />
-        <dl className="kv" style="margin-top:16px">
-          <dt>Tranche</dt>
-          <dd style="font-weight:800">{money(milestone.trancheAmount)}</dd>
-          <dt>Requirement</dt>
-          <dd>{milestone.requirement}</dd>
-        </dl>
+      <div className="panel panel-pad">
+        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start">
+          <div>
+            <div className="t-display num">{money(milestone.trancheAmount)}</div>
+            <div className="t-meta" style="margin-top:2px">Tranche · {milestone.accountStatus}</div>
+          </div>
+          <div style="flex:1;min-width:240px">
+            <div className="t-meta" style="margin-bottom:6px">Lifecycle</div>
+            <Pipeline
+              milestone={milestone}
+              verification={row.verification}
+              approval={approval}
+              approvalProgress={approvalProgressLabel(row)}
+            />
+            {milestoneNextAction(row) ? (
+              <p className="sub" style="margin:8px 0 0">Next: <b style="color:var(--ink-2)">{milestoneNextAction(row)}</b></p>
+            ) : null}
+          </div>
+        </div>
+        <div className="ev-sec" style="margin-top:14px">Evidence requirement</div>
+        <p style="margin:0;font-size:13px;color:var(--ink-2)">{milestone.requirement}</p>
       </div>
 
       {approval ? (
-        <div className="card card-pad" style="margin-top:14px">
-          <h3 style="margin:0 0 10px;font-size:15px">Human approval</h3>
+        <div className="panel panel-pad" style="margin-top:12px">
+          <div className="t-meta" style="margin-bottom:8px">Human approval</div>
           <ApprovalProgress approval={approval} records={approvalRecords} users={input.users} />
           {approval.status === "PENDING" ? (
-            <>
-              <div className="banner warn" style="margin-bottom:0">
-                Funds stay <b>HELD</b> until every required role approves.{" "}
-                {input.canDecide ? (
-                  <a href="/approvals">Review and decide in the approval queue →</a>
-                ) : (
-                  "Your current role is not part of this approval."
-                )}
-              </div>
-            </>
+            <div className="banner warn" style="margin:10px 0 0">
+              Funds stay <b>HELD</b> until every required role approves.{" "}
+              {input.canDecide ? (
+                <a href="/approvals">Review and decide in the approval queue →</a>
+              ) : (
+                "Your current role is not part of this approval."
+              )}
+            </div>
           ) : null}
         </div>
       ) : null}
 
       {milestone.status === "PENDING_EVIDENCE" || milestone.status === "UNDER_REVIEW" ? (
-        <div className="card card-pad" style="margin-top:14px">
-          <h3 style="margin:0 0 4px;font-size:15px">Awaiting field evidence</h3>
-          <p className="sub" style="margin:0 0 12px">
+        <div className="panel panel-pad" style="margin-top:12px">
+          <div className="t-meta" style="margin-bottom:4px">Awaiting field evidence</div>
+          <p className="sub" style="margin:0 0 10px">
             A field engineer submits geo-tagged photo evidence from the mobile capture app.
           </p>
-          <a className="btn" href="/field">Open field capture</a>
+          <a className="btn sm" href="/field">Open field capture</a>
         </div>
       ) : null}
 
       <h2 className="section">Evidence</h2>
       {input.bundles.length === 0 ? (
-        <div className="card">
+        <div className="panel">
           <EmptyState icon={icons.camera()} title="No evidence yet" message="No evidence has been submitted for this milestone." />
         </div>
       ) : (
         input.bundles.map((b) => (
-          <div style="margin-bottom:14px">
+          <div style="margin-bottom:12px">
             <EvidencePanel
               evidence={b.evidence}
               verification={b.verification}
@@ -586,7 +709,6 @@ export interface ApprovalQueueItem {
   milestone: Milestone;
   project: Project;
   bundle: EvidenceBundle | null;
-  /** Whether the current user can decide (role required + not yet voted). */
   canDecide: boolean;
   alreadyDecided: boolean;
 }
@@ -598,15 +720,21 @@ export function renderApprovals(input: {
 }): string {
   const pending = input.items.filter((i) => i.approval.status === "PENDING");
   const resolved = input.items.filter((i) => i.approval.status !== "PENDING");
+  const atStake = pending.reduce((s, i) => s + i.milestone.trancheAmount, 0);
   return renderDocument(
     <AppShell title="Pending approvals" nav={input.nav}>
       <PageHeader
         title="Pending approvals"
-        sub="Release governance: every required role must approve verified evidence before a tranche is released."
-      />
+        sub="Release governance — every required role must approve verified evidence before a tranche becomes release-eligible."
+      >
+        <div style="text-align:right">
+          <div className="t-display num" style="font-size:21px">{money(atStake)}</div>
+          <div className="t-meta">{pending.length} request{pending.length === 1 ? "" : "s"} · held pending governance</div>
+        </div>
+      </PageHeader>
 
       {pending.length === 0 ? (
-        <div className="card">
+        <div className="panel">
           <EmptyState
             icon={icons.approvals()}
             title="Nothing awaiting approval"
@@ -621,71 +749,44 @@ export function renderApprovals(input: {
           );
           const b = item.bundle;
 
-          // Approval audit trail — assembled from existing records only.
           const trail: Array<{ tone: string; msg: VNode | string; when: string }> = [];
           if (b) {
             trail.push({
               tone: "info",
-              msg: (
-                <>
-                  <b>Evidence submitted</b> by {b.submittedBy?.name ?? "field user"}
-                  {b.evidence.isDemoFallback ? " (demo fallback)" : ""}
-                </>
-              ),
+              msg: (<><b>Evidence submitted</b> by {b.submittedBy?.name ?? "field user"}{b.evidence.isDemoFallback ? " (demo fallback)" : ""}</>),
               when: b.evidence.uploadedAt,
             });
             if (b.verification) {
               trail.push({
                 tone: b.verification.verdict === "VERIFIED" ? "ok" : "warn",
-                msg: (
-                  <>
-                    <b>AI verification: {b.verification.verdict.replace(/_/g, " ")}</b> · confidence{" "}
-                    {b.verification.confidence.toFixed(2)} ·{" "}
-                    {b.verification.checks.filter((c) => c.passed).length}/{b.verification.checks.length} checks passed
-                  </>
-                ),
+                msg: (<><b>AI verification: {b.verification.verdict.replace(/_/g, " ")}</b> · confidence {b.verification.confidence.toFixed(2)} · {b.verification.checks.filter((c) => c.passed).length}/{b.verification.checks.length} checks passed</>),
                 when: b.verification.createdAt,
               });
             }
             if (b.ledgerEntry) {
               trail.push({
                 tone: "ok",
-                msg: (
-                  <>
-                    <b>Ledger entry #{b.ledgerEntry.seq} appended</b> ·{" "}
-                    <span className="mono">{shortHash(b.ledgerEntry.currentHash, 18)}</span>
-                  </>
-                ),
+                msg: (<><b>Ledger entry #{b.ledgerEntry.seq} appended</b> · <span className="mono">{shortHash(b.ledgerEntry.currentHash, 18)}</span></>),
                 when: b.ledgerEntry.timestamp,
               });
             }
           }
           trail.push({
             tone: "warn",
-            msg: (
-              <>
-                <b>Approval requested</b> — requires{" "}
-                {item.approval.requiredRoles.map(roleLabel).join(" + ")} · funds HELD
-              </>
-            ),
+            msg: (<><b>Approval requested</b> — requires {item.approval.requiredRoles.map(roleLabel).join(" + ")} · funds HELD</>),
             when: item.approval.createdAt,
           });
           for (const rec of item.records) {
             trail.push({
               tone: rec.decision === "APPROVED" ? "ok" : "bad",
-              msg: (
-                <>
-                  <b>{rec.decision === "APPROVED" ? "Approved" : "Rejected"}</b> by{" "}
-                  {input.users.get(rec.userId)?.name ?? roleLabel(rec.role)} ({roleLabel(rec.role)})
-                </>
-              ),
+              msg: (<><b>{rec.decision === "APPROVED" ? "Approved" : "Rejected"}</b> by {input.users.get(rec.userId)?.name ?? roleLabel(rec.role)} ({roleLabel(rec.role)})</>),
               when: rec.createdAt,
             });
           }
 
           return (
-            <div className="card" style="margin-bottom:16px">
-              <div className="card-head">
+            <div className="panel" style="margin-bottom:14px">
+              <div className="panel-head">
                 <h3>
                   {item.project.name} — M{item.milestone.seq}: {item.milestone.title}
                 </h3>
@@ -700,35 +801,39 @@ export function renderApprovals(input: {
                   <div className="stake">
                     <span className="l">Amount at stake</span>
                     <span className="v">{money(item.milestone.trancheAmount)}</span>
-                    <span className="chip warn">Held until final approval</span>
+                    <span className={`state ${item.milestone.accountStatus === "RELEASED" ? "released" : "held"}`}>
+                      ● {item.milestone.accountStatus} — pending governance
+                    </span>
+                    <div className="progress-line num">{approved} OF {item.approval.requiredRoles.length} APPROVALS</div>
                   </div>
-                  <ApprovalProgress approval={item.approval} records={item.records} users={input.users} />
-                  <p className="sub" style="margin:8px 0 0;font-size:12.5px">
+                  <ApprovalProgress approval={item.approval} records={item.records} users={input.users} hideSummary={true} />
+                  <p className="sub" style="margin:8px 0 0;font-size:11.5px">
                     Submitted {fmtDate(item.approval.createdAt)}
-                    {missing.length > 0 ? (
-                      <>
-                        <br />
-                        Awaiting: <b>{missing.map(roleLabel).join(", ")}</b>
-                      </>
-                    ) : null}
+                    {missing.length > 0 ? (<><br />Awaiting: <b>{missing.map(roleLabel).join(", ")}</b></>) : null}
                   </p>
                   {item.canDecide ? (
-                    <div style="display:flex;flex-direction:column;gap:9px;margin-top:14px">
-                      <form method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
-                        <input type="hidden" name="decision" value="APPROVED" />
-                        <button className="btn" type="submit" style="width:100%">
-                          Approve release ({approved + 1} of {item.approval.requiredRoles.length})
-                        </button>
-                      </form>
-                      <form method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
-                        <input type="hidden" name="decision" value="REJECTED" />
-                        <button className="btn danger" type="submit" style="width:100%">Reject</button>
-                      </form>
-                    </div>
+                    <>
+                      <div className="decision-actions">
+                        <form method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
+                          <input type="hidden" name="decision" value="APPROVED" />
+                          <button className="btn approve" type="submit">
+                            Approve release eligibility ({approved + 1} of {item.approval.requiredRoles.length})
+                          </button>
+                        </form>
+                        <form method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
+                          <input type="hidden" name="decision" value="REJECTED" />
+                          <button className="btn danger" type="submit" style="width:100%">Reject / return for review</button>
+                        </form>
+                      </div>
+                      <p className="decision-note">
+                        Approving records your sign-off. The {money(item.milestone.trancheAmount)} tranche
+                        releases only when all required roles have approved.
+                      </p>
+                    </>
                   ) : item.alreadyDecided ? (
-                    <div className="banner info" style="margin:14px 0 0">Your decision is recorded. Awaiting the remaining role(s).</div>
+                    <div className="banner info" style="margin:12px 0 0">Your decision is recorded. Awaiting the remaining role(s).</div>
                   ) : (
-                    <div className="banner info" style="margin:14px 0 0">
+                    <div className="banner info" style="margin:12px 0 0">
                       Sign in as one of the required roles to decide. Your current role is not part of this approval.
                     </div>
                   )}
@@ -740,8 +845,15 @@ export function renderApprovals(input: {
                       <div className="approval-photo">
                         <img src={b.evidence.photoPath} alt="Field evidence photo" />
                       </div>
-                      <div style="margin-top:10px">
+                      <div style="margin-top:9px">
                         <EvidenceStatusChips verification={b.verification} isDemoFallback={b.evidence.isDemoFallback} />
+                      </div>
+                      <div className="photo-meta">
+                        <div className="row"><span className="k">Captured by</span><span className="v">{b.submittedBy?.name ?? "—"}</span></div>
+                        <div className="row"><span className="k">Captured</span><span className="v mono">{fmtDate(b.evidence.capturedAt)}</span></div>
+                        <div className="row"><span className="k">GPS</span><span className="v mono">{b.evidence.latitude.toFixed(5)}, {b.evidence.longitude.toFixed(5)}</span></div>
+                        <div className="row"><span className="k">Device</span><span className="v">{b.evidence.deviceMetadata.platform} · {b.evidence.deviceMetadata.screen}</span></div>
+                        <div className="row"><span className="k">Capture mode</span><span className="v">{b.evidence.isDemoFallback ? "Demo fallback" : "Live capture"}</span></div>
                       </div>
                     </>
                   ) : (
@@ -752,8 +864,8 @@ export function renderApprovals(input: {
                 <div className="col-facts">
                   {b ? (
                     <>
-                      <div className="ev-sec">Original evidence</div>
-                      <EvidenceFacts evidence={b.evidence} requirement={item.milestone.requirement} submittedBy={b.submittedBy} />
+                      <div className="ev-sec">Requirement</div>
+                      <p style="margin:0;font-size:12.5px;color:var(--ink-2)">{item.milestone.requirement}</p>
                       {b.verification ? (
                         <>
                           <div className="ev-sec">Verification checks</div>
@@ -779,7 +891,7 @@ export function renderApprovals(input: {
               ) : null}
 
               <div className="audit-trail">
-                <div className="ev-sec" style="margin:0;padding:12px 20px 0">Approval audit trail</div>
+                <div className="lbl">Approval audit trail</div>
                 <ul className="activity">
                   {trail.map((t) => (
                     <li>
@@ -788,9 +900,7 @@ export function renderApprovals(input: {
                       </span>
                       <span className="body">
                         <span className="msg">{t.msg}</span>
-                        <span className="meta">
-                          <span className="when">{fmtDate(t.when)}</span>
-                        </span>
+                        <span className="meta"><span className="when">{fmtDate(t.when)}</span></span>
                       </span>
                     </li>
                   ))}
@@ -804,7 +914,7 @@ export function renderApprovals(input: {
       {resolved.length > 0 ? (
         <>
           <h2 className="section">Resolved</h2>
-          <div className="card">
+          <div className="panel">
             <ul className="activity">
               {resolved.map((item) => (
                 <li>
@@ -818,7 +928,7 @@ export function renderApprovals(input: {
                     </span>
                     <span className="meta">
                       <span className="when">{fmtDate(item.approval.createdAt)}</span>
-                      <span style="font-weight:700">{money(item.milestone.trancheAmount)}</span>
+                      <span className="num" style="font-weight:650;color:var(--ink-2)">{money(item.milestone.trancheAmount)}</span>
                     </span>
                   </span>
                 </li>
@@ -840,24 +950,23 @@ export function LedgerCard(props: {
   brokenAt?: number;
   milestoneById: Map<string, Milestone>;
   projectById: Map<string, Project>;
+  actorByEntry?: Map<string, string>;
   showVerify: boolean;
   checkedBanner?: string | null;
+  lastCheckAt?: string | null;
 }): VNode {
   const milestoneProject = (milestoneId: string): Project | undefined => {
     const m = props.milestoneById.get(milestoneId);
     return m ? props.projectById.get(m.projectId) : undefined;
   };
   return (
-    <div className="card">
-      <div className="card-head">
-        <h3>Hash-chained entries</h3>
+    <div className="panel">
+      <div className="panel-head">
+        <h3>Evidence register</h3>
         <span className="right">
-          {props.ledger.length} entries
-          {props.chainValid ? (
-            <span className="chip ok">Chain intact</span>
-          ) : (
-            <span className="chip bad">Tampering detected at entry {props.brokenAt}</span>
-          )}
+          <span className="num">{props.ledger.length} entries</span>
+          {props.lastCheckAt ? <span>last check {fmtDate(props.lastCheckAt).slice(0, 16)}</span> : null}
+          <IntegrityChip valid={props.chainValid} brokenAt={props.brokenAt} />
           {props.showVerify ? (
             <form method="POST" action="/api/ledger/verify" style="margin:0">
               <button className="btn secondary sm" type="submit">Verify integrity</button>
@@ -866,8 +975,8 @@ export function LedgerCard(props: {
         </span>
       </div>
       {props.checkedBanner ? (
-        <div className="card-pad" style="padding-top:12px;padding-bottom:0">
-          <div className={`banner ${props.chainValid ? "ok" : "warn"}`} style="margin:0 0 12px">
+        <div style="padding:12px 18px 0">
+          <div className={`banner ${props.chainValid ? "ok" : "warn"}`} style="margin:0">
             {props.checkedBanner}
           </div>
         </div>
@@ -877,36 +986,44 @@ export function LedgerCard(props: {
         <table className="data">
           <thead>
             <tr>
-              <th>#</th>
+              <th>Entry</th>
               <th>Timestamp</th>
               <th>Project / milestone</th>
               <th>Evidence</th>
-              <th>Verdict</th>
-              <th>Payload hash</th>
+              <th>Verification</th>
+              <th>Actor</th>
+              <th>Hash</th>
               <th>Prev hash</th>
-              <th>Entry hash</th>
+              <th>Integrity</th>
             </tr>
           </thead>
           <tbody>
             {props.ledger.length === 0 ? (
-              <tr><td colspan="8" className="sub">Ledger is empty.</td></tr>
+              <tr><td colspan="9" className="sub">Ledger is empty.</td></tr>
             ) : (
               props.ledger.map((e) => {
                 const m = props.milestoneById.get(e.milestoneId);
                 const p = milestoneProject(e.milestoneId);
                 return (
                   <tr>
-                    <td className="mono">{e.seq}</td>
-                    <td className="mono" style="font-size:12px">{fmtDate(e.timestamp)}</td>
+                    <td className="mono">#{e.seq}</td>
+                    <td className="mono" style="font-size:11px">{fmtDate(e.timestamp)}</td>
                     <td>
-                      {p ? <span style="display:block;font-size:12px;color:var(--ink-mute)">{p.name}</span> : null}
-                      M{m?.seq}: {m?.title}
+                      {p ? <span style="display:block;font-size:10.5px;color:var(--ink-4)">{p.name}</span> : null}
+                      <a href={m ? `/milestone/${m.id}` : "#"}>M{m?.seq}: {m?.title}</a>
                     </td>
                     <td className="mono" title={e.evidenceItemId}>{e.evidenceItemId.slice(0, 8)}…</td>
-                    <td><span className="chip ok">Verified</span></td>
-                    <td className="mono" title={e.payloadHash}>{shortHash(e.payloadHash, 12)}</td>
-                    <td className="mono" title={e.previousHash}>{shortHash(e.previousHash, 12)}</td>
+                    <td><span className="status ok"><span className="g">✓</span>Verified</span></td>
+                    <td style="font-size:11.5px">{props.actorByEntry?.get(e.id) ?? "—"}</td>
                     <td className="mono" title={e.currentHash}>{shortHash(e.currentHash, 12)}</td>
+                    <td className="mono" title={e.previousHash}>{shortHash(e.previousHash, 12)}</td>
+                    <td>
+                      {props.chainValid || (props.brokenAt !== undefined && e.seq < props.brokenAt) ? (
+                        <span className="status ok"><span className="g">✓</span>OK</span>
+                      ) : (
+                        <span className="status bad"><span className="g">✕</span>Suspect</span>
+                      )}
+                    </td>
                   </tr>
                 );
               })
@@ -924,17 +1041,16 @@ export function LedgerCard(props: {
                 <span className="mono">#{e.seq}</span>
                 <span>M{m?.seq}: {m?.title}</span>
               </div>
-              <div className="sub mono" style="font-size:11.5px;margin-top:2px">{fmtDate(e.timestamp)}</div>
+              <div className="sub mono" style="font-size:10.5px;margin-top:2px">{fmtDate(e.timestamp)}</div>
               <div className="hash">hash {shortHash(e.currentHash, 26)}<br />prev {shortHash(e.previousHash, 26)}</div>
             </div>
           );
         })}
       </div>
 
-      <div className="proof-rail">
-        <b>How to read this:</b> each entry's hash covers its content plus the previous
-        entry's hash, so any retroactive edit breaks every later hash. Genesis entries
-        chain from a fixed genesis value.
+      <div className="panel-foot">
+        Each entry's hash covers its content plus the previous entry's hash — any retroactive
+        edit breaks every later hash. Open a milestone for the full proof detail.
       </div>
     </div>
   );
@@ -947,22 +1063,32 @@ export function renderLedger(input: {
   brokenAt?: number;
   milestoneById: Map<string, Milestone>;
   projectById: Map<string, Project>;
+  actorByEntry: Map<string, string>;
   checkedBanner?: string | null;
+  lastCheckAt?: string | null;
 }): string {
   return renderDocument(
     <AppShell title="Evidence ledger" nav={input.nav}>
       <PageHeader
         title="Evidence ledger"
-        sub="Append-only, hash-chained record of every verified evidence item. Tamper-evident by construction."
+        sub="Append-only, hash-chained register of every verified evidence item. Tamper-evident by construction."
       />
+      {!input.chainValid ? (
+        <div className="banner warn" style="border-color:var(--bad-line);background:var(--bad-bg);color:var(--bad)">
+          <b>TAMPERING DETECTED AT ENTRY {input.brokenAt}.</b> Entries at and after this point
+          cannot be relied upon. Investigate before accepting any report generated from this ledger.
+        </div>
+      ) : null}
       <LedgerCard
         ledger={input.ledger}
         chainValid={input.chainValid}
         brokenAt={input.brokenAt}
         milestoneById={input.milestoneById}
         projectById={input.projectById}
+        actorByEntry={input.actorByEntry}
         showVerify={true}
         checkedBanner={input.checkedBanner}
+        lastCheckAt={input.lastCheckAt}
       />
       <script src="/js/poll.js" defer></script>
     </AppShell>
@@ -981,34 +1107,29 @@ export function renderReports(input: {
   const projectById = new Map(input.projects.map((p) => [p.id, p]));
   return renderDocument(
     <AppShell title="Reports" nav={input.nav}>
-      <PageHeader
-        title="Reports"
-        sub="Audit-ready exports for funders, project offices and compliance teams."
-      />
+      <PageHeader title="Reports" sub="Audit-ready document registry for funders, project offices and compliance teams." />
 
       {input.pdfError ? (
         <div className="banner warn">
           <b>PDF rendering is unavailable in this environment.</b> The printable HTML version
-          of the report is still available via “Preview HTML” below.
+          remains available via "Preview HTML" below.
         </div>
       ) : null}
 
-      <div className="card">
-        <div className="card-head">
+      <div className="panel">
+        <div className="panel-head">
           <h3>Project Verification &amp; Fund Release Report</h3>
-          <span className="right">Generated from current application data · runs a ledger integrity check</span>
+          <span className="right">Generated from live application data · runs a ledger integrity check</span>
         </div>
-        <div className="card-pad" style="padding-top:10px;padding-bottom:10px">
+        <div style="padding:4px 18px 8px">
           {input.projects.map((p) => (
-            <div style="display:flex;align-items:center;gap:12px;padding:10px 0;flex-wrap:wrap">
-              <span style="font-weight:650;min-width:0">{p.name}</span>
+            <div style="display:flex;align-items:center;gap:12px;padding:9px 0;flex-wrap:wrap;border-top:1px solid var(--line)">
+              <span style="font-weight:600;min-width:0;font-size:13px">{p.name}</span>
               <span style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
-                <a className="btn ghost sm" href={`/report/${p.id}/preview`} target="_blank">
-                  Preview HTML
-                </a>
+                <a className="btn ghost sm" href={`/report/${p.id}/preview`} target="_blank">Preview HTML</a>
                 <form method="POST" action="/api/reports/generate" style="margin:0">
                   <input type="hidden" name="projectId" value={p.id} />
-                  <button className="btn sm" type="submit">Generate funder report (PDF)</button>
+                  <button className="btn sm" type="submit">Generate report (PDF)</button>
                 </form>
               </span>
             </div>
@@ -1018,21 +1139,21 @@ export function renderReports(input: {
 
       <h2 className="section">Generated reports</h2>
       {input.reports.length === 0 ? (
-        <div className="card">
+        <div className="panel">
           <EmptyState
             icon={icons.reports()}
             title="No reports generated yet"
-            message="Generate a report above — it will stay available for download here."
+            message="Generate a report above — it stays available for download here."
           />
         </div>
       ) : (
-        <div className="card">
+        <div className="panel">
           <div className="desktop-only table-scroll">
             <table className="data">
               <thead>
                 <tr>
+                  <th>Report</th>
                   <th>Project</th>
-                  <th>Report type</th>
                   <th>Generated</th>
                   <th>Generated by</th>
                   <th>Ledger integrity</th>
@@ -1045,17 +1166,22 @@ export function renderReports(input: {
                   const by = input.users.get(r.generatedBy);
                   return (
                     <tr>
-                      <td>{project?.name ?? r.projectId}</td>
-                      <td>Verification &amp; Fund Release</td>
-                      <td className="mono" style="font-size:12px">{fmtDate(r.generatedAt)}</td>
-                      <td>{by ? `${by.name}` : r.generatedBy}</td>
+                      <td>
+                        <span style="display:inline-flex;align-items:center;gap:7px;font-weight:550">
+                          {icons.file(13)} Verification &amp; Fund Release
+                        </span>
+                        <span className="mono" style="display:block;font-size:10px;color:var(--ink-4)">{r.filename}</span>
+                      </td>
+                      <td style="font-size:12px">{project?.name ?? r.projectId}</td>
+                      <td className="mono" style="font-size:11px">{fmtDate(r.generatedAt)}</td>
+                      <td style="font-size:12px">{by ? by.name : r.generatedBy}</td>
                       <td>
                         {r.integrityStatus === "INTACT" ? (
-                          <span className="chip ok">Chain intact</span>
+                          <span className="status ok"><span className="g">✓</span>Chain intact</span>
                         ) : (
-                          <span className="chip bad">{r.integrityStatus.replace("TAMPERED_AT:", "Tampering at #")}</span>
+                          <span className="status bad"><span className="g">✕</span>{r.integrityStatus.replace("TAMPERED_AT:", "Tampering at #")}</span>
                         )}
-                        <span className="sub" style="display:block;font-size:11px">{r.ledgerEntries} entries</span>
+                        <span className="sub" style="display:block;font-size:10px">{r.ledgerEntries} entries</span>
                       </td>
                       <td style="white-space:nowrap">
                         <a className="btn secondary sm" href={`/reports/file/${r.id}`} target="_blank">Open</a>{" "}
@@ -1079,14 +1205,14 @@ export function renderReports(input: {
                 <div className="ledger-row">
                   <div className="t"><span>{project?.name ?? r.projectId}</span></div>
                   <div className="sub" style="margin-top:2px">
-                    Verification &amp; Fund Release · {by?.name ?? ""}
+                    Verification &amp; Fund Release · {by?.name ?? ""}{" "}
                     {r.integrityStatus === "INTACT" ? (
-                      <span className="chip ok" style="margin-left:6px">Chain intact</span>
+                      <span className="status ok" style="margin-left:4px"><span className="g">✓</span>Intact</span>
                     ) : (
-                      <span className="chip bad" style="margin-left:6px">Tampering</span>
+                      <span className="status bad"><span className="g">✕</span>Tampering</span>
                     )}
                   </div>
-                  <div className="sub mono" style="font-size:11.5px;margin-top:2px">{fmtDate(r.generatedAt)}</div>
+                  <div className="sub mono" style="font-size:10.5px;margin-top:2px">{fmtDate(r.generatedAt)}</div>
                   <div style="display:flex;gap:8px;margin-top:8px">
                     <a className="btn secondary sm" href={`/reports/file/${r.id}`}>Open</a>
                     <a className="btn ghost sm" href={`/reports/file/${r.id}?dl=1`}>Download</a>
@@ -1100,7 +1226,7 @@ export function renderReports(input: {
 
       <p className="footer-note">
         Reports are point-in-time snapshots generated from live application data and stored in
-        the demo environment (data/reports/). Regenerating reflects the current state.
+        the demo environment. Regenerating reflects the current state.
       </p>
     </AppShell>
   );
@@ -1125,19 +1251,21 @@ export function renderCompliance(input: { nav: NavContext; data: ComplianceData;
         sub="Open items requiring compliance attention, summarized from recorded verification and governance data."
       />
 
-      <div className="metrics">
-        <MetricCard label="Evidence needing review" value={String(d.needsReview.length)} tone={d.needsReview.length > 0 ? "amber" : "slate"} icon={icons.alert()} />
-        <MetricCard label="Rejected evidence" value={String(d.rejected.length)} tone={d.rejected.length > 0 ? "red" : "slate"} icon={icons.x()} />
-        <MetricCard label="Awaiting approval" value={String(d.awaitingApproval.length)} tone={d.awaitingApproval.length > 0 ? "amber" : "slate"} icon={icons.approvals()} />
-        <MetricCard label="Ledger integrity" value={d.chainValid ? "Intact" : "Alert"} tone={d.chainValid ? "green" : "red"} icon={icons.shield()} hint={d.chainValid ? "all entries verified" : `broken at entry ${d.brokenAt}`} />
-      </div>
+      <OperationalStatus
+        items={[
+          { tone: d.needsReview.length > 0 ? "warn" : "ok", value: String(d.needsReview.length), label: "evidence needing review" },
+          { tone: d.rejected.length > 0 ? "bad" : "ok", value: String(d.rejected.length), label: "rejected evidence" },
+          { tone: d.awaitingApproval.length > 0 ? "warn" : "idle", value: String(d.awaitingApproval.length), label: "awaiting approval" },
+          { tone: d.chainValid ? "ok" : "bad", value: d.chainValid ? "Intact" : `Alert #${d.brokenAt}`, label: "ledger integrity" },
+        ]}
+      />
 
       <h2 className="section">Evidence needing review</h2>
       {d.needsReview.length === 0 ? (
-        <div className="card"><EmptyState icon={icons.check()} title="Nothing flagged" message="No evidence currently requires human review." /></div>
+        <div className="panel"><EmptyState icon={icons.check()} title="Nothing flagged" message="No evidence currently requires human review." /></div>
       ) : (
         d.needsReview.map((b) => (
-          <div style="margin-bottom:14px">
+          <div style="margin-bottom:12px">
             <EvidencePanel
               evidence={b.evidence}
               verification={b.verification}
@@ -1152,20 +1280,18 @@ export function renderCompliance(input: { nav: NavContext; data: ComplianceData;
 
       <h2 className="section">Milestones awaiting approval</h2>
       {d.awaitingApproval.length === 0 ? (
-        <div className="card"><EmptyState icon={icons.approvals()} title="No open approvals" message="All verified milestones have completed governance." /></div>
+        <div className="panel"><EmptyState icon={icons.approvals()} title="No open approvals" message="All verified milestones have completed governance." /></div>
       ) : (
-        <div className="card">
+        <div className="panel">
           <ul className="activity">
             {d.awaitingApproval.map((a) => (
               <li>
                 <span className="ico warn">{icons.clock()}</span>
                 <span className="body">
-                  <span className="msg">
-                    <b>{a.project.name}</b> — M{a.milestone.seq}: {a.milestone.title}
-                  </span>
+                  <span className="msg"><b>{a.project.name}</b> — M{a.milestone.seq}: {a.milestone.title}</span>
                   <span className="meta">
                     <span className="when">requested {fmtDate(a.approval.createdAt)}</span>
-                    <span style="font-weight:700">{money(a.milestone.trancheAmount)} held</span>
+                    <span className="num" style="font-weight:650;color:var(--ink-2)">{money(a.milestone.trancheAmount)} held</span>
                     <a href="/approvals">Review →</a>
                   </span>
                 </span>
@@ -1179,7 +1305,7 @@ export function renderCompliance(input: { nav: NavContext; data: ComplianceData;
         <>
           <h2 className="section">Rejected evidence</h2>
           {d.rejected.map((b) => (
-            <div style="margin-bottom:14px">
+            <div style="margin-bottom:12px">
               <EvidencePanel
                 evidence={b.evidence}
                 verification={b.verification}
@@ -1208,13 +1334,13 @@ export interface Insight {
 
 export function renderInsights(input: { nav: NavContext; insights: Insight[] }): string {
   return renderDocument(
-    <AppShell title="AI Insights" nav={input.nav}>
+    <AppShell title="Verification Insights" nav={input.nav}>
       <PageHeader
         title="Verification insights"
         sub="Automated observations derived from recorded verification, approval and submission data. Informational only — no autonomous decisions are made."
       />
       {input.insights.length === 0 ? (
-        <div className="card">
+        <div className="panel">
           <EmptyState
             icon={icons.insights()}
             title="No anomalies detected"
@@ -1222,7 +1348,7 @@ export function renderInsights(input: { nav: NavContext; insights: Insight[] }):
           />
         </div>
       ) : (
-        <div className="card">
+        <div className="panel">
           <ul className="activity">
             {input.insights.map((ins) => (
               <li>
@@ -1231,9 +1357,7 @@ export function renderInsights(input: { nav: NavContext; insights: Insight[] }):
                 </span>
                 <span className="body">
                   <span className="msg"><b>{ins.title}</b> — {ins.detail}</span>
-                  {ins.href ? (
-                    <span className="meta"><a href={ins.href}>View →</a></span>
-                  ) : null}
+                  {ins.href ? <span className="meta"><a href={ins.href}>View →</a></span> : null}
                 </span>
               </li>
             ))}
@@ -1241,8 +1365,7 @@ export function renderInsights(input: { nav: NavContext; insights: Insight[] }):
         </div>
       )}
       <p className="footer-note">
-        Labelled “Automated insights”: computed from stored verification records, not a
-        generative model.
+        Computed from stored verification records, not a generative model.
       </p>
     </AppShell>
   );
@@ -1253,35 +1376,35 @@ export function renderInsights(input: { nav: NavContext; insights: Insight[] }):
 export function renderMore(input: { nav: NavContext }): string {
   const { user } = input.nav;
   const items = [
-    { href: "/field", label: "Field Capture", icon: icons.camera, desc: "Mobile evidence capture PWA" },
-    { href: "/reports", label: "Reports", icon: icons.reports, desc: "Compliance report exports" },
+    { href: "/field", label: "Field Capture", icon: icons.camera, desc: "Mobile evidence capture" },
+    { href: "/reports", label: "Reports", icon: icons.reports, desc: "Document registry & exports" },
     { href: "/compliance", label: "Risk & Compliance", icon: icons.shield, desc: "Open review items and integrity" },
-    { href: "/insights", label: "AI Insights", icon: icons.insights, desc: "Automated verification observations" },
+    { href: "/insights", label: "Verification Insights", icon: icons.insights, desc: "Automated observations" },
   ];
   return renderDocument(
     <AppShell title="More" nav={{ ...input.nav, active: "more" }}>
       <PageHeader title="More" />
-      <div className="card">
-        {items.map((i) => (
-          <a href={i.href} style="display:flex;gap:14px;align-items:center;padding:15px 18px;border-bottom:1px solid var(--line);color:var(--ink)">
-            <span className="ico" style="width:38px;height:38px;border-radius:10px;background:var(--primary-soft);color:var(--primary-deep);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+      <div className="panel">
+        {items.map((i, idx) => (
+          <a href={i.href} style={`display:flex;gap:12px;align-items:center;padding:13px 16px;color:var(--ink);min-height:48px;${idx > 0 ? "border-top:1px solid var(--line)" : ""}`}>
+            <span style="width:32px;height:32px;border-radius:7px;background:var(--inset);border:1px solid var(--line);color:var(--ink-3);display:flex;align-items:center;justify-content:center;flex-shrink:0">
               {i.icon()}
             </span>
             <span style="min-width:0">
-              <span style="font-weight:650;display:block">{i.label}</span>
-              <span className="sub" style="display:block">{i.desc}</span>
+              <span style="font-weight:600;display:block;font-size:13px">{i.label}</span>
+              <span className="sub" style="display:block;font-size:11.5px">{i.desc}</span>
             </span>
-            <span style="margin-left:auto;color:var(--ink-faint)">{icons.arrowRight()}</span>
+            <span style="margin-left:auto;color:var(--ink-4)">{icons.arrowRight(14)}</span>
           </a>
         ))}
       </div>
-      <div className="card card-pad" style="display:flex;gap:12px;align-items:center">
-        <span className="avatar" style="width:40px;height:40px;border-radius:50%;background:var(--primary-soft);color:var(--primary-deep);font-weight:700;display:flex;align-items:center;justify-content:center">
+      <div className="panel panel-pad" style="display:flex;gap:12px;align-items:center;margin-top:12px">
+        <span style="width:36px;height:36px;border-radius:8px;background:var(--inset);border:1px solid var(--line);color:var(--ink-2);font-weight:650;font-size:12px;display:flex;align-items:center;justify-content:center">
           {initials(user.name)}
         </span>
         <span style="min-width:0;flex:1">
-          <span style="font-weight:650;display:block">{user.name}</span>
-          <span className="sub" style="display:block">{roleLabel(user.role)}</span>
+          <span style="font-weight:600;display:block;font-size:13px">{user.name}</span>
+          <span className="sub" style="display:block;font-size:11.5px">{roleLabel(user.role)}{input.nav.orgName ? ` · ${input.nav.orgName}` : ""}</span>
         </span>
         <a className="btn secondary sm" href="/">Switch user</a>
       </div>
@@ -1302,14 +1425,14 @@ export function renderFieldShell(user: User): string {
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
         <link rel="apple-touch-icon" href="/icons/icon-192.png" />
-        <meta name="theme-color" content="#0b1424" />
+        <meta name="theme-color" content="#0c1220" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
       </head>
       <body className="field-body">
         <div className="field-shell">
           <div className="field-head">
-            <span className="mark">{icons.logo(18)}</span>
+            <span className="mark">{brandMark(16)}</span>
             <span>
               <span className="brand-sm" style="display:block">OBV Field</span>
               <span className="brand-sub" style="display:block">Evidence capture</span>
@@ -1317,13 +1440,15 @@ export function renderFieldShell(user: User): string {
             <span className="role-tag">
               {user.name}
               <br />
-              {user.title} · <a href="/" style="color:#7dd3fc">switch</a>
+              {user.title} · <a href="/" style="color:#96b0f5">switch</a>
             </span>
           </div>
           <div id="app" data-user-id={user.id} data-user-name={user.name}>
             <div className="field-card">
-              <div className="spin"></div>
-              <p style="text-align:center;color:#94a3b8">Loading projects…</p>
+              <div className="skeleton" style="height:14px;width:40%;margin-bottom:12px;background:#263a58"></div>
+              <div className="skeleton" style="height:52px;margin-bottom:8px;background:#1a2740"></div>
+              <div className="skeleton" style="height:52px;margin-bottom:8px;background:#1a2740"></div>
+              <div className="skeleton" style="height:52px;background:#1a2740"></div>
             </div>
           </div>
           <noscript>
@@ -1350,10 +1475,10 @@ export function renderError(nav: NavContext | null, title: string, message: stri
         </head>
         <body>
           <div className="auth-wrap">
-            <div className="auth-box" style="text-align:center">
-              <h1>{title}</h1>
+            <div className="auth-box" style="text-align:center;max-width:420px">
+              <h1 className="t-title">{title}</h1>
               <p className="sub">{message}</p>
-              <a className="btn" href="/">Go to sign-in</a>
+              <a className="btn" href="/" style="margin-top:10px">Go to sign-in</a>
             </div>
           </div>
         </body>

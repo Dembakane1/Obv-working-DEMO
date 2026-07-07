@@ -48,7 +48,7 @@ async function captureEvidence(field) {
   await waitForText(field, "Requirement");
 
   if (MODE === "camera") {
-    await field.getByRole("button", { name: "Capture photo" }).click();
+    await field.getByRole("button", { name: "Capture evidence" }).click();
     await waitForText(field, "Live capture — real camera photo and device GPS");
   } else {
     await waitForText(field, "Camera unavailable or permission denied");

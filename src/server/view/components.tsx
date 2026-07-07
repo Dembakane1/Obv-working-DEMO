@@ -1,6 +1,6 @@
-/** Shared UI components (server-rendered TSX) — OBV design system v2. */
+/** Shared UI components — OBV design system v3 (institutional). */
 import { h, Fragment, VNode, Child } from "./jsx";
-import { icons } from "./icons";
+import { brandMark, icons } from "./icons";
 import type {
   AccountStatus,
   ApprovalRecord,
@@ -51,58 +51,69 @@ export function initials(name: string): string {
     .toUpperCase();
 }
 
-// ------------------------------------------------------------- chips
+// -------------------------------------------------------- status system
+// One consistent treatment: glyph + text + restrained semantic color.
 
-const MILESTONE_STATUS_META: Record<MilestoneStatus, { label: string; tone: string }> = {
-  NOT_STARTED: { label: "Not started", tone: "neutral" },
-  PENDING_EVIDENCE: { label: "Awaiting evidence", tone: "warn" },
-  UNDER_REVIEW: { label: "Under review", tone: "info" },
-  VERIFIED: { label: "Verified", tone: "info" },
-  APPROVED: { label: "Approved", tone: "ok" },
-  RELEASED: { label: "Released", tone: "ok" },
-};
-
-export function MilestoneStatusChip(props: { status: MilestoneStatus }): VNode {
-  const meta = MILESTONE_STATUS_META[props.status];
+function Status(props: { tone: string; glyph: string; children?: Child }): VNode {
   return (
-    <span className={`chip ${meta.tone}`}>
-      <span className="dot"></span>
-      {meta.label}
+    <span className={`status ${props.tone}`}>
+      <span className="g" aria-hidden="true">{props.glyph}</span>
+      {props.children}
     </span>
   );
 }
 
+const MILESTONE_STATUS_META: Record<MilestoneStatus, { label: string; tone: string; glyph: string }> = {
+  NOT_STARTED: { label: "Not started", tone: "", glyph: "○" },
+  PENDING_EVIDENCE: { label: "Awaiting evidence", tone: "warn", glyph: "○" },
+  UNDER_REVIEW: { label: "Under review", tone: "info", glyph: "!" },
+  VERIFIED: { label: "Verified", tone: "info", glyph: "✓" },
+  APPROVED: { label: "Approved", tone: "ok", glyph: "✓" },
+  RELEASED: { label: "Released", tone: "ok", glyph: "✓" },
+};
+
+export function MilestoneStatusChip(props: { status: MilestoneStatus }): VNode {
+  const m = MILESTONE_STATUS_META[props.status];
+  return <Status tone={m.tone} glyph={m.glyph}>{m.label}</Status>;
+}
+
 export function AccountChip(props: { status: AccountStatus }): VNode {
   return props.status === "RELEASED" ? (
-    <span className="chip ok">Released</span>
+    <Status tone="ok" glyph="✓">Released</Status>
   ) : (
-    <span className="chip warn">Held</span>
+    <Status tone="warn" glyph="●">Held</Status>
   );
 }
 
 export function VerdictChip(props: { verdict: Verdict }): VNode {
-  const tone =
-    props.verdict === "VERIFIED" ? "ok" : props.verdict === "NEEDS_REVIEW" ? "warn" : "bad";
-  const label =
-    props.verdict === "VERIFIED"
-      ? "Verified"
-      : props.verdict === "NEEDS_REVIEW"
-        ? "Needs review"
-        : "Rejected";
-  return <span className={`chip ${tone}`}>{label}</span>;
+  return props.verdict === "VERIFIED" ? (
+    <Status tone="ok" glyph="✓">Verified</Status>
+  ) : props.verdict === "NEEDS_REVIEW" ? (
+    <Status tone="warn" glyph="!">Needs review</Status>
+  ) : (
+    <Status tone="bad" glyph="✕">Rejected</Status>
+  );
 }
 
 export function ApprovalChip(props: { status: ApprovalStatus; progress?: string }): VNode {
-  const tone = props.status === "APPROVED" ? "ok" : props.status === "REJECTED" ? "bad" : "warn";
-  const label =
-    props.status === "APPROVED"
-      ? "Approved"
-      : props.status === "REJECTED"
-        ? "Rejected"
-        : props.progress
-          ? `Pending approval · ${props.progress}`
-          : "Pending approval";
-  return <span className={`chip ${tone}`}>{label}</span>;
+  if (props.status === "APPROVED") return <Status tone="ok" glyph="✓">Approved</Status>;
+  if (props.status === "REJECTED") return <Status tone="bad" glyph="✕">Rejected</Status>;
+  if (props.progress && props.progress[0] !== "0") {
+    return <Status tone="warn" glyph="◐">Partially approved · {props.progress}</Status>;
+  }
+  return <Status tone="warn" glyph="○">Pending · {props.progress ?? "approval"}</Status>;
+}
+
+export function IntegrityChip(props: { valid: boolean; brokenAt?: number }): VNode {
+  return props.valid ? (
+    <Status tone="ok" glyph="✓">Chain intact</Status>
+  ) : (
+    <Status tone="bad" glyph="✕">Tampering detected{props.brokenAt ? ` at #${props.brokenAt}` : ""}</Status>
+  );
+}
+
+export function FallbackChip(): VNode {
+  return <span className="chip fallback">Demo fallback</span>;
 }
 
 // ---------------------------------------------------------- app shell
@@ -111,6 +122,8 @@ export interface NavContext {
   user: User;
   active: string;
   pendingApprovals: number;
+  /** Organization name shown in the sidebar user block. */
+  orgName?: string;
 }
 
 const NAV_ITEMS: Array<{ key: string; href: string; label: string; icon: () => VNode }> = [
@@ -121,7 +134,7 @@ const NAV_ITEMS: Array<{ key: string; href: string; label: string; icon: () => V
   { key: "ledger", href: "/ledger", label: "Evidence Ledger", icon: icons.ledger },
   { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
   { key: "compliance", href: "/compliance", label: "Risk & Compliance", icon: icons.shield },
-  { key: "insights", href: "/insights", label: "AI Insights", icon: icons.insights },
+  { key: "insights", href: "/insights", label: "Verification Insights", icon: icons.insights },
 ];
 
 const BOTTOM_NAV = ["overview", "projects", "approvals", "ledger"];
@@ -129,9 +142,12 @@ const BOTTOM_NAV = ["overview", "projects", "approvals", "ledger"];
 export function AppShell(props: {
   title: string;
   nav: NavContext;
+  /** Optional context shown in the top bar after the section name. */
+  context?: string;
   children?: Child;
 }): VNode {
   const { user, active, pendingApprovals } = props.nav;
+  const activeItem = NAV_ITEMS.find((i) => i.key === active);
   return (
     <html lang="en">
       <head>
@@ -141,22 +157,21 @@ export function AppShell(props: {
         <link rel="stylesheet" href="/styles.css" />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
-        <meta name="theme-color" content="#16233b" />
+        <meta name="theme-color" content="#0d1626" />
       </head>
       <body>
         <div className="shell">
           <aside className="sidebar">
             <div className="sidebar-brand">
-              <span className="mark">{icons.logo(20)}</span>
-              <span>
-                <span className="name" style="display:block">OpenBuild Verify</span>
-                <span className="sub" style="display:block">The truth layer for physical projects</span>
+              <span className="mark">{brandMark(18)}</span>
+              <span className="word">
+                <span className="n">OpenBuild Verify</span>
+                <span className="s">Verification · Governance</span>
               </span>
             </div>
-            <nav className="sidebar-nav">
-              <div className="kicker">Navigation</div>
+            <nav className="sidebar-nav" aria-label="Primary">
               {NAV_ITEMS.map((item) => (
-                <a href={item.href} className={`nav-item ${active === item.key ? "active" : ""}`}>
+                <a href={item.href} className={`nav-item ${active === item.key ? "active" : ""}`} aria-current={active === item.key ? "page" : undefined}>
                   {item.icon()}
                   {item.label}
                   {item.key === "approvals" && pendingApprovals > 0 ? (
@@ -166,34 +181,57 @@ export function AppShell(props: {
               ))}
             </nav>
             <div className="sidebar-user">
-              <span className="avatar">{initials(user.name)}</span>
+              <span className="avatar" aria-hidden="true">{initials(user.name)}</span>
               <span className="who">
-                <span className="n">{user.name}</span>
-                <span className="r" style="display:block">{roleLabel(user.role)}</span>
+                <span className="n" style="display:block">{user.name}</span>
+                <span className="r" style="display:block">
+                  {roleLabel(user.role)}
+                  {props.nav.orgName ? ` · ${props.nav.orgName}` : ""}
+                </span>
               </span>
               <a className="switch" href="/">Switch</a>
             </div>
           </aside>
 
           <div className="main">
-            <div className="mobile-top">
-              <span className="mark">{icons.logo(16)}</span>
-              <span className="t">OpenBuild Verify</span>
-              <span className="u">
-                {user.name}
-                <br />
-                {roleLabel(user.role)} · <a href="/">switch</a>
+            <div className="topbar">
+              <span className="ctx">
+                <b>{activeItem?.label ?? props.title}</b>
+                {props.context ? (
+                  <>
+                    <span className="sep">/</span>
+                    <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{props.context}</span>
+                  </>
+                ) : null}
+              </span>
+              <span className="right">
+                <span className="env-tag">Demo environment</span>
+                <span className="user">
+                  <b>{user.name}</b> · {roleLabel(user.role)}
+                </span>
               </span>
             </div>
+
+            <div className="mobile-top">
+              <span className="mark">{brandMark(15)}</span>
+              <span className="t">OpenBuild Verify</span>
+              <span className="u">
+                {user.name} · {roleLabel(user.role)}
+                <br />
+                <span className="env-tag" style="font-size:8.5px;padding:1px 5px">Demo</span>{" "}
+                <a href="/">switch user</a>
+              </span>
+            </div>
+
             <div className="content">{props.children}</div>
           </div>
         </div>
 
-        <nav className="bottom-nav">
+        <nav className="bottom-nav" aria-label="Primary">
           {NAV_ITEMS.filter((i) => BOTTOM_NAV.includes(i.key)).map((item) => (
             <a href={item.href} className={active === item.key ? "active" : ""}>
               {item.icon()}
-              {item.key === "approvals" ? "Approvals" : item.label.split(" ")[0]}
+              {item.key === "approvals" ? "Approvals" : item.key === "ledger" ? "Ledger" : item.label.split(" ")[0]}
             </a>
           ))}
           <a href="/more" className={active === "more" ? "active" : ""}>
@@ -214,42 +252,63 @@ export function PageHeader(props: {
 }): VNode {
   return (
     <header className="page-head">
-      {props.crumb ? (
-        <a className="crumb" href={props.crumb.href}>
-          ← {props.crumb.label}
-        </a>
-      ) : null}
-      <h1>{props.title}</h1>
-      {props.sub ? <p className="sub">{props.sub}</p> : null}
-      {props.children ? <div className="head-actions">{props.children}</div> : null}
+      <div className="id">
+        {props.crumb ? (
+          <a className="crumb" href={props.crumb.href}>← {props.crumb.label}</a>
+        ) : null}
+        <h1>{props.title}</h1>
+        {props.sub ? <p className="sub">{props.sub}</p> : null}
+      </div>
+      {props.children ? <div className="actions">{props.children}</div> : null}
     </header>
   );
 }
 
-// ------------------------------------------------------------ metrics
+// ------------------------------------------------- financial summary band
 
-export function MetricCard(props: {
-  label: string;
+export interface FinCell {
   value: string;
-  hint?: string;
-  tone: "blue" | "green" | "amber" | "red" | "slate";
-  icon: VNode;
-}): VNode {
+  label: string;
+  context?: string;
+  tone?: "green" | "amber";
+}
+
+export function FinancialBand(props: { cells: FinCell[] }): VNode {
   return (
-    <div className="metric">
-      <span className={`icon ${props.tone}`}>{props.icon}</span>
-      <span style="min-width:0">
-        <span className="label" style="display:block">{props.label}</span>
-        <span className="value" style="display:block">{props.value}</span>
-        {props.hint ? <span className="hint">{props.hint}</span> : null}
-      </span>
+    <div className="fin-band">
+      {props.cells.map((c) => (
+        <div className="fin-cell">
+          <div className={`v ${c.tone ?? ""}`}>{c.value}</div>
+          <div className="l">{c.label}</div>
+          {c.context ? <div className="c">{c.context}</div> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export interface OpsItem {
+  tone: "ok" | "warn" | "bad" | "idle";
+  value: string;
+  label: string;
+}
+
+export function OperationalStatus(props: { items: OpsItem[] }): VNode {
+  return (
+    <div className="ops-row">
+      {props.items.map((i) => (
+        <span className="ops-item">
+          <span className={`g ${i.tone}`} aria-hidden="true">●</span>
+          <b>{i.value}</b> {i.label}
+        </span>
+      ))}
     </div>
   );
 }
 
 // ----------------------------------------------------------- pipeline
 
-/** EVIDENCE -> VERIFIED -> APPROVAL -> RELEASE position indicator. */
+/** EVIDENCE → VERIFIED → APPROVAL → RELEASE lifecycle indicator. */
 export function Pipeline(props: {
   milestone: Milestone;
   verification: Verification | null;
@@ -284,9 +343,10 @@ export function Pipeline(props: {
     { label: "Evidence", state: evidence },
     { label: verified === "blocked" ? "Review" : "Verified", state: verified },
     {
-      label: approvalStage === "current" && props.approvalProgress
-        ? `Approval ${props.approvalProgress}`
-        : "Approval",
+      label:
+        approvalStage === "current" && props.approvalProgress
+          ? `Approval ${props.approvalProgress}`
+          : "Approval",
       state: approvalStage,
     },
     { label: "Release", state: release },
@@ -307,7 +367,7 @@ export function Pipeline(props: {
   );
 }
 
-// ------------------------------------------------------ milestone card
+// ------------------------------------------------------ milestone rows
 
 export interface MilestoneCardData {
   milestone: Milestone;
@@ -322,37 +382,55 @@ export function approvalProgressLabel(d: MilestoneCardData): string | undefined 
   return `${approved} of ${d.approval.requiredRoles.length}`;
 }
 
+/** The next action a reader should understand in two seconds. */
+export function milestoneNextAction(d: MilestoneCardData): string | null {
+  const { milestone, approval, approvalRecords } = d;
+  if (milestone.status === "RELEASED") return null;
+  if (approval?.status === "PENDING") {
+    const missing = approval.requiredRoles.filter(
+      (role) => !approvalRecords.some((r) => r.role === role)
+    );
+    return missing.length > 0 ? `Awaiting ${missing.map(roleLabel).join(", ")}` : "Awaiting sign-off";
+  }
+  if (milestone.status === "UNDER_REVIEW") return "Awaiting compliance review of flagged evidence";
+  if (milestone.status === "PENDING_EVIDENCE") return "Awaiting field evidence capture";
+  if (milestone.status === "NOT_STARTED") return null;
+  return null;
+}
+
 export function MilestoneCard(props: { data: MilestoneCardData; cta?: VNode }): VNode {
-  const { milestone, verification, approval } = props.data;
-  const numClass =
-    milestone.status === "RELEASED" ? "done" : milestone.status === "NOT_STARTED" ? "idle" : "";
+  const { milestone } = props.data;
+  const next = milestoneNextAction(props.data);
   return (
-    <div className="card ms-card">
-      <div className="head">
-        <span className={`num ${numClass}`}>{milestone.seq}</span>
-        <span className="title-wrap">
-          <h4>
+    <div className="ms-card">
+      <div className="m-row1">
+        <span className={`m-seq ${milestone.status === "RELEASED" ? "done" : ""}`}>M{milestone.seq}</span>
+        <span className="m-main">
+          <h4 className="m-title">
             <a href={`/milestone/${milestone.id}`}>{milestone.title}</a>
           </h4>
-          <p className="req">{milestone.requirement}</p>
+          <p className="m-req">{milestone.requirement}</p>
         </span>
-        <span className="amount">
-          <span className="v" style="display:block">{money(milestone.trancheAmount)}</span>
-          <span className="l">tranche · {milestone.accountStatus === "RELEASED" ? "released" : "held"}</span>
+        <span className="m-money">
+          <span className="v num">{money(milestone.trancheAmount)}</span>
+          <span className={`s ${milestone.accountStatus === "RELEASED" ? "released" : "held"}`}>
+            {milestone.accountStatus}
+          </span>
         </span>
       </div>
-      <div className="foot">
+      <div className="m-row2">
         <Pipeline
           milestone={milestone}
-          verification={verification}
-          approval={approval}
+          verification={props.data.verification}
+          approval={props.data.approval}
           approvalProgress={approvalProgressLabel(props.data)}
         />
-        <span className="cta">
+        {next ? (
+          <span className="m-next">Next: <b>{next}</b></span>
+        ) : null}
+        <span className="m-cta">
           {props.cta ?? (
-            <a className="btn ghost sm" href={`/milestone/${milestone.id}`}>
-              Details
-            </a>
+            <a className="btn ghost sm" href={`/milestone/${milestone.id}`}>Details</a>
           )}
         </span>
       </div>
@@ -366,29 +444,32 @@ export function ApprovalProgress(props: {
   approval: ApprovalRequest;
   records: ApprovalRecord[];
   users: Map<string, User>;
+  hideSummary?: boolean;
 }): VNode {
   const { approval, records } = props;
   const byRole = new Map(records.map((r) => [r.role, r]));
   const approved = records.filter((r) => r.decision === "APPROVED").length;
   return (
     <div className="approval-progress">
-      <div className="summary">
-        {approval.status === "APPROVED"
-          ? "Fully approved"
-          : approval.status === "REJECTED"
-            ? "Rejected"
-            : `${approved} of ${approval.requiredRoles.length} approvals`}
-      </div>
+      {props.hideSummary ? null : (
+        <div className="summary">
+          {approval.status === "APPROVED"
+            ? "Fully approved"
+            : approval.status === "REJECTED"
+              ? "Rejected"
+              : `${approved} of ${approval.requiredRoles.length} approvals`}
+        </div>
+      )}
       {approval.requiredRoles.map((role) => {
         const rec = byRole.get(role);
         const cls = rec ? (rec.decision === "APPROVED" ? "yes" : "no") : "";
         const person = rec ? props.users.get(rec.userId) : undefined;
         return (
           <div className={`row ${cls}`}>
-            <span className="tick">{rec ? (rec.decision === "APPROVED" ? "✓" : "✕") : "○"}</span>
+            <span className="tick" aria-hidden="true">{rec ? (rec.decision === "APPROVED" ? "✓" : "✕") : "○"}</span>
             <span className="who">
               {roleLabel(role)}
-              {person ? <span className="sub" style="display:block;font-weight:400">{person.name}</span> : null}
+              {person ? <span className="sub" style="display:block">{person.name}</span> : null}
             </span>
             {rec ? (
               <span className="when">{fmtDate(rec.createdAt).slice(0, 16)}</span>
@@ -402,9 +483,7 @@ export function ApprovalProgress(props: {
   );
 }
 
-// ------------------------------------------------------ evidence panel
-
-// --- Evidence panel building blocks (also composed by the approvals page) ---
+// --- Evidence panel building blocks (composed by the approvals page too) ---
 
 export function EvidenceStatusChips(props: {
   verification: Verification | null;
@@ -417,7 +496,7 @@ export function EvidenceStatusChips(props: {
       ) : (
         <span className="chip neutral">Unverified</span>
       )}
-      {props.isDemoFallback ? <span className="chip fallback">Demo fallback</span> : null}
+      {props.isDemoFallback ? <FallbackChip /> : null}
     </div>
   );
 }
@@ -482,7 +561,7 @@ export function EvidenceAiResult(props: { verification: Verification }): VNode {
         <VerdictChip verdict={v.verdict} />
       </div>
       <div className="confbar">
-        <span style="font-weight:650">Confidence</span>
+        <span style="font-weight:600">Confidence</span>
         <ConfidenceTrack confidence={v.confidence} />
         <span className="mono">{v.confidence.toFixed(2)}</span>
       </div>
@@ -524,8 +603,6 @@ export function EvidenceHashes(props: {
 
 /**
  * Reusable Evidence Panel — the chain of proof for one evidence item.
- * A: original evidence  B: verification checks  C: AI verification result
- * D: proof integrity    E: chain-of-proof rail
  */
 export function EvidencePanel(props: {
   evidence: EvidenceItem;
@@ -537,10 +614,8 @@ export function EvidencePanel(props: {
   accountStatus?: AccountStatus;
 }): VNode {
   const { evidence, verification, ledgerEntry } = props;
-  const passed = verification ? verification.checks.filter((c) => c.passed).length : 0;
-  const total = verification ? verification.checks.length : 0;
   return (
-    <div className="card">
+    <div className="panel">
       <div className="evidence-panel">
         <div className="photo">
           <img src={evidence.photoPath} alt="Field evidence photo" />
@@ -549,7 +624,6 @@ export function EvidencePanel(props: {
           <div className="ev-sec">Original evidence</div>
           <EvidenceStatusChips verification={verification} isDemoFallback={evidence.isDemoFallback} />
           <EvidenceFacts evidence={evidence} requirement={props.requirement} submittedBy={props.submittedBy} />
-
           {verification ? (
             <>
               <div className="ev-sec">Verification checks</div>
@@ -558,12 +632,10 @@ export function EvidencePanel(props: {
               <EvidenceAiResult verification={verification} />
             </>
           ) : null}
-
           <div className="ev-sec">Proof integrity</div>
           <EvidenceHashes evidence={evidence} ledgerEntry={ledgerEntry} />
         </div>
       </div>
-
       <ProofRail
         verification={verification}
         ledgerEntry={ledgerEntry}
@@ -574,7 +646,7 @@ export function EvidencePanel(props: {
   );
 }
 
-/** E: chain-of-proof rail — the product story on one line. */
+/** Chain-of-proof rail — the product story on one line. */
 export function ProofRail(props: {
   verification: Verification | null;
   ledgerEntry: LedgerEntry | null;
@@ -635,47 +707,18 @@ export function ProofRail(props: {
   );
 }
 
-/** Subtle product-story cue used under page headers (not a marketing banner). */
-export function StoryStrip(): VNode {
-  const stages = [
-    "Physical evidence",
-    "Verification",
-    "Tamper-evident ledger",
-    "Human approval",
-    "Fund release",
-  ];
-  return (
-    <div className="story-strip">
-      {stages.map((s, i) => (
-        <>
-          {i > 0 ? <span className="arrow">→</span> : null}
-          <span>{s}</span>
-        </>
-      ))}
-    </div>
-  );
-}
-
-export function ConfidenceTrack(props: { confidence: number }): VNode {
-  const pct = Math.round(props.confidence * 100);
-  const cls = pct >= 80 ? "" : pct >= 50 ? "mid" : "low";
-  return (
-    <span className="track">
-      <span className={`fill ${cls}`} style={`width:${pct}%;display:block`}></span>
-    </span>
-  );
-}
-
 // ------------------------------------------------------ activity feed
 
 const ACTIVITY_META: Record<string, { tone: string; icon: () => VNode }> = {
-  MILESTONE_VERIFIED: { tone: "ok", icon: icons.check },
-  EVIDENCE_NEEDS_REVIEW: { tone: "warn", icon: icons.alert },
-  EVIDENCE_REJECTED: { tone: "bad", icon: icons.x },
-  APPROVAL_RECORDED: { tone: "info", icon: icons.approvals },
-  APPROVAL_REJECTED: { tone: "bad", icon: icons.x },
-  TRANCHE_RELEASED: { tone: "ok", icon: icons.dollar },
-  DEMO_RESET: { tone: "", icon: icons.refresh },
+  MILESTONE_VERIFIED: { tone: "ok", icon: () => icons.check() },
+  EVIDENCE_NEEDS_REVIEW: { tone: "warn", icon: () => icons.alert() },
+  EVIDENCE_REJECTED: { tone: "bad", icon: () => icons.x() },
+  APPROVAL_RECORDED: { tone: "info", icon: () => icons.approvals() },
+  APPROVAL_REJECTED: { tone: "bad", icon: () => icons.x() },
+  TRANCHE_RELEASED: { tone: "ok", icon: () => icons.dollar() },
+  INTEGRITY_CHECK: { tone: "info", icon: () => icons.shield() },
+  REPORT_GENERATED: { tone: "info", icon: () => icons.reports() },
+  DEMO_RESET: { tone: "", icon: () => icons.refresh() },
 };
 
 export function ActivityFeed(props: { notifications: Notification[] }): VNode {
@@ -691,17 +734,15 @@ export function ActivityFeed(props: { notifications: Notification[] }): VNode {
   return (
     <ul className="activity">
       {props.notifications.map((n) => {
-        const meta = ACTIVITY_META[n.type] ?? { tone: "", icon: icons.activity };
+        const meta = ACTIVITY_META[n.type] ?? { tone: "", icon: () => icons.activity() };
         return (
           <li>
             <span className={`ico ${meta.tone}`}>{meta.icon()}</span>
             <span className="body">
               <span className="msg">{n.message}</span>
               <span className="meta">
-                <span className="chip neutral" style="font-size:10px;padding:1px 8px">
-                  {n.type.replace(/_/g, " ")}
-                </span>
                 <span className="when">{fmtDate(n.createdAt)}</span>
+                <span className="t-meta" style="font-size:9px">{n.type.replace(/_/g, " ")}</span>
               </span>
             </span>
           </li>
@@ -712,6 +753,16 @@ export function ActivityFeed(props: { notifications: Notification[] }): VNode {
 }
 
 // ------------------------------------------------------------- states
+
+export function ConfidenceTrack(props: { confidence: number }): VNode {
+  const pct = Math.round(props.confidence * 100);
+  const cls = pct >= 80 ? "" : pct >= 50 ? "mid" : "low";
+  return (
+    <span className="track">
+      <span className={`fill ${cls}`} style={`width:${pct}%;display:block`}></span>
+    </span>
+  );
+}
 
 export function EmptyState(props: { icon: VNode; title: string; message: string; children?: Child }): VNode {
   return (

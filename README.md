@@ -51,6 +51,40 @@ npm run seed    # drop & recreate data/obv.db with the seeded project
 
 Switch users any time via **Switch user** in the top bar (or `/`).
 
+## Design system v4 (premium institutional redesign)
+
+The frontend was redesigned to read as institutional infrastructure-finance
+software (development banks, lenders, project offices, auditors):
+
+- **Tokens**: warm off-white canvas, midnight-navy chrome, one controlled deep
+  blue for actions only, deep green / muted amber / controlled red semantics,
+  warm hairline borders, 6–10px radii, near-zero shadows, 8px grid,
+  tabular-numeral financial display type.
+- **Shell**: restrained navy sidebar (left-accent active state, user + role +
+  org + switch at bottom, new layered-strata brand mark) plus a top utility
+  bar with page context, a persistent DEMO ENVIRONMENT tag, and the user.
+- **Overview**: one financial summary band (portfolio / released / held /
+  pending-governance value) with dividers and context lines, a compact
+  operational status row, and dense portfolio asset rows.
+- **Project detail**: command-center header (identity + code left, figures
+  right), PROJECT SETUP → FIELD EVIDENCE → VERIFICATION → GOVERNANCE →
+  RELEASE lifecycle strip, and a two-column operational overview with a
+  sticky side panel (financial state, integrity, risk, next required action).
+- **Milestones**: compact lifecycle rows (seq · title · requirement excerpt ·
+  tranche/state · EVIDENCE→VERIFIED→APPROVAL→RELEASE pipeline · next action).
+- **Approvals**: capital-release decision room — dominant amount-at-stake and
+  HELD state, n-of-m progress, consequential "Approve release eligibility" /
+  "Reject / return for review" actions, evidence as the evaluated object with
+  capture metadata, proof column, audit trail, and a sticky mobile decision bar.
+- **Ledger**: institutional evidence register (entry/timestamp/project/
+  evidence/verification/actor/hash/prev-hash/integrity) with last-check time.
+- **Field PWA**: numbered 01–04 step rail, eligible-milestone highlighting,
+  dominant "Capture evidence" action, GPS/online/queued status strip.
+- **Status system**: one glyph+text+color component across verification,
+  governance (incl. partially approved), financial, and integrity states.
+- Verified at 375/390/430/768/1024/1440 px with zero horizontal overflow;
+  visible focus states and ≥44px touch targets on mobile navigation.
+
 ## What's new in v2 (frontend modernization + approval governance)
 
 The frontend was rebuilt as a modern institutional SaaS shell while preserving

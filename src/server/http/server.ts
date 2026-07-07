@@ -160,6 +160,7 @@ function navFor(user: User, active: string): NavContext {
     user,
     active,
     pendingApprovals: repo.listPendingApprovalRequests().length,
+    orgName: repo.getOrganization(user.organizationId)?.name,
   };
 }
 
@@ -221,11 +222,16 @@ function overviewMetrics(projects: ProjectCardData[]): OverviewMetrics {
   const flagged = repo
     .listAllVerifications()
     .filter((v) => v.verdict !== "VERIFIED").length;
+  const pendingRequests = repo.listPendingApprovalRequests();
   return {
     totalBudget: projects.reduce((s, p) => s + p.summary.totalBudget, 0),
     released: projects.reduce((s, p) => s + p.summary.released, 0),
     held: projects.reduce((s, p) => s + p.summary.held, 0),
-    pendingApprovals: repo.listPendingApprovalRequests().length,
+    pendingApprovals: pendingRequests.length,
+    pendingValue: pendingRequests.reduce(
+      (s, a) => s + (repo.getMilestone(a.milestoneId)?.trancheAmount ?? 0),
+      0
+    ),
     verifiedMilestones: allRows.filter((m) =>
       ["VERIFIED", "APPROVED", "RELEASED"].includes(m.milestone.status)
     ).length,
@@ -674,6 +680,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     const projects = await allProjectCards();
+    const chain = await wormEvidenceStore.verifyChain();
     sendHtml(
       res,
       renderOverview({
@@ -681,6 +688,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         metrics: overviewMetrics(projects),
         projects,
         notifications: repo.listNotifications(),
+        chainValid: chain.valid,
       })
     );
     return;
@@ -771,15 +779,28 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (method === "GET" && pathname === "/ledger") {
     const chain = await wormEvidenceStore.verifyChain();
     const milestones = repo.listProjects().flatMap((p) => repo.listMilestones(p.id));
+    const ledger = repo.listLedgerEntries();
+    const users = usersById();
+    const actorByEntry = new Map(
+      ledger.map((e) => {
+        const ev = repo.getEvidence(e.evidenceItemId);
+        return [e.id, ev ? users.get(ev.userId)?.name ?? "—" : "—"] as [string, string];
+      })
+    );
+    const lastCheck = repo
+      .listNotifications(100)
+      .find((n) => n.type === "INTEGRITY_CHECK");
     sendHtml(
       res,
       renderLedger({
         nav: navFor(user!, "ledger"),
-        ledger: repo.listLedgerEntries(),
+        ledger,
         chainValid: chain.valid,
         brokenAt: chain.brokenAt,
         milestoneById: new Map(milestones.map((m) => [m.id, m])),
         projectById: new Map(repo.listProjects().map((p) => [p.id, p])),
+        actorByEntry,
+        lastCheckAt: lastCheck?.createdAt ?? null,
         checkedBanner: url.searchParams.get("checked")
           ? chain.valid
             ? `Integrity check complete: ${chain.entries} entries recomputed — CHAIN INTACT.`
