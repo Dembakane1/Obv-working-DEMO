@@ -161,6 +161,29 @@ One-click, audit-grade PDF built entirely from live application data:
   reset behavior, 404s for stale files) — plus a manual tampering check
   (mutated ledger row → report states TAMPERING DETECTED AT ENTRY 1).
 
+## Free temporary deployment (Render)
+
+The Claude Code cloud sandbox cannot expose a public preview URL, so to try
+OBV in a real browser deploy it to Render's free tier (~3 minutes, works from
+a phone). Render fits this app because it runs one long-running `node:http`
+server with the built-in `node:sqlite` and local-disk writes — a normal server
+process. Vercel's serverless model cannot host it without a rewrite.
+
+1. Open **https://render.com** and sign in (Sign in with GitHub is fastest).
+2. Tap **New → Blueprint**.
+3. Connect the **Dembakane1/Obv-working-DEMO** repository (grant access if asked).
+4. When asked for a branch, choose **claude/obv-demo-repo-structure-t0hjsc**
+   (the included `render.yaml` configures everything: Node 22, build, seed, start).
+5. Tap **Apply / Deploy** and wait for the build (~2–3 min).
+6. Open the generated URL, e.g. `https://obv-demo.onrender.com`, and pick a
+   demo user.
+
+Free-tier notes: the instance sleeps after ~15 min idle (first request after
+that takes ~30–60 s to wake); the disk is ephemeral, so restarts return the
+demo to its seeded state (convenient for demos — "Reset demo data" also works
+any time); PDF report generation needs Chromium, which the free tier lacks —
+the Reports page falls back to the printable HTML preview automatically.
+
 ## Hero-loop demo script
 
 1. `npm run setup && npm start`, open http://localhost:3000.

@@ -1,0 +1,27 @@
+# Render Blueprint — free temporary demo deployment of OBV.
+# Deploy: render.com → New → Blueprint → connect this repo → apply.
+#
+# Notes
+# - The app is one long-running node:http server (npm start) using the
+#   built-in node:sqlite — it needs Node >= 22.5 and a normal server
+#   process, which is why Render (web service) fits and serverless
+#   platforms (e.g. Vercel functions) do not.
+# - Build compiles TypeScript and seeds data/obv.db; on boot the start
+#   command reseeds only if the database file is missing. The free-tier
+#   disk is ephemeral: a restart/redeploy returns the demo to its seeded
+#   state, which is desirable for a demo.
+# - PDF report generation requires Chromium/Playwright, which the free
+#   tier does not provide; the app degrades gracefully to the printable
+#   HTML report preview. Everything else works fully.
+services:
+  - type: web
+    name: obv-demo
+    runtime: node
+    plan: free
+    branch: claude/obv-demo-repo-structure-t0hjsc
+    buildCommand: npm install && npm run setup
+    startCommand: sh -c "[ -f data/obv.db ] || node dist/server/db/seed.js; node dist/server/http/server.js"
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
