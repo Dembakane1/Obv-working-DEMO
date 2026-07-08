@@ -328,6 +328,16 @@ const GRAPH_ENV = {
       body: JSON.stringify({ action: "connect", teamId: "t1", channelId: "c1" }),
     });
     assert(bind0.status === 409, "no credentials: binding attempts are rejected honestly (409)");
+    const intg0 = await (
+      await req("pm0", "GET", "/communications/integrations", null, `http://127.0.0.1:${OBV_PORT_NOCREDS}`)
+    ).text();
+    assert(
+      intg0.includes("Microsoft Teams conversation sync is not configured") &&
+        intg0.includes("View Setup Requirements") &&
+        intg0.includes("Not Yet Connected") &&
+        !intg0.includes("Run Diagnostic"),
+      "integrations page: honest no-config state (setup requirements, no dead buttons, WhatsApp not faked)"
+    );
     noCreds.kill();
 
     // ---- configured (stub) server ----
@@ -392,6 +402,36 @@ const GRAPH_ENV = {
     );
     const pageSent = await (await req("pm", "GET", "/communications?thread=thread-m3")).text();
     assert(pageSent.includes("Sent to Teams"), "sender sees Sent to Teams delivery state");
+
+    // Integrations page (configured): aggregate status, connected-thread
+    // row with validated names, role-gated management.
+    const intgPm = await (await req("pm", "GET", "/communications/integrations")).text();
+    assert(
+      intgPm.includes("R47 Project Delivery") &&
+        intgPm.includes("M3 Coordination") &&
+        intgPm.includes("Run Diagnostic") &&
+        intgPm.includes("Disconnect") &&
+        /Active \(integration test mode\)|>Active</.test(intgPm),
+      "integrations page lists the connected thread with validated names and admin actions (PM)"
+    );
+    const intgField = await (await req("field", "GET", "/communications/integrations")).text();
+    assert(
+      intgField.includes("M3 Coordination") &&
+        !intgField.includes("Run Diagnostic") &&
+        !intgField.includes("Disconnect") &&
+        intgField.includes("requires a Project Manager or Funder Representative"),
+      "integrations page for FIELD: status visible, management actions hidden"
+    );
+    const convHeader = await (await req("pm", "GET", "/communications?thread=thread-m3")).text();
+    assert(
+      convHeader.includes("Microsoft Teams ·") && convHeader.includes("Manage Teams Connection"),
+      "thread header shows compact Teams status and manage action for authorized roles"
+    );
+    const convField = await (await req("field", "GET", "/communications?thread=thread-m3")).text();
+    assert(
+      convField.includes("Microsoft Teams ·") && !convField.includes("Manage Teams Connection"),
+      "thread header for FIELD shows status only (no management action)"
+    );
 
     // ---- 5. echo of our own outbound message does not loop ----
     const before = counts();
@@ -601,7 +641,11 @@ const GRAPH_ENV = {
     d.exec(`UPDATE external_thread_bindings SET subscription_expires_at='2020-01-01T00:00:00Z'`);
     d.close();
     const maintain = await req("pm", "POST", "/api/teams-sync/maintain", { run: "1" });
-    assert(maintain.status === 200, "maintenance endpoint runs for authorized role");
+    assert(
+      maintain.status === 303 &&
+        (maintain.headers.get("location") ?? "").includes("/communications/integrations?maintained="),
+      "maintenance endpoint runs for authorized role (form flow returns to the integrations page)"
+    );
     d = db();
     const renewed = d.prepare("SELECT * FROM external_thread_bindings").get();
     d.close();

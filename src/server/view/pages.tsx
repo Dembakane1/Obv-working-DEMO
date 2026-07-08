@@ -1982,6 +1982,19 @@ function bindingStatusLabel(
   if (b.status === "DEGRADED") return "Connection degraded";
   return testMode ? "Integration test mode" : "Connected to Teams";
 }
+function bindingShortLabel(
+  b: ExternalThreadBinding | null,
+  configured: boolean,
+  testMode = false
+): string {
+  if (!configured) return "Not configured";
+  if (!b || b.status === "DISCONNECTED") return "Not connected";
+  if (b.status === "PERMISSION_REQUIRED") return "Permissions required";
+  if (b.status === "CONNECTING") return "Connecting";
+  if (b.status === "DEGRADED") return "Degraded";
+  return testMode ? "Test mode" : "Connected";
+}
+
 function bindingTone(b: ExternalThreadBinding | null, configured: boolean): string {
   if (!configured) return "neutral";
   if (!b || b.status === "DISCONNECTED") return "neutral";
@@ -2019,8 +2032,11 @@ export function renderCommunications(input: {
       <div className={`comms ${selected ? "has-selection" : ""}`}>
         <section className="comms-list" aria-label="Threads">
           <div className="comms-list-head">
-            <h3>Threads</h3>
-            <span className="sub">Project-linked coordination</span>
+            <div>
+              <h3>Threads</h3>
+              <span className="sub">Project-linked coordination</span>
+            </div>
+            <a className="btn ghost sm" href="/communications/integrations">Integrations</a>
           </div>
           {sorted.map((t) => (
             <a
@@ -2052,8 +2068,15 @@ export function renderCommunications(input: {
                   {selected.project?.name}
                   {selected.milestone ? ` · M${selected.milestone.seq}` : ""}
                   <span className={`sync-tag ${bindingTone(selected.binding, input.teamsSyncConfigured)}`}>
-                    {bindingStatusLabel(selected.binding, input.teamsSyncConfigured, input.teamsTestMode)}
+                    Microsoft Teams · {bindingShortLabel(selected.binding, input.teamsSyncConfigured, input.teamsTestMode)}
                   </span>
+                  {input.canManageTeams && input.teamsSyncConfigured ? (
+                    <button type="button" className="conv-manage" id="teams-manage">
+                      {selected.binding && selected.binding.status !== "DISCONNECTED"
+                        ? "Manage Teams Connection"
+                        : "Connect to Teams"}
+                    </button>
+                  ) : null}
                 </span>
               </span>
               <button type="button" className="btn ghost sm conv-ctx-toggle" id="ctx-toggle">Context</button>
@@ -2299,5 +2322,214 @@ function CommsContextPanel(props: {
         authorize approvals or funds.
       </p>
     </aside>
+  );
+}
+
+// -------------------------------------------- communication integrations
+
+/**
+ * Communication Integrations — discoverability surface over the EXISTING
+ * Teams Conversation Bridge. Read-only aggregation plus links/forms to
+ * the existing endpoints; no integration logic lives here.
+ */
+export function renderIntegrations(input: {
+  nav: NavContext;
+  configured: boolean;
+  testMode: boolean;
+  sendCap: "delegated" | "app-test" | "none";
+  canManage: boolean;
+  rows: Array<{
+    thread: ConversationThread;
+    binding: ExternalThreadBinding | null;
+    project: Project | null;
+  }>;
+  threadCount: number;
+  maintained: string | null;
+}): string {
+  const live = input.rows.filter(
+    (r) => r.binding && r.binding.status !== "DISCONNECTED"
+  ) as Array<{ thread: ConversationThread; binding: ExternalThreadBinding; project: Project | null }>;
+  const teamCount = new Set(live.map((r) => r.binding.teamId)).size;
+  const lastSync = live
+    .map((r) => r.binding.lastSyncAt)
+    .filter(Boolean)
+    .sort()
+    .pop() as string | undefined;
+  // Aggregate status: worst-first precedence over live bindings.
+  const agg = !input.configured
+    ? { label: "Not Configured", tone: "neutral" }
+    : live.some((r) => r.binding.status === "PERMISSION_REQUIRED")
+      ? { label: "Permissions Required", tone: "warn" }
+      : live.some((r) => r.binding.status === "CONNECTING")
+        ? { label: "Connecting", tone: "warn" }
+        : live.some((r) => r.binding.status === "DEGRADED")
+          ? { label: "Degraded", tone: "warn" }
+          : live.length > 0
+            ? { label: input.testMode ? "Active (integration test mode)" : "Active", tone: "ok" }
+            : { label: "No threads connected", tone: "neutral" };
+  const degradedCount = live.filter((r) => r.binding.status === "DEGRADED").length;
+  const diagLine = !input.configured
+    ? "Not configured — administrator setup required."
+    : [
+        input.sendCap === "delegated"
+          ? "Send path: delegated (configured)"
+          : input.sendCap === "app-test"
+            ? "Send path: integration test mode"
+            : "Receive-only — delegated send permission not configured",
+        degradedCount > 0 ? `${degradedCount} subscription(s) degraded` : "Subscriptions healthy",
+      ].join(" · ");
+
+  return renderDocument(
+    <AppShell title="Communication Integrations" nav={input.nav} context="Integrations">
+      <PageHeader
+        title="Communication Integrations"
+        sub="External channels connected to OBV project coordination. Internal OBV Communications works independently of any integration."
+        crumb={{ href: "/communications", label: "Communications" }}
+      />
+
+      {input.maintained ? (
+        <div className="panel panel-pad" style="margin-bottom:12px;font-size:12.5px">
+          Diagnostic run complete: {input.maintained.split("-")[0]} connection(s) checked,{" "}
+          {input.maintained.split("-")[1]} degraded. Details appear per thread below.
+        </div>
+      ) : null}
+
+      <div className="panel">
+        <div className="panel-head">
+          <h3>Microsoft Teams</h3>
+          <span className="right">Conversation synchronization</span>
+        </div>
+        <div className="intg-body">
+          <div className="intg-facts">
+            <dl className="ctx-kv" style="padding:0;margin:0">
+              <dt>Status</dt>
+              <dd><span className={`sync-tag ${agg.tone}`} style="margin-left:0">{agg.label}</span></dd>
+              <dt>Teams connected</dt><dd>{teamCount}</dd>
+              <dt>Threads connected</dt><dd>{live.length} of {input.threadCount} accessible threads</dd>
+              <dt>Last successful sync</dt><dd>{lastSync ? fmtDate(lastSync) : "—"}</dd>
+              <dt>Diagnostic</dt><dd>{diagLine}</dd>
+            </dl>
+          </div>
+          <div className="intg-actions">
+            {input.configured ? (
+              <>
+                {input.canManage ? (
+                  <>
+                    <a className="btn sm" href={live.length ? "#connected-threads" : "/communications"}>
+                      {live.length ? "View Connected Threads" : "Configure Teams"}
+                    </a>
+                    <form method="POST" action="/api/teams-sync/maintain" style="margin:0">
+                      <button className="btn secondary sm" type="submit" data-busy-label="Running…">
+                        Run Diagnostic
+                      </button>
+                    </form>
+                  </>
+                ) : (
+                  <span className="sub" style="font-size:11.5px">
+                    Connection management requires a Project Manager or Funder Representative.
+                  </span>
+                )}
+              </>
+            ) : null}
+            <details className="intg-setup">
+              <summary>{input.configured ? "Open Setup Guide" : "View Setup Requirements"}</summary>
+              <div className="intg-setup-body">
+                <p>
+                  <b>Administrator setup</b> (server-side only — no values are entered in this UI):
+                </p>
+                <ol>
+                  <li>Entra app registration with application read permission (tenant-wide <code>ChannelMessage.Read.All</code> or team-scoped RSC via the OBV Teams app package in <code>integrations/teams-app/</code>).</li>
+                  <li>Delegated <code>ChannelMessage.Send</code> service account (onboard with <code>scripts/teams-delegated-auth.js</code>).</li>
+                  <li>Environment variables on the deployment: <code>MICROSOFT_TENANT_ID</code>, <code>MICROSOFT_CLIENT_ID</code>, <code>MICROSOFT_CLIENT_SECRET</code>, <code>MICROSOFT_SEND_REFRESH_TOKEN</code>.</li>
+                  <li>Verify with <code>scripts/teams-real-tenant-check.js</code>; schedule subscription renewal (~30 min).</li>
+                </ol>
+                <p>
+                  Full walkthrough: <code>docs/TEAMS_REAL_TENANT_SETUP.md</code> in the repository.
+                  Coordination sync never affects evidence, verification, approvals or funds.
+                </p>
+              </div>
+            </details>
+          </div>
+        </div>
+        {!input.configured ? (
+          <p className="sub" style="padding:0 16px 14px;font-size:12.5px">
+            Microsoft Teams conversation sync is not configured. Administrator setup is
+            required before project threads can be connected. Internal OBV Communications
+            and Teams event notification cards are unaffected.
+          </p>
+        ) : null}
+      </div>
+
+      {input.configured ? (
+        <div className="panel" id="connected-threads" style="margin-top:12px">
+          <div className="panel-head">
+            <h3>Connected threads</h3>
+            <span className="right">{live.length} connection{live.length === 1 ? "" : "s"}</span>
+          </div>
+          {live.length === 0 ? (
+            <p className="sub" style="padding:14px 16px">
+              No threads are connected yet.{" "}
+              {input.canManage
+                ? "Open a thread in Communications and use Connect to Teams."
+                : "A Project Manager or Funder Representative can connect threads."}
+            </p>
+          ) : (
+            <div className="intg-table-wrap">
+              <table className="intg-table">
+                <thead>
+                  <tr>
+                    <th>OBV thread</th><th>Project</th><th>Team</th><th>Channel</th>
+                    <th>Status</th><th>Last sync</th><th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {live.map((r) => (
+                    <tr>
+                      <td data-l="Thread">{r.thread.title}</td>
+                      <td data-l="Project">{r.project?.name ?? "—"}</td>
+                      <td data-l="Team">{r.binding.teamName ?? "—"}</td>
+                      <td data-l="Channel">{r.binding.channelName ?? "—"}</td>
+                      <td data-l="Status">
+                        <span className={`sync-tag ${bindingTone(r.binding, true)}`} style="margin-left:0">
+                          {bindingShortLabel(r.binding, true, input.testMode)}
+                        </span>
+                      </td>
+                      <td data-l="Last sync">{r.binding.lastSyncAt ? fmtDate(r.binding.lastSyncAt) : "—"}</td>
+                      <td data-l="" className="intg-row-actions">
+                        <a className="btn ghost sm" href={`/communications?thread=${r.thread.id}`}>Open Thread</a>
+                        {input.canManage ? (
+                          <>
+                            <a className="btn ghost sm" href={`/communications?thread=${r.thread.id}#comms-ctx`}>Manage</a>
+                            <form method="POST" action={`/api/threads/${r.thread.id}/teams-binding`} style="margin:0;display:inline">
+                              <input type="hidden" name="action" value="disconnect" />
+                              <button className="btn ghost sm" type="submit">Disconnect</button>
+                            </form>
+                          </>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      <div className="panel" style="margin-top:12px">
+        <div className="panel-head">
+          <h3>WhatsApp Business</h3>
+          <span className="right">Field coordination channel</span>
+        </div>
+        <p className="sub" style="padding:14px 16px;font-size:12.5px">
+          <span className="sync-tag neutral" style="margin-left:0">Not Yet Connected</span>
+          <span style="display:block;margin-top:8px">
+            Architecture-ready seam only — no connectivity exists. See
+            <code> docs/COMMUNICATIONS_INTEGRATION.md</code>.
+          </span>
+        </p>
+      </div>
+      <script src="/js/poll.js" defer></script>
+    </AppShell>
   );
 }

@@ -63,6 +63,7 @@ import {
   renderInsights,
   renderLedger,
   renderCommunications,
+  renderIntegrations,
   renderMap,
   renderMilestoneDetail,
   renderMore,
@@ -962,7 +963,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sendJson(res, { error: "Not authorized" }, 403);
       return;
     }
-    sendJson(res, await maintainSubscriptions());
+    const result = await maintainSubscriptions();
+    if (isFormPost(req)) {
+      redirect(res, `/communications/integrations?maintained=${result.checked}-${result.degraded}`);
+    } else {
+      sendJson(res, result);
+    }
     return;
   }
 
@@ -1509,6 +1515,31 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         teamsTestMode: syncConfigured() && !GRAPH_CONFIG.realGraph(),
         canManageTeams: canManageBindings(user!),
         syncError: url.searchParams.get("sync_error"),
+      })
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname === "/communications/integrations") {
+    const threads = listThreadsForUser(user!);
+    const rows = threads
+      .map((t) => ({
+        thread: t,
+        binding: repo.getBindingForThread(t.id),
+        project: t.projectId ? repo.getProject(t.projectId) : null,
+      }))
+      .filter((r) => r.binding !== null);
+    sendHtml(
+      res,
+      renderIntegrations({
+        nav: navFor(user!, "comms"),
+        configured: syncConfigured(),
+        testMode: syncConfigured() && !GRAPH_CONFIG.realGraph(),
+        sendCap: sendCapability(),
+        canManage: canManageBindings(user!),
+        rows,
+        threadCount: threads.length,
+        maintained: url.searchParams.get("maintained"),
       })
     );
     return;

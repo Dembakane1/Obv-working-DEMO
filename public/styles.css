@@ -1532,3 +1532,42 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
 .msg-attach { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; font-size: 11.5px; }
 .msg-attach a { color: var(--action); font-weight: 600; }
 .msg-attach .note { font-size: 9.5px; color: var(--ink-4); font-style: italic; }
+
+/* ---- communication integrations (v10 discoverability) ---- */
+.comms-list-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.conv-manage {
+  border: 0; background: transparent; padding: 0; margin-left: 8px; cursor: pointer;
+  font: inherit; font-size: 10.5px; font-weight: 650; color: var(--action); white-space: nowrap;
+}
+.conv-manage:hover { text-decoration: underline; }
+.intg-body { display: flex; gap: 24px; padding: 14px 16px; flex-wrap: wrap; }
+.intg-facts { flex: 1; min-width: 260px; }
+.intg-actions { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; min-width: 220px; }
+.intg-setup summary {
+  cursor: pointer; font-size: 12px; font-weight: 600; color: var(--action);
+  list-style-position: inside;
+}
+.intg-setup-body { font-size: 12px; color: var(--ink-2); margin-top: 8px; max-width: 460px; line-height: 1.55; }
+.intg-setup-body ol { padding-left: 18px; margin: 6px 0; }
+.intg-setup-body li { margin: 4px 0; }
+.intg-setup-body code { font-size: 10.5px; background: var(--inset); padding: 1px 4px; }
+.intg-table-wrap { overflow-x: auto; }
+.intg-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.intg-table th {
+  text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--ink-3); padding: 8px 12px; border-bottom: 1px solid var(--line-2);
+}
+.intg-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--ink-2); }
+.intg-row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+@media (max-width: 760px) {
+  .intg-table thead { display: none; }
+  .intg-table, .intg-table tbody, .intg-table tr, .intg-table td { display: block; width: 100%; box-sizing: border-box; }
+  .intg-table tr { border-bottom: 1px solid var(--line-2); padding: 8px 0; }
+  .intg-table td { border-bottom: 0; padding: 3px 14px; }
+  .intg-table td[data-l]:not([data-l=""])::before {
+    content: attr(data-l); display: inline-block; width: 84px; font-size: 9.5px;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--ink-4);
+  }
+  .conv-manage { display: block; margin: 2px 0 0; }
+}

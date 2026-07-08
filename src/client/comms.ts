@@ -12,4 +12,16 @@
   if (toggle && ctx) {
     toggle.addEventListener("click", () => ctx.classList.toggle("open"));
   }
+
+  // "Connect to Teams" / "Manage Teams Connection" in the thread header
+  // opens the existing context panel (drawer on mobile) and brings the
+  // Teams connection section into view.
+  const manage = document.getElementById("teams-manage");
+  if (manage && ctx) {
+    manage.addEventListener("click", () => {
+      ctx.classList.add("open");
+      const heads = ctx.querySelectorAll(".ctx-head");
+      (heads[heads.length - 1] as HTMLElement | undefined)?.scrollIntoView({ block: "start" });
+    });
+  }
 })();
