@@ -748,6 +748,8 @@ function toBinding(r: Row): ExternalThreadBinding {
     teamId: r.team_id as string,
     channelId: r.channel_id as string,
     rootMessageId: (r.root_message_id as string) ?? null,
+    teamName: (r.team_name as string) ?? null,
+    channelName: (r.channel_name as string) ?? null,
     subscriptionId: (r.subscription_id as string) ?? null,
     subscriptionExpiresAt: (r.subscription_expires_at as string) ?? null,
     status: r.status as ExternalThreadBinding["status"],
@@ -762,14 +764,16 @@ export function insertBinding(b: ExternalThreadBinding): void {
   getDb()
     .prepare(
       `INSERT INTO external_thread_bindings (id, thread_id, provider, tenant_id,
-         team_id, channel_id, root_message_id, subscription_id,
-         subscription_expires_at, status, last_sync_at, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         team_id, channel_id, root_message_id, team_name, channel_name,
+         subscription_id, subscription_expires_at, status, last_sync_at,
+         created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       b.id, b.threadId, b.provider, b.tenantId, b.teamId, b.channelId,
-      b.rootMessageId, b.subscriptionId, b.subscriptionExpiresAt, b.status,
-      b.lastSyncAt, b.createdBy, b.createdAt, b.updatedAt
+      b.rootMessageId, b.teamName, b.channelName, b.subscriptionId,
+      b.subscriptionExpiresAt, b.status, b.lastSyncAt, b.createdBy,
+      b.createdAt, b.updatedAt
     );
 }
 
@@ -799,7 +803,8 @@ export function updateBinding(
   patch: Partial<
     Pick<
       ExternalThreadBinding,
-      "subscriptionId" | "subscriptionExpiresAt" | "status" | "lastSyncAt" | "rootMessageId"
+      | "subscriptionId" | "subscriptionExpiresAt" | "status" | "lastSyncAt"
+      | "rootMessageId" | "teamName" | "channelName"
     >
   >
 ): void {
@@ -810,7 +815,8 @@ export function updateBinding(
     .prepare(
       `UPDATE external_thread_bindings
          SET subscription_id = ?, subscription_expires_at = ?, status = ?,
-             last_sync_at = ?, root_message_id = ?, updated_at = ?
+             last_sync_at = ?, root_message_id = ?, team_name = ?,
+             channel_name = ?, updated_at = ?
        WHERE id = ?`
     )
     .run(
@@ -819,6 +825,8 @@ export function updateBinding(
       patch.status ?? cur.status,
       patch.lastSyncAt !== undefined ? patch.lastSyncAt : cur.lastSyncAt,
       patch.rootMessageId !== undefined ? patch.rootMessageId : cur.rootMessageId,
+      patch.teamName !== undefined ? patch.teamName : cur.teamName,
+      patch.channelName !== undefined ? patch.channelName : cur.channelName,
       new Date().toISOString(),
       id
     );
@@ -853,6 +861,33 @@ export function upsertIdentityMapping(m: ExternalIdentityMapping): void {
     .run(
       m.id, m.provider, m.tenantId, m.externalUserId, m.obvUserId,
       m.externalDisplayName, m.externalEmail, m.status, m.createdAt, m.updatedAt
+    );
+}
+
+export function listIdentityMappings(): ExternalIdentityMapping[] {
+  return getDb()
+    .prepare("SELECT * FROM external_identity_mappings ORDER BY updated_at DESC")
+    .all()
+    .map((r) => toIdentityMapping(r as Row));
+}
+
+export function setIdentityMapping(
+  tenantId: string,
+  externalUserId: string,
+  obvUserId: string | null
+): void {
+  getDb()
+    .prepare(
+      `UPDATE external_identity_mappings
+         SET obv_user_id = ?, status = ?, updated_at = ?
+       WHERE provider = 'TEAMS' AND tenant_id = ? AND external_user_id = ?`
+    )
+    .run(
+      obvUserId,
+      obvUserId ? "MAPPED" : "UNMAPPED",
+      new Date().toISOString(),
+      tenantId,
+      externalUserId
     );
 }
 

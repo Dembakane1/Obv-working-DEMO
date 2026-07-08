@@ -141,10 +141,17 @@ preserved, "Message deleted in Microsoft Teams"); attachments remain
 communication artifacts — never auto-evidence. **No message from any
 channel can approve or release funds** — proven by
 `scripts/teams-sync-test.js` (40 checkpoints against a Graph-compatible
-stub; real tenant validation still required — see
-`docs/TEAMS_CONVERSATION_SYNC.md` for app-registration setup). Without
-credentials everything runs in demo mode with sync shown as
-"not configured".
+stub; real tenant validation still required). Real-tenant readiness
+(v10): split credential strategies — application-permission READ
+(tenant-wide or team-scoped RSC via `integrations/teams-app/`) and
+delegated `ChannelMessage.Send` for outbound (app-only channel posting
+is migration-mode-only in real Graph and is hard-blocked here);
+bindings validate team + channel + subscription before ever showing
+Connected (`PERMISSION_REQUIRED` state for consent problems); identity
+admin endpoints; `scripts/teams-real-tenant-check.js` diagnostics and
+`scripts/teams-delegated-auth.js` onboarding; administrator guide in
+`docs/TEAMS_REAL_TENANT_SETUP.md`. Without credentials everything runs
+in demo mode with sync shown as "not configured".
 
 ## Spatial map + contextual communications (v8)
 

@@ -21,7 +21,27 @@ interface TokenCache {
   expiresAt: number;
 }
 
-let tokenCache: TokenCache | null = null;
+/**
+ * TWO credential strategies, modeled explicitly because real Microsoft
+ * Graph does not allow one flow for everything:
+ *
+ *  READ strategy (client credentials / application permissions —
+ *  ChannelMessage.Read.All or team-scoped RSC ChannelMessage.Read.Group):
+ *  message fetch, change-notification subscriptions, team/channel
+ *  verification, identity lookups.
+ *
+ *  SEND strategy (delegated ChannelMessage.Send via the dedicated OBV
+ *  service account's refresh token): channel message creation.
+ *  Application permissions CANNOT create channel messages outside
+ *  migration mode, and OBV never uses migration permissions — an
+ *  "app-test" send mode exists solely for the contract stub and is
+ *  hard-blocked against real Graph (see GRAPH_CONFIG.sendCapability).
+ */
+let readTokenCache: TokenCache | null = null;
+let sendTokenCache: TokenCache | null = null;
+/** Azure rotates refresh tokens; keep the newest in memory (the env value
+ *  remains the durable fallback until the admin rotates it). */
+let currentRefreshToken: string | null = null;
 
 async function graphFetch(
   url: string,
@@ -41,45 +61,76 @@ async function graphFetch(
   }
 }
 
-async function accessToken(): Promise<string> {
-  if (!GRAPH_CONFIG.configured()) throw new ConversationSyncError("not-configured", false);
-  if (tokenCache && tokenCache.expiresAt > Date.now() + 60_000) {
-    return tokenCache.accessToken;
-  }
+async function tokenRequest(form: Record<string, string>): Promise<TokenCache & { refreshToken?: string }> {
   const res = await graphFetch(
     `${GRAPH_CONFIG.loginUrl()}/${encodeURIComponent(GRAPH_CONFIG.tenantId())}/oauth2/v2.0/token`,
     {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: GRAPH_CONFIG.clientId(),
-        client_secret: GRAPH_CONFIG.clientSecret(),
-        scope: `${GRAPH_CONFIG.baseUrl()}/.default`,
-        grant_type: "client_credentials",
-      }).toString(),
+      body: new URLSearchParams(form).toString(),
     }
   );
   if (!res.ok) {
+    // Token endpoint bodies can include descriptive detail — never
+    // propagate them. Category only.
     throw new ConversationSyncError(res.status >= 500 ? "provider-5xx" : "auth", res.status >= 500);
   }
   const data = (await res.json().catch(() => null)) as {
     access_token?: string;
     expires_in?: number;
+    refresh_token?: string;
   } | null;
   if (!data?.access_token) throw new ConversationSyncError("invalid-response", false);
-  tokenCache = {
+  return {
     accessToken: data.access_token,
     expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000,
+    refreshToken: data.refresh_token,
   };
-  return tokenCache.accessToken;
+}
+
+/** READ credential strategy: application permissions (client credentials). */
+async function readAccessToken(): Promise<string> {
+  if (!GRAPH_CONFIG.configured()) throw new ConversationSyncError("not-configured", false);
+  if (readTokenCache && readTokenCache.expiresAt > Date.now() + 60_000) {
+    return readTokenCache.accessToken;
+  }
+  readTokenCache = await tokenRequest({
+    client_id: GRAPH_CONFIG.clientId(),
+    client_secret: GRAPH_CONFIG.clientSecret(),
+    scope: `${GRAPH_CONFIG.baseUrl()}/.default`,
+    grant_type: "client_credentials",
+  });
+  return readTokenCache.accessToken;
+}
+
+/** SEND credential strategy: delegated ChannelMessage.Send (service
+ *  account refresh token), or the stub-only app-test mode. */
+async function sendAccessToken(): Promise<string> {
+  const capability = GRAPH_CONFIG.sendCapability();
+  if (capability === "none") throw new ConversationSyncError("send-not-authorized", false);
+  if (capability === "app-test") return readAccessToken(); // stub only — guarded in config
+  if (sendTokenCache && sendTokenCache.expiresAt > Date.now() + 60_000) {
+    return sendTokenCache.accessToken;
+  }
+  const result = await tokenRequest({
+    client_id: GRAPH_CONFIG.clientId(),
+    client_secret: GRAPH_CONFIG.clientSecret(),
+    scope: `${GRAPH_CONFIG.baseUrl()}/ChannelMessage.Send offline_access`,
+    grant_type: "refresh_token",
+    refresh_token: currentRefreshToken ?? GRAPH_CONFIG.sendRefreshToken(),
+  });
+  if (result.refreshToken) currentRefreshToken = result.refreshToken; // rotation
+  sendTokenCache = result;
+  return sendTokenCache.accessToken;
 }
 
 async function authed(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  strategy: "read" | "send" = "read"
 ): Promise<Record<string, unknown>> {
-  const token = await accessToken();
+  const token = strategy === "send" ? await sendAccessToken() : await readAccessToken();
   const res = await graphFetch(`${GRAPH_CONFIG.baseUrl()}/v1.0${path}`, {
     method,
     headers: {
@@ -89,7 +140,8 @@ async function authed(
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (res.status === 401 || res.status === 403) {
-    tokenCache = null; // force re-auth next attempt
+    if (strategy === "send") sendTokenCache = null;
+    else readTokenCache = null; // force re-auth next attempt
     throw new ConversationSyncError("auth", false);
   }
   if (!res.ok) {
@@ -135,12 +187,17 @@ class TeamsConversationProvider implements ExternalConversationProvider {
     const attribution = message.senderRoleTitle
       ? `${message.senderDisplayName} (${message.senderRoleTitle}) via OBV`
       : `${message.senderDisplayName} via OBV`;
-    const result = await authed("POST", path, {
-      body: {
-        contentType: "html",
-        content: `<p><b>${escHtml(attribution)}</b></p><p>${escHtml(message.text).replace(/\n/g, "<br/>")}</p>`,
+    const result = await authed(
+      "POST",
+      path,
+      {
+        body: {
+          contentType: "html",
+          content: `<p><b>${escHtml(attribution)}</b></p><p>${escHtml(message.text).replace(/\n/g, "<br/>")}</p>`,
+        },
       },
-    });
+      "send" // delegated ChannelMessage.Send — never app permissions on real Graph
+    );
     const id = result.id;
     if (typeof id !== "string" || !id) throw new ConversationSyncError("invalid-response", false);
     return id;
@@ -220,12 +277,31 @@ class TeamsConversationProvider implements ExternalConversationProvider {
       /* best-effort on disconnect */
     }
   }
+
+  /** Verify the team exists and is readable; returns its display name. */
+  async verifyTeam(teamId: string): Promise<string> {
+    const t = await authed("GET", `/teams/${teamId}`);
+    return String(t.displayName ?? teamId).slice(0, 120);
+  }
+
+  /** Verify the channel exists in the team; returns its display name. */
+  async verifyChannel(teamId: string, channelId: string): Promise<string> {
+    const c = await authed("GET", `/teams/${teamId}/channels/${channelId}`);
+    return String(c.displayName ?? channelId).slice(0, 120);
+  }
+
+  /** What outbound capability the current configuration provides. */
+  sendCapability(): "delegated" | "app-test" | "none" {
+    return GRAPH_CONFIG.sendCapability();
+  }
 }
 
 export const teamsConversationProvider: ExternalConversationProvider =
   new TeamsConversationProvider();
 
-/** Test-only: clear the token cache between stub scenarios. */
+/** Test-only: clear the token caches between stub scenarios. */
 export function _resetTokenCache(): void {
-  tokenCache = null;
+  readTokenCache = null;
+  sendTokenCache = null;
+  currentRefreshToken = null;
 }

@@ -1970,16 +1970,23 @@ function MessageRefCard(props: { m: ChatMessage }): VNode | null {
   return null;
 }
 
-function bindingStatusLabel(b: ExternalThreadBinding | null, configured: boolean): string {
+function bindingStatusLabel(
+  b: ExternalThreadBinding | null,
+  configured: boolean,
+  testMode = false
+): string {
   if (!configured) return "Demo mode";
   if (!b || b.status === "DISCONNECTED") return "Disconnected";
-  if (b.status === "DEGRADED") return "Teams sync degraded";
-  return "Connected to Teams";
+  if (b.status === "PERMISSION_REQUIRED") return "Teams permissions required";
+  if (b.status === "CONNECTING") return "Connecting";
+  if (b.status === "DEGRADED") return "Connection degraded";
+  return testMode ? "Integration test mode" : "Connected to Teams";
 }
 function bindingTone(b: ExternalThreadBinding | null, configured: boolean): string {
   if (!configured) return "neutral";
   if (!b || b.status === "DISCONNECTED") return "neutral";
-  return b.status === "DEGRADED" ? "warn" : "ok";
+  if (b.status === "PERMISSION_REQUIRED" || b.status === "DEGRADED" || b.status === "CONNECTING") return "warn";
+  return "ok";
 }
 
 export function renderCommunications(input: {
@@ -1996,6 +2003,8 @@ export function renderCommunications(input: {
   users: Map<string, User>;
   currentUser: User;
   teamsSyncConfigured: boolean;
+  teamsSendCapability: "delegated" | "app-test" | "none";
+  teamsTestMode: boolean;
   canManageTeams: boolean;
   syncError: string | null;
 }): string {
@@ -2043,7 +2052,7 @@ export function renderCommunications(input: {
                   {selected.project?.name}
                   {selected.milestone ? ` · M${selected.milestone.seq}` : ""}
                   <span className={`sync-tag ${bindingTone(selected.binding, input.teamsSyncConfigured)}`}>
-                    {bindingStatusLabel(selected.binding, input.teamsSyncConfigured)}
+                    {bindingStatusLabel(selected.binding, input.teamsSyncConfigured, input.teamsTestMode)}
                   </span>
                 </span>
               </span>
@@ -2134,6 +2143,8 @@ export function renderCommunications(input: {
           <CommsContextPanel
             selected={selected}
             teamsSyncConfigured={input.teamsSyncConfigured}
+            teamsSendCapability={input.teamsSendCapability}
+            teamsTestMode={input.teamsTestMode}
             canManageTeams={input.canManageTeams}
             syncError={input.syncError}
           />
@@ -2154,6 +2165,8 @@ function CommsContextPanel(props: {
     hasEvidence: boolean;
   };
   teamsSyncConfigured: boolean;
+  teamsSendCapability: "delegated" | "app-test" | "none";
+  teamsTestMode: boolean;
   canManageTeams: boolean;
   syncError: string | null;
 }): VNode {
@@ -2214,9 +2227,21 @@ function CommsContextPanel(props: {
         <>
           <dl className="ctx-kv">
             <dt>Status</dt>
-            <dd><span className={`sync-tag ${bindingTone(binding, true)}`}>{bindingStatusLabel(binding, true)}</span></dd>
-            <dt>Team</dt><dd style="font-family:var(--mono, monospace);font-size:11px;overflow-wrap:anywhere">{binding.teamId}</dd>
-            <dt>Channel</dt><dd style="font-family:var(--mono, monospace);font-size:11px;overflow-wrap:anywhere">{binding.channelId}</dd>
+            <dd><span className={`sync-tag ${bindingTone(binding, true)}`}>{bindingStatusLabel(binding, true, props.teamsTestMode)}</span></dd>
+            {binding.status === "PERMISSION_REQUIRED" ? (
+              <>
+                <dt>Action</dt>
+                <dd>Teams connection requires administrator approval — grant admin consent or install the OBV Teams app in this Team, then Reconnect.</dd>
+              </>
+            ) : null}
+            <dt>Team</dt><dd>{binding.teamName ?? binding.teamId}</dd>
+            <dt>Channel</dt><dd>{binding.channelName ?? binding.channelId}</dd>
+            {props.teamsSendCapability === "none" ? (
+              <>
+                <dt>Sending</dt>
+                <dd>Receive-only — outbound posting requires the delegated send permission (see docs/TEAMS_REAL_TENANT_SETUP.md).</dd>
+              </>
+            ) : null}
             <dt>Last sync</dt><dd>{binding.lastSyncAt ? fmtDate(binding.lastSyncAt) : "—"}</dd>
             <dt>Subscription</dt>
             <dd>{binding.subscriptionExpiresAt ? `expires ${fmtDate(binding.subscriptionExpiresAt)}` : "not active"}</dd>

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.16",
+  "version": "1.0.0",
+  "id": "REPLACE-WITH-TEAMS-APP-GUID",
+  "packageName": "com.openbuildverify.teamsync",
+  "developer": {
+    "name": "OpenBuild Verify",
+    "websiteUrl": "https://REPLACE-WITH-OBV-PUBLIC-HOST",
+    "privacyUrl": "https://REPLACE-WITH-OBV-PUBLIC-HOST/more",
+    "termsOfUseUrl": "https://REPLACE-WITH-OBV-PUBLIC-HOST/more"
+  },
+  "name": {
+    "short": "OBV Project Sync",
+    "full": "OpenBuild Verify — Project Coordination Sync"
+  },
+  "description": {
+    "short": "Syncs project coordination messages with OpenBuild Verify threads.",
+    "full": "Two-way coordination-message synchronization between this Team's selected channel and the bound OpenBuild Verify project thread. Coordination only: evidence, verification, approvals and fund release remain exclusively inside OBV's governed workflows — no Teams message can approve or release funds."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#0d1626",
+  "webApplicationInfo": {
+    "id": "REPLACE-WITH-ENTRA-CLIENT-ID",
+    "resource": "api://REPLACE-WITH-OBV-PUBLIC-HOST/REPLACE-WITH-ENTRA-CLIENT-ID"
+  },
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        {
+          "name": "ChannelMessage.Read.Group",
+          "type": "Application"
+        }
+      ]
+    }
+  },
+  "validDomains": ["REPLACE-WITH-OBV-PUBLIC-HOST"]
+}

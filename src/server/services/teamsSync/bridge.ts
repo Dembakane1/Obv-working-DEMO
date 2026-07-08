@@ -45,6 +45,14 @@ export function canManageBindings(user: User): boolean {
   return user.role === "PROJECT_MANAGER" || user.role === "FUNDER_REP";
 }
 
+/**
+ * Connect an OBV thread to a Teams channel. A binding is marked ACTIVE
+ * only after real validation succeeds: the team resolves, the channel
+ * resolves, and the change-notification subscription (including Graph's
+ * webhook handshake) is created. Failures land in PERMISSION_REQUIRED
+ * (auth/consent problems) or propagate as sanitized errors (bad ids) —
+ * "Connected" is never shown merely because identifiers were saved.
+ */
 export async function connectThread(
   thread: ConversationThread,
   target: { teamId: string; channelId: string; rootMessageId?: string },
@@ -55,8 +63,8 @@ export async function connectThread(
   const now = new Date().toISOString();
   let binding: ExternalThreadBinding;
   if (existing) {
-    // Reconnect flow: reuse the row, reset status.
-    repo.updateBinding(existing.id, { status: "ACTIVE" });
+    // Reconnect flow: reuse the row; it must re-validate before ACTIVE.
+    repo.updateBinding(existing.id, { status: "CONNECTING" });
     binding = repo.getBindingForThread(thread.id)!;
   } else {
     binding = {
@@ -67,9 +75,11 @@ export async function connectThread(
       teamId: target.teamId.trim(),
       channelId: target.channelId.trim(),
       rootMessageId: target.rootMessageId?.trim() || null,
+      teamName: null,
+      channelName: null,
       subscriptionId: null,
       subscriptionExpiresAt: null,
-      status: "ACTIVE",
+      status: "CONNECTING",
       lastSyncAt: null,
       createdBy: createdBy.id,
       createdAt: now,
@@ -77,8 +87,31 @@ export async function connectThread(
     };
     repo.insertBinding(binding);
   }
-  await ensureSubscription(binding);
+  // Validation handshake: team -> channel -> subscription.
+  try {
+    const teamName = await provider.verifyTeam(binding.teamId);
+    const channelName = await provider.verifyChannel(binding.teamId, binding.channelId);
+    repo.updateBinding(binding.id, { teamName, channelName });
+  } catch (err) {
+    const category = err instanceof ConversationSyncError ? err.category : "unknown";
+    // Consent/permission problems are an admin action, not an OBV error.
+    repo.updateBinding(binding.id, {
+      status: category === "auth" ? "PERMISSION_REQUIRED" : "DISCONNECTED",
+    });
+    throw err;
+  }
+  await ensureSubscription(repo.getBindingForThread(thread.id)!);
+  const validated = repo.getBindingForThread(thread.id)!;
+  if (validated.status === "CONNECTING") {
+    // Subscription step degraded without throwing — reflect honestly.
+    repo.updateBinding(validated.id, { status: "DEGRADED" });
+  }
   return repo.getBindingForThread(thread.id)!;
+}
+
+/** Outbound capability of the current configuration (for UI honesty). */
+export function sendCapability(): "delegated" | "app-test" | "none" {
+  return provider.sendCapability();
 }
 
 export async function disconnectThread(thread: ConversationThread): Promise<void> {
@@ -95,6 +128,7 @@ export async function disconnectThread(thread: ConversationThread): Promise<void
 // --------------------------------------------- subscription lifecycle
 
 async function ensureSubscription(binding: ExternalThreadBinding): Promise<void> {
+  if (binding.status === "DISCONNECTED" || binding.status === "PERMISSION_REQUIRED") return;
   const expiresSoon =
     !binding.subscriptionExpiresAt ||
     Date.parse(binding.subscriptionExpiresAt) < Date.now() + 10 * 60_000;
@@ -163,7 +197,7 @@ export async function syncOutbound(message: ChatMessage, thread: ConversationThr
   try {
     if (!provider.configured()) return;
     const binding = repo.getBindingForThread(thread.id);
-    if (!binding || binding.status === "DISCONNECTED") return;
+    if (!binding || binding.status === "DISCONNECTED" || binding.status === "PERMISSION_REQUIRED" || binding.status === "CONNECTING") return;
     if (!outboundAllowed(message)) return;
     const current = repo.getChatMessage(message.id);
     if (!current || current.externalMessageId) return; // already delivered once
@@ -280,9 +314,25 @@ export function handleInbound(
   if (!inbound.body.trim() && inbound.attachments.length === 0) return { outcome: "ignored" };
 
   // Identity: exact configured mapping only — never guessed from names.
+  // First sight of an unmapped external identity records an UNMAPPED row
+  // so administrators can review and map it explicitly.
   const mapping = inbound.senderExternalId
     ? repo.findIdentityMapping(binding.tenantId, inbound.senderExternalId)
     : null;
+  if (inbound.senderExternalId && !mapping) {
+    repo.upsertIdentityMapping({
+      id: repo.newId(),
+      provider: "TEAMS",
+      tenantId: binding.tenantId,
+      externalUserId: inbound.senderExternalId,
+      obvUserId: null,
+      externalDisplayName: inbound.senderDisplayName,
+      externalEmail: null,
+      status: "UNMAPPED",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  }
   const obvUser = mapping?.obvUserId ? repo.getUser(mapping.obvUserId) : null;
 
   try {

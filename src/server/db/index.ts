@@ -217,9 +217,11 @@ CREATE TABLE IF NOT EXISTS external_thread_bindings (
   team_id TEXT NOT NULL,
   channel_id TEXT NOT NULL,
   root_message_id TEXT,
+  team_name TEXT,    -- display names captured after successful validation
+  channel_name TEXT,
   subscription_id TEXT,
   subscription_expires_at TEXT,
-  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','DEGRADED','DISCONNECTED')),
+  status TEXT NOT NULL DEFAULT 'CONNECTING' CHECK (status IN ('CONNECTING','ACTIVE','DEGRADED','DISCONNECTED','PERMISSION_REQUIRED')),
   last_sync_at TEXT,
   created_by TEXT NOT NULL REFERENCES users(id),
   created_at TEXT NOT NULL,
@@ -276,6 +278,17 @@ export function getDb(): DatabaseSync {
       db.exec("ALTER TABLE evidence_items ADD COLUMN submission_key TEXT");
     } catch {
       /* column already present */
+    }
+    // Additive migration for validated binding display names.
+    for (const ddl of [
+      "ALTER TABLE external_thread_bindings ADD COLUMN team_name TEXT",
+      "ALTER TABLE external_thread_bindings ADD COLUMN channel_name TEXT",
+    ]) {
+      try {
+        db.exec(ddl);
+      } catch {
+        /* column already present */
+      }
     }
     // Additive migrations for Teams conversation sync on the messages
     // table (origin/edit/delete audit + attachments).

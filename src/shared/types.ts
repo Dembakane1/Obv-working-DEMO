@@ -322,7 +322,12 @@ export interface MessageAttachment {
   url: string | null;
 }
 
-export type BindingStatus = "ACTIVE" | "DEGRADED" | "DISCONNECTED";
+export type BindingStatus =
+  | "CONNECTING"
+  | "ACTIVE"
+  | "DEGRADED"
+  | "DISCONNECTED"
+  | "PERMISSION_REQUIRED";
 
 /** Maps one OBV thread to one Teams channel conversation target.
  *  Contains identifiers only — never credentials, tokens or secrets. */
@@ -334,6 +339,9 @@ export interface ExternalThreadBinding {
   teamId: string;
   channelId: string;
   rootMessageId: string | null;
+  /** Display names captured at connect time (verification succeeded). */
+  teamName: string | null;
+  channelName: string | null;
   subscriptionId: string | null;
   subscriptionExpiresAt: string | null;
   status: BindingStatus;

@@ -99,13 +99,15 @@ delivering the high-value workflow cards, so there is no duplicate noise.
 
 1. **App registration** (Entra admin center): register a confidential
    client; create a client secret; note tenant/client ids.
-2. **Application permissions** (admin consent required):
-   `ChannelMessage.Read.All` for reading channel messages and change
-   notifications. Note: *sending* channel messages with pure application
-   permissions is restricted in Graph — production sending typically
-   uses delegated `ChannelMessage.Send` or Teams resource-specific
-   consent (RSC) for the target team. Plan the sending identity
-   accordingly; the provider seam is identical either way.
+2. **Permission model (implemented)**: reading + subscriptions use
+   application permissions (tenant-wide `ChannelMessage.Read.All`, or
+   the team-scoped RSC `ChannelMessage.Read.Group` via the Teams app in
+   `integrations/teams-app/`); **sending uses delegated
+   `ChannelMessage.Send`** through a dedicated OBV service account
+   (refresh-token grant, obtained with `scripts/teams-delegated-auth.js`)
+   — application permissions cannot create channel messages outside
+   migration mode, and OBV never uses migration permissions. The full
+   administrator walkthrough is `docs/TEAMS_REAL_TENANT_SETUP.md`.
 3. **Public HTTPS notification URL**: the deployment must be reachable
    by Graph at `/api/teams-sync/notifications` (Render deployments are;
    the endpoint answers the validation handshake and authenticates every

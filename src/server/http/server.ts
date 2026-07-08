@@ -36,6 +36,7 @@ import {
   disconnectThread,
   maintainSubscriptions,
   processNotificationItem,
+  sendCapability,
   syncConfigured,
   syncOutbound,
 } from "../services/teamsSync/bridge";
@@ -897,6 +898,60 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ---- identity mapping admin flow (smallest practical: endpoints) ----
+  // GET lists external Teams identities seen (mapped + unmapped);
+  // POST maps/unmaps an external identity to an existing OBV user.
+  // Mapping is always explicit — never inferred from display names.
+  if (pathname === "/api/teams-sync/identities") {
+    const user = currentUser(req);
+    if (!user || !canManageBindings(user)) {
+      sendJson(res, { error: "Not authorized" }, 403);
+      return;
+    }
+    if (method === "GET") {
+      sendJson(res, {
+        identities: repo.listIdentityMappings().map((m) => ({
+          tenantId: m.tenantId,
+          // Truncated for display; full id accepted on POST.
+          externalUserId: m.externalUserId.length > 12 ? `${m.externalUserId.slice(0, 12)}…` : m.externalUserId,
+          externalUserIdFull: m.externalUserId,
+          externalDisplayName: m.externalDisplayName,
+          externalEmail: m.externalEmail,
+          obvUserId: m.obvUserId,
+          obvUserName: m.obvUserId ? repo.getUser(m.obvUserId)?.name ?? null : null,
+          status: m.status,
+        })),
+      });
+      return;
+    }
+    if (method === "POST") {
+      const body = (await readBody(req, 16 * 1024)).toString("utf8");
+      const params = isFormPost(req)
+        ? new URLSearchParams(body)
+        : new URLSearchParams(Object.entries(JSON.parse(body || "{}")) as [string, string][]);
+      const externalUserId = params.get("externalUserId") ?? "";
+      const obvUserId = params.get("obvUserId") || null; // empty -> unmap
+      const tenantId = params.get("tenantId") || GRAPH_CONFIG.tenantId();
+      if (!externalUserId) {
+        sendJson(res, { error: "externalUserId required" }, 400);
+        return;
+      }
+      if (obvUserId && !repo.getUser(obvUserId)) {
+        sendJson(res, { error: "Unknown OBV user" }, 404);
+        return;
+      }
+      if (!repo.findIdentityMapping(tenantId, externalUserId)) {
+        sendJson(res, { error: "Unknown external identity (it appears after its first inbound message)" }, 404);
+        return;
+      }
+      repo.setIdentityMapping(tenantId, externalUserId, obvUserId);
+      sendJson(res, { ok: true, status: obvUserId ? "MAPPED" : "UNMAPPED" });
+      return;
+    }
+    sendJson(res, { error: "Method not allowed" }, 405);
+    return;
+  }
+
   // Subscription maintenance sweep (PM session, or external scheduler
   // presenting the configured maintenance key).
   if (method === "POST" && pathname === "/api/teams-sync/maintain") {
@@ -1450,6 +1505,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         users: usersById(),
         currentUser: user!,
         teamsSyncConfigured: syncConfigured(),
+        teamsSendCapability: sendCapability(),
+        teamsTestMode: syncConfigured() && !GRAPH_CONFIG.realGraph(),
         canManageTeams: canManageBindings(user!),
         syncError: url.searchParams.get("sync_error"),
       })

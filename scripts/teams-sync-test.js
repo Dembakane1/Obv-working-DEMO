@@ -67,22 +67,70 @@ const stubServer = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ error: { message: "stub internal error" } }));
     return;
   }
-  // token endpoint
+  // token endpoint — issues DISTINCT tokens per grant so the tests can
+  // prove OBV uses the delegated strategy for sends and the application
+  // strategy for reads (real Graph enforces exactly this split).
   if (url.pathname === `/${TENANT}/oauth2/v2.0/token`) {
     stub.tokenCalls++;
+    const form = new URLSearchParams(body);
+    if (form.get("grant_type") === "refresh_token") {
+      if (form.get("refresh_token") !== "stub-refresh-token" && !String(form.get("refresh_token")).startsWith("rotated-")) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid_grant" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        access_token: "stub-send-token",
+        expires_in: 3600,
+        refresh_token: "rotated-" + ++stub.seq, // Azure rotates refresh tokens
+      }));
+      return;
+    }
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ access_token: "stub-access-token", expires_in: 3600 }));
+    res.end(JSON.stringify({ access_token: "stub-read-token", expires_in: 3600 }));
     return;
   }
   const auth = req.headers.authorization ?? "";
-  if (auth !== "Bearer stub-access-token") {
+  const isRead = auth === "Bearer stub-read-token";
+  const isSend = auth === "Bearer stub-send-token";
+  if (!isRead && !isSend) {
     res.writeHead(401, { "content-type": "application/json" });
     res.end("{}");
     return;
   }
-  // send channel message
-  let m = /^\/v1\.0\/teams\/([^/]+)\/channels\/([^/]+)\/messages$/.exec(url.pathname);
+  // team / channel verification (read token)
+  let m = /^\/v1\.0\/teams\/([^/]+)$/.exec(url.pathname);
+  if (m && req.method === "GET") {
+    if (m[1] !== "t1") {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end("{}");
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "t1", displayName: "R47 Project Delivery" }));
+    return;
+  }
+  m = /^\/v1\.0\/teams\/([^/]+)\/channels\/([^/]+)$/.exec(url.pathname);
+  if (m && req.method === "GET") {
+    if (m[2] !== "c1") {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end("{}");
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "c1", displayName: "M3 Coordination" }));
+    return;
+  }
+  // send channel message — REQUIRES the delegated send token (real Graph
+  // rejects application-permission channel message creation).
+  m = /^\/v1\.0\/teams\/([^/]+)\/channels\/([^/]+)\/messages$/.exec(url.pathname);
   if (m && req.method === "POST") {
+    if (!isSend) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "application permissions cannot post channel messages" } }));
+      return;
+    }
     const id = `tmsg-out-${++stub.seq}`;
     const payload = JSON.parse(body);
     stub.outbound.push({ id, teamId: m[1], channelId: m[2], content: payload.body.content });
@@ -243,6 +291,7 @@ const GRAPH_ENV = {
   MICROSOFT_TENANT_ID: TENANT,
   MICROSOFT_CLIENT_ID: "stub-client",
   MICROSOFT_CLIENT_SECRET: SECRET,
+  MICROSOFT_SEND_REFRESH_TOKEN: "stub-refresh-token",
   OBV_GRAPH_BASE_URL: `http://127.0.0.1:${STUB_PORT}`,
   OBV_GRAPH_LOGIN_URL: `http://127.0.0.1:${STUB_PORT}`,
   OBV_TEAMS_WEBHOOK_PUBLIC_URL: `http://127.0.0.1:${OBV_PORT}/api/teams-sync/notifications`,
@@ -299,7 +348,24 @@ const GRAPH_ENV = {
     d.close();
     assert(
       binding.status === "ACTIVE" && binding.subscription_id && binding.subscription_expires_at,
-      "binding ACTIVE with subscription id + expiry (webhook validation handshake passed)"
+      "binding ACTIVE only after team+channel+subscription validation succeeded"
+    );
+    assert(
+      binding.team_name === "R47 Project Delivery" && binding.channel_name === "M3 Coordination",
+      "validated team and channel display names stored (Connected to: names)"
+    );
+    // Unknown channel: validation fails, binding never shows Connected.
+    const badBind = await fetch(BASE + "/api/threads/thread-project/teams-binding", {
+      method: "POST",
+      headers: { cookie: jars.pm, "content-type": "application/json" },
+      body: JSON.stringify({ action: "connect", teamId: "t1", channelId: "wrong-channel" }),
+    });
+    d = db();
+    const badRow = d.prepare("SELECT status FROM external_thread_bindings WHERE thread_id='thread-project'").get();
+    d.close();
+    assert(
+      badBind.status === 502 && badRow && badRow.status !== "ACTIVE",
+      "invalid channel: connect fails and the binding is NOT marked Connected"
     );
     const noAuth = await req("field", "POST", "/api/threads/thread-m3/teams-binding", {
       action: "connect", teamId: "t1", channelId: "c1",
@@ -319,6 +385,7 @@ const GRAPH_ENV = {
       stub.outbound.length === 1 && stub.outbound[0].content.includes("Compaction certificate"),
       "OBV human message sends outward exactly once"
     );
+    pass("outbound send used the DELEGATED token (stub rejects app-permission posts with 403)");
     assert(
       outMsg.external_message_id === stub.outbound[0].id && outMsg.delivery_status === "SENT" && outMsg.origin === "OBV_LOCAL",
       "external message id stored; delivery SENT; origin OBV_LOCAL"
@@ -373,6 +440,29 @@ const GRAPH_ENV = {
       mapped.sender_user_id === "user-pm" && mapped.sender_display_name === "Daniel Phiri",
       "explicitly mapped Teams identity resolves to the OBV user (never name-guessed)"
     );
+
+    // Identity admin flow: unmapped identity was auto-recorded on first
+    // inbound; PM can list and map it explicitly.
+    const idList = await (await fetch(BASE + "/api/teams-sync/identities", { headers: { cookie: jars.pm } })).json();
+    const amina = idList.identities.find((i) => i.externalUserIdFull === "ext-amina");
+    assert(
+      amina && amina.status === "UNMAPPED" && amina.externalDisplayName === "Amina Ndlovu",
+      "external identities seen are listed for the administrator (UNMAPPED recorded)"
+    );
+    const fieldDenied = await fetch(BASE + "/api/teams-sync/identities", { headers: { cookie: jars.field } });
+    assert(fieldDenied.status === 403, "identity admin endpoints are role-protected");
+    const mapRes = await fetch(BASE + "/api/teams-sync/identities", {
+      method: "POST",
+      headers: { cookie: jars.pm, "content-type": "application/json" },
+      body: JSON.stringify({ externalUserId: "ext-amina", obvUserId: "user-compliance" }),
+    });
+    assert(mapRes.status === 200, "administrator maps a Teams identity to an OBV user");
+    seedInboundStubMessage("tmsg-in-3", { extUser: "ext-amina", name: "Amina Ndlovu", html: "<p>Now mapped.</p>" });
+    await notify([notifItem("tmsg-in-3")]);
+    d = db();
+    const nowMapped = d.prepare("SELECT sender_user_id FROM messages WHERE external_message_id='tmsg-in-3'").get();
+    d.close();
+    assert(nowMapped.sender_user_id === "user-compliance", "subsequent inbound messages resolve via the new mapping");
 
     // ---- 9. GOVERNANCE SAFETY (non-negotiable) ----
     // Submit real evidence first so a PENDING approval exists to attack.
@@ -560,7 +650,17 @@ const GRAPH_ENV = {
     );
 
     console.log(`\nTEAMS CONVERSATION-SYNC TESTS PASSED — ${n} checkpoints.`);
-    console.log("Validated against a Graph-compatible stub; real Microsoft tenant validation still required.\n");
+    console.log("\nTest matrix (never merge the columns):");
+    const matrix = [
+      "Token acquisition (read, app)", "Token acquisition (send, delegated)",
+      "Team/channel verification", "Channel message read", "Channel message send",
+      "Inbound notification + handshake", "Deduplication/replay", "Loop prevention",
+      "Edit auditability", "Delete auditability", "Subscription lifecycle",
+      "Governance isolation",
+    ];
+    for (const row of matrix) console.log(`  ${row.padEnd(38)} Stub PASS   Real NOT RUN`);
+    console.log("\nValidated against a Graph-compatible stub; real Microsoft tenant validation still required");
+    console.log("(run docs/TEAMS_REAL_TENANT_SETUP.md steps 12-17 against your tenant).\n");
   } finally {
     for (const p of spawned) p.kill();
     stubServer.close();

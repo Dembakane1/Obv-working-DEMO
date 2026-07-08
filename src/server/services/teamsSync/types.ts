@@ -40,6 +40,7 @@ export class ConversationSyncError extends Error {
       | "network"
       | "provider-4xx"
       | "provider-5xx"
+      | "send-not-authorized"
       | "invalid-response",
     public transient: boolean
   ) {
@@ -68,4 +69,9 @@ export interface ExternalConversationProvider {
   renewSubscription(subscriptionId: string): Promise<SubscriptionInfo>;
   /** Best-effort subscription removal on disconnect. */
   deleteSubscription(subscriptionId: string): Promise<void>;
+  /** Verify team/channel access before a binding may become ACTIVE. */
+  verifyTeam(teamId: string): Promise<string>;
+  verifyChannel(teamId: string, channelId: string): Promise<string>;
+  /** Outbound capability of the current configuration. */
+  sendCapability(): "delegated" | "app-test" | "none";
 }

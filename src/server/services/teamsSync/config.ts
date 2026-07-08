@@ -29,8 +29,36 @@ export const GRAPH_CONFIG = {
   /** Optional key allowing an external scheduler to hit the maintenance
    *  endpoint without a session. */
   maintenanceKey: () => process.env.OBV_TEAMS_MAINTENANCE_KEY ?? "",
+  /** Delegated refresh token for the dedicated OBV send service account
+   *  (ChannelMessage.Send). SECRET — server-side only. */
+  sendRefreshToken: () => process.env.MICROSOFT_SEND_REFRESH_TOKEN ?? "",
+  /**
+   * Outbound send mode:
+   *  - "delegated"  (default): delegated ChannelMessage.Send via the OBV
+   *    service-account refresh token — the supported production path.
+   *  - "app-test": application-permission send, ONLY valid against a
+   *    non-Microsoft base URL (contract stub). Application permissions
+   *    cannot create channel messages in real Graph outside migration
+   *    mode, and OBV never uses migration permissions operationally.
+   */
+  sendMode: (): "delegated" | "app-test" =>
+    process.env.OBV_TEAMS_SEND_MODE === "app-test" ? "app-test" : "delegated",
+  /** True when the base URL points at real Microsoft Graph. */
+  realGraph(): boolean {
+    return this.baseUrl() === "https://graph.microsoft.com";
+  },
   configured(): boolean {
     return Boolean(this.tenantId() && this.clientId() && this.clientSecret());
+  },
+  /** What outbound capability the current configuration provides. */
+  sendCapability(): "delegated" | "app-test" | "none" {
+    if (!this.configured()) return "none";
+    if (this.sendMode() === "app-test") {
+      // Hard guard: the unsupported app-permission send path can never
+      // run against real Microsoft Graph.
+      return this.realGraph() ? "none" : "app-test";
+    }
+    return this.sendRefreshToken() ? "delegated" : "none";
   },
 } as const;
 
