@@ -54,10 +54,34 @@ interface MapEvidence {
   threadId: string | null;
 }
 
+interface MapCommLocation {
+  messageId: string;
+  threadId: string;
+  threadTitle: string;
+  sender: string;
+  provider: string;
+  createdAt: string;
+  latitude: number;
+  longitude: number;
+}
+
+interface MapIssue {
+  id: string;
+  title: string;
+  severity: string;
+  status: string;
+  milestoneId: string | null;
+  assignee: string | null;
+  latitude: number;
+  longitude: number;
+}
+
 interface MapProject {
   id: string;
   name: string;
   location: string;
+  commLocations: MapCommLocation[];
+  issues: MapIssue[];
   boundary: Array<[number, number]>;
   route: { label: string; geometry: Array<[number, number]> } | null;
   totalBudget: number;
@@ -239,7 +263,7 @@ interface MapProject {
 
   // ---------------- data + overlay ----------------
   let project: MapProject | null = null;
-  let selected: { kind: "project" | "segment" | "evidence"; id?: string } | null = null;
+  let selected: { kind: "project" | "segment" | "evidence" | "comm" | "issue"; id?: string } | null = null;
   const filters = { time: "all", milestone: "all", verdict: "all" };
 
   function filteredEvidence(): MapEvidence[] {
@@ -354,6 +378,41 @@ interface MapProject {
       });
       svg.appendChild(g);
     }
+
+    // Field COMMUNICATION locations — visually distinct from evidence
+    // (small slate diamond, dashed outline): coordination context only.
+    for (const c of project.commLocations) {
+      const sPt = toScreen(c.longitude, c.latitude);
+      const g = el("g", {
+        class: "geo-comm",
+        transform: `translate(${sPt.x},${sPt.y})`,
+      });
+      g.setAttribute("tabindex", "0");
+      g.setAttribute("role", "button");
+      g.setAttribute("aria-label", `Communication location from ${c.sender}`);
+      g.appendChild(el("rect", { x: "-6", y: "-6", width: "12", height: "12", transform: "rotate(45)", class: "comm-dot" }));
+      g.addEventListener("click", () => select({ kind: "comm", id: c.messageId }));
+      svg.appendChild(g);
+    }
+
+    // Open FIELD ISSUES with coordinates — triangle, severity-toned.
+    for (const iss of project.issues) {
+      if (["RESOLVED", "CLOSED"].includes(iss.status)) continue;
+      const sPt = toScreen(iss.longitude, iss.latitude);
+      const g = el("g", { class: "geo-issue", transform: `translate(${sPt.x},${sPt.y})` });
+      g.setAttribute("tabindex", "0");
+      g.setAttribute("role", "button");
+      g.setAttribute("aria-label", `Field issue: ${iss.title} (${iss.severity})`);
+      g.appendChild(
+        el("path", {
+          d: "M0,-9 L8,7 L-8,7 Z",
+          class: "issue-tri",
+          fill: iss.severity === "CRITICAL" ? TONE.bad : iss.severity === "HIGH" ? TONE.review : TONE.warn,
+        })
+      );
+      g.addEventListener("click", () => select({ kind: "issue", id: iss.id }));
+      svg.appendChild(g);
+    }
   }
 
   function render(): void {
@@ -373,7 +432,7 @@ interface MapProject {
     return `<span class="map-chip" style="color:${tone};border-color:${tone}40;background:${tone}12">${esc(label)}</span>`;
   }
 
-  function select(sel: { kind: "project" | "segment" | "evidence"; id?: string } | null): void {
+  function select(sel: { kind: "project" | "segment" | "evidence" | "comm" | "issue"; id?: string } | null): void {
     selected = sel;
     renderOverlay();
     if (!project || !sel) {
@@ -440,6 +499,37 @@ interface MapProject {
               ? `<a class="btn ghost sm" href="/communications?thread=${esc(seg.threadId)}">Open thread</a>`
               : `<form method="POST" action="/api/threads/open" style="margin:0;display:inline"><input type="hidden" name="milestoneId" value="${esc(seg.milestoneId)}"><button class="btn ghost sm" type="submit">Open thread</button></form>`
           }
+        </div>`;
+    } else if (sel.kind === "comm") {
+      const c = project.commLocations.find((x) => x.messageId === sel.id);
+      if (!c) return;
+      panelBody.innerHTML = `
+        <div class="mp-title">Field communication location</div>
+        <div class="mp-chips">${chip("COMMUNICATION LOCATION", TONE.neutral)}</div>
+        <dl class="mp-kv">
+          <dt>Sender</dt><dd>${esc(c.sender)}</dd>
+          <dt>Provider</dt><dd>${esc(c.provider === "WHATSAPP" ? "WhatsApp" : c.provider === "TEAMS" ? "Microsoft Teams" : "OBV")}</dd>
+          <dt>Shared</dt><dd>${esc(c.createdAt.replace("T", " ").slice(0, 16))} UTC</dd>
+          <dt>Thread</dt><dd>${esc(c.threadTitle)}</dd>
+          <dt>GPS</dt><dd class="num">${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}</dd>
+        </dl>
+        <p style="font-size:10.5px;color:#6a7280;margin:10px 0 0">Not an evidence capture location — communication context only.</p>
+        <div class="mp-actions">
+          <a class="btn sm" href="/communications?thread=${esc(c.threadId)}">Open Conversation</a>
+        </div>`;
+    } else if (sel.kind === "issue") {
+      const iss = project.issues.find((x) => x.id === sel.id);
+      if (!iss) return;
+      panelBody.innerHTML = `
+        <div class="mp-title">${esc(iss.title)}</div>
+        <div class="mp-chips">${chip(iss.severity, iss.severity === "CRITICAL" ? TONE.bad : TONE.warn)}${chip(iss.status.replace(/_/g, " "), TONE.warn)}</div>
+        <dl class="mp-kv">
+          <dt>Assigned</dt><dd>${esc(iss.assignee ?? "Unassigned")}</dd>
+          <dt>Milestone</dt><dd>${iss.milestoneId ? esc(iss.milestoneId.toUpperCase().replace("MS-", "M")) : "—"}</dd>
+          <dt>Source</dt><dd>Field communication</dd>
+        </dl>
+        <div class="mp-actions">
+          <a class="btn sm" href="/issue/${esc(iss.id)}">Open Issue</a>
         </div>`;
     } else {
       const e = project.evidence.find((x) => x.id === sel.id);
@@ -641,6 +731,12 @@ interface MapProject {
       parts.push(
         `<span class="lg-row"><i class="lg-dot lg-demo"></i>Demo fallback evidence</span>`
       );
+    }
+    if (project.commLocations.length > 0) {
+      parts.push(`<span class="lg-row"><i class="lg-comm"></i>Field communication</span>`);
+    }
+    if (project.issues.some((i) => !["RESOLVED", "CLOSED"].includes(i.status))) {
+      parts.push(`<span class="lg-row"><i class="lg-issue"></i>Field issue</span>`);
     }
     parts.push(`<span class="lg-row"><i class="lg-boundary"></i>Project boundary</span>`);
     parts.push(`<span class="lg-note">Demo corridor geometry — km labels are demonstration metadata</span>`);

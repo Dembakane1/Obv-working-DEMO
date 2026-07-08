@@ -261,7 +261,9 @@ export type ChatMessageType =
   | "EVIDENCE_REFERENCE"
   | "MILESTONE_REFERENCE"
   | "APPROVAL_REFERENCE"
-  | "REPORT_REFERENCE";
+  | "REPORT_REFERENCE"
+  | "ISSUE_REFERENCE"
+  | "CLARIFICATION_REFERENCE";
 
 export interface ConversationThread {
   id: string;
@@ -289,7 +291,7 @@ export interface ChatMessage {
   /** Referenced record id for *_REFERENCE types (evidence/milestone/approval/report). */
   refId: string | null;
   createdAt: string;
-  deliveryStatus: "SENT" | "PENDING" | "FAILED";
+  deliveryStatus: "SENT" | "PENDING" | "DELIVERED" | "READ" | "FAILED" | "SKIPPED";
   /** Loop-prevention origin (see MessageOrigin below). */
   origin: MessageOrigin;
   /** External edit audit: original body is preserved on first edit. */
@@ -299,6 +301,8 @@ export interface ChatMessage {
   externalDeleted: boolean;
   /** Communication attachments — never auto-promoted to evidence. */
   attachments: MessageAttachment[];
+  /** Shared communication location (never evidence GPS by itself). */
+  location: MessageLocation | null;
 }
 
 // ---------------------------------------------------------------------
@@ -313,13 +317,27 @@ export interface ChatMessage {
 /** Where a message originated — the loop-prevention anchor.
  *  OBV_LOCAL messages may sync outbound once; TEAMS_INBOUND messages are
  *  never echoed back. */
-export type MessageOrigin = "OBV_LOCAL" | "TEAMS_INBOUND";
+export type MessageOrigin = "OBV_LOCAL" | "TEAMS_INBOUND" | "WHATSAPP_INBOUND";
 
 /** Communication attachment metadata (a chat artifact — NEVER evidence;
  *  evidence enters only through the governed submission workflow). */
 export interface MessageAttachment {
   name: string;
   url: string | null;
+  /** Communication-media kind (IMAGE/VIDEO/AUDIO/DOCUMENT). */
+  kind?: "IMAGE" | "VIDEO" | "AUDIO" | "DOCUMENT";
+  /** Provider media identifier (provenance; never a secret). */
+  externalMediaId?: string;
+  mimeType?: string;
+}
+
+/** A location shared in chat — COMMUNICATION context only, never
+ *  evidence capture geolocation unless explicitly associated during a
+ *  governed evidence-draft promotion. */
+export interface MessageLocation {
+  latitude: number;
+  longitude: number;
+  name?: string;
 }
 
 export type BindingStatus =
@@ -355,8 +373,10 @@ export interface ExternalThreadBinding {
  *  display-name similarity; unmapped identities stay clearly external. */
 export interface ExternalIdentityMapping {
   id: string;
-  provider: "TEAMS";
+  provider: "TEAMS" | "WHATSAPP";
+  /** Teams: Entra tenant id. WhatsApp: business-account id. */
   tenantId: string;
+  organizationId?: string | null;
   externalUserId: string;
   obvUserId: string | null;
   externalDisplayName: string;
@@ -364,4 +384,125 @@ export interface ExternalIdentityMapping {
   status: "MAPPED" | "UNMAPPED";
   createdAt: string;
   updatedAt: string;
+}
+
+
+// ---------------------------------------------------------------------
+// WhatsApp field-operations bridge + field issue workflow (additive).
+//
+// WHATSAPP COORDINATES. OBV EVIDENCE PROVES. VERIFICATION ASSESSES.
+// HUMANS AUTHORIZE THROUGH THE FORMAL APPROVAL WORKFLOW. THE LEDGER
+// RECORDS. CHAT DOES NOT RELEASE FUNDS.
+// ---------------------------------------------------------------------
+
+/** Where an external participant's inbound messages currently belong.
+ *  Explicit assignment only — context is NEVER guessed from text. */
+export interface ExternalParticipantContext {
+  id: string;
+  provider: "WHATSAPP" | "TEAMS";
+  /** External user key (WhatsApp: wa phone id). */
+  externalUserId: string;
+  activeProjectId: string | null;
+  activeThreadId: string | null;
+  activeMilestoneId: string | null;
+  /** Last inbound time — drives the outbound service-window policy. */
+  lastInboundAt: string | null;
+  expiresAt: string | null;
+  updatedAt: string;
+}
+
+export type FieldIssueCategory =
+  | "QUALITY" | "SAFETY" | "MATERIAL" | "SCHEDULE" | "ACCESS"
+  | "ENVIRONMENTAL" | "DOCUMENTATION" | "EQUIPMENT" | "OTHER";
+export type FieldIssueSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type FieldIssueStatus =
+  | "OPEN" | "ACKNOWLEDGED" | "IN_PROGRESS" | "AWAITING_FIELD_RESPONSE"
+  | "RESOLVED" | "CLOSED";
+
+/** Operational field issue. Informs humans; NEVER changes financial
+ *  state — release eligibility stays exclusively with the existing
+ *  ApprovalRequest governance workflow. */
+export interface FieldIssue {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  milestoneId: string | null;
+  evidenceItemId: string | null;
+  sourceThreadId: string | null;
+  sourceMessageId: string | null;
+  title: string;
+  description: string;
+  category: FieldIssueCategory;
+  severity: FieldIssueSeverity;
+  status: FieldIssueStatus;
+  reportedByUserId: string | null;
+  reportedByExternalIdentityId: string | null;
+  assignedToUserId: string | null;
+  /** Optional coordinates from an explicitly linked location message. */
+  latitude: number | null;
+  longitude: number | null;
+  dueAt: string | null;
+  resolvedAt: string | null;
+  resolutionSummary: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Field-issue operational timeline entry (NOT the Evidence Ledger). */
+export interface FieldIssueEvent {
+  id: string;
+  issueId: string;
+  type: "CREATED" | "STATUS_CHANGED" | "ASSIGNED" | "COMMENT" | "RESOLVED";
+  detail: string;
+  actorUserId: string | null;
+  createdAt: string;
+}
+
+export type ClarificationResponseType =
+  | "TEXT" | "PHOTO" | "DOCUMENT" | "LOCATION" | "SITE_REVISIT";
+export type ClarificationStatus =
+  | "OPEN" | "RESPONDED" | "ACCEPTED" | "REOPENED" | "CLOSED";
+
+/** Formal reviewer clarification request. A response arriving (from any
+ *  channel) NEVER auto-accepts — the reviewer must accept/close it. */
+export interface ClarificationRequest {
+  id: string;
+  milestoneId: string;
+  evidenceItemId: string | null;
+  question: string;
+  responseType: ClarificationResponseType;
+  dueAt: string | null;
+  assignedToUserId: string | null;
+  requestedByUserId: string;
+  status: ClarificationStatus;
+  responseMessageId: string | null;
+  resolutionNote: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Governed promotion of communication media toward evidence. A draft
+ *  is NOT evidence: submission routes through the normal evidence
+ *  pipeline (verification -> ledger -> governance) with honest
+ *  provenance — missing GPS/metadata stays missing. */
+export interface EvidenceDraft {
+  id: string;
+  projectId: string;
+  milestoneId: string;
+  sourceMessageId: string;
+  sourceAttachmentIndex: number;
+  mediaPath: string;
+  sourceProvider: "WHATSAPP" | "TEAMS" | "OBV";
+  sourceIdentity: string;
+  /** Provider message timestamp (NOT an original capture timestamp). */
+  sourceTimestamp: string;
+  /** Only set by explicit association with a location message. */
+  latitude: number | null;
+  longitude: number | null;
+  locationSourceMessageId: string | null;
+  status: "DRAFT" | "SUBMITTED" | "DISCARDED";
+  createdBy: string;
+  createdAt: string;
+  submittedAt: string | null;
+  evidenceItemId: string | null;
 }

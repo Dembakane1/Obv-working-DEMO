@@ -204,7 +204,8 @@ CREATE TABLE IF NOT EXISTS messages (
   edited_at TEXT,                              -- external edit audit
   original_body TEXT,                          -- preserved on first edit
   external_deleted INTEGER NOT NULL DEFAULT 0, -- deleted in provider (audit kept)
-  attachments TEXT                             -- JSON MessageAttachment[] (communication only)
+  attachments TEXT,                            -- JSON MessageAttachment[] (communication only)
+  location TEXT                                -- JSON MessageLocation (communication context only)
 );
 
 -- Teams conversation-sync thread bindings. Identifiers only — NEVER
@@ -241,6 +242,97 @@ CREATE TABLE IF NOT EXISTS external_identity_mappings (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (provider, tenant_id, external_user_id)
+);
+
+-- WhatsApp/Teams participant context: which project/thread an external
+-- participant's inbound messages belong to. EXPLICIT assignment only.
+CREATE TABLE IF NOT EXISTS external_participant_contexts (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL DEFAULT 'WHATSAPP',
+  external_user_id TEXT NOT NULL,
+  active_project_id TEXT REFERENCES projects(id),
+  active_thread_id TEXT REFERENCES conversation_threads(id),
+  active_milestone_id TEXT REFERENCES milestones(id),
+  last_inbound_at TEXT,
+  expires_at TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (provider, external_user_id)
+);
+
+-- Operational field issues. Informational for humans — no code path
+-- from these tables reaches approvals or the virtual account.
+CREATE TABLE IF NOT EXISTS field_issues (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  milestone_id TEXT REFERENCES milestones(id),
+  evidence_item_id TEXT REFERENCES evidence_items(id),
+  source_thread_id TEXT REFERENCES conversation_threads(id),
+  source_message_id TEXT REFERENCES messages(id),
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (category IN ('QUALITY','SAFETY','MATERIAL','SCHEDULE','ACCESS','ENVIRONMENTAL','DOCUMENTATION','EQUIPMENT','OTHER')),
+  severity TEXT NOT NULL CHECK (severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','ACKNOWLEDGED','IN_PROGRESS','AWAITING_FIELD_RESPONSE','RESOLVED','CLOSED')),
+  reported_by_user_id TEXT REFERENCES users(id),
+  reported_by_external_identity_id TEXT,
+  assigned_to_user_id TEXT REFERENCES users(id),
+  latitude REAL,
+  longitude REAL,
+  due_at TEXT,
+  resolved_at TEXT,
+  resolution_summary TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Field-issue operational timeline (NOT the Evidence Ledger).
+CREATE TABLE IF NOT EXISTS field_issue_events (
+  id TEXT PRIMARY KEY,
+  issue_id TEXT NOT NULL REFERENCES field_issues(id),
+  type TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+-- Formal reviewer clarification requests. A response NEVER auto-accepts.
+CREATE TABLE IF NOT EXISTS clarification_requests (
+  id TEXT PRIMARY KEY,
+  milestone_id TEXT NOT NULL REFERENCES milestones(id),
+  evidence_item_id TEXT REFERENCES evidence_items(id),
+  question TEXT NOT NULL,
+  response_type TEXT NOT NULL CHECK (response_type IN ('TEXT','PHOTO','DOCUMENT','LOCATION','SITE_REVISIT')),
+  due_at TEXT,
+  assigned_to_user_id TEXT REFERENCES users(id),
+  requested_by_user_id TEXT NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','RESPONDED','ACCEPTED','REOPENED','CLOSED')),
+  response_message_id TEXT REFERENCES messages(id),
+  resolution_note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Governed evidence drafts promoted from communication media. A draft
+-- is not evidence; explicit submission runs the NORMAL pipeline.
+CREATE TABLE IF NOT EXISTS evidence_drafts (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  milestone_id TEXT NOT NULL REFERENCES milestones(id),
+  source_message_id TEXT NOT NULL REFERENCES messages(id),
+  source_attachment_index INTEGER NOT NULL DEFAULT 0,
+  media_path TEXT NOT NULL,
+  source_provider TEXT NOT NULL,
+  source_identity TEXT NOT NULL,
+  source_timestamp TEXT NOT NULL,
+  latitude REAL,
+  longitude REAL,
+  location_source_message_id TEXT REFERENCES messages(id),
+  status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','SUBMITTED','DISCARDED')),
+  created_by TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  submitted_at TEXT,
+  evidence_item_id TEXT REFERENCES evidence_items(id)
 );
 
 -- Generated funder-report artifacts (PDFs stored under data/reports/).
@@ -298,6 +390,8 @@ export function getDb(): DatabaseSync {
       "ALTER TABLE messages ADD COLUMN original_body TEXT",
       "ALTER TABLE messages ADD COLUMN external_deleted INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE messages ADD COLUMN attachments TEXT",
+      "ALTER TABLE messages ADD COLUMN location TEXT",
+      "ALTER TABLE external_identity_mappings ADD COLUMN organization_id TEXT",
     ]) {
       try {
         db.exec(ddl);

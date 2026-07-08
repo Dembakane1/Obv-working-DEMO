@@ -513,7 +513,11 @@ export function newId(): string {
 
 // ---------- generated reports ----------
 
-import type { Report, SpatialFeature, ConversationThread, ChatMessage, ExternalThreadBinding, ExternalIdentityMapping } from "../../shared/types";
+import type {
+  Report, SpatialFeature, ConversationThread, ChatMessage,
+  ExternalThreadBinding, ExternalIdentityMapping, ExternalParticipantContext,
+  FieldIssue, FieldIssueEvent, ClarificationRequest, EvidenceDraft,
+} from "../../shared/types";
 
 function toReport(r: Row): Report {
   return {
@@ -664,6 +668,7 @@ function toChatMessage(r: Row): ChatMessage {
     originalBody: (r.original_body as string) ?? null,
     externalDeleted: Boolean(r.external_deleted),
     attachments: r.attachments ? JSON.parse(r.attachments as string) : [],
+    location: r.location ? JSON.parse(r.location as string) : null,
   };
 }
 
@@ -673,15 +678,16 @@ export function insertChatMessage(m: ChatMessage): void {
       `INSERT INTO messages (id, thread_id, sender_user_id, sender_display_name,
          provider, external_thread_id, external_message_id, body, message_type,
          ref_id, created_at, delivery_status, origin, edited_at, original_body,
-         external_deleted, attachments)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         external_deleted, attachments, location)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       m.id, m.threadId, m.senderUserId, m.senderDisplayName, m.provider,
       m.externalThreadId, m.externalMessageId, m.body, m.messageType,
       m.refId, m.createdAt, m.deliveryStatus, m.origin, m.editedAt,
       m.originalBody, m.externalDeleted ? 1 : 0,
-      m.attachments.length ? JSON.stringify(m.attachments) : null
+      m.attachments.length ? JSON.stringify(m.attachments) : null,
+      m.location ? JSON.stringify(m.location) : null
     );
 }
 
@@ -835,8 +841,9 @@ export function updateBinding(
 function toIdentityMapping(r: Row): ExternalIdentityMapping {
   return {
     id: r.id as string,
-    provider: "TEAMS",
+    provider: (r.provider as ExternalIdentityMapping["provider"]) ?? "TEAMS",
     tenantId: r.tenant_id as string,
+    organizationId: (r.organization_id as string) ?? null,
     externalUserId: r.external_user_id as string,
     obvUserId: (r.obv_user_id as string) ?? null,
     externalDisplayName: r.external_display_name as string,
@@ -893,15 +900,34 @@ export function setIdentityMapping(
 
 export function findIdentityMapping(
   tenantId: string,
-  externalUserId: string
+  externalUserId: string,
+  provider: ExternalIdentityMapping["provider"] = "TEAMS"
 ): ExternalIdentityMapping | null {
   const r = getDb()
     .prepare(
       `SELECT * FROM external_identity_mappings
-        WHERE provider = 'TEAMS' AND tenant_id = ? AND external_user_id = ?`
+        WHERE provider = ? AND tenant_id = ? AND external_user_id = ?`
     )
-    .get(tenantId, externalUserId);
+    .get(provider, tenantId, externalUserId);
   return r ? toIdentityMapping(r as Row) : null;
+}
+
+export function setIdentityMappingByProvider(
+  provider: ExternalIdentityMapping["provider"],
+  tenantId: string,
+  externalUserId: string,
+  obvUserId: string | null
+): void {
+  getDb()
+    .prepare(
+      `UPDATE external_identity_mappings
+         SET obv_user_id = ?, status = ?, updated_at = ?
+       WHERE provider = ? AND tenant_id = ? AND external_user_id = ?`
+    )
+    .run(
+      obvUserId, obvUserId ? "MAPPED" : "UNMAPPED", new Date().toISOString(),
+      provider, tenantId, externalUserId
+    );
 }
 
 export function listMessagesForThread(threadId: string): ChatMessage[] {
@@ -926,4 +952,353 @@ export function countChatRows(): { threads: number; messages: number } {
     )
     .get() as Row;
   return { threads: r.threads as number, messages: r.messages as number };
+}
+
+// ---------- external participant contexts (WhatsApp routing) ----------
+
+function toParticipantContext(r: Row): ExternalParticipantContext {
+  return {
+    id: r.id as string,
+    provider: r.provider as ExternalParticipantContext["provider"],
+    externalUserId: r.external_user_id as string,
+    activeProjectId: (r.active_project_id as string) ?? null,
+    activeThreadId: (r.active_thread_id as string) ?? null,
+    activeMilestoneId: (r.active_milestone_id as string) ?? null,
+    lastInboundAt: (r.last_inbound_at as string) ?? null,
+    expiresAt: (r.expires_at as string) ?? null,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function upsertParticipantContext(c: ExternalParticipantContext): void {
+  getDb()
+    .prepare(
+      `INSERT INTO external_participant_contexts (id, provider, external_user_id,
+         active_project_id, active_thread_id, active_milestone_id,
+         last_inbound_at, expires_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(provider, external_user_id) DO UPDATE SET
+         active_project_id = excluded.active_project_id,
+         active_thread_id = excluded.active_thread_id,
+         active_milestone_id = excluded.active_milestone_id,
+         expires_at = excluded.expires_at,
+         updated_at = excluded.updated_at`
+    )
+    .run(
+      c.id, c.provider, c.externalUserId, c.activeProjectId, c.activeThreadId,
+      c.activeMilestoneId, c.lastInboundAt, c.expiresAt, c.updatedAt
+    );
+}
+
+export function getParticipantContext(
+  provider: string,
+  externalUserId: string
+): ExternalParticipantContext | null {
+  const r = getDb()
+    .prepare(
+      "SELECT * FROM external_participant_contexts WHERE provider = ? AND external_user_id = ?"
+    )
+    .get(provider, externalUserId);
+  return r ? toParticipantContext(r as Row) : null;
+}
+
+export function listParticipantContextsForThread(threadId: string): ExternalParticipantContext[] {
+  return getDb()
+    .prepare("SELECT * FROM external_participant_contexts WHERE active_thread_id = ?")
+    .all(threadId)
+    .map((r) => toParticipantContext(r as Row));
+}
+
+export function touchParticipantInbound(provider: string, externalUserId: string): void {
+  getDb()
+    .prepare(
+      `UPDATE external_participant_contexts
+         SET last_inbound_at = ?, updated_at = ?
+       WHERE provider = ? AND external_user_id = ?`
+    )
+    .run(new Date().toISOString(), new Date().toISOString(), provider, externalUserId);
+}
+
+// ---------- field issues (operational; never touches money) ----------
+
+function toFieldIssue(r: Row): FieldIssue {
+  return {
+    id: r.id as string,
+    organizationId: r.organization_id as string,
+    projectId: r.project_id as string,
+    milestoneId: (r.milestone_id as string) ?? null,
+    evidenceItemId: (r.evidence_item_id as string) ?? null,
+    sourceThreadId: (r.source_thread_id as string) ?? null,
+    sourceMessageId: (r.source_message_id as string) ?? null,
+    title: r.title as string,
+    description: r.description as string,
+    category: r.category as FieldIssue["category"],
+    severity: r.severity as FieldIssue["severity"],
+    status: r.status as FieldIssue["status"],
+    reportedByUserId: (r.reported_by_user_id as string) ?? null,
+    reportedByExternalIdentityId: (r.reported_by_external_identity_id as string) ?? null,
+    assignedToUserId: (r.assigned_to_user_id as string) ?? null,
+    latitude: (r.latitude as number) ?? null,
+    longitude: (r.longitude as number) ?? null,
+    dueAt: (r.due_at as string) ?? null,
+    resolvedAt: (r.resolved_at as string) ?? null,
+    resolutionSummary: (r.resolution_summary as string) ?? null,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function insertFieldIssue(i: FieldIssue): void {
+  getDb()
+    .prepare(
+      `INSERT INTO field_issues (id, organization_id, project_id, milestone_id,
+         evidence_item_id, source_thread_id, source_message_id, title, description,
+         category, severity, status, reported_by_user_id,
+         reported_by_external_identity_id, assigned_to_user_id, latitude, longitude,
+         due_at, resolved_at, resolution_summary, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      i.id, i.organizationId, i.projectId, i.milestoneId, i.evidenceItemId,
+      i.sourceThreadId, i.sourceMessageId, i.title, i.description, i.category,
+      i.severity, i.status, i.reportedByUserId, i.reportedByExternalIdentityId,
+      i.assignedToUserId, i.latitude, i.longitude, i.dueAt, i.resolvedAt,
+      i.resolutionSummary, i.createdAt, i.updatedAt
+    );
+}
+
+export function getFieldIssue(id: string): FieldIssue | null {
+  const r = getDb().prepare("SELECT * FROM field_issues WHERE id = ?").get(id);
+  return r ? toFieldIssue(r as Row) : null;
+}
+
+export function listFieldIssues(): FieldIssue[] {
+  return getDb()
+    .prepare("SELECT * FROM field_issues ORDER BY created_at DESC")
+    .all()
+    .map((r) => toFieldIssue(r as Row));
+}
+
+export function updateFieldIssue(
+  id: string,
+  patch: Partial<
+    Pick<
+      FieldIssue,
+      "status" | "assignedToUserId" | "severity" | "dueAt" | "resolvedAt" | "resolutionSummary"
+    >
+  >
+): void {
+  const cur = getFieldIssue(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE field_issues SET status = ?, assigned_to_user_id = ?, severity = ?,
+         due_at = ?, resolved_at = ?, resolution_summary = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.status ?? cur.status,
+      patch.assignedToUserId !== undefined ? patch.assignedToUserId : cur.assignedToUserId,
+      patch.severity ?? cur.severity,
+      patch.dueAt !== undefined ? patch.dueAt : cur.dueAt,
+      patch.resolvedAt !== undefined ? patch.resolvedAt : cur.resolvedAt,
+      patch.resolutionSummary !== undefined ? patch.resolutionSummary : cur.resolutionSummary,
+      new Date().toISOString(),
+      id
+    );
+}
+
+export function insertIssueEvent(e: FieldIssueEvent): void {
+  getDb()
+    .prepare(
+      `INSERT INTO field_issue_events (id, issue_id, type, detail, actor_user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(e.id, e.issueId, e.type, e.detail, e.actorUserId, e.createdAt);
+}
+
+export function listIssueEvents(issueId: string): FieldIssueEvent[] {
+  return getDb()
+    .prepare("SELECT * FROM field_issue_events WHERE issue_id = ? ORDER BY created_at")
+    .all(issueId)
+    .map((r) => ({
+      id: r.id as string,
+      issueId: r.issue_id as string,
+      type: r.type as FieldIssueEvent["type"],
+      detail: r.detail as string,
+      actorUserId: (r.actor_user_id as string) ?? null,
+      createdAt: r.created_at as string,
+    }));
+}
+
+// ---------- clarification requests ----------
+
+function toClarification(r: Row): ClarificationRequest {
+  return {
+    id: r.id as string,
+    milestoneId: r.milestone_id as string,
+    evidenceItemId: (r.evidence_item_id as string) ?? null,
+    question: r.question as string,
+    responseType: r.response_type as ClarificationRequest["responseType"],
+    dueAt: (r.due_at as string) ?? null,
+    assignedToUserId: (r.assigned_to_user_id as string) ?? null,
+    requestedByUserId: r.requested_by_user_id as string,
+    status: r.status as ClarificationRequest["status"],
+    responseMessageId: (r.response_message_id as string) ?? null,
+    resolutionNote: (r.resolution_note as string) ?? null,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function insertClarification(c: ClarificationRequest): void {
+  getDb()
+    .prepare(
+      `INSERT INTO clarification_requests (id, milestone_id, evidence_item_id,
+         question, response_type, due_at, assigned_to_user_id, requested_by_user_id,
+         status, response_message_id, resolution_note, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      c.id, c.milestoneId, c.evidenceItemId, c.question, c.responseType, c.dueAt,
+      c.assignedToUserId, c.requestedByUserId, c.status, c.responseMessageId,
+      c.resolutionNote, c.createdAt, c.updatedAt
+    );
+}
+
+export function getClarification(id: string): ClarificationRequest | null {
+  const r = getDb().prepare("SELECT * FROM clarification_requests WHERE id = ?").get(id);
+  return r ? toClarification(r as Row) : null;
+}
+
+export function listClarificationsForMilestone(milestoneId: string): ClarificationRequest[] {
+  return getDb()
+    .prepare("SELECT * FROM clarification_requests WHERE milestone_id = ? ORDER BY created_at DESC")
+    .all(milestoneId)
+    .map((r) => toClarification(r as Row));
+}
+
+export function listOpenClarificationsForMilestone(milestoneId: string): ClarificationRequest[] {
+  return getDb()
+    .prepare(
+      "SELECT * FROM clarification_requests WHERE milestone_id = ? AND status IN ('OPEN','REOPENED') ORDER BY created_at"
+    )
+    .all(milestoneId)
+    .map((r) => toClarification(r as Row));
+}
+
+export function listClarifications(): ClarificationRequest[] {
+  return getDb()
+    .prepare("SELECT * FROM clarification_requests ORDER BY created_at DESC")
+    .all()
+    .map((r) => toClarification(r as Row));
+}
+
+export function updateClarification(
+  id: string,
+  patch: Partial<Pick<ClarificationRequest, "status" | "responseMessageId" | "resolutionNote">>
+): void {
+  const cur = getClarification(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE clarification_requests
+         SET status = ?, response_message_id = ?, resolution_note = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.status ?? cur.status,
+      patch.responseMessageId !== undefined ? patch.responseMessageId : cur.responseMessageId,
+      patch.resolutionNote !== undefined ? patch.resolutionNote : cur.resolutionNote,
+      new Date().toISOString(),
+      id
+    );
+}
+
+// ---------- evidence drafts (governed promotion; NOT evidence) ----------
+
+function toDraft(r: Row): EvidenceDraft {
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    milestoneId: r.milestone_id as string,
+    sourceMessageId: r.source_message_id as string,
+    sourceAttachmentIndex: r.source_attachment_index as number,
+    mediaPath: r.media_path as string,
+    sourceProvider: r.source_provider as EvidenceDraft["sourceProvider"],
+    sourceIdentity: r.source_identity as string,
+    sourceTimestamp: r.source_timestamp as string,
+    latitude: (r.latitude as number) ?? null,
+    longitude: (r.longitude as number) ?? null,
+    locationSourceMessageId: (r.location_source_message_id as string) ?? null,
+    status: r.status as EvidenceDraft["status"],
+    createdBy: r.created_by as string,
+    createdAt: r.created_at as string,
+    submittedAt: (r.submitted_at as string) ?? null,
+    evidenceItemId: (r.evidence_item_id as string) ?? null,
+  };
+}
+
+export function insertDraft(d: EvidenceDraft): void {
+  getDb()
+    .prepare(
+      `INSERT INTO evidence_drafts (id, project_id, milestone_id, source_message_id,
+         source_attachment_index, media_path, source_provider, source_identity,
+         source_timestamp, latitude, longitude, location_source_message_id, status,
+         created_by, created_at, submitted_at, evidence_item_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      d.id, d.projectId, d.milestoneId, d.sourceMessageId, d.sourceAttachmentIndex,
+      d.mediaPath, d.sourceProvider, d.sourceIdentity, d.sourceTimestamp,
+      d.latitude, d.longitude, d.locationSourceMessageId, d.status, d.createdBy,
+      d.createdAt, d.submittedAt, d.evidenceItemId
+    );
+}
+
+export function getDraft(id: string): EvidenceDraft | null {
+  const r = getDb().prepare("SELECT * FROM evidence_drafts WHERE id = ?").get(id);
+  return r ? toDraft(r as Row) : null;
+}
+
+export function listDraftsForMilestone(milestoneId: string): EvidenceDraft[] {
+  return getDb()
+    .prepare("SELECT * FROM evidence_drafts WHERE milestone_id = ? ORDER BY created_at DESC")
+    .all(milestoneId)
+    .map((r) => toDraft(r as Row));
+}
+
+export function updateDraft(
+  id: string,
+  patch: Partial<Pick<EvidenceDraft, "status" | "submittedAt" | "evidenceItemId" | "latitude" | "longitude" | "locationSourceMessageId">>
+): void {
+  const cur = getDraft(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE evidence_drafts SET status = ?, submitted_at = ?, evidence_item_id = ?,
+         latitude = ?, longitude = ?, location_source_message_id = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.status ?? cur.status,
+      patch.submittedAt !== undefined ? patch.submittedAt : cur.submittedAt,
+      patch.evidenceItemId !== undefined ? patch.evidenceItemId : cur.evidenceItemId,
+      patch.latitude !== undefined ? patch.latitude : cur.latitude,
+      patch.longitude !== undefined ? patch.longitude : cur.longitude,
+      patch.locationSourceMessageId !== undefined ? patch.locationSourceMessageId : cur.locationSourceMessageId,
+      id
+    );
+}
+
+/** Update delivery state for an outbound message by its external id
+ *  (WhatsApp status webhooks: sent -> delivered -> read / failed). */
+export function updateMessageDeliveryByExternalId(
+  externalMessageId: string,
+  deliveryStatus: ChatMessage["deliveryStatus"]
+): boolean {
+  const result = getDb()
+    .prepare("UPDATE messages SET delivery_status = ? WHERE external_message_id = ? AND origin = 'OBV_LOCAL'")
+    .run(deliveryStatus, externalMessageId);
+  return Number(result.changes) > 0;
 }

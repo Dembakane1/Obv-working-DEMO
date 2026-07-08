@@ -356,6 +356,7 @@ export function handleInbound(
       // Communication artifacts only — promotion to evidence goes
       // through the governed submission workflow, never automatically.
       attachments: inbound.attachments,
+      location: inbound.location ?? null,
     });
   } catch {
     // Unique (thread_id, external_message_id) index caught a replay race.

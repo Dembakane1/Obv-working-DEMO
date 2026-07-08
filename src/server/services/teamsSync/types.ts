@@ -16,6 +16,8 @@ export interface NormalizedInboundMessage {
   body: string;
   createdAt: string;
   attachments: MessageAttachment[];
+  /** Shared communication location (WhatsApp location messages). */
+  location?: { latitude: number; longitude: number; name?: string } | null;
 }
 
 export interface OutboundMessage {

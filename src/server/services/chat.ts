@@ -132,6 +132,7 @@ export function postMessage(thread: ConversationThread, sender: User, body: stri
     originalBody: null,
     externalDeleted: false,
     attachments: [],
+    location: null,
   };
   repo.insertChatMessage(message);
   return message;
@@ -145,7 +146,8 @@ export interface MirrorContext {
   /** Referenced record for a compact context card in the thread. */
   refType?: Extract<
     ChatMessageType,
-    "EVIDENCE_REFERENCE" | "MILESTONE_REFERENCE" | "APPROVAL_REFERENCE" | "REPORT_REFERENCE"
+    | "EVIDENCE_REFERENCE" | "MILESTONE_REFERENCE" | "APPROVAL_REFERENCE"
+    | "REPORT_REFERENCE" | "ISSUE_REFERENCE" | "CLARIFICATION_REFERENCE"
   >;
   refId?: string;
 }
@@ -181,6 +183,7 @@ export function mirrorEvent(body: string, ctx: MirrorContext): ChatMessage | nul
     originalBody: null,
     externalDeleted: false,
     attachments: [],
+    location: null,
   };
   repo.insertChatMessage(message);
   return message;

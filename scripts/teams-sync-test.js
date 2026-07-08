@@ -334,7 +334,7 @@ const GRAPH_ENV = {
     assert(
       intg0.includes("Microsoft Teams conversation sync is not configured") &&
         intg0.includes("View Setup Requirements") &&
-        intg0.includes("Not Yet Connected") &&
+        intg0.includes("Not Configured") &&
         !intg0.includes("Run Diagnostic"),
       "integrations page: honest no-config state (setup requirements, no dead buttons, WhatsApp not faked)"
     );
@@ -689,8 +689,8 @@ const GRAPH_ENV = {
       .get();
     d.close();
     assert(
-      after.bindings === 0 && after.mappings === 0 && after.messages === 8,
-      "demo reset restores seeded state (bindings and mappings cleared, 8 seeded messages)"
+      after.bindings === 0 && after.mappings === 1 && after.messages === 13,
+      "demo reset restores seeded state (Teams bindings/mappings cleared; 13 seeded messages incl. WhatsApp scenario)"
     );
 
     console.log(`\nTEAMS CONVERSATION-SYNC TESTS PASSED — ${n} checkpoints.`);

@@ -41,6 +41,33 @@ import {
   syncOutbound,
 } from "../services/teamsSync/bridge";
 import { GRAPH_CONFIG } from "../services/teamsSync/config";
+import {
+  assignParticipantContext,
+  ensureUnresolvedThread,
+  handleStatusUpdate,
+  handleWhatsAppInbound,
+  syncOutboundWhatsApp,
+  whatsappConfigured,
+  whatsappStatus,
+  displayPhone,
+} from "../services/whatsappSync/bridge";
+import { WHATSAPP_CONFIG } from "../services/whatsappSync/config";
+import {
+  COMM_MEDIA_DIR,
+  parseWebhook,
+  probePhoneNumber,
+  verifySignature,
+  WhatsAppSyncError,
+} from "../services/whatsappSync/provider";
+import {
+  canManageFieldOps,
+  createClarification,
+  createEvidenceDraft,
+  createFieldIssue,
+  submitDraft,
+  updateClarificationStatus,
+  updateIssueStatus,
+} from "../services/fieldOps";
 import { ConversationSyncError } from "../services/teamsSync/types";
 import {
   processApprovalDecision,
@@ -64,6 +91,10 @@ import {
   renderLedger,
   renderCommunications,
   renderIntegrations,
+  renderIssueDetail,
+  renderIssueNew,
+  renderIssues,
+  renderDraftNew,
   renderMap,
   renderMilestoneDetail,
   renderMore,
@@ -463,7 +494,12 @@ function stateFingerprint(): string {
               (SELECT COUNT(*) FROM messages) AS msg,
               (SELECT COUNT(*) FROM messages WHERE external_deleted = 1) AS msgdel,
               (SELECT COALESCE(MAX(edited_at), '') FROM messages) AS msgedit,
-              (SELECT COUNT(*) FROM conversation_threads) AS th`
+              (SELECT COUNT(*) FROM conversation_threads) AS th,
+              (SELECT COUNT(*) FROM field_issues) AS fi,
+              (SELECT COALESCE(MAX(updated_at), '') FROM field_issues) AS fiu,
+              (SELECT COUNT(*) FROM clarification_requests) AS cr,
+              (SELECT COALESCE(MAX(updated_at), '') FROM clarification_requests) AS cru,
+              (SELECT COUNT(*) FROM evidence_drafts) AS ed`
     )
     .get();
   return createHash("sha256")
@@ -504,6 +540,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   // ---- static assets ----
   if (method === "GET") {
+    if (pathname.startsWith("/comm-media/")) {
+      // Communication media (session-gated; never executed, inline-safe
+      // types only via the MIME map).
+      if (!currentUser(req)) {
+        sendJson(res, { error: "Not found" }, 404);
+        return;
+      }
+      if (serveStatic(res, COMM_MEDIA_DIR, pathname.slice("/comm-media/".length))) return;
+    }
     if (pathname.startsWith("/worm/")) {
       if (serveStatic(res, WORM_DIR, pathname.slice("/worm/".length))) return;
     } else if (pathname !== "/" && serveStatic(res, PUBLIC_DIR, pathname.slice(1))) {
@@ -512,7 +557,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   // ---- optional deployment access gate ----
-  if (ACCESS_CODE && !pathname.startsWith("/report-cache/") && pathname !== "/api/teams-sync/notifications") {
+  if (ACCESS_CODE && !pathname.startsWith("/report-cache/") && pathname !== "/api/teams-sync/notifications" && pathname !== "/api/whatsapp/webhook") {
     if (method === "POST" && pathname === "/api/access") {
       const body = (await readBody(req, 4 * 1024)).toString("utf8");
       const code = new URLSearchParams(body).get("code") ?? "";
@@ -648,6 +693,37 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
                 threadId: repo.findThreadForMilestone(m.id)?.id ?? null,
               };
             }),
+          commLocations: repo
+            .listThreads()
+            .filter((t) => t.projectId === project.id)
+            .flatMap((t) =>
+              repo
+                .listMessagesForThread(t.id)
+                .filter((m) => m.location !== null)
+                .map((m) => ({
+                  messageId: m.id,
+                  threadId: t.id,
+                  threadTitle: t.title,
+                  sender: m.senderDisplayName,
+                  provider: m.provider,
+                  createdAt: m.createdAt,
+                  latitude: m.location!.latitude,
+                  longitude: m.location!.longitude,
+                }))
+            ),
+          issues: repo
+            .listFieldIssues()
+            .filter((i) => i.projectId === project.id && i.latitude !== null && i.longitude !== null)
+            .map((i) => ({
+              id: i.id,
+              title: i.title,
+              severity: i.severity,
+              status: i.status,
+              milestoneId: i.milestoneId,
+              assignee: i.assignedToUserId ? repo.getUser(i.assignedToUserId)?.name ?? null : null,
+              latitude: i.latitude,
+              longitude: i.longitude,
+            })),
           evidence: milestones.flatMap((m) =>
             repo
               .listEvidenceForMilestone(m.id)
@@ -715,6 +791,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // delivery state is visible on redirect, but it NEVER throws — a
     // provider failure keeps the internal message and marks FAILED.
     await syncOutbound(message, thread);
+    // Outbound WhatsApp sync to this thread's assigned participants
+    // (policy-gated; equally failure-isolated).
+    await syncOutboundWhatsApp(message, thread);
     if (isFormPost(req)) {
       redirect(res, `/communications?thread=${thread.id}`);
     } else {
@@ -830,6 +909,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       originalBody: null,
       externalDeleted: false,
       attachments: [],
+      location: null,
     };
     repo.insertChatMessage(message);
     await syncOutbound(message, thread);
@@ -895,6 +975,291 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     } else {
       res.writeHead(202, { "Content-Type": "application/json; charset=utf-8" });
       res.end("{}");
+    }
+    return;
+  }
+
+  // ---- WhatsApp Business webhook (session-free; HMAC-authenticated) ----
+  if (pathname === "/api/whatsapp/webhook") {
+    if (method === "GET") {
+      // Meta verification handshake.
+      const mode = url.searchParams.get("hub.mode");
+      const token = url.searchParams.get("hub.verify_token");
+      const challenge = url.searchParams.get("hub.challenge") ?? "";
+      if (mode === "subscribe" && token && token === WHATSAPP_CONFIG.webhookVerifyToken()) {
+        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end(challenge);
+      } else {
+        sendJson(res, { error: "Verification failed" }, 403);
+      }
+      return;
+    }
+    if (method !== "POST") {
+      sendJson(res, { error: "Method not allowed" }, 405);
+      return;
+    }
+    if (!whatsappConfigured()) {
+      sendJson(res, { error: "Not configured" }, 404);
+      return;
+    }
+    const raw = await readBody(req, 1024 * 1024); // payload cap
+    if (!verifySignature(raw, req.headers["x-hub-signature-256"] as string | undefined)) {
+      sendJson(res, { error: "Invalid signature" }, 401);
+      return;
+    }
+    let parsed: ReturnType<typeof parseWebhook>;
+    try {
+      parsed = parseWebhook(JSON.parse(raw.toString("utf8")));
+    } catch {
+      sendJson(res, { error: "Malformed payload" }, 400);
+      return;
+    }
+    // Acknowledge fast; message/media processing continues asynchronously
+    // (no long AI or evidence work happens on this request path — chat
+    // storage only).
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end("{}");
+    (async () => {
+      for (const st of parsed.statuses) handleStatusUpdate(st);
+      for (const m of parsed.messages) {
+        try {
+          await handleWhatsAppInbound(m);
+        } catch (err) {
+          console.error(
+            "[whatsapp] inbound processing failed:",
+            err instanceof WhatsAppSyncError ? err.category : "unknown"
+          );
+        }
+      }
+    })().catch(() => {});
+    return;
+  }
+
+  // Coordinator assigns a WhatsApp participant to a project/thread
+  // (explicit context — never guessed from message text).
+  if (method === "POST" && pathname === "/api/whatsapp/contexts") {
+    const user = currentUser(req);
+    if (!user || !canManageBindings(user)) {
+      sendJson(res, { error: "Not authorized" }, 403);
+      return;
+    }
+    const body = (await readBody(req, 16 * 1024)).toString("utf8");
+    const params = isFormPost(req)
+      ? new URLSearchParams(body)
+      : new URLSearchParams(Object.entries(JSON.parse(body || "{}")) as [string, string][]);
+    const phone = (params.get("phone") ?? "").trim();
+    const threadId = params.get("threadId") || null;
+    if (!phone) {
+      sendJson(res, { error: "phone required" }, 400);
+      return;
+    }
+    const thread = threadId ? repo.getThread(threadId) : null;
+    if (threadId && (!thread || !canAccessThread(user, thread))) {
+      sendJson(res, { error: "Thread not found" }, 404);
+      return;
+    }
+    const ctx = assignParticipantContext(
+      phone,
+      {
+        threadId,
+        projectId: thread?.projectId ?? params.get("projectId") ?? null,
+        milestoneId: thread?.milestoneId ?? null,
+      },
+      params.get("expiresAt") || null
+    );
+    if (isFormPost(req)) {
+      redirect(res, threadId ? `/communications?thread=${threadId}` : "/communications/integrations");
+    } else {
+      sendJson(res, { context: ctx });
+    }
+    return;
+  }
+
+  // WhatsApp admin: safe connection test (credential + phone probe; no
+  // message is ever sent).
+  if (method === "POST" && pathname === "/api/whatsapp/test") {
+    const user = currentUser(req);
+    if (!user || !canManageBindings(user)) {
+      sendJson(res, { error: "Not authorized" }, 403);
+      return;
+    }
+    if (!whatsappConfigured()) {
+      if (isFormPost(req)) redirect(res, "/communications/integrations?watest=fail:not-configured");
+      else sendJson(res, { ok: false, status: "NOT_CONFIGURED" }, 409);
+      return;
+    }
+    try {
+      const probe = await probePhoneNumber();
+      const masked = probe.displayPhone ? displayPhone(probe.displayPhone.replace(/\D/g, "")) : null;
+      if (isFormPost(req)) {
+        redirect(
+          res,
+          `/communications/integrations?watest=${encodeURIComponent(masked ? `ok:${masked}` : "ok")}`
+        );
+      } else {
+        sendJson(res, {
+          ok: true,
+          status: "ACTIVE",
+          displayPhone: masked,
+          webhookConfigured: Boolean(WHATSAPP_CONFIG.webhookVerifyToken()),
+        });
+      }
+    } catch (err) {
+      const category = err instanceof WhatsAppSyncError ? err.category : "unknown";
+      if (isFormPost(req)) redirect(res, `/communications/integrations?watest=fail:${category}`);
+      else sendJson(res, { ok: false, status: "DEGRADED", category }, 502);
+    }
+    return;
+  }
+
+  // ---- field issues ----
+  if (method === "POST" && pathname === "/api/issues") {
+    const user = currentUser(req);
+    if (!user || !canManageFieldOps(user)) {
+      sendJson(res, { error: "Not authorized to create field issues" }, 403);
+      return;
+    }
+    const body = (await readBody(req, 32 * 1024)).toString("utf8");
+    const params = isFormPost(req)
+      ? new URLSearchParams(body)
+      : new URLSearchParams(Object.entries(JSON.parse(body || "{}")) as [string, string][]);
+    const sourceMessage = params.get("messageId") ? repo.getChatMessage(params.get("messageId")!) : null;
+    const issue = createFieldIssue({
+      projectId: params.get("projectId") ?? "",
+      milestoneId: params.get("milestoneId") || null,
+      sourceMessage,
+      title: params.get("title") ?? "",
+      description: params.get("description") ?? sourceMessage?.body ?? "",
+      category: (params.get("category") ?? "OTHER") as never,
+      severity: (params.get("severity") ?? "MEDIUM") as never,
+      assignedToUserId: params.get("assignedToUserId") || null,
+      dueAt: params.get("dueAt") || null,
+      createdBy: user,
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/issue/${issue.id}`);
+    } else {
+      sendJson(res, { issue }, 201);
+    }
+    return;
+  }
+
+  const issueStatusMatch = /^\/api\/issues\/([^/]+)\/status$/.exec(pathname);
+  if (method === "POST" && issueStatusMatch) {
+    const user = currentUser(req);
+    if (!user || !canManageFieldOps(user)) {
+      sendJson(res, { error: "Not authorized" }, 403);
+      return;
+    }
+    const body = (await readBody(req, 16 * 1024)).toString("utf8");
+    const params = isFormPost(req)
+      ? new URLSearchParams(body)
+      : new URLSearchParams(Object.entries(JSON.parse(body || "{}")) as [string, string][]);
+    const issue = updateIssueStatus(
+      issueStatusMatch[1],
+      (params.get("status") ?? "") as never,
+      user,
+      params.get("resolutionSummary") || undefined
+    );
+    if (isFormPost(req)) {
+      redirect(res, `/issue/${issue.id}`);
+    } else {
+      sendJson(res, { issue });
+    }
+    return;
+  }
+
+  // ---- clarification requests ----
+  if (method === "POST" && pathname === "/api/clarifications") {
+    const user = currentUser(req);
+    if (!user || !canManageFieldOps(user)) {
+      sendJson(res, { error: "Not authorized to request clarifications" }, 403);
+      return;
+    }
+    const body = (await readBody(req, 16 * 1024)).toString("utf8");
+    const params = isFormPost(req)
+      ? new URLSearchParams(body)
+      : new URLSearchParams(Object.entries(JSON.parse(body || "{}")) as [string, string][]);
+    const clar = createClarification({
+      milestoneId: params.get("milestoneId") ?? "",
+      evidenceItemId: params.get("evidenceItemId") || null,
+      question: params.get("question") ?? "",
+      responseType: (params.get("responseType") ?? "TEXT") as never,
+      dueAt: params.get("dueAt") || null,
+      assignedToUserId: params.get("assignedToUserId") || null,
+      requestedBy: user,
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/milestone/${clar.milestoneId}`);
+    } else {
+      sendJson(res, { clarification: clar }, 201);
+    }
+    return;
+  }
+
+  const clarStatusMatch = /^\/api\/clarifications\/([^/]+)\/status$/.exec(pathname);
+  if (method === "POST" && clarStatusMatch) {
+    const user = currentUser(req);
+    if (!user || !canManageFieldOps(user)) {
+      sendJson(res, { error: "Not authorized" }, 403);
+      return;
+    }
+    const body = (await readBody(req, 16 * 1024)).toString("utf8");
+    const params = isFormPost(req)
+      ? new URLSearchParams(body)
+      : new URLSearchParams(Object.entries(JSON.parse(body || "{}")) as [string, string][]);
+    const clar = updateClarificationStatus(
+      clarStatusMatch[1],
+      (params.get("status") ?? "") as never,
+      user,
+      params.get("note") || undefined
+    );
+    if (isFormPost(req)) {
+      redirect(res, `/milestone/${clar.milestoneId}`);
+    } else {
+      sendJson(res, { clarification: clar });
+    }
+    return;
+  }
+
+  // ---- evidence drafts (governed promotion) ----
+  if (method === "POST" && pathname === "/api/evidence-drafts") {
+    const user = currentUser(req);
+    if (!user || !(canManageFieldOps(user) || user.role === "FIELD")) {
+      sendJson(res, { error: "Not authorized" }, 403);
+      return;
+    }
+    const body = (await readBody(req, 16 * 1024)).toString("utf8");
+    const params = isFormPost(req)
+      ? new URLSearchParams(body)
+      : new URLSearchParams(Object.entries(JSON.parse(body || "{}")) as [string, string][]);
+    const draft = createEvidenceDraft({
+      messageId: params.get("messageId") ?? "",
+      attachmentIndex: Number(params.get("attachmentIndex") ?? 0),
+      milestoneId: params.get("milestoneId") ?? "",
+      locationMessageId: params.get("locationMessageId") || null,
+      createdBy: user,
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/milestone/${draft.milestoneId}`);
+    } else {
+      sendJson(res, { draft }, 201);
+    }
+    return;
+  }
+
+  const draftSubmitMatch = /^\/api\/evidence-drafts\/([^/]+)\/submit$/.exec(pathname);
+  if (method === "POST" && draftSubmitMatch) {
+    const user = currentUser(req);
+    if (!user || !(canManageFieldOps(user) || user.role === "FIELD")) {
+      sendJson(res, { error: "Not authorized" }, 403);
+      return;
+    }
+    const result = await submitDraft(draftSubmitMatch[1], user);
+    if (isFormPost(req)) {
+      redirect(res, `/milestone/${result.milestone.id}`);
+    } else {
+      sendJson(res, result, 201);
     }
     return;
   }
@@ -1274,7 +1639,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   const PAGE_PREFIXES = [
     "/overview", "/dashboard", "/projects", "/project/", "/milestone/",
     "/approvals", "/ledger", "/reports", "/compliance", "/insights", "/more", "/field",
-    "/map", "/communications",
+    "/map", "/communications", "/issues", "/issue/", "/evidence-drafts",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -1376,6 +1741,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         bundles: evidenceBundlesForMilestone(milestone.id),
         users: usersById(),
         canDecide,
+        clarifications: repo.listClarificationsForMilestone(milestone.id),
+        drafts: repo.listDraftsForMilestone(milestone.id),
+        canFieldOps: canManageFieldOps(user!),
       })
     );
     return;
@@ -1464,7 +1832,21 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       chainValid: chain.valid,
       brokenAt: chain.brokenAt,
     };
-    sendHtml(res, renderCompliance({ nav: navFor(user!, "compliance"), data, users: usersById() }));
+    const allIssues = repo.listFieldIssues();
+    const openIssues = allIssues.filter((i) => !["RESOLVED", "CLOSED"].includes(i.status));
+    sendHtml(
+      res,
+      renderCompliance({
+        nav: navFor(user!, "compliance"),
+        data,
+        users: usersById(),
+        fieldIssues: {
+          open: openIssues.length,
+          critical: openIssues.filter((i) => i.severity === "CRITICAL").length,
+          overdue: openIssues.filter((i) => i.dueAt && Date.parse(i.dueAt) < Date.now()).length,
+        },
+      })
+    );
     return;
   }
 
@@ -1520,6 +1902,99 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  if (method === "GET" && pathname === "/issues") {
+    sendHtml(
+      res,
+      renderIssues({
+        nav: navFor(user!, "compliance"),
+        issues: repo.listFieldIssues().map((issue) => ({
+          issue,
+          project: repo.getProject(issue.projectId),
+          milestone: issue.milestoneId ? repo.getMilestone(issue.milestoneId) : null,
+          assignee: issue.assignedToUserId ? repo.getUser(issue.assignedToUserId) : null,
+        })),
+        canManage: canManageFieldOps(user!),
+      })
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname.startsWith("/issue/")) {
+    const issue = repo.getFieldIssue(pathname.slice("/issue/".length));
+    if (!issue) {
+      sendHtml(res, renderError(navFor(user!, "compliance"), "Issue not found", "No field issue exists at this address."), 404);
+      return;
+    }
+    sendHtml(
+      res,
+      renderIssueDetail({
+        nav: navFor(user!, "compliance"),
+        issue,
+        project: repo.getProject(issue.projectId)!,
+        milestone: issue.milestoneId ? repo.getMilestone(issue.milestoneId) : null,
+        assignee: issue.assignedToUserId ? repo.getUser(issue.assignedToUserId) : null,
+        reporter: issue.reportedByUserId ? repo.getUser(issue.reportedByUserId) : null,
+        events: repo.listIssueEvents(issue.id),
+        sourceMessage: issue.sourceMessageId ? repo.getChatMessage(issue.sourceMessageId) : null,
+        users: usersById(),
+        canManage: canManageFieldOps(user!),
+      })
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname === "/issues/new") {
+    if (!canManageFieldOps(user!)) {
+      sendHtml(res, renderError(navFor(user!, "compliance"), "Not authorized", "Creating field issues requires a project manager, funder representative or compliance reviewer."), 403);
+      return;
+    }
+    const sourceMessage = url.searchParams.get("messageId")
+      ? repo.getChatMessage(url.searchParams.get("messageId")!)
+      : null;
+    const sourceThread = sourceMessage ? repo.getThread(sourceMessage.threadId) : null;
+    sendHtml(
+      res,
+      renderIssueNew({
+        nav: navFor(user!, "compliance"),
+        sourceMessage,
+        project:
+          (sourceThread?.projectId ? repo.getProject(sourceThread.projectId) : null) ??
+          repo.listProjects()[0] ?? null,
+        milestone: sourceThread?.milestoneId ? repo.getMilestone(sourceThread.milestoneId) : null,
+        users: repo.listUsers(),
+      })
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname === "/evidence-drafts/new") {
+    const canPromote = canManageFieldOps(user!) || user!.role === "FIELD";
+    const sourceMessage = url.searchParams.get("messageId")
+      ? repo.getChatMessage(url.searchParams.get("messageId")!)
+      : null;
+    if (!canPromote || !sourceMessage) {
+      sendHtml(res, renderError(navFor(user!, "comms"), "Cannot promote", !canPromote ? "Promoting media requires an authorized role." : "Source message not found."), canPromote ? 404 : 403);
+      return;
+    }
+    const thread = repo.getThread(sourceMessage.threadId)!;
+    const project = thread.projectId ? repo.getProject(thread.projectId) : repo.listProjects()[0];
+    sendHtml(
+      res,
+      renderDraftNew({
+        nav: navFor(user!, "comms"),
+        sourceMessage,
+        attachmentIndex: Number(url.searchParams.get("attachment") ?? 0),
+        project: project!,
+        milestones: project ? repo.listMilestones(project.id) : [],
+        defaultMilestoneId: thread.milestoneId,
+        locationMessages: repo
+          .listMessagesForThread(thread.id)
+          .filter((m) => m.location !== null),
+      })
+    );
+    return;
+  }
+
   if (method === "GET" && pathname === "/communications/integrations") {
     const threads = listThreadsForUser(user!);
     const rows = threads
@@ -1540,6 +2015,25 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         rows,
         threadCount: threads.length,
         maintained: url.searchParams.get("maintained"),
+        watest: url.searchParams.get("watest"),
+        whatsapp: {
+          ...whatsappStatus(),
+          canManage: canManageBindings(user!),
+          unresolvedCount: (() => {
+            const t = repo
+              .listThreads()
+              .find((x) => x.scope === "ORGANIZATION" && x.title === "WhatsApp — Unresolved");
+            return t ? repo.listMessagesForThread(t.id).length : 0;
+          })(),
+          lastInbound:
+            repo
+              .listThreads()
+              .flatMap((t) => repo.listMessagesForThread(t.id))
+              .filter((m) => m.provider === "WHATSAPP" && m.origin === "WHATSAPP_INBOUND")
+              .map((m) => m.createdAt)
+              .sort()
+              .pop() ?? null,
+        },
       })
     );
     return;

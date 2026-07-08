@@ -39,9 +39,13 @@ import type {
   ApprovalRecord,
   ApprovalRequest,
   ChatMessage,
+  ClarificationRequest,
   ConversationThread,
+  EvidenceDraft,
   EvidenceItem,
   ExternalThreadBinding,
+  FieldIssue,
+  FieldIssueEvent,
   LedgerEntry,
   Milestone,
   Notification,
@@ -95,6 +99,8 @@ const repoView = {
         : "Not requested",
     };
   },
+  issue: (id: string) => repo.getFieldIssue(id),
+  clarification: (id: string) => repo.getClarification(id),
   projectContext: (projectId: string) => {
     const ms = repo.listMilestones(projectId);
     return {
@@ -867,6 +873,9 @@ export function renderMilestoneDetail(input: {
   bundles: EvidenceBundle[];
   users: Map<string, User>;
   canDecide: boolean;
+  clarifications: ClarificationRequest[];
+  drafts: EvidenceDraft[];
+  canFieldOps: boolean;
 }): string {
   const { project, row } = input;
   const { milestone, approval, approvalRecords } = row;
@@ -910,6 +919,97 @@ export function renderMilestoneDetail(input: {
           <a className="btn ghost sm" href={`/project/${project.id}?tab=map`}>{icons.map(13)} View on map</a>
         </div>
       </div>
+
+      {input.drafts.length > 0 ? (
+        <div className="panel" style="margin-top:12px">
+          <div className="panel-head">
+            <h3>Evidence drafts</h3>
+            <span className="right">Promoted communication media — NOT evidence until submitted and verified</span>
+          </div>
+          {input.drafts.map((d, i) => (
+            <div className="draft-row" style={i > 0 ? "border-top:1px solid var(--line)" : ""}>
+              <img src={d.mediaPath} alt="Draft media" />
+              <span className="d-meta">
+                <span className={`sync-tag ${d.status === "DRAFT" ? "warn" : d.status === "SUBMITTED" ? "ok" : "neutral"}`} style="margin-left:0">{d.status}</span>
+                <span className="s">Source: {d.sourceIdentity} · {d.sourceProvider === "WHATSAPP" ? "WhatsApp communication" : d.sourceProvider} · {fmtDate(d.sourceTimestamp)}</span>
+                <span className="s">
+                  {d.latitude !== null
+                    ? `Associated communication location: ${d.latitude.toFixed(4)}, ${d.longitude!.toFixed(4)}`
+                    : "MISSING LOCATION — geofence will route to review"}
+                  {" · no original capture metadata"}
+                </span>
+              </span>
+              {d.status === "DRAFT" ? (
+                <form method="POST" action={`/api/evidence-drafts/${d.id}/submit`} style="margin:0">
+                  <button className="btn sm" type="submit" data-busy-label="Submitting…">Submit for Verification</button>
+                </form>
+              ) : d.evidenceItemId ? (
+                <span className="sub" style="font-size:11px">submitted {d.submittedAt ? fmtDate(d.submittedAt) : ""}</span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {(input.clarifications.length > 0 || input.canFieldOps) ? (
+        <div className="panel" style="margin-top:12px">
+          <div className="panel-head">
+            <h3>Clarification requests</h3>
+            <span className="right">A response never auto-accepts — reviewer decision required</span>
+          </div>
+          {input.clarifications.map((c, i) => (
+            <div className="clar-row" style={i > 0 ? "border-top:1px solid var(--line)" : ""}>
+              <span className="c-body">
+                <span className={`sync-tag ${c.status === "ACCEPTED" ? "ok" : c.status === "CLOSED" ? "neutral" : "warn"}`} style="margin-left:0">{c.status}</span>
+                <span className="q">“{c.question}”</span>
+                <span className="s">
+                  Response required: {c.responseType.replace(/_/g, " ")}
+                  {c.dueAt ? ` · due ${c.dueAt.slice(0, 10)}` : ""}
+                  {c.assignedToUserId ? ` · assigned to ${input.users.get(c.assignedToUserId)?.name}` : ""}
+                  {c.responseMessageId ? " · response received in thread" : ""}
+                </span>
+              </span>
+              {input.canFieldOps && ["RESPONDED", "OPEN", "REOPENED"].includes(c.status) ? (
+                <form method="POST" action={`/api/clarifications/${c.id}/status`} style="display:flex;gap:6px;margin:0;align-items:center;flex-wrap:wrap">
+                  <select name="status" aria-label="Clarification decision">
+                    {c.status === "RESPONDED" ? (
+                      <>
+                        <option value="ACCEPTED">Accept</option>
+                        <option value="REOPENED">Reopen</option>
+                        <option value="CLOSED">Close</option>
+                      </>
+                    ) : (
+                      <option value="CLOSED">Close</option>
+                    )}
+                  </select>
+                  <button className="btn ghost sm" type="submit">Apply</button>
+                </form>
+              ) : null}
+            </div>
+          ))}
+          {input.canFieldOps ? (
+            <form method="POST" action="/api/clarifications" className="fo-form" style="padding:12px 16px;border-top:1px solid var(--line)">
+              <input type="hidden" name="milestoneId" value={milestone.id} />
+              <div className="fo-row">
+                <label style="flex:2">Question
+                  <input name="question" required placeholder="e.g. Please attach the compaction test certificate" />
+                </label>
+                <label>Response type
+                  <select name="responseType">
+                    {["TEXT","PHOTO","DOCUMENT","LOCATION","SITE_REVISIT"].map((t) => (
+                      <option value={t}>{t.replace(/_/g, " ")}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>Due
+                  <input name="dueAt" type="date" />
+                </label>
+              </div>
+              <button className="btn secondary sm" type="submit" style="align-self:flex-start">Request Clarification</button>
+            </form>
+          ) : null}
+        </div>
+      ) : null}
 
       {approval ? (
         <div className="panel panel-pad" style="margin-top:12px">
@@ -1564,8 +1664,14 @@ export interface ComplianceData {
   brokenAt?: number;
 }
 
-export function renderCompliance(input: { nav: NavContext; data: ComplianceData; users: Map<string, User> }): string {
+export function renderCompliance(input: {
+  nav: NavContext;
+  data: ComplianceData;
+  users: Map<string, User>;
+  fieldIssues: { open: number; critical: number; overdue: number };
+}): string {
   const d = input.data;
+  const fi = input.fieldIssues;
   return renderDocument(
     <AppShell title="Risk & Compliance" nav={input.nav}>
       <PageHeader
@@ -1581,6 +1687,24 @@ export function renderCompliance(input: { nav: NavContext; data: ComplianceData;
           { tone: d.chainValid ? "ok" : "bad", value: d.chainValid ? "Intact" : `Alert #${d.brokenAt}`, label: "ledger integrity" },
         ]}
       />
+
+      <h2 className="section">Field issues</h2>
+      <div className="panel">
+        <div className="panel-head">
+          <h3>Operational field issues</h3>
+          <span className="right"><a href="/issues" style="color:var(--action);font-weight:600">Open register →</a></span>
+        </div>
+        <div className="issue-stats" style="border:0;margin:0">
+          <span><b className="num">{fi.open}</b> Open</span>
+          <span><b className="num" style={fi.critical ? "color:var(--bad)" : ""}>{fi.critical}</b> Critical</span>
+          <span><b className="num" style={fi.overdue ? "color:var(--warn)" : ""}>{fi.overdue}</b> Overdue</span>
+        </div>
+        <p className="sub" style="padding:0 16px 12px;font-size:11.5px">
+          Issues coordinate field response and inform reviewers. They never
+          change financial state — release eligibility is controlled only by
+          the formal approval workflow.
+        </p>
+      </div>
 
       <h2 className="section">Evidence needing review</h2>
       {d.needsReview.length === 0 ? (
@@ -1703,6 +1827,7 @@ export function renderMore(input: { nav: NavContext }): string {
     { href: "/field", label: "Field Capture", icon: icons.camera, desc: "Mobile evidence capture" },
     { href: "/reports", label: "Reports", icon: icons.reports, desc: "Document registry & exports" },
     { href: "/compliance", label: "Risk & Compliance", icon: icons.shield, desc: "Open review items and integrity" },
+    { href: "/issues", label: "Field Issues", icon: icons.activity, desc: "Operational issues from field coordination" },
     { href: "/insights", label: "Verification Insights", icon: icons.insights, desc: "Automated observations" },
   ];
   return renderDocument(
@@ -1967,6 +2092,26 @@ function MessageRefCard(props: { m: ChatMessage }): VNode | null {
       </span>
     );
   }
+  if (m.messageType === "ISSUE_REFERENCE" && m.refId) {
+    const issue = repoView.issue(m.refId);
+    return (
+      <span className="msg-ref">
+        <span className="k">FIELD ISSUE</span>
+        {issue ? <span className="s">{issue.category} · {issue.severity} · {issue.status.replace(/_/g, " ")}</span> : null}
+        <a href={`/issue/${m.refId}`}>Open Issue</a>
+      </span>
+    );
+  }
+  if (m.messageType === "CLARIFICATION_REFERENCE" && m.refId) {
+    const clar = repoView.clarification(m.refId);
+    return (
+      <span className="msg-ref">
+        <span className="k">CLARIFICATION</span>
+        {clar ? <span className="s">{clar.responseType.replace(/_/g, " ")} required · {clar.status}</span> : null}
+        {clar ? <a href={`/milestone/${clar.milestoneId}`}>View milestone</a> : null}
+      </span>
+    );
+  }
   return null;
 }
 
@@ -2085,8 +2230,10 @@ export function renderCommunications(input: {
               {selected.messages.map((m) => {
                 const sender = m.senderUserId ? input.users.get(m.senderUserId) : null;
                 const isTeams = m.provider === "TEAMS";
+                const isExternal = m.provider !== "OBV";
                 const isOwn = m.senderUserId === input.currentUser.id;
-                return m.senderUserId || isTeams ? (
+                const canFieldOps = ["PROJECT_MANAGER", "FUNDER_REP", "COMPLIANCE_REVIEWER"].includes(input.currentUser.role);
+                return m.senderUserId || isExternal ? (
                   <div className="msg">
                     <span className="avatar" aria-hidden="true">{initials(m.senderDisplayName)}</span>
                     <span className="body">
@@ -2094,6 +2241,7 @@ export function renderCommunications(input: {
                         <b>{m.senderDisplayName}</b>
                         {sender ? <span className="role">{roleLabel(sender.role)}</span> : null}
                         {isTeams ? <span className="prov">via Microsoft Teams</span> : null}
+                        {m.provider === "WHATSAPP" ? <span className="prov">via WhatsApp</span> : null}
                         <span className="when">{fmtDate(m.createdAt)}</span>
                         {m.editedAt ? <span className="edited">edited in Teams</span> : null}
                       </span>
@@ -2104,15 +2252,39 @@ export function renderCommunications(input: {
                       )}
                       {!m.externalDeleted && m.attachments.length > 0 ? (
                         <span className="msg-attach">
-                          {m.attachments.map((a) =>
-                            a.url ? (
-                              <a href={a.url} target="_blank" rel="noopener noreferrer">📎 {a.name}</a>
-                            ) : (
-                              <span>📎 {a.name}</span>
-                            )
-                          )}
-                          <span className="note">Communication attachment — evidence is submitted only via Field Capture</span>
+                          {m.attachments.map((a, ai) => (
+                            <span className="att-row">
+                              {a.kind === "AUDIO" && a.url ? (
+                                <audio controls preload="none" src={a.url} style="height:32px;max-width:260px"></audio>
+                              ) : a.kind === "IMAGE" && a.url ? (
+                                <a href={a.url} target="_blank" rel="noopener noreferrer">
+                                  <img src={a.url} alt={a.name} style="max-width:180px;max-height:120px;object-fit:cover;border:1px solid var(--line)" />
+                                </a>
+                              ) : a.url ? (
+                                <a href={a.url} target="_blank" rel="noopener noreferrer">📎 {a.name}</a>
+                              ) : (
+                                <span>📎 {a.name}</span>
+                              )}
+                              {a.kind === "IMAGE" && a.url && (canFieldOps || input.currentUser.role === "FIELD") ? (
+                                <a className="att-promote" href={`/evidence-drafts/new?messageId=${m.id}&attachment=${ai}`}>
+                                  Promote to Evidence Draft
+                                </a>
+                              ) : null}
+                            </span>
+                          ))}
+                          <span className="note">Communication attachment — not evidence; evidence enters only through the governed workflow</span>
                         </span>
+                      ) : null}
+                      {!m.externalDeleted && m.location ? (
+                        <span className="msg-loc">
+                          <span className="k">COMMUNICATION LOCATION</span>
+                          <span className="num">{m.location.latitude.toFixed(5)}, {m.location.longitude.toFixed(5)}</span>
+                          <a href={selected.project ? `/project/${selected.project.id}?tab=map` : "/map"}>View on Map</a>
+                          <span className="note">not evidence capture location</span>
+                        </span>
+                      ) : null}
+                      {canFieldOps && m.messageType === "TEXT" && !m.externalDeleted ? (
+                        <a className="msg-mkissue" href={`/issues/new?messageId=${m.id}`}>Create Field Issue</a>
                       ) : null}
                       <MessageRefCard m={m} />
                       {isOwn && selected.binding && selected.binding.status !== "DISCONNECTED" && m.origin === "OBV_LOCAL" ? (
@@ -2345,6 +2517,14 @@ export function renderIntegrations(input: {
   }>;
   threadCount: number;
   maintained: string | null;
+  watest: string | null;
+  whatsapp: {
+    status: "NOT_CONFIGURED" | "ACTIVE" | "DEGRADED";
+    businessAccountId: string | null;
+    canManage: boolean;
+    unresolvedCount: number;
+    lastInbound: string | null;
+  };
 }): string {
   const live = input.rows.filter(
     (r) => r.binding && r.binding.status !== "DISCONNECTED"
@@ -2521,15 +2701,396 @@ export function renderIntegrations(input: {
           <h3>WhatsApp Business</h3>
           <span className="right">Field coordination channel</span>
         </div>
-        <p className="sub" style="padding:14px 16px;font-size:12.5px">
-          <span className="sync-tag neutral" style="margin-left:0">Not Yet Connected</span>
-          <span style="display:block;margin-top:8px">
-            Architecture-ready seam only — no connectivity exists. See
-            <code> docs/COMMUNICATIONS_INTEGRATION.md</code>.
-          </span>
-        </p>
+        {input.watest ? (
+          <div
+            className={`banner ${input.watest.startsWith("ok") ? "ok" : "warn"}`}
+            style="margin:12px 16px 0"
+          >
+            {input.watest.startsWith("ok")
+              ? `Connection test passed — credentials valid${input.watest.includes(":") ? `, business number ${input.watest.split(":")[1]}` : ""}. No message was sent.`
+              : `Connection test failed (${input.watest.replace(/^fail:/, "")}). Check credentials and webhook configuration.`}
+          </div>
+        ) : null}
+        {input.whatsapp.status === "NOT_CONFIGURED" ? (
+          <p className="sub" style="padding:14px 16px;font-size:12.5px">
+            <span className="sync-tag neutral" style="margin-left:0">Not Configured</span>
+            <span style="display:block;margin-top:8px">
+              WhatsApp field coordination requires administrator setup (Meta
+              Business / Cloud API credentials) — see
+              <code> docs/WHATSAPP_REAL_SETUP.md</code>. Internal OBV
+              Communications works independently.
+            </span>
+          </p>
+        ) : (
+          <div className="intg-body">
+            <div className="intg-facts">
+              <dl className="ctx-kv" style="padding:0;margin:0">
+                <dt>Status</dt>
+                <dd><span className={`sync-tag ${input.whatsapp.status === "ACTIVE" ? "ok" : "warn"}`} style="margin-left:0">{input.whatsapp.status}</span></dd>
+                <dt>Business account</dt><dd>{input.whatsapp.businessAccountId ?? "—"}</dd>
+                <dt>Webhook</dt><dd>Configured (verify token + signature validation)</dd>
+                <dt>Last inbound</dt><dd>{input.whatsapp.lastInbound ? fmtDate(input.whatsapp.lastInbound) : "—"}</dd>
+                <dt>Unresolved inbox</dt><dd>{input.whatsapp.unresolvedCount} message{input.whatsapp.unresolvedCount === 1 ? "" : "s"}</dd>
+              </dl>
+            </div>
+            <div className="intg-actions">
+              {input.whatsapp.canManage ? (
+                <form method="POST" action="/api/whatsapp/test" style="margin:0">
+                  <button className="btn secondary sm" type="submit" data-busy-label="Testing…">Test Connection</button>
+                </form>
+              ) : null}
+              <p className="ctx-note" style="padding:0">
+                Participants are assigned to project threads explicitly by a
+                coordinator — context is never guessed from message text.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
       <script src="/js/poll.js" defer></script>
+    </AppShell>
+  );
+}
+
+// ------------------------------------------------------- field issues
+
+const SEVERITY_TONE: Record<string, string> = {
+  LOW: "neutral", MEDIUM: "warn", HIGH: "warn", CRITICAL: "bad",
+};
+const ISSUE_STATUS_TONE: Record<string, string> = {
+  OPEN: "warn", ACKNOWLEDGED: "warn", IN_PROGRESS: "warn",
+  AWAITING_FIELD_RESPONSE: "warn", RESOLVED: "ok", CLOSED: "neutral",
+};
+
+export function renderIssues(input: {
+  nav: NavContext;
+  issues: Array<{
+    issue: FieldIssue;
+    project: Project | null;
+    milestone: Milestone | null;
+    assignee: User | null;
+  }>;
+  canManage: boolean;
+}): string {
+  const open = input.issues.filter((r) => !["RESOLVED", "CLOSED"].includes(r.issue.status));
+  const critical = open.filter((r) => r.issue.severity === "CRITICAL");
+  const overdue = open.filter(
+    (r) => r.issue.dueAt && Date.parse(r.issue.dueAt) < Date.now()
+  );
+  const awaiting = input.issues.filter((r) => r.issue.status === "AWAITING_FIELD_RESPONSE");
+  const resolved = input.issues.filter((r) => ["RESOLVED", "CLOSED"].includes(r.issue.status));
+  return renderDocument(
+    <AppShell title="Field Issues" nav={input.nav} context="Field Issues">
+      <PageHeader
+        title="Field Issues"
+        sub="Operational issues raised from field coordination. Issues inform human decisions — release eligibility is controlled only by the formal approval workflow."
+        crumb={{ href: "/compliance", label: "Risk & Compliance" }}
+      />
+      <div className="issue-stats">
+        <span><b className="num">{open.length}</b> Open</span>
+        <span><b className="num" style={critical.length ? "color:var(--bad)" : ""}>{critical.length}</b> Critical</span>
+        <span><b className="num" style={overdue.length ? "color:var(--warn)" : ""}>{overdue.length}</b> Overdue</span>
+        <span><b className="num">{awaiting.length}</b> Awaiting field response</span>
+        <span><b className="num">{resolved.length}</b> Resolved</span>
+      </div>
+      <div className="panel">
+        <div className="panel-head">
+          <h3>Register</h3>
+          <span className="right">{input.issues.length} issue{input.issues.length === 1 ? "" : "s"}</span>
+        </div>
+        {input.issues.length === 0 ? (
+          <p className="sub" style="padding:14px 16px">
+            No field issues. Issues are created from coordination messages in
+            Communications or directly by authorized roles.
+          </p>
+        ) : (
+          <div className="intg-table-wrap">
+            <table className="intg-table">
+              <thead>
+                <tr><th>Issue</th><th>Project / milestone</th><th>Category</th><th>Severity</th><th>Status</th><th>Assigned</th><th>Due</th></tr>
+              </thead>
+              <tbody>
+                {input.issues.map((r) => (
+                  <tr>
+                    <td data-l="Issue"><a href={`/issue/${r.issue.id}`} style="font-weight:600;color:var(--action)">{r.issue.title}</a></td>
+                    <td data-l="Context">{r.milestone ? `M${r.milestone.seq}` : r.project?.name.slice(0, 28) ?? "—"}</td>
+                    <td data-l="Category">{r.issue.category}</td>
+                    <td data-l="Severity"><span className={`sync-tag ${SEVERITY_TONE[r.issue.severity]}`} style="margin-left:0">{r.issue.severity}</span></td>
+                    <td data-l="Status"><span className={`sync-tag ${ISSUE_STATUS_TONE[r.issue.status]}`} style="margin-left:0">{r.issue.status.replace(/_/g, " ")}</span></td>
+                    <td data-l="Assigned">{r.assignee?.name ?? "—"}</td>
+                    <td data-l="Due">{r.issue.dueAt ? r.issue.dueAt.slice(0, 10) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      <script src="/js/poll.js" defer></script>
+    </AppShell>
+  );
+}
+
+export function renderIssueDetail(input: {
+  nav: NavContext;
+  issue: FieldIssue;
+  project: Project;
+  milestone: Milestone | null;
+  assignee: User | null;
+  reporter: User | null;
+  events: FieldIssueEvent[];
+  sourceMessage: ChatMessage | null;
+  users: Map<string, User>;
+  canManage: boolean;
+}): string {
+  const { issue } = input;
+  const NEXT: Record<string, string[]> = {
+    OPEN: ["ACKNOWLEDGED", "IN_PROGRESS", "CLOSED"],
+    ACKNOWLEDGED: ["IN_PROGRESS", "AWAITING_FIELD_RESPONSE", "RESOLVED", "CLOSED"],
+    IN_PROGRESS: ["AWAITING_FIELD_RESPONSE", "RESOLVED", "CLOSED"],
+    AWAITING_FIELD_RESPONSE: ["IN_PROGRESS", "RESOLVED", "CLOSED"],
+    RESOLVED: ["CLOSED", "IN_PROGRESS"],
+    CLOSED: [],
+  };
+  return renderDocument(
+    <AppShell title={issue.title} nav={input.nav} context={`Issue · ${issue.title}`}>
+      <PageHeader
+        title={issue.title}
+        sub={`${input.project.name}${input.milestone ? ` · M${input.milestone.seq} ${input.milestone.title}` : ""}`}
+        crumb={{ href: "/issues", label: "Field Issues" }}
+      >
+        <span className={`sync-tag ${SEVERITY_TONE[issue.severity]}`}>{issue.severity}</span>
+        <span className={`sync-tag ${ISSUE_STATUS_TONE[issue.status]}`}>{issue.status.replace(/_/g, " ")}</span>
+      </PageHeader>
+
+      <div className="panel panel-pad">
+        <dl className="ctx-kv" style="padding:0;grid-template-columns:130px 1fr">
+          <dt>Description</dt><dd>{issue.description}</dd>
+          <dt>Category</dt><dd>{issue.category}</dd>
+          <dt>Reported by</dt>
+          <dd>
+            {input.reporter?.name ??
+              (issue.reportedByExternalIdentityId
+                ? `External participant · via WhatsApp`
+                : "—")}
+          </dd>
+          <dt>Assigned to</dt><dd>{input.assignee?.name ?? "Unassigned"}</dd>
+          <dt>Due</dt><dd>{issue.dueAt ? issue.dueAt.slice(0, 10) : "—"}</dd>
+          {issue.latitude !== null ? (
+            <>
+              <dt>Location</dt>
+              <dd>
+                {issue.latitude.toFixed(5)}, {issue.longitude!.toFixed(5)}{" "}
+                <span className="sub">(communication location)</span>{" "}
+                <a href="/map" style="color:var(--action);font-weight:600">View on Map</a>
+              </dd>
+            </>
+          ) : null}
+          {issue.resolutionSummary ? (
+            <>
+              <dt>Resolution</dt><dd>{issue.resolutionSummary}</dd>
+            </>
+          ) : null}
+        </dl>
+        {input.sourceMessage ? (
+          <div className="issue-src">
+            <span className="k">SOURCE MESSAGE</span>
+            <span className="b">
+              {input.sourceMessage.senderDisplayName}
+              {input.sourceMessage.provider !== "OBV" ? ` · via ${input.sourceMessage.provider === "WHATSAPP" ? "WhatsApp" : "Microsoft Teams"}` : ""}:
+              “{input.sourceMessage.body.slice(0, 300)}”
+            </span>
+            <a href={`/communications?thread=${input.sourceMessage.threadId}`}>Open conversation</a>
+          </div>
+        ) : null}
+        {input.canManage && NEXT[issue.status].length > 0 ? (
+          <form method="POST" action={`/api/issues/${issue.id}/status`} className="issue-actions">
+            <select name="status" aria-label="New status">
+              {NEXT[issue.status].map((s) => (
+                <option value={s}>{s.replace(/_/g, " ")}</option>
+              ))}
+            </select>
+            <input name="resolutionSummary" placeholder="Resolution note (for RESOLVED/CLOSED)" style="flex:1;min-width:160px" />
+            <button className="btn sm" type="submit">Update status</button>
+          </form>
+        ) : null}
+      </div>
+
+      <div className="panel" style="margin-top:12px">
+        <div className="panel-head">
+          <h3>Field issue timeline</h3>
+          <span className="right">Operational record — NOT the Evidence Ledger</span>
+        </div>
+        <ul className="activity">
+          {input.events.map((e) => (
+            <li>
+              <span className={`ico ${e.type === "RESOLVED" ? "ok" : "warn"}`}>{icons.activity()}</span>
+              <span className="body">
+                <span className="msg">{e.detail}</span>
+                <span className="meta">
+                  <span className="when">{fmtDate(e.createdAt)}</span>
+                  {e.actorUserId ? <span>{input.users.get(e.actorUserId)?.name}</span> : null}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <script src="/js/poll.js" defer></script>
+    </AppShell>
+  );
+}
+
+export function renderIssueNew(input: {
+  nav: NavContext;
+  sourceMessage: ChatMessage | null;
+  project: Project | null;
+  milestone: Milestone | null;
+  users: User[];
+}): string {
+  return renderDocument(
+    <AppShell title="Create Field Issue" nav={input.nav} context="New Field Issue">
+      <PageHeader
+        title="Create Field Issue"
+        sub="An operational issue for human coordination. Issues never change financial state."
+        crumb={{ href: "/issues", label: "Field Issues" }}
+      />
+      <div className="panel panel-pad" style="max-width:640px">
+        {input.sourceMessage ? (
+          <div className="issue-src" style="margin:0 0 14px">
+            <span className="k">FROM MESSAGE</span>
+            <span className="b">
+              {input.sourceMessage.senderDisplayName}
+              {input.sourceMessage.provider === "WHATSAPP" ? " · via WhatsApp" : input.sourceMessage.provider === "TEAMS" ? " · via Microsoft Teams" : ""}:
+              “{input.sourceMessage.body.slice(0, 240)}”
+            </span>
+          </div>
+        ) : null}
+        <form method="POST" action="/api/issues" className="fo-form">
+          {input.sourceMessage ? <input type="hidden" name="messageId" value={input.sourceMessage.id} /> : null}
+          <input type="hidden" name="projectId" value={input.project?.id ?? ""} />
+          {input.milestone ? <input type="hidden" name="milestoneId" value={input.milestone.id} /> : null}
+          <label>Title
+            <input name="title" required maxlength="160" placeholder="Short operational summary" />
+          </label>
+          <label>Description
+            <textarea name="description" rows="3" placeholder="What happened, where, and what is needed">{input.sourceMessage?.body ?? ""}</textarea>
+          </label>
+          <div className="fo-row">
+            <label>Category
+              <select name="category">
+                {["QUALITY","SAFETY","MATERIAL","SCHEDULE","ACCESS","ENVIRONMENTAL","DOCUMENTATION","EQUIPMENT","OTHER"].map((c) => (
+                  <option value={c}>{c}</option>
+                ))}
+              </select>
+            </label>
+            <label>Severity
+              <select name="severity">
+                {["LOW","MEDIUM","HIGH","CRITICAL"].map((c) => (
+                  <option value={c} selected={c === "MEDIUM"}>{c}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="fo-row">
+            <label>Assign to
+              <select name="assignedToUserId">
+                <option value="">Unassigned</option>
+                {input.users.filter((u) => u.role !== "FIELD" || true).map((u) => (
+                  <option value={u.id}>{u.name} — {u.title}</option>
+                ))}
+              </select>
+            </label>
+            <label>Due date
+              <input name="dueAt" type="date" />
+            </label>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button className="btn" type="submit">Create Field Issue</button>
+            <a className="btn ghost" href={input.sourceMessage ? `/communications?thread=${input.sourceMessage.threadId}` : "/issues"}>Cancel</a>
+          </div>
+        </form>
+      </div>
+    </AppShell>
+  );
+}
+
+// -------------------------------------------- evidence draft promotion
+
+export function renderDraftNew(input: {
+  nav: NavContext;
+  sourceMessage: ChatMessage;
+  attachmentIndex: number;
+  project: Project;
+  milestones: Milestone[];
+  defaultMilestoneId: string | null;
+  locationMessages: ChatMessage[];
+}): string {
+  const m = input.sourceMessage;
+  const att = m.attachments[input.attachmentIndex];
+  return renderDocument(
+    <AppShell title="Promote to Evidence Draft" nav={input.nav} context="Evidence Draft">
+      <PageHeader
+        title="Promote to Evidence Draft"
+        sub="Creates a DRAFT only. Submission runs the normal verification, ledger and governance pipeline — nothing is verified by promotion."
+        crumb={{ href: `/communications?thread=${m.threadId}`, label: "Conversation" }}
+      />
+      <div className="panel panel-pad" style="max-width:640px">
+        {att?.url && att.kind === "IMAGE" ? (
+          <img src={att.url} alt="Communication media" style="max-width:100%;max-height:220px;object-fit:contain;border:1px solid var(--line);background:var(--inset)" />
+        ) : null}
+        <dl className="ctx-kv" style="padding:0;margin-top:12px;grid-template-columns:170px 1fr">
+          <dt>Source</dt>
+          <dd><span className="sync-tag warn" style="margin-left:0">SOURCE: {m.provider === "WHATSAPP" ? "WHATSAPP COMMUNICATION" : `${m.provider} COMMUNICATION`}</span></dd>
+          <dt>Source identity</dt><dd>{m.senderDisplayName}{m.provider === "WHATSAPP" ? " · via WhatsApp" : ""}</dd>
+          <dt>Source timestamp</dt><dd>{fmtDate(m.createdAt)} <span className="sub">(provider message time — not an original capture timestamp)</span></dd>
+          <dt>Original capture metadata</dt>
+          <dd><span className="sync-tag warn" style="margin-left:0">MISSING ORIGINAL CAPTURE METADATA</span></dd>
+          <dt>Location</dt>
+          <dd>
+            {input.locationMessages.length === 0 ? (
+              <span className="sync-tag warn" style="margin-left:0">MISSING LOCATION</span>
+            ) : (
+              <span className="sub">Optionally associate an explicitly shared location below.</span>
+            )}
+          </dd>
+        </dl>
+        <form method="POST" action="/api/evidence-drafts" className="fo-form" style="margin-top:14px">
+          <input type="hidden" name="messageId" value={m.id} />
+          <input type="hidden" name="attachmentIndex" value={String(input.attachmentIndex)} />
+          <label>Milestone
+            <select name="milestoneId" required>
+              {input.milestones.map((ms) => (
+                <option value={ms.id} selected={ms.id === input.defaultMilestoneId}>
+                  M{ms.seq} · {ms.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          {input.locationMessages.length > 0 ? (
+            <label>Associate communication location (explicit — otherwise stays missing)
+              <select name="locationMessageId">
+                <option value="">No location — leave honestly missing</option>
+                {input.locationMessages.map((lm) => (
+                  <option value={lm.id}>
+                    {lm.senderDisplayName} · {fmtDate(lm.createdAt)} · {lm.location!.latitude.toFixed(4)}, {lm.location!.longitude.toFixed(4)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <p className="sub" style="font-size:11.5px;margin:0">
+            The draft appears on the milestone page. A separate explicit
+            “Submit for Verification” runs the standard pipeline: missing GPS
+            routes to review under the existing geofence policy; no verified
+            status, ledger entry or approval is created by this step.
+          </p>
+          <div style="display:flex;gap:8px">
+            <button className="btn" type="submit">Create Evidence Draft</button>
+            <a className="btn ghost" href={`/communications?thread=${m.threadId}`}>Cancel</a>
+          </div>
+        </form>
+      </div>
     </AppShell>
   );
 }

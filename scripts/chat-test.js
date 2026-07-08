@@ -237,7 +237,7 @@ function govCounts() {
     const resetList = await (await req("funder", "GET", "/communications")).text();
     assert(
       resetCounts.threads === 2 &&
-        resetCounts.messages === 8 &&
+        resetCounts.messages === 13 &&
         resetList.includes("Project General") &&
         !resetList.includes("km 10 marker"),
       "demo reset restores the seeded threads and messages exactly"

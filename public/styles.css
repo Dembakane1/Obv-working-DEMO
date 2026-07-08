@@ -1571,3 +1571,111 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
   }
   .conv-manage { display: block; margin: 2px 0 0; }
 }
+
+/* =====================================================================
+   v11 — WhatsApp field bridge, field issues, clarifications, drafts
+   ===================================================================== */
+
+/* ---- message attachments / promotion ---- */
+.att-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.att-promote {
+  font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--action); border: 1px solid var(--line-2); padding: 3px 9px; background: var(--surface);
+  white-space: nowrap;
+}
+.att-promote:hover { background: var(--action-soft); }
+
+/* ---- communication location block ---- */
+.msg-loc {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 6px;
+  border: 1px solid var(--line-2); border-left: 3px solid var(--ink-3);
+  background: var(--surface-2); padding: 6px 10px; font-size: 11px;
+}
+.msg-loc .k { font-size: 9px; font-weight: 700; letter-spacing: .08em; color: var(--ink-3); }
+.msg-loc .num { font-variant-numeric: tabular-nums; }
+.msg-loc a { color: var(--action); font-weight: 600; }
+.msg-loc .note { font-size: 9.5px; color: var(--ink-4); font-style: italic; }
+
+.msg-mkissue {
+  display: inline-block; margin-top: 5px; font-size: 10px; font-weight: 700;
+  letter-spacing: .05em; text-transform: uppercase; color: var(--ink-2);
+  border: 1px solid var(--line-2); padding: 3px 9px; background: var(--surface);
+}
+.msg-mkissue:hover { border-color: var(--ink-3); }
+
+/* ---- field issues dashboard ---- */
+.issue-stats {
+  display: flex; gap: 24px; flex-wrap: wrap; margin: 0 0 14px;
+  border: 1px solid var(--line-2); background: var(--surface); padding: 12px 18px;
+}
+.issue-stats span { font-size: 11px; color: var(--ink-3); display: flex; align-items: baseline; gap: 7px; }
+.issue-stats .num { font-size: 20px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+.issue-src {
+  display: flex; flex-direction: column; gap: 3px; margin: 14px 0 0;
+  border: 1px solid var(--line-2); border-left: 3px solid var(--action);
+  background: var(--surface-2); padding: 9px 12px; font-size: 12px;
+}
+.issue-src .k { font-size: 9px; font-weight: 700; letter-spacing: .08em; color: var(--ink-3); }
+.issue-src .b { color: var(--ink-2); }
+.issue-src a { color: var(--action); font-weight: 600; font-size: 11px; }
+
+.issue-actions {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 14px 0 0;
+  border-top: 1px solid var(--line); padding-top: 12px;
+}
+.issue-actions select, .issue-actions input {
+  border: 1px solid var(--line-2); background: var(--surface); font: inherit;
+  font-size: 12px; padding: 6px 8px; min-height: 32px;
+}
+
+/* ---- field-ops forms (issue create, clarification request, draft promote) ---- */
+.fo-form { display: flex; flex-direction: column; gap: 12px; }
+.fo-form label {
+  display: flex; flex-direction: column; gap: 4px; font-size: 10px; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); flex: 1; min-width: 140px;
+}
+.fo-form input, .fo-form select, .fo-form textarea {
+  border: 1px solid var(--line-2); background: var(--surface); font: inherit; font-size: 13px;
+  text-transform: none; letter-spacing: normal; font-weight: 400; color: var(--ink);
+  padding: 7px 9px; min-height: 34px;
+}
+.fo-form textarea { min-height: 64px; resize: vertical; }
+.fo-row { display: flex; gap: 12px; flex-wrap: wrap; }
+
+/* ---- evidence draft rows (milestone detail) ---- */
+.draft-row { display: flex; align-items: center; gap: 14px; padding: 12px 16px; flex-wrap: wrap; }
+.draft-row img {
+  width: 74px; height: 56px; object-fit: cover; border: 1px solid var(--line-2); flex: none;
+  background: var(--surface-2);
+}
+.draft-row .d-meta { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 220px; }
+.draft-row .d-meta .s { font-size: 11px; color: var(--ink-3); }
+
+/* ---- clarification rows ---- */
+.clar-row { display: flex; align-items: center; gap: 14px; padding: 12px 16px; flex-wrap: wrap; }
+.clar-row .c-body { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 220px; }
+.clar-row .q { font-size: 12.5px; color: var(--ink); }
+.clar-row .s { font-size: 11px; color: var(--ink-3); }
+.clar-row select {
+  border: 1px solid var(--line-2); background: var(--surface); font: inherit; font-size: 12px;
+  padding: 5px 8px; min-height: 30px;
+}
+
+/* ---- map legend + inspector entries for comms / issues ---- */
+.lg-comm {
+  width: 9px; height: 9px; flex: none; transform: rotate(45deg);
+  background: #64748b33; border: 1.5px dashed #64748b;
+}
+.lg-issue {
+  width: 0; height: 0; flex: none;
+  border-left: 5.5px solid transparent; border-right: 5.5px solid transparent;
+  border-bottom: 9px solid #b45309;
+}
+
+@media (max-width: 640px) {
+  .issue-stats { gap: 14px; padding: 10px 14px; }
+  .issue-stats .num { font-size: 16px; }
+  .draft-row, .clar-row { align-items: flex-start; }
+  .fo-row { flex-direction: column; gap: 12px; }
+}

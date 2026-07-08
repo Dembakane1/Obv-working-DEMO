@@ -9,8 +9,11 @@
  *
  * Run: npm run seed   (drops and recreates data/obv.db)
  */
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { resetDb } from "./index";
 import * as repo from "./repo";
+import { COMM_MEDIA_DIR } from "../services/whatsappSync/provider";
 import { runVerificationPipeline } from "../services/verification/index";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
 import { virtualAccountService } from "../services/VirtualAccountService";
@@ -425,6 +428,7 @@ export async function seedDemo(): Promise<void> {
       originalBody: null,
       externalDeleted: false,
       attachments: [],
+      location: null,
       ...m,
     });
   // Project General: history mirroring the real M1/M2 record.
@@ -477,6 +481,130 @@ export async function seedDemo(): Promise<void> {
     senderUserId: "user-compliance", senderDisplayName: "Amina Ndlovu", messageType: "TEXT",
     body: "Please confirm the compaction test certificate is attached to the project file before final sign-off. Reminder: release still requires the formal two-role approval in OBV — nothing in this thread authorizes funds.",
     createdAt: "2026-06-28T09:03:00.000Z",
+  });
+
+  // ---- seeded WhatsApp field scenario (coordination only; nothing here ----
+  // touches evidence, verification, approvals or money). Chikondi's WhatsApp
+  // identity is mapped and her context is explicitly bound to the M3 thread,
+  // so the inbound coordination messages below land in the right place.
+  // The gravel-shortfall report becomes a Field Issue — an OPERATIONAL
+  // record. M3 remains PENDING_EVIDENCE; no financial state changes.
+  const waPhone = "265991114821"; // demo wa_id (digits, no plus) — not a real subscriber
+  repo.upsertIdentityMapping({
+    id: "waid-field",
+    provider: "WHATSAPP",
+    tenantId: "whatsapp",
+    organizationId: "org-cdfc",
+    externalUserId: waPhone,
+    obvUserId: "user-field",
+    externalDisplayName: "Chikondi Banda",
+    externalEmail: null,
+    status: "MAPPED",
+    createdAt: "2026-07-01T08:00:00.000Z",
+    updatedAt: "2026-07-01T08:00:00.000Z",
+  });
+  repo.upsertParticipantContext({
+    id: "wactx-field",
+    provider: "WHATSAPP",
+    externalUserId: waPhone,
+    activeProjectId: project.id,
+    activeThreadId: "thread-m3",
+    activeMilestoneId: "ms-3",
+    lastInboundAt: "2026-07-06T09:14:00.000Z",
+    expiresAt: null,
+    updatedAt: "2026-07-01T08:05:00.000Z",
+  });
+  // Communication media lives in data/comm-media (mutable, retention-managed)
+  // — never in the WORM evidence store.
+  fs.mkdirSync(COMM_MEDIA_DIR, { recursive: true });
+  const stockpileSvg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420" viewBox="0 0 640 420">` +
+    `<rect width="640" height="420" fill="#a9b2a0"/>` +
+    `<rect y="300" width="640" height="120" fill="#7d7365"/>` +
+    `<polygon points="180,300 320,190 460,300" fill="#9d917d"/>` +
+    `<polygon points="300,300 400,235 500,300" fill="#8f8470"/>` +
+    `<rect x="20" y="20" width="290" height="54" fill="#00000066"/>` +
+    `<text x="34" y="42" font-family="monospace" font-size="16" fill="#fff">km 12 gravel stockpile</text>` +
+    `<text x="34" y="62" font-family="monospace" font-size="12" fill="#ffd">WhatsApp communication photo — demo asset, NOT evidence</text>` +
+    `</svg>`;
+  fs.writeFileSync(path.join(COMM_MEDIA_DIR, "seed-wa-stockpile.svg"), stockpileSvg);
+  msg({
+    id: "wamsg-1", threadId: "thread-m3",
+    senderUserId: "user-field", senderDisplayName: "Chikondi Banda",
+    provider: "WHATSAPP", origin: "WHATSAPP_INBOUND",
+    externalMessageId: "wamid.SEED.DEMO.001", messageType: "TEXT",
+    body: "Gravel deliveries to the km 12 stockpile stopped this morning — the supplier truck broke down near Ekwendeni. We are roughly 40 m³ short for tomorrow's lift on the last section.",
+    createdAt: "2026-07-06T09:12:00.000Z",
+  });
+  msg({
+    id: "wamsg-2", threadId: "thread-m3",
+    senderUserId: "user-field", senderDisplayName: "Chikondi Banda",
+    provider: "WHATSAPP", origin: "WHATSAPP_INBOUND",
+    externalMessageId: "wamid.SEED.DEMO.002", messageType: "TEXT",
+    body: "Photo of the stockpile as of this morning.",
+    attachments: [{
+      kind: "IMAGE", name: "km12-stockpile.jpg",
+      url: "/comm-media/seed-wa-stockpile.svg", mimeType: "image/svg+xml",
+    }],
+    createdAt: "2026-07-06T09:13:00.000Z",
+  });
+  msg({
+    id: "wamsg-3", threadId: "thread-m3",
+    senderUserId: "user-field", senderDisplayName: "Chikondi Banda",
+    provider: "WHATSAPP", origin: "WHATSAPP_INBOUND",
+    externalMessageId: "wamid.SEED.DEMO.003", messageType: "TEXT",
+    body: "Shared location: stockpile position on the alignment.",
+    location: { latitude: -11.8062, longitude: 33.6329 },
+    createdAt: "2026-07-06T09:14:00.000Z",
+  });
+  repo.insertFieldIssue({
+    id: "issue-1",
+    organizationId: "org-cdfc",
+    projectId: project.id,
+    milestoneId: "ms-3",
+    evidenceItemId: null,
+    sourceThreadId: "thread-m3",
+    sourceMessageId: "wamsg-1",
+    title: "Gravel shortfall at km 12 stockpile",
+    description:
+      "Supplier truck breakdown near Ekwendeni interrupted gravel deliveries; " +
+      "approx. 40 m³ short for the next base-course lift on the final section. " +
+      "Reported from the field via WhatsApp.",
+    category: "MATERIAL",
+    severity: "HIGH",
+    status: "ACKNOWLEDGED",
+    reportedByUserId: "user-field",
+    reportedByExternalIdentityId: "waid-field",
+    assignedToUserId: "user-pm",
+    latitude: -11.8062,
+    longitude: 33.6329,
+    dueAt: "2026-07-10T00:00:00.000Z",
+    resolvedAt: null,
+    resolutionSummary: null,
+    createdAt: "2026-07-06T09:30:00.000Z",
+    updatedAt: "2026-07-06T10:05:00.000Z",
+  });
+  repo.insertIssueEvent({
+    id: "issev-1", issueId: "issue-1", type: "CREATED",
+    detail: "Field issue created from WhatsApp coordination message by Daniel Phiri.",
+    actorUserId: "user-pm", createdAt: "2026-07-06T09:30:00.000Z",
+  });
+  repo.insertIssueEvent({
+    id: "issev-2", issueId: "issue-1", type: "STATUS_CHANGED",
+    detail: "Status OPEN → ACKNOWLEDGED. Alternate supplier contacted; delivery expected within 48h.",
+    actorUserId: "user-pm", createdAt: "2026-07-06T10:05:00.000Z",
+  });
+  msg({
+    id: "wamsg-4", threadId: "thread-m3",
+    body: "Field issue created: “Gravel shortfall at km 12 stockpile” (MATERIAL, HIGH). Operational record only — release eligibility is controlled solely by the formal approval workflow.",
+    messageType: "ISSUE_REFERENCE", refId: "issue-1",
+    createdAt: "2026-07-06T09:30:30.000Z",
+  });
+  msg({
+    id: "wamsg-5", threadId: "thread-m3",
+    senderUserId: "user-pm", senderDisplayName: "Daniel Phiri", messageType: "TEXT",
+    body: "Acknowledged — issue logged and an alternate supplier is being arranged. Reminder: this chat coordinates only; evidence still goes through OBV field capture and release needs the formal approvals.",
+    createdAt: "2026-07-06T10:06:00.000Z",
   });
 
   const chain = await wormEvidenceStore.verifyChain();

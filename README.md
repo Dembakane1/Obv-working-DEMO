@@ -125,6 +125,40 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## WhatsApp field bridge + field issues + evidence-draft promotion (v11)
+
+Field teams coordinate on WhatsApp; OBV stays the source of truth.
+
+> WHATSAPP COORDINATES. OBV EVIDENCE PROVES. VERIFICATION ASSESSES.
+> HUMANS AUTHORIZE THROUGH THE FORMAL OBV APPROVAL WORKFLOW.
+> THE EVIDENCE LEDGER RECORDS. CHAT DOES NOT RELEASE FUNDS.
+
+- **WhatsApp Business Cloud API bridge** (provider-isolated, server-side
+  only): signed webhook (HMAC + verify handshake) for inbound text, photos,
+  documents, voice notes and locations; policy-gated outbound (free-form in
+  the 24 h service window, operational templates outside it, otherwise
+  honestly `SKIPPED`); delivery statuses; dedupe/loop prevention; per-sender
+  rate limiting. Participants are **explicitly** assigned to project threads
+  by a coordinator (never guessed from text); unknown senders land in a
+  "WhatsApp — Unresolved" inbox. Media is allowlisted, size-capped, stored
+  under `data/comm-media/` as communication artifacts — never WORM evidence.
+- **Field Issues** — structured operational records (category, severity,
+  assignment, due date, transition-validated lifecycle, auditable timeline)
+  raised from coordination messages or directly. Issues inform humans and
+  appear on the map and Risk & Compliance; they can never move money.
+- **Clarification Requests** — reviewer asks the field for something
+  specific; an inbound response sets RESPONDED at most; acceptance is a
+  separate explicit reviewer decision.
+- **Promote to Evidence Draft** — governed path from a coordination photo to
+  the formal pipeline: DRAFT (not evidence) → explicit submit → the SAME
+  `processEvidenceSubmission` flow as field capture. Missing GPS stays
+  missing (geofence routes to REVIEW); provenance stays honest.
+
+Docs: `docs/WHATSAPP_FIELD_BRIDGE.md` (architecture + trust model),
+`docs/WHATSAPP_REAL_SETUP.md` (Meta setup + real-platform validation
+checklist). Unconfigured, WhatsApp shows "Not Configured" and everything
+else works fully. Stub-validated only until a real message is exchanged.
+
 ## Teams ↔ OBV conversation sync (v9)
 
 Selected OBV project/milestone threads can bind to Microsoft Teams
@@ -370,6 +404,8 @@ in the Render dashboard (or platform equivalent), **never in the repo**.
 | OPTIONAL — TEAMS | `TEAMS_WEBHOOK_URL` | Enables Microsoft Teams governance notifications (`teamsMode: "configured"`). Without it: in-app demo notification mode. Never logged in full. |
 | | `TEAMS_NOTIFICATION_TIMEOUT_MS` | Delivery timeout (default 5000 ms). |
 | | `OBV_PUBLIC_BASE_URL` | Base URL for "Open in OBV" links on Teams cards. On Render, defaults to the platform-provided `RENDER_EXTERNAL_URL`. |
+| OPTIONAL — WHATSAPP | `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `WHATSAPP_WEBHOOK_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET` | Enables the WhatsApp field bridge (all five required together). Server-side only, never logged. Setup: `docs/WHATSAPP_REAL_SETUP.md`. |
+| | `WHATSAPP_API_VERSION`, `WHATSAPP_SYNC_TIMEOUT_MS`, `OBV_WHATSAPP_API_BASE_URL` | Provider overrides (defaults `v21.0`, 8000 ms, Meta Graph; base URL override is for the contract-stub tests). |
 | OPTIONAL — STORAGE | `OBV_DATA_DIR` | Root for ALL runtime data. Point at a persistent volume (e.g. `/var/data`) for restart-safe state. Default `./data` (ephemeral in containers). |
 | | `OBV_REPORT_STORAGE_PATH` | Relocates generated report PDFs only (default `<OBV_DATA_DIR>/reports`). |
 | OPTIONAL — DEPLOYMENT | `OBV_ACCESS_CODE` | Simple access gate for the public demo. Everything except `/api/health` requires the code once per browser; the cookie stores only a hash. |
@@ -504,6 +540,8 @@ node scripts/idempotency-test.js           # replay/double-submit protections (n
 node scripts/map-test.js                   # spatial map: layers, geometry, markers, filters, mobile
 node scripts/chat-test.js                  # communications + proof that chat cannot approve/release
 node scripts/teams-sync-test.js            # Teams conversation sync vs Graph stub (dedupe, loops, governance)
+node scripts/whatsapp-sync-test.js         # WhatsApp bridge vs Cloud API stub (signatures, media, policy, governance)
+node scripts/fieldops-test.js              # field issues, clarifications, draft promotion — none of it moves money
 ```
 
 `scripts/idempotency-test.js` proves accidental repeats cannot duplicate
