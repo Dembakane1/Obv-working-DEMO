@@ -11,6 +11,7 @@
  * Everything downstream (ledger, approval request, HELD/RELEASED) stays in
  * the orchestrator and human governance — never here, never in the model.
  */
+import * as repo from "../../db/repo";
 import { resilientVisualService } from "./visual";
 import { geofenceService } from "./geofence";
 import { metadataService } from "./metadata";
@@ -54,17 +55,21 @@ export async function runVerificationPipeline(input: PipelineInput): Promise<Pip
     { forceMock: input.forceMock }
   );
 
+  const policy = resolveProjectPolicy(input.project.id);
+
   const geofence = geofenceService.check(
     input.latitude,
     input.longitude,
     input.project.siteBoundary,
-    input.project.name
+    input.project.name,
+    { marginDeg: policy.geofenceMarginDeg }
   );
 
   const metadata = metadataService.check({
     capturedAt: input.capturedAt,
     uploadedAt: input.uploadedAt,
     deviceMetadata: input.deviceMetadata,
+    maxOfflineDelayDays: policy.maxOfflineDelayDays,
   });
 
   const aggregated = verificationAggregator.aggregate({
@@ -72,7 +77,39 @@ export async function runVerificationPipeline(input: PipelineInput): Promise<Pip
     geofence,
     metadata,
     source: visual.source,
+    verifiedMinConfidence: policy.verifiedMinConfidence,
   });
 
   return { ...aggregated, fallbackNote: visual.note };
+}
+
+/**
+ * CUSTOMER POLICY resolution — bounded per-project overrides configured
+ * through pilot onboarding. Every value is clamped to OBV-validated
+ * bounds at read time; with no configured policy the standing defaults
+ * apply unchanged. OBV NON-OVERRIDABLE INTEGRITY RULES (missing GPS ->
+ * REVIEW, malformed/future timestamps -> FAIL, strong visual mismatch ->
+ * REJECTED, corrupted media rejected) are not expressed here and cannot
+ * be configured away.
+ */
+export function resolveProjectPolicy(projectId: string): {
+  verifiedMinConfidence: number | undefined;
+  geofenceMarginDeg: number | undefined;
+  maxOfflineDelayDays: number | undefined;
+} {
+  const config = repo.getVerificationPolicy(projectId);
+  if (!config) {
+    return { verifiedMinConfidence: undefined, geofenceMarginDeg: undefined, maxOfflineDelayDays: undefined };
+  }
+  const clamp = (v: number | null, min: number, max: number) =>
+    v === null ? undefined : Math.min(max, Math.max(min, v));
+  const geofenceMarginDeg =
+    config.geofencePolicy === "STRICT" ? 0.003
+    : config.geofencePolicy === "EXTENDED_REVIEW" ? 0.02
+    : undefined; // STANDARD / unset -> default margin
+  return {
+    verifiedMinConfidence: clamp(config.aiConfidenceThreshold, 0.5, 0.95),
+    geofenceMarginDeg,
+    maxOfflineDelayDays: clamp(config.offlineAllowanceDays ?? config.recencyDays, 0, 14),
+  };
 }

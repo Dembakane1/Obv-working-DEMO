@@ -22,6 +22,14 @@ import { TEAMS_CONFIG, teamsNotifier } from "../services/TeamsNotifier";
 import { AI_PROVIDER } from "../services/verification/config";
 import { integrityFailureCard } from "../services/teamsCards";
 import { pointInPolygon, polygonCentroid } from "../services/geo";
+import * as pilot from "../services/pilot/onboarding";
+import { PROJECT_TEMPLATES } from "../services/pilot/templates";
+import {
+  renderInviteAccept,
+  renderPilotDashboard,
+  renderPilotSetup,
+  renderProjectSetup,
+} from "../view/pilotPages";
 import {
   canAccessThread,
   ensureMilestoneThread,
@@ -557,7 +565,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   // ---- optional deployment access gate ----
-  if (ACCESS_CODE && !pathname.startsWith("/report-cache/") && pathname !== "/api/teams-sync/notifications" && pathname !== "/api/whatsapp/webhook") {
+  if (
+    ACCESS_CODE &&
+    !pathname.startsWith("/report-cache/") &&
+    pathname !== "/api/teams-sync/notifications" &&
+    pathname !== "/api/whatsapp/webhook" &&
+    // Invitation activation carries its own one-time secret token.
+    !pathname.startsWith("/invite/") &&
+    pathname !== "/api/invitations/accept"
+  ) {
     if (method === "POST" && pathname === "/api/access") {
       const body = (await readBody(req, 4 * 1024)).toString("utf8");
       const code = new URLSearchParams(body).get("code") ?? "";
@@ -612,23 +628,45 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (method === "GET" && pathname === "/api/field-context") {
-    const projects = repo.listProjects().map((project) => {
+    // Field scoping: ACTIVE projects only. A user with active field
+    // assignments sees exactly their assigned projects/milestones; a user
+    // without assignments keeps the legacy behavior for unassigned
+    // (demo) projects but never sees assignment-scoped pilot projects.
+    const fieldUser = currentUser(req);
+    const myAssignments = fieldUser ? repo.listAssignmentsForUser(fieldUser.id) : [];
+    const assignedProjectIds = new Set(myAssignments.map((a) => a.projectId));
+    const visibleProjects = repo.listProjects().filter((project) => {
+      if (project.status !== "ACTIVE") return false;
+      if (assignedProjectIds.size > 0) return assignedProjectIds.has(project.id);
+      return repo.listAssignmentsForProject(project.id).filter((a) => a.active).length === 0;
+    });
+    const projects = visibleProjects.map((project) => {
       const centre = polygonCentroid(project.siteBoundary);
       return {
         id: project.id,
         name: project.name,
         location: project.location,
         simulatedGps: { latitude: centre.lat, longitude: centre.lng },
-        milestones: repo.listMilestones(project.id).map((m) => ({
-          id: m.id,
-          seq: m.seq,
-          title: m.title,
-          requirement: m.requirement,
-          trancheAmount: m.trancheAmount,
-          status: m.status,
-          accountStatus: m.accountStatus,
-          demoPhotos: repo.listDemoFallbackPhotos(m.id),
-        })),
+        milestones: repo
+          .listMilestones(project.id)
+          .filter((m) => !m.archived)
+          .filter((m) => {
+            const scoped = myAssignments.find(
+              (a) => a.projectId === project.id && a.milestoneIds.length > 0
+            );
+            return scoped ? scoped.milestoneIds.includes(m.id) : true;
+          })
+          .map((m) => ({
+            id: m.id,
+            seq: m.seq,
+            title: m.title,
+            requirement: m.requirement,
+            trancheAmount: m.trancheAmount,
+            status: m.status,
+            accountStatus: m.accountStatus,
+            requirements: repo.listRequirementsForMilestone(m.id),
+            demoPhotos: repo.listDemoFallbackPhotos(m.id),
+          })),
       };
     });
     sendJson(res, { projects });
@@ -644,7 +682,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     const projects = await Promise.all(
-      repo.listProjects().map(async (project) => {
+      repo.listProjects().filter((p) => p.status !== "DRAFT").map(async (project) => {
         const features = repo.listSpatialFeatures(project.id);
         const summary = await virtualAccountService.getProjectSummary(project.id);
         const chain = await wormEvidenceStore.verifyChain();
@@ -1614,15 +1652,347 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
-  // Reset the demo database to its seeded state.
+  // Reset the DEMO data to its seeded state. Pilot projects created
+  // through onboarding are preserved — wiping everything requires the
+  // explicitly gated Development Full Reset below.
   if (method === "POST" && pathname === "/api/demo/reset") {
-    await seedDemo();
+    await seedDemo({ preservePilot: true });
     await teamsNotifier.notify("DEMO_RESET", "Demo data reset to the seeded state.");
     if (isFormPost(req) || (req.headers.accept ?? "").includes("text/html")) {
       redirect(res, "/overview");
     } else {
       sendJson(res, { ok: true });
     }
+    return;
+  }
+
+  // ==================== pilot onboarding (configuration only) ====================
+  // Nothing in these routes can create evidence, verifications, ledger
+  // entries, approval records, or a RELEASED event — they configure.
+
+  const pilotForm = async (max = 64 * 1024): Promise<URLSearchParams> => {
+    const body = (await readBody(req, max)).toString("utf8");
+    if (isFormPost(req)) return new URLSearchParams(body);
+    const json = JSON.parse(body || "{}") as Record<string, unknown>;
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(json)) {
+      if (Array.isArray(v)) v.forEach((x) => params.append(k, String(x)));
+      else if (v !== null && v !== undefined) params.append(k, String(v));
+    }
+    return params;
+  };
+  const pilotAdmin = (): User | null => {
+    const u = currentUser(req);
+    return u && pilot.canAdminPilot(u) ? u : null;
+  };
+  const pilotRespond = (fallbackPath: string, payload: Record<string, unknown>, status = 200) => {
+    if (isFormPost(req)) redirect(res, fallbackPath);
+    else sendJson(res, payload, status);
+  };
+
+  // ---- invitation activation (public; the token is the credential) ----
+  const inviteMatch = /^\/invite\/([a-f0-9]{24,})$/.exec(pathname);
+  if (method === "GET" && inviteMatch) {
+    const invitation = pilot.findInvitationForToken(inviteMatch[1]);
+    sendHtml(
+      res,
+      renderInviteAccept({
+        invitation: invitation && invitation.status === "PENDING" ? invitation : null,
+        orgName: invitation ? repo.getOrganization(invitation.organizationId)?.name ?? null : null,
+        token: inviteMatch[1],
+        error:
+          invitation && invitation.status !== "PENDING"
+            ? `This invitation is ${invitation.status.toLowerCase()}.`
+            : invitation
+              ? null
+              : "This invitation link is invalid or has expired.",
+      })
+    );
+    return;
+  }
+  if (method === "POST" && pathname === "/api/invitations/accept") {
+    const params = await pilotForm(16 * 1024);
+    const { user: newUser } = pilot.acceptInvitation(params.get("token") ?? "", {
+      name: params.get("name") ?? "",
+      title: params.get("title") ?? "",
+    });
+    res.setHeader(
+      "Set-Cookie",
+      `obv_user=${encodeURIComponent(newUser.id)}; Path=/; SameSite=Lax; Max-Age=86400`
+    );
+    if (isFormPost(req)) redirect(res, newUser.role === "FIELD" ? "/field" : "/overview");
+    else sendJson(res, { user: newUser }, 201);
+    return;
+  }
+
+  // ---- organizations ----
+  if (method === "POST" && pathname === "/api/pilot/orgs") {
+    const actor = pilotAdmin();
+    if (!actor) { sendJson(res, { error: "Not authorized" }, 403); return; }
+    const params = await pilotForm();
+    const org = pilot.createOrganization(Object.fromEntries(params) as never, actor);
+    pilotRespond("/setup", { organization: org }, 201);
+    return;
+  }
+
+  // ---- invitations ----
+  if (method === "POST" && pathname === "/api/pilot/invitations") {
+    const actor = pilotAdmin();
+    if (!actor) { sendJson(res, { error: "Not authorized" }, 403); return; }
+    const params = await pilotForm();
+    const { invitation, rawToken } = pilot.createInvitation(
+      {
+        email: params.get("email") ?? "",
+        organizationId: params.get("organizationId") ?? "",
+        role: params.get("role") ?? "",
+        projectId: params.get("projectId") || null,
+      },
+      actor
+    );
+    // Mock delivery for the pilot demo build: the activation link is
+    // surfaced ONCE to the administrator; no real email is sent and the
+    // raw token is never logged or stored.
+    const link = `${req.headers.host ? `http://${req.headers.host}` : ""}/invite/${rawToken}`;
+    if (isFormPost(req)) {
+      redirect(res, `/setup?invited=${encodeURIComponent(invitation.email)}&link=${encodeURIComponent(link)}`);
+    } else {
+      sendJson(res, { invitation, activationLink: link }, 201);
+    }
+    return;
+  }
+  const invActionMatch = /^\/api\/pilot\/invitations\/([^/]+)\/(resend|revoke)$/.exec(pathname);
+  if (method === "POST" && invActionMatch) {
+    const actor = pilotAdmin();
+    if (!actor) { sendJson(res, { error: "Not authorized" }, 403); return; }
+    if (invActionMatch[2] === "revoke") {
+      const invitation = pilot.revokeInvitation(invActionMatch[1], actor);
+      pilotRespond("/setup", { invitation });
+    } else {
+      const { invitation, rawToken } = pilot.resendInvitation(invActionMatch[1], actor);
+      const link = `${req.headers.host ? `http://${req.headers.host}` : ""}/invite/${rawToken}`;
+      if (isFormPost(req)) {
+        redirect(res, `/setup?invited=${encodeURIComponent(invitation.email)}&link=${encodeURIComponent(link)}`);
+      } else {
+        sendJson(res, { invitation, activationLink: link });
+      }
+    }
+    return;
+  }
+
+  // ---- project configuration ----
+  if (method === "POST" && pathname === "/api/pilot/projects") {
+    const actor = pilotAdmin();
+    if (!actor) { sendJson(res, { error: "Not authorized" }, 403); return; }
+    const params = await pilotForm();
+    const project = pilot.createDraftProject(Object.fromEntries(params) as never, actor);
+    if (isFormPost(req)) redirect(res, `/setup/project/${project.id}`);
+    else sendJson(res, { project }, 201);
+    return;
+  }
+  const pilotProjectMatch = /^\/api\/pilot\/projects\/([^/]+)(?:\/([a-z-]+))?(?:\/([a-z-]+))?$/.exec(pathname);
+  if (pilotProjectMatch && pathname.startsWith("/api/pilot/projects/")) {
+    const projectId = pilotProjectMatch[1];
+    const sub = pilotProjectMatch[2] ?? "";
+    // Export is readable by any pilot viewer role; everything else is admin.
+    if (method === "GET" && sub === "export") {
+      const viewer = currentUser(req);
+      if (!viewer || !pilot.canViewPilot(viewer)) { sendJson(res, { error: "Not authorized" }, 403); return; }
+      const pkg = pilot.buildExportPackage(projectId);
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Disposition": `attachment; filename="obv-pilot-export-${projectId.slice(0, 8)}.json"`,
+      });
+      res.end(JSON.stringify(pkg, null, 2));
+      return;
+    }
+    if (method === "POST") {
+      const actor = pilotAdmin();
+      if (!actor) { sendJson(res, { error: "Not authorized" }, 403); return; }
+      const setupUrl = (stage: string) => `/setup/project/${projectId}?stage=${stage}`;
+      if (sub === "") {
+        const params = await pilotForm();
+        pilot.updateDraftProject(projectId, Object.fromEntries(params) as never, actor);
+        pilotRespond(setupUrl("project"), { project: repo.getProject(projectId) });
+        return;
+      }
+      if (sub === "template") {
+        const params = await pilotForm();
+        const milestones = pilot.applyTemplate(projectId, params.get("templateKey") ?? "", actor);
+        pilotRespond(setupUrl("milestones"), { milestones }, 201);
+        return;
+      }
+      if (sub === "geography") {
+        const params = await pilotForm();
+        // Form posts carry one textarea (one "lng, lat" per line); JSON
+        // callers may send an array of pairs (flattened to repeated params).
+        const rawCoords = params.getAll("coordinates");
+        const coordLines =
+          rawCoords.length > 1
+            ? rawCoords
+            : (rawCoords[0] ?? "").split(/\n+/);
+        const coordinates = coordLines
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => line.split(/[,;\s]+/).filter(Boolean).map(Number) as [number, number]);
+        const project = pilot.setGeography(
+          projectId,
+          {
+            kind: params.get("kind") ?? "",
+            coordinates,
+            label: params.get("label") ?? undefined,
+            reason: params.get("reason") || null,
+          },
+          actor
+        );
+        pilotRespond(setupUrl("geography"), { project });
+        return;
+      }
+      if (sub === "milestones") {
+        const params = await pilotForm();
+        const milestone = pilot.addMilestone(projectId, Object.fromEntries(params) as never, actor);
+        pilotRespond(setupUrl("milestones"), { milestone }, 201);
+        return;
+      }
+      if (sub === "draw") {
+        const params = await pilotForm();
+        const reason = params.get("reason") || null;
+        for (const m of repo.listMilestones(projectId)) {
+          const raw = params.get(`tranche_${m.id}`);
+          if (raw !== null && Number(raw) !== m.trancheAmount) {
+            pilot.updateMilestone(m.id, { trancheAmount: raw, reason }, actor);
+          }
+        }
+        pilotRespond(setupUrl("draw"), { reconciliation: pilot.drawReconciliation(projectId) });
+        return;
+      }
+      if (sub === "approval-matrix") {
+        const params = await pilotForm();
+        const policy = pilot.setApprovalMatrix(
+          projectId, null, params.getAll("roles"), actor, params.get("reason") || null
+        );
+        pilotRespond(setupUrl("approvals"), { policy });
+        return;
+      }
+      if (sub === "verification-policy") {
+        const params = await pilotForm();
+        const policy = pilot.saveVerificationPolicy(projectId, Object.fromEntries(params) as never, actor);
+        pilotRespond(setupUrl("approvals"), { policy });
+        return;
+      }
+      if (sub === "assignments") {
+        const params = await pilotForm();
+        const assignment = pilot.assignField(
+          projectId,
+          {
+            userId: params.get("userId") ?? "",
+            milestoneIds: params.getAll("milestoneIds").filter(Boolean),
+            effectiveFrom: params.get("effectiveFrom") || null,
+          },
+          actor
+        );
+        pilotRespond(setupUrl("field"), { assignment }, 201);
+        return;
+      }
+      if (sub === "launch") {
+        const result = await pilot.launchProject(projectId, actor);
+        pilotRespond(setupUrl("review"), result, 201);
+        return;
+      }
+      if (sub === "import") {
+        const kind = pilotProjectMatch[3] ?? "";
+        const params = await pilotForm(512 * 1024);
+        const commit = params.get("mode") === "commit";
+        const result = pilot.importCsv(kind, projectId, params.get("csv") ?? "", commit, actor);
+        if (isFormPost(req)) {
+          const stage = kind === "requirements" ? "evidence" : "milestones";
+          redirect(
+            res,
+            `${setupUrl(stage)}&import=${encodeURIComponent(JSON.stringify({ kind, ok: result.ok, imported: result.imported, errors: result.errors.slice(0, 8) }))}`
+          );
+        } else {
+          sendJson(res, result, result.ok ? 200 : 422);
+        }
+        return;
+      }
+    }
+  }
+  const pilotMsMatch = /^\/api\/pilot\/milestones\/([^/]+)(?:\/(delete))?$/.exec(pathname);
+  if (method === "POST" && pilotMsMatch) {
+    const actor = pilotAdmin();
+    if (!actor) { sendJson(res, { error: "Not authorized" }, 403); return; }
+    const milestone = repo.getMilestone(pilotMsMatch[1]);
+    const backTo = milestone ? `/setup/project/${milestone.projectId}?stage=milestones` : "/setup";
+    if (pilotMsMatch[2] === "delete") {
+      pilot.removeMilestone(pilotMsMatch[1], actor);
+      pilotRespond(backTo, { ok: true });
+    } else {
+      const params = await pilotForm();
+      const updated = pilot.updateMilestone(pilotMsMatch[1], Object.fromEntries(params) as never, actor);
+      pilotRespond(backTo, { milestone: updated });
+    }
+    return;
+  }
+  if (method === "POST" && pathname === "/api/pilot/requirements") {
+    const actor = pilotAdmin();
+    if (!actor) { sendJson(res, { error: "Not authorized" }, 403); return; }
+    const params = await pilotForm();
+    const requirement = pilot.saveRequirement(Object.fromEntries(params) as never, actor);
+    const ms = repo.getMilestone(requirement.milestoneId);
+    pilotRespond(ms ? `/setup/project/${ms.projectId}?stage=evidence` : "/setup", { requirement }, 201);
+    return;
+  }
+  const reqDeleteMatch = /^\/api\/pilot\/requirements\/([^/]+)\/delete$/.exec(pathname);
+  if (method === "POST" && reqDeleteMatch) {
+    const actor = pilotAdmin();
+    if (!actor) { sendJson(res, { error: "Not authorized" }, 403); return; }
+    const requirement = repo.getRequirement(reqDeleteMatch[1]);
+    const ms = requirement ? repo.getMilestone(requirement.milestoneId) : null;
+    pilot.removeRequirement(reqDeleteMatch[1], actor);
+    pilotRespond(ms ? `/setup/project/${ms.projectId}?stage=evidence` : "/setup", { ok: true });
+    return;
+  }
+  const assignDeactivateMatch = /^\/api\/pilot\/assignments\/([^/]+)\/deactivate$/.exec(pathname);
+  if (method === "POST" && assignDeactivateMatch) {
+    const actor = pilotAdmin();
+    if (!actor) { sendJson(res, { error: "Not authorized" }, 403); return; }
+    const rows = repo.listProjects().flatMap((p) => repo.listAssignmentsForProject(p.id));
+    const target = rows.find((a) => a.id === assignDeactivateMatch[1]);
+    repo.deactivateAssignment(assignDeactivateMatch[1]);
+    pilotRespond(target ? `/setup/project/${target.projectId}?stage=field` : "/setup", { ok: true });
+    return;
+  }
+  const csvTemplateMatch = /^\/api\/pilot\/csv-template\/([a-z]+)$/.exec(pathname);
+  if (method === "GET" && csvTemplateMatch) {
+    if (!currentUser(req)) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    const text = pilot.csvTemplateText(csvTemplateMatch[1]);
+    res.writeHead(200, {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="obv-${csvTemplateMatch[1]}-template.csv"`,
+    });
+    res.end(text);
+    return;
+  }
+
+  // Development Full Reset — DANGEROUS: drops the entire database
+  // including user-created pilot projects. Gated behind an authorized
+  // role AND a typed confirmation phrase; never exposed casually.
+  if (method === "POST" && pathname === "/api/dev/full-reset") {
+    const resetUser = currentUser(req);
+    if (!resetUser || resetUser.role !== "PROJECT_MANAGER") {
+      sendJson(res, { error: "Not authorized" }, 403);
+      return;
+    }
+    const body = (await readBody(req, 4 * 1024)).toString("utf8");
+    const confirm = isFormPost(req)
+      ? new URLSearchParams(body).get("confirm")
+      : JSON.parse(body || "{}").confirm;
+    if (confirm !== "FULL RESET") {
+      sendJson(res, { error: 'Type the exact confirmation phrase "FULL RESET" to proceed' }, 422);
+      return;
+    }
+    await seedDemo(); // full path: drops everything and reseeds
+    if (isFormPost(req)) redirect(res, "/overview");
+    else sendJson(res, { ok: true, mode: "FULL" });
     return;
   }
 
@@ -1640,6 +2010,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     "/overview", "/dashboard", "/projects", "/project/", "/milestone/",
     "/approvals", "/ledger", "/reports", "/compliance", "/insights", "/more", "/field",
     "/map", "/communications", "/issues", "/issue/", "/evidence-drafts",
+    "/setup", "/pilot",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -1653,7 +2024,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       redirect(res, "/overview", 302);
       return;
     }
-    const projects = await allProjectCards();
+    // Overview shows operational (launched) projects; drafts live in
+    // Pilot Setup until launched.
+    const projects = (await allProjectCards()).filter((p) => p.project.status !== "DRAFT");
     const chain = await wormEvidenceStore.verifyChain();
     sendHtml(
       res,
@@ -2034,6 +2407,164 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
               .sort()
               .pop() ?? null,
         },
+      })
+    );
+    return;
+  }
+
+  // ---- pilot setup workspace ----
+  if (method === "GET" && pathname === "/setup") {
+    if (!pilot.canViewPilot(user!)) {
+      sendHtml(res, renderError(navFor(user!, ""), "Not available", "Pilot setup is available to Project Manager, Funder Representative, and Compliance roles."), 403);
+      return;
+    }
+    const pilotProjects = repo.listProjects().filter((p) => pilot.isPilotProject(p.id));
+    sendHtml(
+      res,
+      renderPilotSetup({
+        nav: navFor(user!, "pilot"),
+        orgs: repo.listOrganizations(),
+        invitations: repo.listInvitations().map((invitation) => ({
+          invitation,
+          org: repo.getOrganization(invitation.organizationId),
+          acceptedUser: invitation.acceptedUserId ? repo.getUser(invitation.acceptedUserId) : null,
+        })),
+        projects: pilotProjects.map((project) => ({
+          project,
+          stages: pilot.setupStages(project.id),
+        })),
+        users: usersById(),
+        canAdmin: pilot.canAdminPilot(user!),
+        issuedInvite:
+          url.searchParams.get("invited") && url.searchParams.get("link")
+            ? { email: url.searchParams.get("invited")!, link: url.searchParams.get("link")! }
+            : null,
+        error: url.searchParams.get("error"),
+      })
+    );
+    return;
+  }
+  const setupProjectMatch = /^\/setup\/project\/([^/]+)$/.exec(pathname);
+  if (method === "GET" && setupProjectMatch) {
+    if (!pilot.canViewPilot(user!)) {
+      redirect(res, "/overview");
+      return;
+    }
+    const project = repo.getProject(setupProjectMatch[1]);
+    if (!project) {
+      sendHtml(res, renderError(navFor(user!, ""), "Not found", "No project at this address."), 404);
+      return;
+    }
+    const stages = pilot.setupStages(project.id);
+    const stage = stages.some((st) => st.slug === url.searchParams.get("stage"))
+      ? url.searchParams.get("stage")!
+      : "project";
+    const milestones = repo.listMilestones(project.id);
+    let importResult: { kind: string; ok: boolean; imported: number; errors: string[] } | null = null;
+    try {
+      importResult = url.searchParams.get("import")
+        ? JSON.parse(url.searchParams.get("import")!)
+        : null;
+    } catch { /* ignore malformed */ }
+    sendHtml(
+      res,
+      renderProjectSetup({
+        nav: navFor(user!, "pilot"),
+        project,
+        stage,
+        stages,
+        canAdmin: pilot.canAdminPilot(user!),
+        data: {
+          orgs: repo.listOrganizations(),
+          milestones,
+          requirementsByMilestone: new Map(
+            milestones.map((m) => [m.id, repo.listRequirementsForMilestone(m.id)])
+          ),
+          templates: PROJECT_TEMPLATES,
+          reconciliation: pilot.drawReconciliation(project.id),
+          approvalPolicies: repo.listApprovalPolicies(project.id),
+          verificationPolicy: repo.getVerificationPolicy(project.id),
+          assignments: repo.listAssignmentsForProject(project.id).map((assignment) => ({
+            assignment,
+            user: repo.getUser(assignment.userId),
+          })),
+          participants: pilot.projectParticipants(project.id),
+          readiness: pilot.evaluateReadiness(project.id),
+          route: repo.listSpatialFeatures(project.id).find((f) => f.kind === "ROUTE") ?? null,
+          integrations: {
+            teamsConfigured: syncConfigured(),
+            whatsappConfigured: whatsappConfigured(),
+          },
+          audit: repo.listConfigAudit(project.id, 50),
+          snapshots: repo.listConfigSnapshots(project.id),
+          users: usersById(),
+          importResult,
+          error: url.searchParams.get("error"),
+        },
+      })
+    );
+    return;
+  }
+
+  // ---- pilot operations dashboard ----
+  if (method === "GET" && pathname === "/pilot") {
+    const allProjects = repo.listProjects();
+    const activeProjects = allProjects.filter((p) => p.status === "ACTIVE");
+    const draftProjects = allProjects.filter((p) => p.status === "DRAFT");
+    const verifications = repo.listAllVerifications();
+    const allMilestones = allProjects.flatMap((p) => repo.listMilestones(p.id));
+    const fundsHeld = allMilestones
+      .filter((m) => m.accountStatus === "HELD" && !m.archived)
+      .reduce((sum, m) => sum + m.trancheAmount, 0);
+    const fundsReleased = allMilestones
+      .filter((m) => m.accountStatus === "RELEASED")
+      .reduce((sum, m) => sum + m.trancheAmount, 0);
+    const openClarifications = allMilestones
+      .flatMap((m) => repo.listClarificationsForMilestone(m.id))
+      .filter((c) => !["ACCEPTED", "CLOSED"].includes(c.status)).length;
+    const activeRows = await Promise.all(
+      activeProjects.map(async (project) => {
+        const summary = await virtualAccountService.getProjectSummary(project.id);
+        return {
+          project,
+          held: summary.held,
+          released: summary.released,
+          pendingApprovals: repo
+            .listApprovalRequestsForProject(project.id)
+            .filter((a) => a.status === "PENDING").length,
+        };
+      })
+    );
+    sendHtml(
+      res,
+      renderPilotDashboard({
+        nav: navFor(user!, "pilot"),
+        stats: {
+          activeProjects: activeProjects.length,
+          draftProjects: draftProjects.length,
+          evidenceSubmitted: verifications.length,
+          verified: verifications.filter((v) => v.verdict === "VERIFIED").length,
+          needsReview: verifications.filter((v) => v.verdict === "NEEDS_REVIEW").length,
+          rejected: verifications.filter((v) => v.verdict === "REJECTED").length,
+          pendingApprovals: repo.listPendingApprovalRequests().length,
+          fundsHeld,
+          fundsReleased,
+          openIssues: repo.listFieldIssues().filter((i) => !["RESOLVED", "CLOSED"].includes(i.status)).length,
+          openClarifications,
+          invitationsPending: repo.listInvitations().filter((i) => i.status === "PENDING").length,
+        },
+        integrations: {
+          teamsConfigured: syncConfigured(),
+          whatsappConfigured: whatsappConfigured(),
+        },
+        drafts: draftProjects.map((project) => ({
+          project,
+          blockers: pilot
+            .evaluateReadiness(project.id)
+            .checks.filter((c) => !c.ok && !c.optional).length,
+        })),
+        active: activeRows,
+        canAdmin: pilot.canAdminPilot(user!),
       })
     );
     return;

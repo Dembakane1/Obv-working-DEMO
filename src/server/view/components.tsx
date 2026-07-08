@@ -141,6 +141,7 @@ const NAV_ITEMS: Array<{ key: string; href: string; label: string; icon: () => V
   { key: "ledger", href: "/ledger", label: "Evidence Ledger", icon: icons.ledger },
   { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
   { key: "compliance", href: "/compliance", label: "Risk & Compliance", icon: icons.shield },
+  { key: "pilot", href: "/pilot", label: "Pilot Operations", icon: icons.activity },
   { key: "insights", href: "/insights", label: "Verification Insights", icon: icons.insights },
 ];
 

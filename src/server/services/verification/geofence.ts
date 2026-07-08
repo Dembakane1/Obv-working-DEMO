@@ -21,7 +21,11 @@ export class GeofenceVerificationService {
     latitude: number | null | undefined,
     longitude: number | null | undefined,
     boundary: GeoPolygon | null | undefined,
-    projectName: string
+    projectName: string,
+    /** Bounded per-project policy overrides (pilot configuration). The
+     *  non-overridable rules — missing GPS -> REVIEW, impossible
+     *  coordinates never passed — are above this parameter's reach. */
+    opts?: { marginDeg?: number }
   ): StructuredCheck {
     const name = GEOFENCE_CHECK_NAME;
 
@@ -51,7 +55,7 @@ export class GeofenceVerificationService {
     }
     // Outside the polygon: indeterminate if within the margin of the
     // boundary bounding box, clearly outside beyond it.
-    const margin = VERIFICATION_POLICY.GEOFENCE_REVIEW_MARGIN_DEG;
+    const margin = opts?.marginDeg ?? VERIFICATION_POLICY.GEOFENCE_REVIEW_MARGIN_DEG;
     let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
     for (const [x, y] of boundary) {
       minLng = Math.min(minLng, x); maxLng = Math.max(maxLng, x);

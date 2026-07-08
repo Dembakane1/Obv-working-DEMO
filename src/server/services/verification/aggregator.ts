@@ -30,6 +30,10 @@ export class VerificationAggregator {
     geofence: StructuredCheck;
     metadata: StructuredCheck;
     source: VerificationSource;
+    /** Bounded per-project minimum-confidence override (pilot policy).
+     *  Hard-fail conditions (visual mismatch, metadata FAIL, clear
+     *  geofence FAIL) reject regardless of this value. */
+    verifiedMinConfidence?: number;
   }): AggregatedVerification {
     const P = VERIFICATION_POLICY;
     const { visual, geofence, metadata, source } = input;
@@ -64,7 +68,7 @@ export class VerificationAggregator {
       visual.passed &&
       geofence.status === "PASS" &&
       metadata.status === "PASS" &&
-      confidence >= P.VERIFIED_MIN_CONFIDENCE
+      confidence >= (input.verifiedMinConfidence ?? P.VERIFIED_MIN_CONFIDENCE)
     ) {
       verdict = "VERIFIED";
     } else {

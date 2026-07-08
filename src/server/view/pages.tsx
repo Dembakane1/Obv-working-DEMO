@@ -1828,6 +1828,8 @@ export function renderMore(input: { nav: NavContext }): string {
     { href: "/reports", label: "Reports", icon: icons.reports, desc: "Document registry & exports" },
     { href: "/compliance", label: "Risk & Compliance", icon: icons.shield, desc: "Open review items and integrity" },
     { href: "/issues", label: "Field Issues", icon: icons.activity, desc: "Operational issues from field coordination" },
+    { href: "/pilot", label: "Pilot Operations", icon: icons.activity, desc: "Pilot status across projects" },
+    { href: "/setup", label: "Pilot Setup", icon: icons.projects, desc: "Customer onboarding & project configuration" },
     { href: "/insights", label: "Verification Insights", icon: icons.insights, desc: "Automated observations" },
   ];
   return renderDocument(

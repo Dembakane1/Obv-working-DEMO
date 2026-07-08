@@ -16,6 +16,10 @@ export class MetadataIntegrityService {
     deviceMetadata: DeviceMetadata | null | undefined;
     /** "now" injectable for tests. */
     now?: number;
+    /** Bounded per-project offline-window override (pilot policy). Hard
+     *  rules — missing/malformed/future timestamps FAIL — are not
+     *  configurable. */
+    maxOfflineDelayDays?: number;
   }): StructuredCheck {
     const name = METADATA_CHECK_NAME;
     const now = input.now ?? Date.now();
@@ -36,11 +40,12 @@ export class MetadataIntegrityService {
       return { name, status: "FAIL", detail: "Capture timestamp is after the upload timestamp beyond clock-skew tolerance." };
     }
     const delayMs = uploaded - captured;
-    if (delayMs > P.MAX_OFFLINE_UPLOAD_DELAY_DAYS * 24 * 3_600_000) {
+    const offlineWindowDays = input.maxOfflineDelayDays ?? P.MAX_OFFLINE_UPLOAD_DELAY_DAYS;
+    if (delayMs > offlineWindowDays * 24 * 3_600_000) {
       return {
         name,
         status: "REVIEW",
-        detail: `Upload occurred ${Math.round(delayMs / 86_400_000)} days after capture — beyond the ${P.MAX_OFFLINE_UPLOAD_DELAY_DAYS}-day offline window; review recommended.`,
+        detail: `Upload occurred ${Math.round(delayMs / 86_400_000)} days after capture — beyond the ${offlineWindowDays}-day offline window; review recommended.`,
       };
     }
     if (!input.deviceMetadata?.userAgent) {

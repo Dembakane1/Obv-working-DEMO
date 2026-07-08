@@ -34,6 +34,27 @@ function toProject(r: Row): Project {
     totalBudget: r.total_budget as number,
     status: r.status as Project["status"],
     projectType: r.project_type as Project["projectType"],
+    pilot: {
+      code: (r.code as string) ?? null,
+      category: (r.category as never) ?? null,
+      country: (r.country as string) ?? null,
+      region: (r.region as string) ?? null,
+      locality: (r.locality as string) ?? null,
+      implementingOrgId: (r.implementing_org_id as string) ?? null,
+      contractorOrgId: (r.contractor_org_id as string) ?? null,
+      funderOrgId: (r.funder_org_id as string) ?? null,
+      engineerOrgId: (r.engineer_org_id as string) ?? null,
+      obvControlledAmount: (r.obv_controlled_amount as number) ?? null,
+      currency: (r.currency as string) ?? null,
+      plannedStart: (r.planned_start as string) ?? null,
+      plannedEnd: (r.planned_end as string) ?? null,
+      timezone: (r.timezone as string) ?? null,
+      geometryKind: (r.geometry_kind as never) ?? null,
+      createdBy: (r.created_by as string) ?? null,
+      launchedAt: (r.launched_at as string) ?? null,
+      launchedBy: (r.launched_by as string) ?? null,
+      configVersion: (r.config_version as number) ?? 1,
+    },
   };
 }
 
@@ -47,6 +68,11 @@ function toMilestone(r: Row): Milestone {
     trancheAmount: r.tranche_amount as number,
     status: r.status as Milestone["status"],
     accountStatus: r.account_status as Milestone["accountStatus"],
+    plannedStart: (r.planned_start as string) ?? null,
+    plannedEnd: (r.planned_end as string) ?? null,
+    weight: (r.weight as number) ?? null,
+    spatialLabel: (r.spatial_label as string) ?? null,
+    archived: Boolean(r.archived),
   };
 }
 
@@ -77,6 +103,7 @@ function toVerification(r: Row): Verification {
     reasoning: r.reasoning as string,
     createdAt: r.created_at as string,
     source: ((r.source as string) ?? "MOCK_DEFAULT") as Verification["source"],
+    policyVersion: (r.policy_version as number) ?? null,
   };
 }
 
@@ -152,9 +179,61 @@ export function getUser(id: string): User | null {
   return r ? toUser(r as Row) : null;
 }
 
+function toOrganization(r: Row): Organization {
+  return {
+    id: r.id as string,
+    name: r.name as string,
+    kind: r.kind as string,
+    profile: {
+      country: (r.country as string) ?? null,
+      region: (r.region as string) ?? null,
+      website: (r.website as string) ?? null,
+      primaryContact: (r.primary_contact as string) ?? null,
+      billingContact: (r.billing_contact as string) ?? null,
+      timezone: (r.timezone as string) ?? null,
+      currency: (r.currency as string) ?? null,
+      language: (r.language as string) ?? null,
+      pilotStart: (r.pilot_start as string) ?? null,
+      pilotEnd: (r.pilot_end as string) ?? null,
+      pilotReference: (r.pilot_reference as string) ?? null,
+      notes: (r.notes as string) ?? null,
+    },
+  };
+}
+
 export function getOrganization(id: string): Organization | null {
   const r = getDb().prepare("SELECT * FROM organizations WHERE id = ?").get(id);
-  return r ? (r as unknown as Organization) : null;
+  return r ? toOrganization(r as Row) : null;
+}
+
+export function listOrganizations(): Organization[] {
+  return getDb()
+    .prepare("SELECT * FROM organizations ORDER BY name")
+    .all()
+    .map((r) => toOrganization(r as Row));
+}
+
+export function updateOrganization(
+  id: string,
+  fields: { name?: string; kind?: string } & Partial<NonNullable<Organization["profile"]>>
+): void {
+  const cur = getOrganization(id);
+  if (!cur) return;
+  const prof = { ...cur.profile!, ...fields };
+  getDb()
+    .prepare(
+      `UPDATE organizations SET name = ?, kind = ?, country = ?, region = ?,
+         website = ?, primary_contact = ?, billing_contact = ?, timezone = ?,
+         currency = ?, language = ?, pilot_start = ?, pilot_end = ?,
+         pilot_reference = ?, notes = ?
+       WHERE id = ?`
+    )
+    .run(
+      fields.name ?? cur.name, fields.kind ?? cur.kind, prof.country, prof.region,
+      prof.website, prof.primaryContact, prof.billingContact, prof.timezone,
+      prof.currency, prof.language, prof.pilotStart, prof.pilotEnd,
+      prof.pilotReference, prof.notes, id
+    );
 }
 
 // ---------- projects & milestones ----------
@@ -163,12 +242,25 @@ export function insertProject(p: Project): void {
   getDb()
     .prepare(
       `INSERT INTO projects (id, organization_id, name, description, location,
-         site_boundary, total_budget, status, project_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         site_boundary, total_budget, status, project_type, code, category,
+         country, region, locality, implementing_org_id, contractor_org_id,
+         funder_org_id, engineer_org_id, obv_controlled_amount, currency,
+         planned_start, planned_end, timezone, geometry_kind, created_by,
+         launched_at, launched_by, config_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       p.id, p.organizationId, p.name, p.description, p.location,
-      JSON.stringify(p.siteBoundary), p.totalBudget, p.status, p.projectType
+      JSON.stringify(p.siteBoundary), p.totalBudget, p.status, p.projectType,
+      p.pilot?.code ?? null, p.pilot?.category ?? null, p.pilot?.country ?? null,
+      p.pilot?.region ?? null, p.pilot?.locality ?? null,
+      p.pilot?.implementingOrgId ?? null, p.pilot?.contractorOrgId ?? null,
+      p.pilot?.funderOrgId ?? null, p.pilot?.engineerOrgId ?? null,
+      p.pilot?.obvControlledAmount ?? null, p.pilot?.currency ?? null,
+      p.pilot?.plannedStart ?? null, p.pilot?.plannedEnd ?? null,
+      p.pilot?.timezone ?? null, p.pilot?.geometryKind ?? null,
+      p.pilot?.createdBy ?? null, p.pilot?.launchedAt ?? null,
+      p.pilot?.launchedBy ?? null, p.pilot?.configVersion ?? 1
     );
 }
 
@@ -188,12 +280,15 @@ export function insertMilestone(m: Milestone): void {
   getDb()
     .prepare(
       `INSERT INTO milestones (id, project_id, seq, title, requirement,
-         tranche_amount, status, account_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         tranche_amount, status, account_status, planned_start, planned_end,
+         weight, spatial_label, archived)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       m.id, m.projectId, m.seq, m.title, m.requirement,
-      m.trancheAmount, m.status, m.accountStatus
+      m.trancheAmount, m.status, m.accountStatus,
+      m.plannedStart ?? null, m.plannedEnd ?? null, m.weight ?? null,
+      m.spatialLabel ?? null, m.archived ? 1 : 0
     );
 }
 
@@ -277,12 +372,13 @@ export function insertVerification(v: Verification): void {
   getDb()
     .prepare(
       `INSERT INTO verifications (id, evidence_item_id, verdict, confidence,
-         checks, reasoning, created_at, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         checks, reasoning, created_at, source, policy_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       v.id, v.evidenceItemId, v.verdict, v.confidence,
-      JSON.stringify(v.checks), v.reasoning, v.createdAt, v.source
+      JSON.stringify(v.checks), v.reasoning, v.createdAt, v.source,
+      v.policyVersion ?? null
     );
 }
 
@@ -517,6 +613,9 @@ import type {
   Report, SpatialFeature, ConversationThread, ChatMessage,
   ExternalThreadBinding, ExternalIdentityMapping, ExternalParticipantContext,
   FieldIssue, FieldIssueEvent, ClarificationRequest, EvidenceDraft,
+  Invitation, EvidenceRequirement, VerificationPolicyConfig, ApprovalPolicy,
+  FieldAssignment, ConfigSnapshot, ConfigAuditEntry, PilotMetricTarget,
+  UserRole,
 } from "../../shared/types";
 
 function toReport(r: Row): Report {
@@ -578,6 +677,10 @@ export function insertSpatialFeature(f: SpatialFeature): void {
        VALUES (?, ?, ?, ?, ?, ?)`
     )
     .run(f.id, f.projectId, f.milestoneId, f.kind, f.label, JSON.stringify(f.geometry));
+}
+
+export function deleteSpatialFeatures(projectId: string): void {
+  getDb().prepare("DELETE FROM spatial_features WHERE project_id = ?").run(projectId);
 }
 
 export function listSpatialFeatures(projectId: string): SpatialFeature[] {
@@ -1301,4 +1404,468 @@ export function updateMessageDeliveryByExternalId(
     .prepare("UPDATE messages SET delivery_status = ? WHERE external_message_id = ? AND origin = 'OBV_LOCAL'")
     .run(deliveryStatus, externalMessageId);
   return Number(result.changes) > 0;
+}
+
+// ====================== pilot onboarding (additive) ======================
+// Configuration CRUD only — no function below can create evidence,
+// verifications, ledger entries, approval records, or account events.
+
+// ---------- project/milestone configuration updates ----------
+
+export function updateProjectFields(
+  id: string,
+  fields: Partial<{
+    name: string; description: string; location: string; status: Project["status"];
+    siteBoundary: Project["siteBoundary"]; totalBudget: number;
+  }> &
+    Partial<NonNullable<Project["pilot"]>>
+): void {
+  const cur = getProject(id);
+  if (!cur) return;
+  const pilot = { ...cur.pilot!, ...fields };
+  getDb()
+    .prepare(
+      `UPDATE projects SET name = ?, description = ?, location = ?, status = ?,
+         site_boundary = ?, total_budget = ?, code = ?, category = ?, country = ?,
+         region = ?, locality = ?, implementing_org_id = ?, contractor_org_id = ?,
+         funder_org_id = ?, engineer_org_id = ?, obv_controlled_amount = ?,
+         currency = ?, planned_start = ?, planned_end = ?, timezone = ?,
+         geometry_kind = ?, created_by = ?, launched_at = ?, launched_by = ?,
+         config_version = ?
+       WHERE id = ?`
+    )
+    .run(
+      fields.name ?? cur.name, fields.description ?? cur.description,
+      fields.location ?? cur.location, fields.status ?? cur.status,
+      JSON.stringify(fields.siteBoundary ?? cur.siteBoundary),
+      fields.totalBudget ?? cur.totalBudget,
+      pilot.code, pilot.category, pilot.country, pilot.region, pilot.locality,
+      pilot.implementingOrgId, pilot.contractorOrgId, pilot.funderOrgId,
+      pilot.engineerOrgId, pilot.obvControlledAmount, pilot.currency,
+      pilot.plannedStart, pilot.plannedEnd, pilot.timezone, pilot.geometryKind,
+      pilot.createdBy, pilot.launchedAt, pilot.launchedBy, pilot.configVersion,
+      id
+    );
+}
+
+export function updateMilestoneFields(
+  id: string,
+  fields: Partial<
+    Pick<
+      Milestone,
+      "title" | "requirement" | "seq" | "trancheAmount" | "plannedStart" |
+      "plannedEnd" | "weight" | "spatialLabel" | "archived"
+    >
+  >
+): void {
+  const cur = getMilestone(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE milestones SET title = ?, requirement = ?, seq = ?,
+         tranche_amount = ?, planned_start = ?, planned_end = ?, weight = ?,
+         spatial_label = ?, archived = ?
+       WHERE id = ?`
+    )
+    .run(
+      fields.title ?? cur.title, fields.requirement ?? cur.requirement,
+      fields.seq ?? cur.seq, fields.trancheAmount ?? cur.trancheAmount,
+      fields.plannedStart !== undefined ? fields.plannedStart : cur.plannedStart ?? null,
+      fields.plannedEnd !== undefined ? fields.plannedEnd : cur.plannedEnd ?? null,
+      fields.weight !== undefined ? fields.weight : cur.weight ?? null,
+      fields.spatialLabel !== undefined ? fields.spatialLabel : cur.spatialLabel ?? null,
+      (fields.archived !== undefined ? fields.archived : cur.archived) ? 1 : 0,
+      id
+    );
+}
+
+/** Hard delete — pre-launch draft milestones only (guarded in the service). */
+export function deleteMilestone(id: string): void {
+  getDb().prepare("DELETE FROM evidence_requirements WHERE milestone_id = ?").run(id);
+  getDb().prepare("DELETE FROM approval_policies WHERE milestone_id = ?").run(id);
+  getDb().prepare("DELETE FROM milestones WHERE id = ?").run(id);
+}
+
+// ---------- invitations ----------
+
+function toInvitation(r: Row): Invitation {
+  return {
+    id: r.id as string,
+    email: r.email as string,
+    organizationId: r.organization_id as string,
+    role: r.role as UserRole,
+    projectId: (r.project_id as string) ?? null,
+    tokenHash: r.token_hash as string,
+    status: r.status as Invitation["status"],
+    expiresAt: r.expires_at as string,
+    createdBy: r.created_by as string,
+    createdAt: r.created_at as string,
+    acceptedAt: (r.accepted_at as string) ?? null,
+    acceptedUserId: (r.accepted_user_id as string) ?? null,
+    revokedAt: (r.revoked_at as string) ?? null,
+  };
+}
+
+export function insertInvitation(i: Invitation): void {
+  getDb()
+    .prepare(
+      `INSERT INTO invitations (id, email, organization_id, role, project_id,
+         token_hash, status, expires_at, created_by, created_at, accepted_at,
+         accepted_user_id, revoked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      i.id, i.email, i.organizationId, i.role, i.projectId, i.tokenHash,
+      i.status, i.expiresAt, i.createdBy, i.createdAt, i.acceptedAt,
+      i.acceptedUserId, i.revokedAt
+    );
+}
+
+export function getInvitation(id: string): Invitation | null {
+  const r = getDb().prepare("SELECT * FROM invitations WHERE id = ?").get(id);
+  return r ? toInvitation(r as Row) : null;
+}
+
+export function findInvitationByTokenHash(tokenHash: string): Invitation | null {
+  const r = getDb().prepare("SELECT * FROM invitations WHERE token_hash = ?").get(tokenHash);
+  return r ? toInvitation(r as Row) : null;
+}
+
+export function listInvitations(): Invitation[] {
+  return getDb()
+    .prepare("SELECT * FROM invitations ORDER BY created_at DESC")
+    .all()
+    .map((r) => toInvitation(r as Row));
+}
+
+export function updateInvitation(
+  id: string,
+  patch: Partial<Pick<Invitation, "status" | "tokenHash" | "expiresAt" | "acceptedAt" | "acceptedUserId" | "revokedAt">>
+): void {
+  const cur = getInvitation(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE invitations SET status = ?, token_hash = ?, expires_at = ?,
+         accepted_at = ?, accepted_user_id = ?, revoked_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.status ?? cur.status,
+      patch.tokenHash ?? cur.tokenHash,
+      patch.expiresAt ?? cur.expiresAt,
+      patch.acceptedAt !== undefined ? patch.acceptedAt : cur.acceptedAt,
+      patch.acceptedUserId !== undefined ? patch.acceptedUserId : cur.acceptedUserId,
+      patch.revokedAt !== undefined ? patch.revokedAt : cur.revokedAt,
+      id
+    );
+}
+
+// ---------- evidence requirements ----------
+
+function toRequirement(r: Row): EvidenceRequirement {
+  return {
+    id: r.id as string,
+    milestoneId: r.milestone_id as string,
+    sort: r.sort as number,
+    type: r.type as EvidenceRequirement["type"],
+    title: r.title as string,
+    description: r.description as string,
+    required: Boolean(r.required),
+    minCount: r.min_count as number,
+    mediaTypes: JSON.parse((r.media_types as string) || "[]"),
+    geolocationRequired: Boolean(r.geolocation_required),
+    recencyDays: (r.recency_days as number) ?? null,
+    notes: (r.notes as string) ?? null,
+  };
+}
+
+export function insertRequirement(req: EvidenceRequirement): void {
+  getDb()
+    .prepare(
+      `INSERT INTO evidence_requirements (id, milestone_id, sort, type, title,
+         description, required, min_count, media_types, geolocation_required,
+         recency_days, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      req.id, req.milestoneId, req.sort, req.type, req.title, req.description,
+      req.required ? 1 : 0, req.minCount, JSON.stringify(req.mediaTypes),
+      req.geolocationRequired ? 1 : 0, req.recencyDays, req.notes
+    );
+}
+
+export function getRequirement(id: string): EvidenceRequirement | null {
+  const r = getDb().prepare("SELECT * FROM evidence_requirements WHERE id = ?").get(id);
+  return r ? toRequirement(r as Row) : null;
+}
+
+export function listRequirementsForMilestone(milestoneId: string): EvidenceRequirement[] {
+  return getDb()
+    .prepare("SELECT * FROM evidence_requirements WHERE milestone_id = ? ORDER BY sort, title")
+    .all(milestoneId)
+    .map((r) => toRequirement(r as Row));
+}
+
+export function updateRequirement(id: string, patch: Partial<EvidenceRequirement>): void {
+  const cur = getRequirement(id);
+  if (!cur) return;
+  const next = { ...cur, ...patch };
+  getDb()
+    .prepare(
+      `UPDATE evidence_requirements SET sort = ?, type = ?, title = ?,
+         description = ?, required = ?, min_count = ?, media_types = ?,
+         geolocation_required = ?, recency_days = ?, notes = ?
+       WHERE id = ?`
+    )
+    .run(
+      next.sort, next.type, next.title, next.description, next.required ? 1 : 0,
+      next.minCount, JSON.stringify(next.mediaTypes),
+      next.geolocationRequired ? 1 : 0, next.recencyDays, next.notes, id
+    );
+}
+
+export function deleteRequirement(id: string): void {
+  getDb().prepare("DELETE FROM evidence_requirements WHERE id = ?").run(id);
+}
+
+// ---------- verification policy (bounded customer policy) ----------
+
+export function getVerificationPolicy(projectId: string): VerificationPolicyConfig | null {
+  const r = getDb()
+    .prepare("SELECT * FROM verification_policies WHERE project_id = ?")
+    .get(projectId);
+  if (!r) return null;
+  const row = r as Row;
+  return {
+    projectId: row.project_id as string,
+    aiConfidenceThreshold: (row.ai_confidence_threshold as number) ?? null,
+    geofencePolicy: (row.geofence_policy as never) ?? null,
+    recencyDays: (row.recency_days as number) ?? null,
+    offlineAllowanceDays: (row.offline_allowance_days as number) ?? null,
+    updatedAt: row.updated_at as string,
+    updatedBy: (row.updated_by as string) ?? null,
+  };
+}
+
+export function upsertVerificationPolicy(p: VerificationPolicyConfig): void {
+  getDb()
+    .prepare(
+      `INSERT INTO verification_policies (project_id, ai_confidence_threshold,
+         geofence_policy, recency_days, offline_allowance_days, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id) DO UPDATE SET
+         ai_confidence_threshold = excluded.ai_confidence_threshold,
+         geofence_policy = excluded.geofence_policy,
+         recency_days = excluded.recency_days,
+         offline_allowance_days = excluded.offline_allowance_days,
+         updated_at = excluded.updated_at,
+         updated_by = excluded.updated_by`
+    )
+    .run(
+      p.projectId, p.aiConfidenceThreshold, p.geofencePolicy, p.recencyDays,
+      p.offlineAllowanceDays, p.updatedAt, p.updatedBy
+    );
+}
+
+// ---------- approval matrix ----------
+
+function toApprovalPolicy(r: Row): ApprovalPolicy {
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    milestoneId: (r.milestone_id as string) ?? null,
+    requiredRoles: JSON.parse(r.required_roles as string),
+    updatedAt: r.updated_at as string,
+    updatedBy: (r.updated_by as string) ?? null,
+  };
+}
+
+export function upsertApprovalPolicy(p: ApprovalPolicy): void {
+  // SQLite treats NULLs as distinct in UNIQUE constraints, so the
+  // project-default row (milestone_id NULL) is replaced explicitly.
+  if (p.milestoneId === null) {
+    getDb()
+      .prepare("DELETE FROM approval_policies WHERE project_id = ? AND milestone_id IS NULL")
+      .run(p.projectId);
+    getDb()
+      .prepare(
+        `INSERT INTO approval_policies (id, project_id, milestone_id, required_roles,
+           updated_at, updated_by)
+         VALUES (?, ?, NULL, ?, ?, ?)`
+      )
+      .run(p.id, p.projectId, JSON.stringify(p.requiredRoles), p.updatedAt, p.updatedBy);
+    return;
+  }
+  getDb()
+    .prepare(
+      `INSERT INTO approval_policies (id, project_id, milestone_id, required_roles,
+         updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, milestone_id) DO UPDATE SET
+         required_roles = excluded.required_roles,
+         updated_at = excluded.updated_at,
+         updated_by = excluded.updated_by`
+    )
+    .run(p.id, p.projectId, p.milestoneId, JSON.stringify(p.requiredRoles), p.updatedAt, p.updatedBy);
+}
+
+export function listApprovalPolicies(projectId: string): ApprovalPolicy[] {
+  return getDb()
+    .prepare("SELECT * FROM approval_policies WHERE project_id = ?")
+    .all(projectId)
+    .map((r) => toApprovalPolicy(r as Row));
+}
+
+/** Effective required roles for a milestone: milestone row, else project
+ *  default row, else the standing OBV default. */
+export function resolveApprovalRoles(projectId: string, milestoneId: string): UserRole[] {
+  const rows = listApprovalPolicies(projectId);
+  const forMilestone = rows.find((p) => p.milestoneId === milestoneId);
+  if (forMilestone && forMilestone.requiredRoles.length > 0) return forMilestone.requiredRoles;
+  const projectDefault = rows.find((p) => p.milestoneId === null);
+  if (projectDefault && projectDefault.requiredRoles.length > 0) return projectDefault.requiredRoles;
+  return ["FUNDER_REP", "COMPLIANCE_REVIEWER"];
+}
+
+// ---------- field assignments ----------
+
+function toAssignment(r: Row): FieldAssignment {
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    userId: r.user_id as string,
+    milestoneIds: JSON.parse((r.milestone_ids as string) || "[]"),
+    effectiveFrom: (r.effective_from as string) ?? null,
+    effectiveTo: (r.effective_to as string) ?? null,
+    active: Boolean(r.active),
+    createdBy: r.created_by as string,
+    createdAt: r.created_at as string,
+  };
+}
+
+export function insertAssignment(a: FieldAssignment): void {
+  getDb()
+    .prepare(
+      `INSERT INTO field_assignments (id, project_id, user_id, milestone_ids,
+         effective_from, effective_to, active, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      a.id, a.projectId, a.userId, JSON.stringify(a.milestoneIds),
+      a.effectiveFrom, a.effectiveTo, a.active ? 1 : 0, a.createdBy, a.createdAt
+    );
+}
+
+export function listAssignmentsForProject(projectId: string): FieldAssignment[] {
+  return getDb()
+    .prepare("SELECT * FROM field_assignments WHERE project_id = ? ORDER BY created_at")
+    .all(projectId)
+    .map((r) => toAssignment(r as Row));
+}
+
+export function listAssignmentsForUser(userId: string): FieldAssignment[] {
+  return getDb()
+    .prepare("SELECT * FROM field_assignments WHERE user_id = ? AND active = 1")
+    .all(userId)
+    .map((r) => toAssignment(r as Row));
+}
+
+export function deactivateAssignment(id: string): void {
+  getDb().prepare("UPDATE field_assignments SET active = 0 WHERE id = ?").run(id);
+}
+
+// ---------- config snapshots & audit ----------
+
+export function insertConfigSnapshot(c: ConfigSnapshot): void {
+  getDb()
+    .prepare(
+      `INSERT INTO config_snapshots (id, project_id, version, hash, data,
+         reason, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(c.id, c.projectId, c.version, c.hash, c.data, c.reason, c.createdBy, c.createdAt);
+}
+
+export function listConfigSnapshots(projectId: string): ConfigSnapshot[] {
+  return getDb()
+    .prepare("SELECT * FROM config_snapshots WHERE project_id = ? ORDER BY version")
+    .all(projectId)
+    .map((r) => {
+      const row = r as Row;
+      return {
+        id: row.id as string,
+        projectId: row.project_id as string,
+        version: row.version as number,
+        hash: row.hash as string,
+        data: row.data as string,
+        reason: row.reason as string,
+        createdBy: row.created_by as string,
+        createdAt: row.created_at as string,
+      };
+    });
+}
+
+export function insertConfigAudit(e: ConfigAuditEntry): void {
+  getDb()
+    .prepare(
+      `INSERT INTO config_audit (id, project_id, actor_user_id, action,
+         entity_type, entity_id, reason, before_summary, after_summary, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      e.id, e.projectId, e.actorUserId, e.action, e.entityType, e.entityId,
+      e.reason, e.beforeSummary, e.afterSummary, e.createdAt
+    );
+}
+
+export function listConfigAudit(projectId: string | null, limit = 100): ConfigAuditEntry[] {
+  const rows = projectId
+    ? getDb()
+        .prepare("SELECT * FROM config_audit WHERE project_id = ? ORDER BY created_at DESC LIMIT ?")
+        .all(projectId, limit)
+    : getDb().prepare("SELECT * FROM config_audit ORDER BY created_at DESC LIMIT ?").all(limit);
+  return rows.map((r) => {
+    const row = r as Row;
+    return {
+      id: row.id as string,
+      projectId: (row.project_id as string) ?? null,
+      actorUserId: row.actor_user_id as string,
+      action: row.action as string,
+      entityType: row.entity_type as string,
+      entityId: row.entity_id as string,
+      reason: (row.reason as string) ?? null,
+      beforeSummary: (row.before_summary as string) ?? null,
+      afterSummary: (row.after_summary as string) ?? null,
+      createdAt: row.created_at as string,
+    };
+  });
+}
+
+// ---------- pilot metric targets ----------
+
+export function upsertMetricTarget(t: PilotMetricTarget): void {
+  getDb()
+    .prepare(
+      `INSERT INTO pilot_metric_targets (id, project_id, metric, target, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(t.id, t.projectId, t.metric, t.target, t.createdBy, t.createdAt);
+}
+
+export function listMetricTargets(projectId: string | null): PilotMetricTarget[] {
+  const rows = projectId
+    ? getDb().prepare("SELECT * FROM pilot_metric_targets WHERE project_id = ?").all(projectId)
+    : getDb().prepare("SELECT * FROM pilot_metric_targets").all();
+  return rows.map((r) => {
+    const row = r as Row;
+    return {
+      id: row.id as string,
+      projectId: (row.project_id as string) ?? null,
+      metric: row.metric as string,
+      target: row.target as number,
+      createdBy: row.created_by as string,
+      createdAt: row.created_at as string,
+    };
+  });
 }

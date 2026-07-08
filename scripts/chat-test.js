@@ -235,13 +235,20 @@ function govCounts() {
     await req("funder", "POST", "/api/demo/reset", { ok: "1" });
     const resetCounts = govCounts();
     const resetList = await (await req("funder", "GET", "/communications")).text();
+    // The reset preserves user-created (non-demo) data: 'proj-x' and its
+    // thread from the tenant-boundary test survive, while the demo
+    // threads/messages are restored to their exact seeded state.
     assert(
-      resetCounts.threads === 2 &&
+      resetCounts.threads === 3 &&
         resetCounts.messages === 13 &&
         resetList.includes("Project General") &&
         !resetList.includes("km 10 marker"),
-      "demo reset restores the seeded threads and messages exactly"
+      "demo reset restores the seeded demo threads/messages exactly (user-created project preserved)"
     );
+    const dReset = db();
+    const projX = dReset.prepare("SELECT id FROM projects WHERE id='proj-x'").get();
+    dReset.close();
+    assert(Boolean(projX), "demo reset does not delete non-demo (pilot) projects");
 
     console.log(`\nCOMMUNICATIONS TESTS PASSED — ${n} checkpoints.\n`);
   } finally {

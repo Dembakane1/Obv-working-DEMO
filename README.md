@@ -125,6 +125,51 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Pilot readiness & customer onboarding (v12)
+
+OBV can now onboard a real customer project — organization, team, project,
+geography, milestones, evidence requirements, draw structure, approval
+matrix, field assignments — without database editing, and launch it into
+the same trust architecture the demo runs on.
+
+> CUSTOMER CONFIGURATION DEFINES THE PROJECT RULES. FIELD EVIDENCE PROVES.
+> VERIFICATION ASSESSES. FORMAL GOVERNANCE AUTHORIZES. THE LEDGER RECORDS.
+> LAUNCH IS CONFIGURATION ACTIVATION — NEVER PROOF OF WORK.
+
+- **Pilot Setup** (`/setup`) — stage-based workspace: organizations
+  (primary + counterparties), team invitations (random one-time tokens,
+  sha256 at rest, expiring, revocable; activation link surfaced once —
+  mock delivery, no real email), draft projects, editable setup templates
+  (road, school, clinic, water, generic), geography (corridor/polygon/
+  point with validation; drives the geofence), milestone builder, evidence
+  requirement builder (types, min counts, allowlisted media, geolocation,
+  recency), draw structure with loud tranche-total reconciliation,
+  approval matrix (≥2 distinct roles, FIELD excluded, submitter can never
+  self-approve), bounded verification policy (CUSTOMER POLICY vs
+  non-overridable OBV integrity rules), field assignments (scope Field
+  Capture), CSV import (users/milestones/requirements — transactional,
+  preview-first), and a deterministic readiness engine whose blockers link
+  to their stages.
+- **Launch** — explicit, role-gated, readiness-gated. Creates a hashed
+  configuration snapshot, sets ACTIVE, records tranches HELD, opens
+  threads. Creates no evidence, no approvals, no ledger entries.
+- **Post-launch change control** — material changes require a reason,
+  bump the config version, snapshot again, and land in a configuration
+  audit trail (separate from the Evidence Ledger). Historic verifications
+  keep the policy version they were evaluated under.
+- **Pilot Operations** (`/pilot`) — real-record dashboard: evidence,
+  verdicts, approvals, funds held/released, issues, clarifications,
+  integration health, draft readiness. **Pilot Export Package** — one
+  JSON document with configuration, registers, matrices, readiness and
+  report index (never tokens or secrets).
+- **Demo-reset safety** — "Reset demo data" now restores the seeded R47
+  demo while **preserving** pilot data (the append-only ledger is never
+  rewritten); a separate, typed-confirmation Development Full Reset wipes
+  everything.
+
+Runbook: `docs/PILOT_ONBOARDING_RUNBOOK.md`. Tests: `scripts/pilot-test.js`
+(70 checkpoints).
+
 ## WhatsApp field bridge + field issues + evidence-draft promotion (v11)
 
 Field teams coordinate on WhatsApp; OBV stays the source of truth.
@@ -542,6 +587,7 @@ node scripts/chat-test.js                  # communications + proof that chat ca
 node scripts/teams-sync-test.js            # Teams conversation sync vs Graph stub (dedupe, loops, governance)
 node scripts/whatsapp-sync-test.js         # WhatsApp bridge vs Cloud API stub (signatures, media, policy, governance)
 node scripts/fieldops-test.js              # field issues, clarifications, draft promotion — none of it moves money
+node scripts/pilot-test.js                 # pilot onboarding: invitations, config, readiness, launch, change control
 ```
 
 `scripts/idempotency-test.js` proves accidental repeats cannot duplicate

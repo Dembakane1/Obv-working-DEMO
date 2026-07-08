@@ -1679,3 +1679,72 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
   .draft-row, .clar-row { align-items: flex-start; }
   .fo-row { flex-direction: column; gap: 12px; }
 }
+
+/* =====================================================================
+   v12 — pilot onboarding & operations
+   ===================================================================== */
+
+.setup-grid { display: grid; grid-template-columns: 250px 1fr; gap: 12px; align-items: start; }
+.setup-nav { position: sticky; top: 12px; }
+.setup-stage {
+  display: flex; gap: 10px; padding: 9px 14px; align-items: flex-start;
+  border-top: 1px solid var(--line); color: var(--ink-2);
+}
+.setup-stage:first-of-type { border-top: 0; }
+.setup-stage.active { background: var(--action-soft); }
+.setup-stage .st-dot {
+  width: 18px; height: 18px; flex: none; border-radius: 50%; font-size: 10px;
+  display: flex; align-items: center; justify-content: center; margin-top: 1px;
+  border: 1px solid var(--line-2); color: var(--ink-4); background: var(--surface);
+}
+.setup-stage .st-dot.ok { background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok); }
+.setup-stage .st-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.setup-stage .st-title { font-size: 12px; font-weight: 600; }
+.setup-stage .st-detail {
+  font-size: 10.5px; color: var(--ink-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.setup-proj { display: flex; align-items: center; gap: 14px; padding: 12px 16px; flex-wrap: wrap; }
+.setup-proj .sp-id { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 220px; }
+.setup-proj .sp-id .s { font-size: 11px; color: var(--ink-3); }
+.setup-proj .sp-id .sync-tag { align-self: flex-start; margin-left: 0; }
+.sp-progress { display: flex; flex-direction: column; gap: 5px; min-width: 210px; }
+.sp-progress .s { font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--ink-3); }
+.sp-bar { height: 4px; background: var(--inset); border: 1px solid var(--line); position: relative; }
+.sp-bar i { position: absolute; inset: 0 auto 0 0; background: var(--navy); }
+
+.ms-edit summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 16px; cursor: pointer; list-style: none;
+}
+.ms-edit summary::-webkit-details-marker { display: none; }
+.ms-edit summary .sp-id { display: flex; flex-direction: column; gap: 2px; }
+.ms-edit summary .sp-id .s { font-size: 11px; color: var(--ink-3); font-weight: 400; }
+.ms-edit[open] summary { border-bottom: 1px dashed var(--line); }
+
+.readiness { list-style: none; margin: 12px 0 4px; padding: 0 16px; }
+.readiness li {
+  display: flex; gap: 10px; align-items: flex-start; padding: 8px 0;
+  border-top: 1px solid var(--line); 
+}
+.readiness li:first-child { border-top: 0; }
+.readiness .r-ico {
+  width: 18px; height: 18px; flex: none; border-radius: 50%; font-size: 10.5px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; margin-top: 1px;
+  background: var(--inset); border: 1px solid var(--line-2); color: var(--ink-4);
+}
+.readiness li.ok .r-ico { background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok); }
+.readiness li.bad .r-ico { background: #fbeaea; border-color: #ecc8c8; color: var(--bad); }
+.readiness .r-body { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.readiness .r-label { font-size: 12.5px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.readiness .r-detail { font-size: 11px; color: var(--ink-3); }
+.readiness li .btn { flex: none; align-self: center; }
+
+@media (max-width: 900px) {
+  .setup-grid { grid-template-columns: 1fr; }
+  .setup-nav { position: static; }
+}
+@media (max-width: 640px) {
+  .setup-proj { align-items: flex-start; }
+  .sp-progress { min-width: 0; width: 100%; }
+}

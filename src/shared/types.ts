@@ -20,7 +20,7 @@ export type ProjectType =
   | "MINING_SUPPLY_CHAIN"
   | "BATTERY_PASSPORT";
 
-export type ProjectStatus = "ACTIVE" | "COMPLETED" | "SUSPENDED";
+export type ProjectStatus = "DRAFT" | "ACTIVE" | "COMPLETED" | "SUSPENDED";
 
 export type MilestoneStatus =
   | "NOT_STARTED"
@@ -43,6 +43,8 @@ export interface Organization {
   id: string;
   name: string;
   kind: string; // e.g. "DEVELOPMENT_FINANCE", "GOVERNMENT", "CONTRACTOR"
+  /** Pilot-onboarding profile (additive; null-filled on legacy rows). */
+  profile?: OrganizationProfile;
 }
 
 export interface User {
@@ -67,6 +69,9 @@ export interface Project {
   totalBudget: number; // whole currency units (USD)
   status: ProjectStatus;
   projectType: ProjectType;
+  /** Pilot-onboarding configuration (additive; always present on rows
+   *  read through the repository — optional only for constructors). */
+  pilot?: ProjectPilotConfig;
 }
 
 export interface Milestone {
@@ -78,6 +83,12 @@ export interface Milestone {
   trancheAmount: number;
   status: MilestoneStatus;
   accountStatus: AccountStatus;
+  /** Pilot-onboarding planning fields (additive; null on legacy rows). */
+  plannedStart?: string | null;
+  plannedEnd?: string | null;
+  weight?: number | null;
+  spatialLabel?: string | null;
+  archived?: boolean;
 }
 
 export interface DeviceMetadata {
@@ -124,6 +135,8 @@ export interface Verification {
   createdAt: string;
   /** Whether the visual check came from the live model or the mock. */
   source: VerificationSource;
+  /** Project configuration version this verification was evaluated under. */
+  policyVersion?: number | null;
 }
 
 export interface ApprovalRequest {
@@ -505,4 +518,195 @@ export interface EvidenceDraft {
   createdAt: string;
   submittedAt: string | null;
   evidenceItemId: string | null;
+}
+
+// ============================================================ pilot
+// Pilot Readiness & Customer Onboarding. Configuration entities only —
+// nothing here creates evidence, approvals, ledger entries, or release
+// state. Launch is configuration activation, not proof of work.
+
+/** Richer organization profile for pilot onboarding (additive; the
+ *  original `kind` field stays authoritative for org type). */
+export interface OrganizationProfile {
+  country: string | null;
+  region: string | null;
+  website: string | null;
+  primaryContact: string | null;
+  billingContact: string | null;
+  timezone: string | null;
+  currency: string | null;
+  language: string | null;
+  pilotStart: string | null;
+  pilotEnd: string | null;
+  pilotReference: string | null;
+  notes: string | null;
+}
+
+export type OrganizationKind =
+  | "LENDER" | "FUNDER" | "GOVERNMENT_AGENCY" | "DEVELOPMENT_INSTITUTION"
+  | "PROJECT_OWNER" | "IMPLEMENTING_AGENCY" | "CONTRACTOR" | "CONSULTANT"
+  // legacy seeded kinds remain valid
+  | "DEVELOPMENT_FINANCE" | "GOVERNMENT" | "OTHER" | string;
+
+export type InvitationStatus = "PENDING" | "ACCEPTED" | "REVOKED" | "EXPIRED";
+
+/** Pilot-grade invitation. The raw token is shown once at creation and
+ *  only its sha256 hash is stored; tokens are one-time and expire. */
+export interface Invitation {
+  id: string;
+  email: string;
+  organizationId: string;
+  role: UserRole;
+  projectId: string | null;
+  tokenHash: string;
+  status: InvitationStatus;
+  expiresAt: string;
+  createdBy: string;
+  createdAt: string;
+  acceptedAt: string | null;
+  acceptedUserId: string | null;
+  revokedAt: string | null;
+}
+
+export type PilotProjectCategory =
+  | "ROAD" | "BUILDING" | "SCHOOL" | "CLINIC" | "WATER" | "ENERGY"
+  | "BRIDGE" | "OTHER_INFRASTRUCTURE";
+
+export type ProjectGeometryKind = "POINT" | "POLYGON" | "CORRIDOR";
+
+/** Pilot configuration fields carried by a project (additive columns).
+ *  Existing demo projects keep null/defaults and behave unchanged. */
+export interface ProjectPilotConfig {
+  code: string | null;
+  category: PilotProjectCategory | null;
+  country: string | null;
+  region: string | null;
+  locality: string | null;
+  implementingOrgId: string | null;
+  contractorOrgId: string | null;
+  funderOrgId: string | null;
+  engineerOrgId: string | null;
+  obvControlledAmount: number | null;
+  currency: string | null;
+  plannedStart: string | null;
+  plannedEnd: string | null;
+  timezone: string | null;
+  geometryKind: ProjectGeometryKind | null;
+  createdBy: string | null;
+  launchedAt: string | null;
+  launchedBy: string | null;
+  /** Configuration version, bumped by audited post-launch changes. */
+  configVersion: number;
+}
+
+export type EvidenceRequirementType =
+  | "PHOTO" | "VIDEO" | "DOCUMENT" | "LOCATION_CONFIRMATION" | "FIELD_FORM"
+  | "INSPECTION" | "CERTIFICATE" | "TEST_RESULT" | "OTHER";
+
+/** Configured evidence expectation for one milestone. Drives the field
+ *  checklist and readiness display; it never verifies anything itself. */
+export interface EvidenceRequirement {
+  id: string;
+  milestoneId: string;
+  sort: number;
+  type: EvidenceRequirementType;
+  title: string;
+  description: string;
+  required: boolean;
+  minCount: number;
+  mediaTypes: string[];
+  geolocationRequired: boolean;
+  recencyDays: number | null;
+  notes: string | null;
+}
+
+export type GeofencePolicyLevel = "STRICT" | "STANDARD" | "EXTENDED_REVIEW";
+
+/**
+ * CUSTOMER POLICY — bounded, per-project verification parameters. Values
+ * are clamped to OBV-validated bounds at read time. OBV NON-OVERRIDABLE
+ * INTEGRITY RULES (missing GPS/timestamp -> review, corrupted media
+ * rejected, impossible coordinates rejected, visual mismatch never
+ * auto-verified) are hard-coded and cannot be configured away.
+ */
+export interface VerificationPolicyConfig {
+  projectId: string;
+  aiConfidenceThreshold: number | null;
+  geofencePolicy: GeofencePolicyLevel | null;
+  recencyDays: number | null;
+  offlineAllowanceDays: number | null;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+/** Approval matrix row: which roles (each approving once) a milestone's
+ *  ApprovalRequest requires. milestone_id null = project default. */
+export interface ApprovalPolicy {
+  id: string;
+  projectId: string;
+  milestoneId: string | null;
+  requiredRoles: UserRole[];
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+export interface FieldAssignment {
+  id: string;
+  projectId: string;
+  userId: string;
+  /** Empty array = all milestones on the project. */
+  milestoneIds: string[];
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  active: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
+/** Immutable configuration snapshot captured at launch and on audited
+ *  post-launch changes. Separate from the Evidence Ledger. */
+export interface ConfigSnapshot {
+  id: string;
+  projectId: string;
+  version: number;
+  hash: string;
+  data: string; // JSON of the full configuration
+  reason: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+/** Configuration audit trail — administrative record, NOT the Evidence
+ *  Ledger. */
+export interface ConfigAuditEntry {
+  id: string;
+  projectId: string | null;
+  actorUserId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  reason: string | null;
+  beforeSummary: string | null;
+  afterSummary: string | null;
+  createdAt: string;
+}
+
+export interface PilotMetricTarget {
+  id: string;
+  projectId: string | null;
+  metric: string;
+  target: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ReadinessCheck {
+  key: string;
+  group: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+  /** Setup stage slug the blocker links to. */
+  stage: string;
+  optional?: boolean;
 }

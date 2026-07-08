@@ -190,6 +190,9 @@ export async function processEvidenceSubmission(
     reasoning: result.reasoning,
     createdAt: new Date().toISOString(),
     source: result.source,
+    // Historic evidence keeps the configuration version it was evaluated
+    // under (post-launch change control, Part 19).
+    policyVersion: project.pilot?.configVersion ?? 1,
   };
   repo.insertVerification(verification);
 
@@ -249,7 +252,9 @@ export async function processEvidenceSubmission(
         id: repo.newId(),
         milestoneId: milestone.id,
         status: "PENDING",
-        requiredRoles: ["FUNDER_REP", "COMPLIANCE_REVIEWER"],
+        // Configured approval matrix (pilot onboarding) — falls back to
+        // the standing OBV default when no matrix is configured.
+        requiredRoles: repo.resolveApprovalRoles(project.id, milestone.id),
         createdAt: new Date().toISOString(),
       };
       repo.insertApprovalRequest(approvalRequest);
@@ -323,6 +328,12 @@ export async function processApprovalDecision(
   const existing = repo.listApprovalRecordsForRequest(request.id);
   if (existing.some((r) => r.role === user.role)) {
     throw new SubmissionError(`A ${user.role} decision has already been recorded`, 409);
+  }
+  // Separation of duties: whoever submitted the evidence under review
+  // can never approve it, whatever role they hold.
+  const latestForSoD = repo.latestEvidenceForMilestone(request.milestoneId);
+  if (latestForSoD && latestForSoD.userId === user.id) {
+    throw new SubmissionError("Separation of duties: the evidence submitter cannot approve their own submission", 403);
   }
   const milestone = repo.getMilestone(request.milestoneId)!;
   const project = repo.getProject(milestone.projectId)!;

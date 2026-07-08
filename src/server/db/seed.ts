@@ -11,7 +11,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { resetDb } from "./index";
+import { getDb, resetDb } from "./index";
 import * as repo from "./repo";
 import { COMM_MEDIA_DIR } from "../services/whatsappSync/provider";
 import { runVerificationPipeline } from "../services/verification/index";
@@ -27,9 +27,36 @@ import type {
   Verification,
 } from "../../shared/types";
 
-/** Reset and reseed the demo database. Also used by POST /api/demo/reset. */
-export async function seedDemo(): Promise<void> {
-  resetDb();
+/**
+ * Reset and reseed the demo data. Also used by POST /api/demo/reset.
+ *
+ * Two modes:
+ *  - FULL (default): drops the entire database + storage and reseeds.
+ *    Used by `npm run seed` and the gated Development Full Reset.
+ *  - preservePilot: when user-created pilot projects exist, only the
+ *    DEMO-SCOPED rows are removed and reseeded; pilot organizations,
+ *    users, invitations, projects, and configuration are untouched.
+ *    The Evidence Ledger is append-only and is NEVER deleted in this
+ *    mode: the original seeded entries still describe the re-created
+ *    (identical, fixed-id) demo evidence, and entries from mid-demo
+ *    submissions remain as honest historical records whose evidence was
+ *    removed by the demo reset.
+ */
+export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<void> {
+  const scoped =
+    Boolean(opts.preservePilot) &&
+    (() => {
+      try {
+        return repo.listProjects().some((p) => p.id !== "proj-r47");
+      } catch {
+        return false; // fresh/empty database — full path
+      }
+    })();
+  if (!scoped) {
+    resetDb();
+  } else {
+    purgeDemoScopedRows();
+  }
 
   // ---- organizations ----
   repo.insertOrganization({
@@ -265,19 +292,24 @@ export async function seedDemo(): Promise<void> {
     };
     repo.insertVerification(verification);
 
-    await wormEvidenceStore.appendLedgerEntry({
-      evidenceItemId: evidence.id,
-      milestoneId: h.milestone.id,
-      verificationId: verification.id,
-      payloadHash: sha256(
-        JSON.stringify({
-          evidenceHash: evidence.hash,
-          verdict: verification.verdict,
-          confidence: verification.confidence,
-        })
-      ),
-      timestamp: h.uploadedAt,
-    });
+    // Append-only ledger: in preservePilot mode the original seeded
+    // entry for this fixed-id evidence still exists and stays valid —
+    // never append a duplicate, never delete.
+    if (!repo.getLedgerEntryForEvidence(evidence.id)) {
+      await wormEvidenceStore.appendLedgerEntry({
+        evidenceItemId: evidence.id,
+        milestoneId: h.milestone.id,
+        verificationId: verification.id,
+        payloadHash: sha256(
+          JSON.stringify({
+            evidenceHash: evidence.hash,
+            verdict: verification.verdict,
+            confidence: verification.confidence,
+          })
+        ),
+        timestamp: h.uploadedAt,
+      });
+    }
 
     const approval: ApprovalRequest = {
       id: `ap-${h.milestone.id}`,
@@ -612,6 +644,93 @@ export async function seedDemo(): Promise<void> {
     `Seeded project "${project.name}" with ${milestones.length} milestones, ` +
     `4 users, ${chain.entries} ledger entries (chain valid: ${chain.valid}).`
   );
+}
+
+/**
+ * Remove demo-scoped rows only (projects/orgs/users/threads/records of
+ * the seeded R47 demo). Ledger entries and WORM objects are append-only
+ * and are intentionally NOT touched. Pilot data is never matched here —
+ * everything is keyed off the fixed demo ids.
+ */
+function purgeDemoScopedRows(): void {
+  const db = getDb();
+  // ledger_entries intentionally keeps its rows (append-only doctrine —
+  // a reset never rewrites history). Their references to purged demo
+  // evidence/verification rows become historical: the seeded fixed-id
+  // records are re-created identically, and mid-demo records show as
+  // "removed by demo reset" in the UI. FK enforcement is suspended for
+  // exactly this purge so the ledger can stay untouched.
+  db.exec("PRAGMA foreign_keys = OFF;");
+  const DEMO_PROJECT = "proj-r47";
+  const DEMO_ORGS = ["org-cdfc", "org-crra"];
+  const DEMO_USERS = ["user-pm", "user-field", "user-funder", "user-compliance"];
+  const inList = (ids: string[]) => ids.map(() => "?").join(",");
+
+  const threadIds = db
+    .prepare(
+      `SELECT id FROM conversation_threads
+        WHERE project_id = ? OR (project_id IS NULL AND organization_id IN (${inList(DEMO_ORGS)}))`
+    )
+    .all(DEMO_PROJECT, ...DEMO_ORGS)
+    .map((r) => (r as { id: string }).id);
+  const msIds = db
+    .prepare("SELECT id FROM milestones WHERE project_id = ?")
+    .all(DEMO_PROJECT)
+    .map((r) => (r as { id: string }).id);
+
+  // Message-referencing rows first (field issues, clarifications, drafts),
+  // then messages/threads, then the milestone-scoped records.
+  db.prepare(
+    `DELETE FROM field_issue_events WHERE issue_id IN
+       (SELECT id FROM field_issues WHERE project_id = ?)`
+  ).run(DEMO_PROJECT);
+  db.prepare("DELETE FROM field_issues WHERE project_id = ?").run(DEMO_PROJECT);
+  if (msIds.length) {
+    db.prepare(`DELETE FROM clarification_requests WHERE milestone_id IN (${inList(msIds)})`).run(...msIds);
+  }
+  db.prepare("DELETE FROM evidence_drafts WHERE project_id = ?").run(DEMO_PROJECT);
+
+  if (threadIds.length) {
+    db.prepare(`DELETE FROM messages WHERE thread_id IN (${inList(threadIds)})`).run(...threadIds);
+    db.prepare(`DELETE FROM external_thread_bindings WHERE thread_id IN (${inList(threadIds)})`).run(...threadIds);
+    db.prepare(
+      `DELETE FROM external_participant_contexts WHERE active_thread_id IN (${inList(threadIds)})`
+    ).run(...threadIds);
+    db.prepare(`DELETE FROM conversation_threads WHERE id IN (${inList(threadIds)})`).run(...threadIds);
+  }
+  db.prepare("DELETE FROM external_participant_contexts WHERE active_project_id = ?").run(DEMO_PROJECT);
+  db.prepare(
+    `DELETE FROM external_identity_mappings
+      WHERE obv_user_id IN (${inList(DEMO_USERS)}) OR id = 'waid-field'`
+  ).run(...DEMO_USERS);
+
+  if (msIds.length) {
+    const ph = inList(msIds);
+    db.prepare(
+      `DELETE FROM approval_records WHERE approval_request_id IN
+         (SELECT id FROM approval_requests WHERE milestone_id IN (${ph}))`
+    ).run(...msIds);
+    db.prepare(`DELETE FROM approval_requests WHERE milestone_id IN (${ph})`).run(...msIds);
+    db.prepare(`DELETE FROM virtual_account_events WHERE milestone_id IN (${ph})`).run(...msIds);
+    db.prepare(
+      `DELETE FROM verifications WHERE evidence_item_id IN
+         (SELECT id FROM evidence_items WHERE milestone_id IN (${ph}))`
+    ).run(...msIds);
+    db.prepare(`DELETE FROM evidence_items WHERE milestone_id IN (${ph})`).run(...msIds);
+    db.prepare(`DELETE FROM demo_fallback_photos WHERE milestone_id IN (${ph})`).run(...msIds);
+    db.prepare(`DELETE FROM evidence_requirements WHERE milestone_id IN (${ph})`).run(...msIds);
+    db.prepare(`DELETE FROM approval_policies WHERE project_id = ?`).run(DEMO_PROJECT);
+  }
+  db.prepare("DELETE FROM field_assignments WHERE project_id = ?").run(DEMO_PROJECT);
+  db.prepare("DELETE FROM verification_policies WHERE project_id = ?").run(DEMO_PROJECT);
+  db.prepare("DELETE FROM spatial_features WHERE project_id = ?").run(DEMO_PROJECT);
+  db.prepare("DELETE FROM notifications WHERE project_id = ? OR project_id IS NULL").run(DEMO_PROJECT);
+  db.prepare("DELETE FROM reports WHERE project_id = ?").run(DEMO_PROJECT);
+  db.prepare("DELETE FROM milestones WHERE project_id = ?").run(DEMO_PROJECT);
+  db.prepare("DELETE FROM projects WHERE id = ?").run(DEMO_PROJECT);
+  db.prepare(`DELETE FROM users WHERE id IN (${inList(DEMO_USERS)})`).run(...DEMO_USERS);
+  db.prepare(`DELETE FROM organizations WHERE id IN (${inList(DEMO_ORGS)})`).run(...DEMO_ORGS);
+  db.exec("PRAGMA foreign_keys = ON;");
 }
 
 if (require.main === module) {

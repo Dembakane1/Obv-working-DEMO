@@ -346,6 +346,117 @@ CREATE TABLE IF NOT EXISTS reports (
   integrity_status TEXT NOT NULL, -- 'INTACT' or 'TAMPERED_AT:<seq>'
   ledger_entries INTEGER NOT NULL
 );
+
+-- ====================== pilot onboarding (additive) ======================
+-- Configuration entities only. Nothing below creates evidence, approvals,
+-- ledger entries, or release state.
+
+-- Pilot-grade invitations: raw token shown once, only sha256 stored.
+CREATE TABLE IF NOT EXISTS invitations (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  role TEXT NOT NULL,
+  project_id TEXT,
+  token_hash TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'PENDING', -- PENDING | ACCEPTED | REVOKED | EXPIRED
+  expires_at TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  accepted_at TEXT,
+  accepted_user_id TEXT,
+  revoked_at TEXT
+);
+
+-- Configured evidence expectations per milestone (drives the field
+-- checklist and readiness display; never verifies anything itself).
+CREATE TABLE IF NOT EXISTS evidence_requirements (
+  id TEXT PRIMARY KEY,
+  milestone_id TEXT NOT NULL REFERENCES milestones(id),
+  sort INTEGER NOT NULL DEFAULT 0,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  required INTEGER NOT NULL DEFAULT 1,
+  min_count INTEGER NOT NULL DEFAULT 1,
+  media_types TEXT NOT NULL DEFAULT '[]', -- JSON string[]
+  geolocation_required INTEGER NOT NULL DEFAULT 0,
+  recency_days INTEGER,
+  notes TEXT
+);
+
+-- CUSTOMER POLICY (bounded overrides). Hard integrity rules are not here.
+CREATE TABLE IF NOT EXISTS verification_policies (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id),
+  ai_confidence_threshold REAL,
+  geofence_policy TEXT, -- STRICT | STANDARD | EXTENDED_REVIEW
+  recency_days INTEGER,
+  offline_allowance_days INTEGER,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+
+-- Approval matrix: required roles per milestone (milestone_id NULL =
+-- project default). Feeds ApprovalRequest.required_roles at creation.
+CREATE TABLE IF NOT EXISTS approval_policies (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  milestone_id TEXT,
+  required_roles TEXT NOT NULL, -- JSON UserRole[]
+  updated_at TEXT NOT NULL,
+  updated_by TEXT,
+  UNIQUE (project_id, milestone_id)
+);
+
+CREATE TABLE IF NOT EXISTS field_assignments (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  milestone_ids TEXT NOT NULL DEFAULT '[]', -- JSON; empty = all milestones
+  effective_from TEXT,
+  effective_to TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- Immutable configuration snapshots (launch + audited changes).
+-- Separate from the Evidence Ledger.
+CREATE TABLE IF NOT EXISTS config_snapshots (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  version INTEGER NOT NULL,
+  hash TEXT NOT NULL,
+  data TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (project_id, version)
+);
+
+-- Configuration audit trail (administrative record, NOT the Evidence
+-- Ledger).
+CREATE TABLE IF NOT EXISTS config_audit (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  actor_user_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  reason TEXT,
+  before_summary TEXT,
+  after_summary TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pilot_metric_targets (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  metric TEXT NOT NULL,
+  target REAL NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 `;
 
 export function getDb(): DatabaseSync {
@@ -392,6 +503,46 @@ export function getDb(): DatabaseSync {
       "ALTER TABLE messages ADD COLUMN attachments TEXT",
       "ALTER TABLE messages ADD COLUMN location TEXT",
       "ALTER TABLE external_identity_mappings ADD COLUMN organization_id TEXT",
+      // ---- pilot onboarding (additive; legacy rows keep defaults) ----
+      "ALTER TABLE organizations ADD COLUMN country TEXT",
+      "ALTER TABLE organizations ADD COLUMN region TEXT",
+      "ALTER TABLE organizations ADD COLUMN website TEXT",
+      "ALTER TABLE organizations ADD COLUMN primary_contact TEXT",
+      "ALTER TABLE organizations ADD COLUMN billing_contact TEXT",
+      "ALTER TABLE organizations ADD COLUMN timezone TEXT",
+      "ALTER TABLE organizations ADD COLUMN currency TEXT",
+      "ALTER TABLE organizations ADD COLUMN language TEXT",
+      "ALTER TABLE organizations ADD COLUMN pilot_start TEXT",
+      "ALTER TABLE organizations ADD COLUMN pilot_end TEXT",
+      "ALTER TABLE organizations ADD COLUMN pilot_reference TEXT",
+      "ALTER TABLE organizations ADD COLUMN notes TEXT",
+      "ALTER TABLE projects ADD COLUMN code TEXT",
+      "ALTER TABLE projects ADD COLUMN category TEXT",
+      "ALTER TABLE projects ADD COLUMN country TEXT",
+      "ALTER TABLE projects ADD COLUMN region TEXT",
+      "ALTER TABLE projects ADD COLUMN locality TEXT",
+      "ALTER TABLE projects ADD COLUMN implementing_org_id TEXT",
+      "ALTER TABLE projects ADD COLUMN contractor_org_id TEXT",
+      "ALTER TABLE projects ADD COLUMN funder_org_id TEXT",
+      "ALTER TABLE projects ADD COLUMN engineer_org_id TEXT",
+      "ALTER TABLE projects ADD COLUMN obv_controlled_amount INTEGER",
+      "ALTER TABLE projects ADD COLUMN currency TEXT",
+      "ALTER TABLE projects ADD COLUMN planned_start TEXT",
+      "ALTER TABLE projects ADD COLUMN planned_end TEXT",
+      "ALTER TABLE projects ADD COLUMN timezone TEXT",
+      "ALTER TABLE projects ADD COLUMN geometry_kind TEXT",
+      "ALTER TABLE projects ADD COLUMN created_by TEXT",
+      "ALTER TABLE projects ADD COLUMN launched_at TEXT",
+      "ALTER TABLE projects ADD COLUMN launched_by TEXT",
+      "ALTER TABLE projects ADD COLUMN config_version INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE milestones ADD COLUMN planned_start TEXT",
+      "ALTER TABLE milestones ADD COLUMN planned_end TEXT",
+      "ALTER TABLE milestones ADD COLUMN weight REAL",
+      "ALTER TABLE milestones ADD COLUMN spatial_label TEXT",
+      "ALTER TABLE milestones ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+      // Which configuration version a verification was evaluated under
+      // (historic evidence keeps its policy reference — Part 19).
+      "ALTER TABLE verifications ADD COLUMN policy_version INTEGER",
     ]) {
       try {
         db.exec(ddl);
