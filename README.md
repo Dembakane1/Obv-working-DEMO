@@ -115,10 +115,13 @@ every piece of verification, ledger and financial-control logic:
   PENDING_EVIDENCE. Decisions are role-gated server-side.
 - **Evidence Ledger page** — institutional ledger with a "Verify integrity"
   action: CHAIN INTACT or TAMPERING DETECTED AT ENTRY N.
-- **Risk & Compliance / AI Insights** — presentation layers over existing
-  verification data (flagged evidence, approval bottlenecks, geofence misses,
-  low-confidence verifications). Labelled as automated insights — no
-  generative-AI claims.
+- **Risk & Compliance / OBV Intelligence** — presentation layers over existing
+  records. `/insights` is the OBV Intelligence center: summary counts,
+  deterministic attention signals, verification/governance/field-risk
+  analytics, an explainable project attention table (HIGH/MEDIUM/LOW with the
+  documented rule set rendered on the page) and record-grounded recommended
+  actions. Every figure traces to stored rows — no generative scoring, no
+  fabricated probabilities.
 - **Field PWA** — 4-step progress indicator, eligible milestone highlighted
   with status chips and tranche amounts, camera button disabled until the
   stream is live, explicit GPS-acquired state. Capture logic unchanged.

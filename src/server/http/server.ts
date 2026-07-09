@@ -18,6 +18,7 @@ import * as repo from "../db/repo";
 import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { wormEvidenceStore } from "../services/WormEvidenceStore";
+import { computeIntelligence } from "../services/intelligence";
 import { TEAMS_CONFIG, teamsNotifier } from "../services/TeamsNotifier";
 import { AI_PROVIDER } from "../services/verification/config";
 import { integrityFailureCard } from "../services/teamsCards";
@@ -86,7 +87,6 @@ import {
   ApprovalQueueItem,
   ComplianceData,
   EvidenceBundle,
-  Insight,
   MilestoneRow,
   OverviewMetrics,
   ProjectCardData,
@@ -95,7 +95,7 @@ import {
   renderCompliance,
   renderError,
   renderFieldShell,
-  renderInsights,
+  renderIntelligence,
   renderLedger,
   renderCommunications,
   renderIntegrations,
@@ -370,93 +370,6 @@ function approvalQueue(user: User): ApprovalQueueItem[] {
     }
   }
   return items.sort((a, b) => (a.approval.createdAt < b.approval.createdAt ? 1 : -1));
-}
-
-function computeInsights(): Insight[] {
-  const insights: Insight[] = [];
-  const verifications = repo.listAllVerifications();
-  const evidence = new Map(repo.listAllEvidence().map((e) => [e.id, e]));
-  const milestoneOf = (evidenceId: string) => {
-    const ev = evidence.get(evidenceId);
-    return ev ? repo.getMilestone(ev.milestoneId) : null;
-  };
-
-  for (const v of verifications) {
-    if (v.verdict === "VERIFIED" && v.confidence < 0.75) {
-      const m = milestoneOf(v.evidenceItemId);
-      insights.push({
-        severity: "warn",
-        title: "Low-confidence verification",
-        detail: `Milestone ${m?.seq} "${m?.title}" verified at confidence ${v.confidence.toFixed(2)} — consider a spot check.`,
-        href: m ? `/milestone/${m.id}` : undefined,
-      });
-    }
-    const geo = v.checks.find((c) => c.name.toLowerCase().includes("geofence"));
-    if (geo && !geo.passed) {
-      const m = milestoneOf(v.evidenceItemId);
-      insights.push({
-        severity: "bad",
-        title: "Evidence outside expected geofence",
-        detail: `A submission for milestone ${m?.seq} "${m?.title}" was captured outside the registered site boundary.`,
-        href: m ? `/milestone/${m.id}` : undefined,
-      });
-    }
-  }
-
-  // Repeated NEEDS_REVIEW verdicts per milestone.
-  const reviewCounts = new Map<string, number>();
-  for (const v of verifications) {
-    if (v.verdict !== "NEEDS_REVIEW") continue;
-    const m = milestoneOf(v.evidenceItemId);
-    if (m) reviewCounts.set(m.id, (reviewCounts.get(m.id) ?? 0) + 1);
-  }
-  for (const [milestoneId, count] of reviewCounts) {
-    if (count >= 2) {
-      const m = repo.getMilestone(milestoneId)!;
-      insights.push({
-        severity: "warn",
-        title: "Repeated review flags",
-        detail: `Milestone ${m.seq} "${m.title}" has ${count} submissions flagged NEEDS_REVIEW.`,
-        href: `/milestone/${m.id}`,
-      });
-    }
-  }
-
-  // Unusual submission timing (upload long after capture).
-  for (const ev of evidence.values()) {
-    const gap = Date.parse(ev.uploadedAt) - Date.parse(ev.capturedAt);
-    if (gap > 24 * 3600_000) {
-      const m = repo.getMilestone(ev.milestoneId);
-      insights.push({
-        severity: "info",
-        title: "Delayed upload",
-        detail: `Evidence for milestone ${m?.seq} "${m?.title}" was uploaded ${Math.round(gap / 3600_000)}h after capture.`,
-        href: m ? `/milestone/${m.id}` : undefined,
-      });
-    }
-  }
-
-  // Approval bottlenecks.
-  for (const approval of repo.listPendingApprovalRequests()) {
-    const ageH = (Date.now() - Date.parse(approval.createdAt)) / 3600_000;
-    const m = repo.getMilestone(approval.milestoneId)!;
-    if (ageH > 48) {
-      insights.push({
-        severity: "warn",
-        title: "Approval bottleneck",
-        detail: `Release approval for milestone ${m.seq} "${m.title}" has been waiting ${Math.round(ageH / 24)} days.`,
-        href: "/approvals",
-      });
-    } else {
-      insights.push({
-        severity: "info",
-        title: "Approval in queue",
-        detail: `Milestone ${m.seq} "${m.title}" is verified and awaiting human approval (${money(m.trancheAmount)} held).`,
-        href: "/approvals",
-      });
-    }
-  }
-  return insights;
 }
 
 function money(amount: number): string {
@@ -2272,7 +2185,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (method === "GET" && pathname === "/insights") {
-    sendHtml(res, renderInsights({ nav: navFor(user!, "insights"), insights: computeInsights() }));
+    const chain = await wormEvidenceStore.verifyChain();
+    sendHtml(
+      res,
+      renderIntelligence({
+        nav: navFor(user!, "insights"),
+        data: computeIntelligence({ chainValid: chain.valid }),
+      })
+    );
     return;
   }
 

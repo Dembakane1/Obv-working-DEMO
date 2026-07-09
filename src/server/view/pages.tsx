@@ -57,6 +57,7 @@ import type {
   VirtualAccountEvent,
 } from "../../shared/types";
 import type { ProjectAccountSummary } from "../services/VirtualAccountService";
+import { ATTENTION_RULES, type IntelligenceData } from "../services/intelligence";
 import * as repo from "../db/repo";
 
 /**
@@ -1820,50 +1821,375 @@ export function renderCompliance(input: {
   );
 }
 
-// ------------------------------------------------------------- insights
+// ------------------------------------------------- OBV Intelligence
 
-export interface Insight {
-  severity: "info" | "warn" | "bad";
-  title: string;
-  detail: string;
-  href?: string;
+function sevChip(sev: "HIGH" | "MEDIUM" | "INFO" | "LOW"): VNode {
+  const cls = sev === "HIGH" ? "bad" : sev === "MEDIUM" ? "warn" : "ok";
+  return <span className={`int-sev ${cls}`}>{sev}</span>;
 }
 
-export function renderInsights(input: { nav: NavContext; insights: Insight[] }): string {
+function attChip(level: "HIGH" | "MEDIUM" | "LOW"): VNode {
+  const cls = level === "HIGH" ? "bad" : level === "MEDIUM" ? "warn" : "ok";
+  return <span className={`int-sev ${cls}`}>{level}</span>;
+}
+
+function healthChip(state: "HEALTHY" | "WATCH" | "AT_RISK"): VNode {
+  const cls = state === "AT_RISK" ? "bad" : state === "WATCH" ? "warn" : "ok";
+  return <span className={`int-health ${cls}`}>{state.replace("_", " ")}</span>;
+}
+
+export function renderIntelligence(input: { nav: NavContext; data: IntelligenceData }): string {
+  const d = input.data;
+  const s = d.summary;
+  const v = d.verification;
+  const g = d.governance;
+  const f = d.fieldRisk;
+  const critical = d.signals.filter((x) => x.severity === "HIGH").length;
+  const medium = d.signals.filter((x) => x.severity === "MEDIUM").length;
+  const calm = critical === 0 && medium === 0;
+  const trendMax = v.trend ? Math.max(...v.trend.map((t) => t.total)) : 0;
+  const catMax = Math.max(1, ...f.byCategory.map((c) => c.open));
+
+  const sumCard = (
+    n: number,
+    label: string,
+    href: string,
+    tone: "neutral" | "warn" | "bad",
+  ): VNode => (
+    <a className={`int-stat ${n > 0 && tone !== "neutral" ? tone : ""}`} href={href}>
+      <span className="is-n">{n}</span>
+      <span className="is-l">{label}</span>
+    </a>
+  );
+
   return renderDocument(
-    <AppShell title="Verification Insights" nav={input.nav}>
+    <AppShell title="OBV Intelligence" nav={input.nav} context="Operational intelligence">
       <PageHeader
-        title="Verification insights"
-        sub="Automated observations derived from recorded verification, approval and submission data. Informational only — no autonomous decisions are made."
-      />
-      {input.insights.length === 0 ? (
-        <div className="panel">
-          <EmptyState
-            icon={icons.insights()}
-            title="No anomalies detected"
-            message="All recorded verifications look consistent. Insights appear as evidence accumulates."
-          />
+        title="OBV Intelligence"
+        sub="Verification, governance and field-risk intelligence computed deterministically from recorded OBV data. Every figure traces to stored records — no generative scoring, no predictions."
+      >
+        <span className="int-mode" title="All signals derive from stored records via documented rules">
+          DETERMINISTIC
+        </span>
+      </PageHeader>
+
+      {/* ---- Section 1 · intelligence summary ---- */}
+      <div className="sec-label">Intelligence summary</div>
+      <div className="intel-sum">
+        {sumCard(s.activeProjects, "Active projects", "/projects", "neutral")}
+        {sumCard(s.projectsNeedingAttention, "Needing attention", "#attention", "warn")}
+        {sumCard(s.highSeverityIssues, "High-severity issues", "/issues", "bad")}
+        {sumCard(s.evidenceNeedsReview, "Evidence needs review", "/compliance", "warn")}
+        {sumCard(s.pendingApprovals, "Pending approvals", "/approvals", "warn")}
+        {sumCard(s.openClarifications, "Open clarifications", "/compliance", "warn")}
+        {sumCard(s.integrityAlerts, "Integrity alerts", "/ledger", "bad")}
+      </div>
+
+      {calm ? (
+        <div className="int-calm">
+          <i>{icons.check()}</i>
+          <span>
+            <b>NO CRITICAL SIGNALS</b>
+            <span className="s">
+              All recorded verification and governance checks are currently within normal
+              operating state. The intelligence below reflects the live records.
+            </span>
+          </span>
         </div>
-      ) : (
-        <div className="panel">
-          <ul className="activity">
-            {input.insights.map((ins) => (
-              <li>
-                <span className={`ico ${ins.severity === "bad" ? "bad" : ins.severity === "warn" ? "warn" : "info"}`}>
-                  {ins.severity === "info" ? icons.insights() : icons.alert()}
-                </span>
-                <span className="body">
-                  <span className="msg"><b>{ins.title}</b> — {ins.detail}</span>
-                  {ins.href ? <span className="meta"><a href={ins.href}>View →</a></span> : null}
-                </span>
-              </li>
-            ))}
-          </ul>
+      ) : null}
+
+      {/* ---- Section 2 + 7 · signals and recommended actions ---- */}
+      <div className="intel-main">
+        <div className="panel int-signals">
+          <div className="panel-head">
+            <h3>Attention signals</h3>
+            <span className="right int-counts">
+              {critical > 0 ? <span className="int-sev bad">{critical} HIGH</span> : null}
+              {medium > 0 ? <span className="int-sev warn">{medium} MEDIUM</span> : null}
+              <span className="int-sev ok">{d.signals.length - critical - medium} INFO</span>
+            </span>
+          </div>
+          {d.signals.length === 0 ? (
+            <p className="aq-empty">No signals — no anomalous records exist right now.</p>
+          ) : (
+            <div className="sig-list">
+              {d.signals.map((sig) => (
+                <div className="sig-row">
+                  <span className="sig-side">{sevChip(sig.severity)}</span>
+                  <span className="sig-body">
+                    <span className="sig-scope">
+                      {sig.projectName}
+                      {sig.milestoneLabel ? <i> · {sig.milestoneLabel}</i> : null}
+                    </span>
+                    <span className="sig-reason">{sig.reason}</span>
+                    <span className="sig-meta">
+                      {sig.age ? <span>age {sig.age}</span> : null}
+                      <span className="rule" title="Deterministic rule id">{sig.rule}</span>
+                    </span>
+                  </span>
+                  <a className="btn ghost sm sig-act" href={sig.actionHref}>{sig.actionLabel}</a>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-      )}
+
+        <div className="panel int-recs">
+          <div className="panel-head"><h3>Recommended actions</h3></div>
+          {d.recommendations.length === 0 ? (
+            <p className="aq-empty">
+              Nothing to recommend — no open issue, flagged evidence, pending governance or
+              clarification records require intervention.
+            </p>
+          ) : (
+            <div className="rec-list">
+              {d.recommendations.map((r, i) => (
+                <div className="rec-card">
+                  <span className="rec-head">
+                    <span className="rec-n">{i + 1}</span>
+                    {sevChip(r.priority)}
+                  </span>
+                  <span className="rec-title">{r.title}</span>
+                  <span className="rec-why"><b>Why:</b> {r.why}</span>
+                  <span className="rec-src">Source: {r.sources.join(" · ")}</span>
+                  <a className="btn sm rec-act" href={r.actionHref}>{r.actionLabel}</a>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="rec-note">
+            Recommendations are deterministic next actions derived from open records — not
+            generated advice.
+          </p>
+        </div>
+      </div>
+
+      {/* ---- Section 3 + 4 · verification & governance intelligence ---- */}
+      <div className="sec-label">Verification intelligence</div>
+      <div className="intel-duo">
+        <div className="panel int-verif">
+          <div className="panel-head"><h3>Verification outcomes</h3><span className="right"><a href="/compliance">Evidence review →</a></span></div>
+          <div className="iv-stats">
+            <span className="iv-cell"><span className="n">{v.total}</span><span className="l">Submissions</span></span>
+            <span className="iv-cell ok"><span className="n">{v.verified}</span><span className="l">Verified</span></span>
+            <span className="iv-cell warn"><span className="n">{v.needsReview}</span><span className="l">Needs review</span></span>
+            <span className="iv-cell bad"><span className="n">{v.rejected}</span><span className="l">Rejected</span></span>
+            <span className="iv-cell"><span className="n">{v.verificationRatePct === null ? "—" : `${v.verificationRatePct}%`}</span><span className="l">Verification rate</span></span>
+            <span className="iv-cell"><span className="n">{v.avgConfidence === null ? "—" : v.avgConfidence.toFixed(2)}</span><span className="l">Avg confidence</span></span>
+          </div>
+          <div className="iv-cols">
+            <div>
+              <span className="iv-h">Most common review reasons</span>
+              {v.reviewReasons.length === 0 ? (
+                <span className="iv-empty">No failed checks recorded.</span>
+              ) : (
+                v.reviewReasons.map((r) => (
+                  <span className="iv-row"><span>{r.reason}</span><b>{r.count}</b></span>
+                ))
+              )}
+              <span className="iv-row"><span>Geofence exceptions</span><b>{v.geofenceExceptions}</b></span>
+              <span className="iv-row"><span>Metadata / timestamp exceptions</span><b>{v.metadataExceptions}</b></span>
+              <span className="iv-row"><span>DEMO FALLBACK evidence items</span><b>{v.demoFallbackEvidence}</b></span>
+            </div>
+            <div>
+              <span className="iv-h">Assessment provenance</span>
+              {v.provenance.map((p) => (
+                <span className="iv-row"><span>{p.label} <i className="mono">({p.source})</i></span><b>{p.count}</b></span>
+              ))}
+              {v.trend ? (
+                <div className="iv-trend">
+                  <span className="iv-h">Monthly submissions</span>
+                  {v.trend.map((t) => (
+                    <span className="tr-row">
+                      <span className="m">{t.month}</span>
+                      <span className="bar"><span className="fl" style={`width:${Math.round((t.total / trendMax) * 100)}%`}></span></span>
+                      <span className="c">{t.verified}/{t.total} verified</span>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <span className="iv-empty">Not enough dated records for a trend.</span>
+              )}
+            </div>
+          </div>
+          <div className="iv-recent">
+            <span className="iv-h">Recent verifications</span>
+            {v.recent.length === 0 ? (
+              <span className="iv-empty">No verifications recorded yet.</span>
+            ) : (
+              v.recent.map((r) => (
+                <a className="ivr-row" href={r.href}>
+                  <VerdictChip verdict={r.verdict} />
+                  <span className="t">{r.milestoneLabel} <i>· {r.projectName}</i></span>
+                  <span className="c num">{r.confidence.toFixed(2)}</span>
+                  <span className="w">{timeAgo(r.createdAt)}</span>
+                </a>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="panel int-gov">
+          <div className="panel-head"><h3>Governance intelligence</h3><span className="right"><a href="/approvals">Approvals →</a></span></div>
+          <div className="iv-stats">
+            <span className="iv-cell warn"><span className="n">{g.pending}</span><span className="l">Pending requests</span></span>
+            <span className="iv-cell"><span className="n">{g.partiallyApproved}</span><span className="l">Partially approved</span></span>
+            <span className="iv-cell"><span className="n">{g.avgApprovalHours === null ? "—" : g.avgApprovalHours >= 48 ? `${(g.avgApprovalHours / 24).toFixed(1)}d` : `${Math.round(g.avgApprovalHours)}h`}</span><span className="l">Avg approval time</span></span>
+            <span className="iv-cell"><span className="n">{g.oldestPending ? g.oldestPending.age : "—"}</span><span className="l">Oldest pending</span></span>
+          </div>
+          <div className="gov-funds">
+            <span className="gf-cell hold">
+              <span className="l">Held pending governance</span>
+              <span className="n">{money(g.fundsHeldPendingGovernance)}</span>
+            </span>
+            <span className="gf-cell">
+              <span className="l">Total held</span>
+              <span className="n">{money(g.totalHeld)}</span>
+            </span>
+            <span className="gf-cell rel">
+              <span className="l">Released</span>
+              <span className="n">{money(g.totalReleased)}</span>
+            </span>
+          </div>
+          <span className="iv-h">Approvals awaiting role</span>
+          {g.awaitingByRole.length === 0 ? (
+            <span className="iv-empty">No role is currently blocking an approval.</span>
+          ) : (
+            g.awaitingByRole.map((r) => (
+              <a className="iv-row link" href="/approvals">
+                <span>{roleLabel(r.role)}</span>
+                <b>{r.count} request{r.count === 1 ? "" : "s"} awaiting action</b>
+              </a>
+            ))
+          )}
+          {g.oldestPending ? (
+            <a className="gov-oldest" href={g.oldestPending.href}>
+              Oldest pending request: <b>{g.oldestPending.label}</b> · waiting {g.oldestPending.age}
+            </a>
+          ) : null}
+        </div>
+      </div>
+
+      {/* ---- Section 5 · field risk ---- */}
+      <div className="sec-label">Field risk &amp; issue intelligence</div>
+      <div className="intel-duo">
+        <div className="panel int-field">
+          <div className="panel-head"><h3>Field issues &amp; clarifications</h3><span className="right"><a href="/issues">Issue register →</a></span></div>
+          <div className="iv-stats">
+            <span className="iv-cell"><span className="n">{f.openIssues}</span><span className="l">Open issues</span></span>
+            <span className="iv-cell bad"><span className="n">{f.highCritical}</span><span className="l">High / critical</span></span>
+            <span className="iv-cell warn"><span className="n">{f.overdue}</span><span className="l">Overdue</span></span>
+            <span className="iv-cell"><span className="n">{f.awaitingFieldResponse}</span><span className="l">Awaiting field</span></span>
+            <span className="iv-cell warn"><span className="n">{f.openClarifications}</span><span className="l">Open clarifications</span></span>
+          </div>
+          {f.oldestOpenIssue ? (
+            <a className="gov-oldest" href={f.oldestOpenIssue.href}>
+              Oldest unresolved issue: <b>{f.oldestOpenIssue.title}</b> · open {f.oldestOpenIssue.age}
+            </a>
+          ) : (
+            <span className="iv-empty">No unresolved field issues.</span>
+          )}
+        </div>
+        <div className="panel int-cats">
+          <div className="panel-head"><h3>Open issues by category</h3></div>
+          {f.byCategory.length === 0 ? (
+            <span className="iv-empty">No open issues to categorize.</span>
+          ) : (
+            f.byCategory.map((c) => (
+              <span className="tr-row">
+                <span className="m">{c.category}</span>
+                <span className="bar"><span className="fl warn" style={`width:${Math.round((c.open / catMax) * 100)}%`}></span></span>
+                <span className="c">{c.open}</span>
+              </span>
+            ))
+          )}
+          {f.bySeverity.length > 0 ? (
+            <div style="margin-top:10px">
+              <span className="iv-h">By severity</span>
+              {f.bySeverity.map((sv) => (
+                <span className="iv-row"><span>{sv.severity}</span><b>{sv.open}</b></span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {/* ---- Section 6 + 8 · project attention table ---- */}
+      <div className="sec-label" id="attention">Project attention</div>
+      <div className="panel int-table-panel">
+        <div className="desktop-only table-scroll">
+          <table className="pf-table int-table">
+            <thead>
+              <tr>
+                <th>Project</th><th>Progress</th><th>Current gate</th><th>Evidence</th>
+                <th>Governance</th><th>Issues</th><th>Clarif.</th><th>Funds held</th><th>Attention</th><th>Health</th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.projects.map((p) => (
+                <tr>
+                  <td>
+                    <a className="pf-name" href={`/project/${p.projectId}`}>{p.name}</a>
+                    {p.reasons.length > 0 ? (
+                      <span className="int-reasons">{p.reasons.join(" · ")}</span>
+                    ) : null}
+                  </td>
+                  <td>
+                    <span className="pf-prog">
+                      <span className="num">{p.progressPct}%</span>
+                      <span className="tr"><span className="fl" style={`width:${p.progressPct}%`}></span></span>
+                    </span>
+                  </td>
+                  <td className="pf-gate">{p.currentGate}</td>
+                  <td>{p.evidenceState}</td>
+                  <td className="num">{p.pendingGovernance}</td>
+                  <td className="num">{p.openIssues}</td>
+                  <td className="num">{p.openClarifications}</td>
+                  <td className="num">{money(p.fundsHeld)}</td>
+                  <td>{attChip(p.attention)}</td>
+                  <td>{healthChip(p.health)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="mobile-only">
+          {d.projects.map((p) => (
+            <div className="pf-card">
+              <a className="pf-name" href={`/project/${p.projectId}`}>{p.name}</a>
+              <div className="int-chips">{attChip(p.attention)} {healthChip(p.health)}</div>
+              {p.reasons.length > 0 ? <span className="int-reasons">{p.reasons.join(" · ")}</span> : null}
+              <div className="pf-kv"><span className="k">Progress</span><span className="v num">{p.progressPct}%</span>
+                <span className="tr"><span className="fl" style={`width:${p.progressPct}%`}></span></span></div>
+              <div className="pf-kv"><span className="k">Current gate</span><span className="v">{p.currentGate}</span></div>
+              <div className="pf-kv"><span className="k">Evidence</span><span className="v">{p.evidenceState}</span></div>
+              <div className="pf-kv"><span className="k">Governance / issues / clarif.</span><span className="v num">{p.pendingGovernance} · {p.openIssues} · {p.openClarifications}</span></div>
+              <div className="pf-kv"><span className="k">Funds held</span><span className="v num" style="font-weight:650">{money(p.fundsHeld)}</span></div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <details className="int-rules">
+        <summary>How attention levels are computed</summary>
+        <ul>
+          {ATTENTION_RULES.map((r) => (
+            <li>{attChip(r.level)} {r.rule}</li>
+          ))}
+        </ul>
+        <p>
+          Project health mirrors attention: AT RISK = any HIGH factor, WATCH = any MEDIUM
+          factor, HEALTHY = normal workflow. The exact factors for each project are listed in
+          the table above.
+        </p>
+      </details>
+
       <p className="footer-note">
-        Computed from stored verification records, not a generative model.
+        Computed {fmtDate(d.generatedAt)} from stored evidence, verification, governance,
+        field-issue, clarification and virtual-account records. The only AI-assisted input is
+        the visual assessment inside verification, labeled under assessment provenance above.
       </p>
+      <script src="/js/poll.js" defer></script>
     </AppShell>
   );
 }
@@ -1881,7 +2207,7 @@ export function renderMore(input: { nav: NavContext }): string {
     { href: "/issues", label: "Field Issues", icon: icons.activity, desc: "Operational issues from field coordination" },
     { href: "/pilot", label: "Pilot Operations", icon: icons.activity, desc: "Pilot status across projects" },
     { href: "/setup", label: "Pilot Setup", icon: icons.projects, desc: "Customer onboarding & project configuration" },
-    { href: "/insights", label: "Verification Insights", icon: icons.insights, desc: "Automated observations" },
+    { href: "/insights", label: "OBV Intelligence", icon: icons.insights, desc: "Operational intelligence from recorded data" },
   ];
   return renderDocument(
     <AppShell title="More" nav={{ ...input.nav, active: "more" }}>
