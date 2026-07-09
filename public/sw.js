@@ -1,7 +1,7 @@
 /* OBV Field Capture service worker.
    Network-first with cache fallback: pages and data stay fresh while the
    app shell keeps working offline (captures queue in IndexedDB). */
-const CACHE = "obv-field-v1";
+const CACHE = "obv-field-v2"; // bumped: purges stale pre-redesign caches on activate
 const SHELL = [
   "/field",
   "/styles.css",
@@ -28,16 +28,27 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
-  if (req.method !== "GET" || new URL(req.url).origin !== location.origin) return;
+  const url = new URL(req.url);
+  if (req.method !== "GET" || url.origin !== location.origin) return;
+  // Cache fallback is ONLY for the offline field-capture shell. Serving a
+  // stale copy of any other page (e.g. during a free-tier cold start)
+  // would show an outdated app — better to surface the real network state.
+  const isFieldShell =
+    url.pathname === "/field" || SHELL.includes(url.pathname);
   event.respondWith(
     fetch(req)
       .then((res) => {
-        if (res.ok) {
+        if (res.ok && isFieldShell) {
           const copy = res.clone();
           caches.open(CACHE).then((cache) => cache.put(req, copy));
         }
         return res;
       })
-      .catch(() => caches.match(req).then((hit) => hit || caches.match("/field")))
+      .catch((err) => {
+        if (isFieldShell) {
+          return caches.match(req).then((hit) => hit || caches.match("/field"));
+        }
+        throw err;
+      })
   );
 });
