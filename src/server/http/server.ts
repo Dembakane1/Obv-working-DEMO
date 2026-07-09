@@ -542,6 +542,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         reportRenderer: pdfRendererAvailable() ? "pdf" : "html-fallback",
         aiMode: AI_PROVIDER.apiKey() ? "live-capable" : "fallback-only",
         teamsMode: TEAMS_CONFIG.configured() ? "configured" : "demo",
+        // Deployed commit (Render injects RENDER_GIT_COMMIT) so the live
+        // version is verifiable from the outside. Short hash only.
+        version: (process.env.RENDER_GIT_COMMIT ?? process.env.OBV_GIT_COMMIT ?? "").slice(0, 7) || "unknown",
         timestamp: new Date().toISOString(),
       },
       database === "connected" ? 200 : 503
