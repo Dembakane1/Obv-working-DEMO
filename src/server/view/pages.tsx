@@ -2007,43 +2007,57 @@ export function renderError(nav: NavContext | null, title: string, message: stri
 function MapShell(props: { projectId?: string }): VNode {
   return (
     <div className="map-wrap" id="map-wrap" data-project={props.projectId ?? ""}>
-      <div className="map-toolbar">
-        <div className="map-layers" role="group" aria-label="Map layer">
-          <button type="button" id="layer-map" className="active" aria-pressed="true">Map</button>
-          <button type="button" id="layer-sat" aria-pressed="false">Satellite</button>
-        </div>
-        <button type="button" className="map-filters-btn" id="flt-btn" aria-expanded="false" aria-controls="map-filters">
-          Filters
-        </button>
-        <div className="map-filters" id="map-filters" role="group" aria-label="Evidence filters">
-          <div className="map-filters-head">
-            <span>Filters</span>
-            <button type="button" id="flt-close" aria-label="Close filters">×</button>
-          </div>
-          <label>Time
-            <select id="flt-time" aria-label="Evidence time filter">
-              <option value="all">All evidence</option>
-              <option value="7">Last 7 days</option>
-              <option value="30">Last 30 days</option>
-            </select>
-          </label>
-          <label>Milestone
-            <select id="flt-milestone" aria-label="Milestone filter">
-              <option value="all">All milestones</option>
-            </select>
-          </label>
-          <label>Verification
-            <select id="flt-verdict" aria-label="Verdict filter">
-              <option value="all">All verdicts</option>
-              <option value="VERIFIED">Verified</option>
-              <option value="NEEDS_REVIEW">Needs review</option>
-              <option value="REJECTED">Rejected</option>
-            </select>
-          </label>
-        </div>
+      {/* Intelligence-console strip: project identity left, utilities right */}
+      <div className="map-head">
+        <span className="mh-id">
+          <i className="mh-glyph" aria-hidden="true">{icons.map()}</i>
+          <h1 className="mh-title">
+            <span className="mh-proj" id="map-head-project">Project Map</span>
+            <span className="mh-kicker">Project Map · spatial intelligence</span>
+          </h1>
+        </span>
+        <span className="mh-utils">
+          <a className="mh-btn" href="/projects" title="Project register" aria-label="Project register">{icons.projects()}</a>
+          <a className="mh-btn" href="/overview" title="Exit map" aria-label="Exit map">×</a>
+        </span>
       </div>
       <div className="map-summary" id="map-summary" aria-live="polite"></div>
       <div className="map-stage">
+        <div className="map-overlay-top">
+          <div className="map-layers" role="group" aria-label="Map layer">
+            <button type="button" id="layer-map" className="active" aria-pressed="true">Map</button>
+            <button type="button" id="layer-sat" aria-pressed="false">Satellite</button>
+          </div>
+          <button type="button" className="map-filters-btn" id="flt-btn" aria-expanded="false" aria-controls="map-filters">
+            Filters
+          </button>
+          <div className="map-filters" id="map-filters" role="group" aria-label="Evidence filters">
+            <div className="map-filters-head">
+              <span>Filters</span>
+              <button type="button" id="flt-close" aria-label="Close filters">×</button>
+            </div>
+            <label>Time
+              <select id="flt-time" aria-label="Evidence time filter">
+                <option value="all">All evidence</option>
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+              </select>
+            </label>
+            <label>Milestone
+              <select id="flt-milestone" aria-label="Milestone filter">
+                <option value="all">All milestones</option>
+              </select>
+            </label>
+            <label>Verification
+              <select id="flt-verdict" aria-label="Verdict filter">
+                <option value="all">All verdicts</option>
+                <option value="VERIFIED">Verified</option>
+                <option value="NEEDS_REVIEW">Needs review</option>
+                <option value="REJECTED">Rejected</option>
+              </select>
+            </label>
+          </div>
+        </div>
         <div className="map-canvas" id="map-canvas" aria-label="Project map"></div>
         <div className="map-note" id="map-note" hidden>
           Base map unavailable — project geometry still available
@@ -2067,12 +2081,10 @@ function MapShell(props: { projectId?: string }): VNode {
 
 export function renderMap(input: { nav: NavContext; scope: "global" }): string {
   return renderDocument(
-    <AppShell title="Project Map" nav={input.nav}>
-      <PageHeader
-        title="Project Map"
-        sub="Spatial view of project boundaries, milestone progress, and evidence capture locations."
-      />
-      <MapShell />
+    <AppShell title="Project Map" nav={input.nav} context="Spatial intelligence">
+      <div className="map-page">
+        <MapShell />
+      </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );

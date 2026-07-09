@@ -480,20 +480,64 @@ interface MapProject {
                 : seg.status === "PENDING_EVIDENCE"
                   ? "Next action: Submit field evidence"
                   : "Not started";
+      // Reference-style segment inspector — every figure below is a real
+      // record: verdict split from mapped evidence, issue severities from
+      // the issue register, gate steps from the milestone status.
+      const segEvidence = project.evidence.filter((ev) => ev.milestoneId === seg.milestoneId);
+      const vCount = (v: string) => segEvidence.filter((ev) => ev.verdict === v).length;
+      const segIssues = project.issues.filter(
+        (iss2) => iss2.milestoneId === seg.milestoneId && !["RESOLVED", "CLOSED"].includes(iss2.status)
+      );
+      const high = segIssues.filter((iss2) => ["HIGH", "CRITICAL"].includes(iss2.severity)).length;
+      const medium = segIssues.filter((iss2) => iss2.severity === "MEDIUM").length;
+      const low = segIssues.length - high - medium;
+      // Governance gate progression derived from the real status only.
+      const GATES = ["Evidence", "Verified", "Approved", "Released"];
+      const gateIdx =
+        seg.status === "RELEASED" ? 4
+        : seg.status === "APPROVED" ? 3
+        : seg.status === "VERIFIED" ? 2
+        : seg.status === "UNDER_REVIEW" || seg.evidenceCount > 0 ? 1
+        : 0;
+      const evRow = (label: string, count: number, tone: string) =>
+        count > 0 || label === "Verified"
+          ? `<span class="mpx-row"><span class="k" style="color:${tone}">${label}</span><span class="n">${count}</span></span>`
+          : "";
       panelBody.innerHTML = `
-        <div class="mp-title">M${seg.seq} · ${esc(seg.title)}</div>
+        <div class="mpx-eyebrow">Segment M${seg.seq}</div>
+        <div class="mp-title">${esc(seg.title)}</div>
         <div class="mp-sub">${esc(seg.label)} · demo corridor segment</div>
         <div class="mp-chips">${chip(segmentStateLabel(seg.status), segmentTone(seg.status))}${chip("FUNDS " + seg.accountStatus, seg.accountStatus === "RELEASED" ? TONE.ok : TONE.warn)}</div>
-        <div class="mp-next">${esc(nextAction)}</div>
+        <div class="mpx-sec">Gate progress</div>
+        <div class="mpx-gates">
+          ${GATES.map((g, gi) => `<span class="mpx-gate ${gi < gateIdx ? "done" : ""}" title="${g}"></span>`).join("")}
+          <span class="mpx-gate-lbl">${gateIdx}/4 · ${esc(segmentStateLabel(seg.status))}</span>
+        </div>
+        <div class="mpx-sec">Evidence (${seg.evidenceCount})</div>
+        <div class="mpx-rows">
+          ${evRow("Verified", vCount("VERIFIED"), "#5ec27a")}
+          ${evRow("Review", vCount("NEEDS_REVIEW"), "#e2b25b")}
+          ${evRow("Rejected", vCount("REJECTED"), "#e07a70")}
+          ${segEvidence.length === 0 ? `<span class="mpx-none">No mapped evidence yet</span>` : ""}
+        </div>
+        ${
+          segIssues.length
+            ? `<div class="mpx-sec">Issues (${segIssues.length})</div>
+               <div class="mpx-rows">
+                 ${high ? `<span class="mpx-row"><span class="k" style="color:#e07a70">! High</span><span class="n">${high}</span></span>` : ""}
+                 ${medium ? `<span class="mpx-row"><span class="k" style="color:#e2b25b">Medium</span><span class="n">${medium}</span></span>` : ""}
+                 ${low ? `<span class="mpx-row"><span class="k">Low</span><span class="n">${low}</span></span>` : ""}
+               </div>`
+            : ""
+        }
         <dl class="mp-kv">
-          <dt>Requirement</dt><dd>${esc(seg.requirement)}</dd>
           <dt>Tranche</dt><dd class="num">${money(seg.trancheAmount)}</dd>
-          <dt>Evidence</dt><dd>${seg.evidenceCount} item${seg.evidenceCount === 1 ? "" : "s"}</dd>
-          <dt>Verification</dt><dd>${seg.latestVerdict ? esc(seg.latestVerdict.replace(/_/g, " ")) : "—"}</dd>
           <dt>Approval</dt><dd>${esc(approvalLine)}</dd>
+          <dt>Requirement</dt><dd>${esc(seg.requirement)}</dd>
         </dl>
+        <div class="mp-next">${esc(nextAction)}</div>
         <div class="mp-actions">
-          <a class="btn ghost sm" href="/milestone/${esc(seg.milestoneId)}">View milestone</a>
+          <a class="btn sm mpx-cta" href="/milestone/${esc(seg.milestoneId)}">View details</a>
           ${
             seg.threadId
               ? `<a class="btn ghost sm" href="/communications?thread=${esc(seg.threadId)}">Open thread</a>`
@@ -758,6 +802,9 @@ interface MapProject {
   function buildSummary(): void {
     const target = document.getElementById("map-summary");
     if (!target || !project) return;
+    // Console header identity — real selected project name.
+    const headProj = document.getElementById("map-head-project");
+    if (headProj) headProj.textContent = project.name;
     const buckets = new Map<string, { km: number; count: number; order: number }>();
     const ORDER: Record<string, number> = {
       "VERIFIED": 0, "AWAITING GOVERNANCE": 1, "NEEDS REVIEW": 2,

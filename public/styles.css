@@ -2105,3 +2105,220 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
   .ms-card { overflow: hidden; }
   .side-kv .v { overflow-wrap: anywhere; }
 }
+
+/* =====================================================================
+   v14 — map intelligence console (Reference A). Presentation only:
+   the map engine, ids, stroke/fill semantics, and filters are untouched.
+   ===================================================================== */
+
+/* the map owns the page — full-bleed dark workspace, minimal chrome */
+.map-page { margin: -24px -24px -64px; }
+.map-page .map-wrap {
+  border-radius: 0; padding: 0 14px 14px;
+  min-height: calc(100dvh - var(--topbar-h));
+  display: flex; flex-direction: column;
+}
+.map-page .map-stage { flex: 1; height: auto; min-height: 520px; }
+
+/* console strip: identity left, utilities right */
+.map-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 4px 10px;
+}
+.map-head .mh-id { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.map-head .mh-glyph {
+  width: 30px; height: 30px; border-radius: 8px; flex: none;
+  background: var(--navy-2); border: 1px solid var(--navy-line);
+  color: #9fb0ca; display: inline-flex; align-items: center; justify-content: center;
+  font-style: normal;
+}
+.map-head .mh-title { margin: 0; min-width: 0; line-height: 1.2; }
+.map-head .mh-proj {
+  display: block; color: #f2f5fa; font-size: 14.5px; font-weight: 650;
+  letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.map-head .mh-kicker {
+  display: block; font-size: 9px; font-weight: 700; letter-spacing: 0.11em;
+  text-transform: uppercase; color: #5f7091; margin-top: 1px;
+}
+.map-head .mh-utils { margin-left: auto; display: flex; gap: 6px; }
+.map-head .mh-btn {
+  width: 28px; height: 28px; border-radius: 7px;
+  background: var(--navy-2); border: 1px solid var(--navy-line);
+  color: #9fb0ca; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; line-height: 1;
+}
+.map-head .mh-btn:hover { color: #fff; border-color: #43557a; text-decoration: none; }
+.map-head .mh-btn svg { width: 13px; height: 13px; }
+
+.map-summary { padding: 0 4px 9px; pointer-events: none; }
+
+/* floating top overlay: layer pills left, filters right */
+.map-overlay-top {
+  position: absolute; top: 10px; left: 10px; right: 10px; z-index: 25;
+  display: flex; align-items: flex-start; gap: 10px;
+  pointer-events: none;
+}
+.map-overlay-top > * { pointer-events: auto; }
+.map-layers {
+  background: rgba(13, 22, 38, 0.92); border: 1px solid #2c3c5c;
+  border-radius: 9px; box-shadow: 0 4px 14px rgba(4, 9, 18, 0.45);
+  backdrop-filter: blur(3px);
+}
+.map-layers button { min-height: 28px; padding: 5px 13px; border-radius: 8px; }
+.map-layers button.active { background: #f3f2ee; color: var(--navy); }
+.map-filters {
+  margin-left: auto; display: flex; gap: 8px; align-items: center;
+  background: rgba(13, 22, 38, 0.92); border: 1px solid #2c3c5c;
+  border-radius: 9px; padding: 4px 8px;
+  box-shadow: 0 4px 14px rgba(4, 9, 18, 0.45);
+  backdrop-filter: blur(3px);
+}
+.map-filters label {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 8.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+  color: #5f7091;
+}
+.map-filters select {
+  background: transparent; color: #dbe3ee; border: 0; font: inherit;
+  font-size: 11px; font-weight: 550; padding: 4px 2px; max-width: 128px;
+}
+.map-filters select:focus-visible { outline: 1px solid #5b7be0; border-radius: 4px; }
+.map-filters-btn { border-radius: 9px; box-shadow: 0 4px 14px rgba(4, 9, 18, 0.45); }
+
+/* floating inspector: rounded dark card over the map */
+.map-panel {
+  position: absolute; top: 52px; right: 10px; bottom: auto; z-index: 22;
+  width: 288px; max-height: calc(100% - 110px); overflow-y: auto;
+  background: rgba(15, 26, 46, 0.96); border: 1px solid #2c3c5c;
+  border-radius: 12px; box-shadow: 0 12px 34px rgba(4, 9, 18, 0.55);
+  backdrop-filter: blur(4px);
+  padding: 15px 16px;
+}
+.map-panel-empty { color: #7d8ca6; font-size: 11.5px; line-height: 1.55; }
+.mpx-eyebrow {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  color: #6d80a3; margin-bottom: 2px;
+}
+.map-panel .mp-title { font-size: 14px; font-weight: 650; letter-spacing: -0.01em; }
+.map-panel .mp-sub { font-size: 10.5px; color: #7d8ca6; margin-top: 2px; }
+.map-panel .mp-chips { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.mpx-sec {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  color: #6d80a3; margin: 13px 0 6px; padding-top: 11px; border-top: 1px solid #24334f;
+}
+.mpx-gates { display: flex; align-items: center; gap: 4px; }
+.mpx-gate {
+  height: 5px; flex: 1; max-width: 34px; border-radius: 3px;
+  background: #24334f;
+}
+.mpx-gate.done { background: #35b566; }
+.mpx-gate-lbl { font-size: 10px; color: #8fa0bd; margin-left: 6px; white-space: nowrap; }
+.mpx-rows { display: flex; flex-direction: column; }
+.mpx-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 5px 0; border-bottom: 1px solid #1d2b45; font-size: 11.5px;
+}
+.mpx-row:last-child { border-bottom: 0; }
+.mpx-row .k { font-weight: 600; }
+.mpx-row .n {
+  min-width: 22px; text-align: center; font-size: 10.5px; font-weight: 700;
+  background: #22314e; color: #dbe3ee; border-radius: 5px; padding: 1px 6px;
+  font-variant-numeric: tabular-nums;
+}
+.mpx-none { font-size: 10.5px; color: #7d8ca6; padding: 4px 0; }
+.map-panel .mp-kv { grid-template-columns: 84px 1fr; font-size: 11px; margin-top: 10px; }
+.map-panel .mp-kv dt { font-size: 9.5px; }
+.map-panel .mp-next { font-size: 10.5px; color: #a9b8d2; margin-top: 10px; line-height: 1.5; }
+.map-panel .mp-actions { margin-top: 12px; display: flex; gap: 7px; flex-wrap: wrap; }
+.mpx-cta {
+  background: #1e4bd2 !important; border-color: #1e4bd2 !important; color: #fff !important;
+  flex: 1; text-align: center; border-radius: 8px;
+}
+.mpx-cta:hover { background: #163a9f !important; }
+.map-panel-close { color: #7d8ca6; }
+
+/* legend: compact floating chip bar, bottom-left */
+.map-legend {
+  border-radius: 10px; border-color: #2c3c5c;
+  box-shadow: 0 6px 18px rgba(4, 9, 18, 0.5);
+  padding: 6px 11px 8px; max-width: 250px;
+}
+.legend-body { display: flex; flex-wrap: wrap; gap: 3px 12px; }
+.map-legend .lg-row { font-size: 10px; white-space: nowrap; }
+.map-legend .lg-note { flex-basis: 100%; font-size: 8.5px; }
+
+/* zoom: compact floating vertical control, bottom-right */
+.map-zoom {
+  left: auto !important; top: auto !important;
+  right: 10px; bottom: 12px;
+  display: flex; flex-direction: column;
+  background: rgba(13, 22, 38, 0.92); border: 1px solid #2c3c5c;
+  border-radius: 9px; overflow: hidden;
+  box-shadow: 0 4px 14px rgba(4, 9, 18, 0.45);
+}
+.map-zoom button {
+  background: transparent; border: 0; color: #dbe3ee;
+  width: 32px; height: 30px; font-size: 15px; cursor: pointer;
+}
+.map-zoom button:first-child { border-bottom: 1px solid #2c3c5c; }
+.map-zoom button:hover { background: #22314e; }
+
+/* richer overlay rendering — CSS presentation only, attribute semantics
+   (stroke/fill colors read by integrity checks) are untouched */
+.geo-casing { stroke-width: 9; stroke-linecap: round; opacity: 0.9; }
+.geo-segment { stroke-width: 5.5; stroke-linecap: round; filter: drop-shadow(0 1px 2px rgba(4, 9, 18, 0.45)); }
+.geo-marker .dot { stroke: #ffffff; stroke-width: 2.2; filter: drop-shadow(0 1px 3px rgba(4, 9, 18, 0.5)); }
+.geo-marker { cursor: pointer; }
+.geo-label {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.03em;
+  fill: #eef2f8; paint-order: stroke; stroke: rgba(13, 22, 38, 0.85); stroke-width: 3px;
+}
+.geo-boundary { stroke-dasharray: 5 5; opacity: 0.85; }
+.map-note {
+  background: rgba(13, 22, 38, 0.9); color: #a9b8d2; border: 1px solid #2c3c5c;
+  border-radius: 8px;
+  top: 56px; left: 10px; right: auto; transform: none; max-width: 320px;
+}
+.map-attr { opacity: 0.75; }
+
+/* inspector floats over the map on desktop; below 860px the existing
+   bottom-sheet behavior takes over untouched */
+@media (max-width: 860px) {
+  .map-page { margin: -14px -14px -92px; }
+  .map-page .map-wrap { border-radius: 0; min-height: calc(100dvh - 52px); }
+  .map-head { padding-top: calc(10px + env(safe-area-inset-top) / 2); }
+  .map-panel {
+    position: absolute; top: auto; right: 0; width: auto;
+    border-radius: 12px 12px 0 0;
+  }
+  .map-overlay-top { right: 10px; }
+  .map-filters { margin-left: 0; }
+}
+
+/* mobile re-assertions (v14 rules above are later in the cascade, so the
+   compact filter sheet + hidden-until-open behavior is restated here) */
+@media (max-width: 860px) {
+  .map-page .map-wrap { padding-bottom: calc(70px + env(safe-area-inset-bottom)); }
+  /* deterministic stage height on mobile: the view fit measures the
+     canvas at boot, so the stage must not grow after layout settles */
+  .map-page .map-stage { flex: none; height: calc(100dvh - 320px); min-height: 340px; }
+  .map-filters { display: none; }
+  .map-filters.open {
+    display: flex; flex-direction: column; align-items: stretch; gap: 10px;
+    position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 30;
+    background: rgba(15, 26, 46, 0.98); border: 1px solid #2c3c5c;
+    border-radius: 10px; padding: 12px 14px 14px; margin-left: 0;
+    box-shadow: 0 10px 26px rgba(4, 9, 18, 0.55);
+  }
+  .map-filters.open label { justify-content: space-between; font-size: 9px; color: #8fa0bd; }
+  .map-filters.open select {
+    max-width: 60%; min-width: 0; flex: 1; margin-left: 10px;
+    background: #22314e; border-radius: 6px; padding: 6px 8px;
+  }
+  .map-filters-head { display: flex; align-items: center; justify-content: space-between; }
+  .map-filters-head span { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #8fa0bd; }
+  .map-filters-head button { border: 0; background: transparent; font-size: 19px; color: #8fa0bd; cursor: pointer; padding: 2px 8px; min-height: 34px; }
+  .map-zoom { bottom: 12px; right: 10px; }
+  .map-legend { max-width: 210px; }
+}
