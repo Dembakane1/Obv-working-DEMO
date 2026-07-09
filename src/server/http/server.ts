@@ -257,11 +257,14 @@ function usersById(): Map<string, User> {
 }
 
 function navFor(user: User, active: string): NavContext {
+  const org = repo.getOrganization(user.organizationId);
   return {
     user,
     active,
     pendingApprovals: repo.listPendingApprovalRequests().length,
-    orgName: repo.getOrganization(user.organizationId)?.name,
+    openIssues: repo.listFieldIssues().filter((i) => !["RESOLVED", "CLOSED"].includes(i.status)).length,
+    orgName: org?.name,
+    orgKind: org?.kind,
   };
 }
 
@@ -2028,6 +2031,38 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // Pilot Setup until launched.
     const projects = (await allProjectCards()).filter((p) => p.project.status !== "DRAFT");
     const chain = await wormEvidenceStore.verifyChain();
+    // Real records only: pending approvals -> next releases + queue; open
+    // clarifications/issues/review counts from the primary stores.
+    const pendingReqs = repo.listPendingApprovalRequests();
+    const nextReleases = pendingReqs
+      .map((req2) => {
+        const ms = repo.getMilestone(req2.milestoneId)!;
+        const proj = repo.getProject(ms.projectId)!;
+        const approvedRoles = new Set(
+          repo.listApprovalRecordsForRequest(req2.id).filter((r) => r.decision === "APPROVED").map((r) => r.role)
+        );
+        const missing = req2.requiredRoles.filter((r) => !approvedRoles.has(r));
+        return {
+          projectId: proj.id,
+          projectName: proj.name,
+          label: `${proj.name.split("(")[0].trim().slice(0, 28)} · M${ms.seq}`,
+          amount: ms.trancheAmount,
+          awaiting:
+            approvedRoles.size > 0
+              ? `Awaiting ${missing.map((r) => r.replace(/_/g, " ").toLowerCase()).join(", ")}`
+              : `Awaiting ${req2.requiredRoles.length} approvals`,
+        };
+      })
+      .sort((a, b) => b.amount - a.amount);
+    const allMilestonesOv = projects.flatMap((p) => repo.listMilestones(p.project.id));
+    const openClarsOv = allMilestonesOv
+      .flatMap((ms) => repo.listClarificationsForMilestone(ms.id))
+      .filter((c) => ["OPEN", "RESPONDED", "REOPENED"].includes(c.status)).length;
+    const openIssuesOv = repo.listFieldIssues().filter((i) => !["RESOLVED", "CLOSED"].includes(i.status));
+    const openIssuesByProject = new Map<string, number>();
+    for (const issue of openIssuesOv) {
+      openIssuesByProject.set(issue.projectId, (openIssuesByProject.get(issue.projectId) ?? 0) + 1);
+    }
     sendHtml(
       res,
       renderOverview({
@@ -2037,6 +2072,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         notifications: repo.listNotifications(),
         chainValid: chain.valid,
         teamsConfigured: TEAMS_CONFIG.configured(),
+        nextReleases,
+        queue: {
+          approvals: pendingReqs.length,
+          approvalsAmount: nextReleases.reduce((sum, r) => sum + r.amount, 0),
+          approvalsProjects: new Set(nextReleases.map((r) => r.projectId)).size,
+          clarifications: openClarsOv,
+          highIssues: openIssuesOv.filter((i) => ["HIGH", "CRITICAL"].includes(i.severity)).length,
+          evidenceReview: allMilestonesOv.filter((ms) => ms.status === "UNDER_REVIEW").length,
+        },
+        openIssuesByProject,
       })
     );
     return;
@@ -2279,7 +2324,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     sendHtml(
       res,
       renderIssues({
-        nav: navFor(user!, "compliance"),
+        nav: navFor(user!, "issues"),
         issues: repo.listFieldIssues().map((issue) => ({
           issue,
           project: repo.getProject(issue.projectId),
@@ -2295,13 +2340,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (method === "GET" && pathname.startsWith("/issue/")) {
     const issue = repo.getFieldIssue(pathname.slice("/issue/".length));
     if (!issue) {
-      sendHtml(res, renderError(navFor(user!, "compliance"), "Issue not found", "No field issue exists at this address."), 404);
+      sendHtml(res, renderError(navFor(user!, "issues"), "Issue not found", "No field issue exists at this address."), 404);
       return;
     }
     sendHtml(
       res,
       renderIssueDetail({
-        nav: navFor(user!, "compliance"),
+        nav: navFor(user!, "issues"),
         issue,
         project: repo.getProject(issue.projectId)!,
         milestone: issue.milestoneId ? repo.getMilestone(issue.milestoneId) : null,
@@ -2318,7 +2363,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   if (method === "GET" && pathname === "/issues/new") {
     if (!canManageFieldOps(user!)) {
-      sendHtml(res, renderError(navFor(user!, "compliance"), "Not authorized", "Creating field issues requires a project manager, funder representative or compliance reviewer."), 403);
+      sendHtml(res, renderError(navFor(user!, "issues"), "Not authorized", "Creating field issues requires a project manager, funder representative or compliance reviewer."), 403);
       return;
     }
     const sourceMessage = url.searchParams.get("messageId")
@@ -2328,7 +2373,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     sendHtml(
       res,
       renderIssueNew({
-        nav: navFor(user!, "compliance"),
+        nav: navFor(user!, "issues"),
         sourceMessage,
         project:
           (sourceThread?.projectId ? repo.getProject(sourceThread.projectId) : null) ??
@@ -2380,7 +2425,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     sendHtml(
       res,
       renderIntegrations({
-        nav: navFor(user!, "comms"),
+        nav: navFor(user!, "integrations"),
         configured: syncConfigured(),
         testMode: syncConfigured() && !GRAPH_CONFIG.realGraph(),
         sendCap: sendCapability(),
@@ -2422,7 +2467,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     sendHtml(
       res,
       renderPilotSetup({
-        nav: navFor(user!, "pilot"),
+        nav: navFor(user!, "setup"),
         orgs: repo.listOrganizations(),
         invitations: repo.listInvitations().map((invitation) => ({
           invitation,
@@ -2469,7 +2514,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     sendHtml(
       res,
       renderProjectSetup({
-        nav: navFor(user!, "pilot"),
+        nav: navFor(user!, "setup"),
         project,
         stage,
         stages,

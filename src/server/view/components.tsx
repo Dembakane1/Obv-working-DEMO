@@ -127,23 +127,39 @@ export interface NavContext {
   user: User;
   active: string;
   pendingApprovals: number;
-  /** Organization name shown in the sidebar user block. */
+  /** Open field issues (badge on the Field Issues nav item). */
+  openIssues?: number;
+  /** Organization identity shown at the bottom of the sidebar. */
   orgName?: string;
+  orgKind?: string;
 }
 
-const NAV_ITEMS: Array<{ key: string; href: string; label: string; icon: () => VNode }> = [
+interface NavItem { key: string; href: string; label: string; icon: () => VNode; badge?: "approvals" | "issues" }
+
+const NAV_ITEMS: NavItem[] = [
   { key: "overview", href: "/overview", label: "Overview", icon: icons.overview },
   { key: "projects", href: "/projects", label: "Projects", icon: icons.projects },
-  { key: "map", href: "/map", label: "Project Map", icon: icons.map },
-  { key: "field", href: "/field", label: "Field Capture", icon: icons.camera },
+  { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
+  { key: "approvals", href: "/approvals", label: "Approvals", icon: icons.approvals, badge: "approvals" },
+  { key: "compliance", href: "/compliance", label: "Evidence Review", icon: icons.shield },
   { key: "comms", href: "/communications", label: "Communications", icon: icons.chat },
-  { key: "approvals", href: "/approvals", label: "Pending Approvals", icon: icons.approvals },
-  { key: "ledger", href: "/ledger", label: "Evidence Ledger", icon: icons.ledger },
+  { key: "issues", href: "/issues", label: "Field Issues", icon: icons.alert, badge: "issues" },
+  { key: "field", href: "/field", label: "Field Capture", icon: icons.camera },
   { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
-  { key: "compliance", href: "/compliance", label: "Risk & Compliance", icon: icons.shield },
+  { key: "ledger", href: "/ledger", label: "Ledger", icon: icons.ledger },
+];
+
+const NAV_ITEMS_PILOT: NavItem[] = [
+  { key: "setup", href: "/setup", label: "Pilot Setup", icon: icons.projects },
   { key: "pilot", href: "/pilot", label: "Pilot Operations", icon: icons.activity },
+  { key: "integrations", href: "/communications/integrations", label: "Integrations", icon: icons.refresh },
+];
+
+const NAV_ITEMS_UTILITY: NavItem[] = [
   { key: "insights", href: "/insights", label: "Verification Insights", icon: icons.insights },
 ];
+
+const ALL_NAV_ITEMS = [...NAV_ITEMS, ...NAV_ITEMS_PILOT, ...NAV_ITEMS_UTILITY];
 
 const BOTTOM_NAV = ["overview", "projects", "approvals", "ledger"];
 
@@ -154,8 +170,21 @@ export function AppShell(props: {
   context?: string;
   children?: Child;
 }): VNode {
-  const { user, active, pendingApprovals } = props.nav;
-  const activeItem = NAV_ITEMS.find((i) => i.key === active);
+  const { user, active, pendingApprovals, openIssues = 0 } = props.nav;
+  const activeItem = ALL_NAV_ITEMS.find((i) => i.key === active);
+  const badgeCount = (item: NavItem) =>
+    item.badge === "approvals" ? pendingApprovals : item.badge === "issues" ? openIssues : 0;
+  const navLink = (item: NavItem) => (
+    <a
+      href={item.href}
+      className={`nav-item ${active === item.key ? "active" : ""}`}
+      aria-current={active === item.key ? "page" : undefined}
+    >
+      {item.icon()}
+      {item.label}
+      {badgeCount(item) > 0 ? <span className="count">{badgeCount(item)}</span> : null}
+    </a>
+  );
   return (
     <html lang="en">
       <head>
@@ -173,39 +202,35 @@ export function AppShell(props: {
             <div className="sidebar-brand">
               <span className="mark">{brandMark(18)}</span>
               <span className="word">
-                <span className="n">OpenBuild Verify</span>
-                <span className="s">Verification · Governance</span>
+                <span className="n">OBV</span>
+                <span className="s">OpenBuild Verify</span>
               </span>
             </div>
             <nav className="sidebar-nav" aria-label="Primary">
-              {NAV_ITEMS.map((item) => (
-                <a href={item.href} className={`nav-item ${active === item.key ? "active" : ""}`} aria-current={active === item.key ? "page" : undefined}>
-                  {item.icon()}
-                  {item.label}
-                  {item.key === "approvals" && pendingApprovals > 0 ? (
-                    <span className="count">{pendingApprovals}</span>
-                  ) : null}
-                </a>
-              ))}
+              {NAV_ITEMS.map(navLink)}
+              <div className="nav-group">Pilot</div>
+              {NAV_ITEMS_PILOT.map(navLink)}
+              <div className="nav-group">Analysis</div>
+              {NAV_ITEMS_UTILITY.map(navLink)}
             </nav>
-            <div className="sidebar-user">
-              <span className="avatar" aria-hidden="true">{initials(user.name)}</span>
-              <span className="who">
-                <span className="n" style="display:block">{user.name}</span>
-                <span className="r" style="display:block">
-                  {roleLabel(user.role)}
-                  {props.nav.orgName ? ` · ${props.nav.orgName}` : ""}
+            {props.nav.orgName ? (
+              <div className="sidebar-org">
+                <span className="o-mark" aria-hidden="true">{icons.building()}</span>
+                <span className="o-body">
+                  <span className="o-n">{props.nav.orgName}</span>
+                  {props.nav.orgKind ? (
+                    <span className="o-k">{props.nav.orgKind.replace(/_/g, " ").toLowerCase()}</span>
+                  ) : null}
                 </span>
-              </span>
-              <a className="switch" href="/">Switch</a>
-            </div>
+              </div>
+            ) : null}
           </aside>
 
           <div className="main">
             <div className="topbar">
               <span className="ctx">
                 <b>{activeItem?.label ?? props.title}</b>
-                {props.context ? (
+                {props.context && props.context !== (activeItem?.label ?? props.title) ? (
                   <>
                     <span className="sep">/</span>
                     <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{props.context}</span>
@@ -214,20 +239,26 @@ export function AppShell(props: {
               </span>
               <span className="right">
                 <span className="env-tag">Demo environment</span>
-                <span className="user">
-                  <b>{user.name}</b> · {roleLabel(user.role)}
+                <span className="id-block">
+                  <span className="avatar" aria-hidden="true">{initials(user.name)}</span>
+                  <span className="who">
+                    <span className="n">{user.name}</span>
+                    <span className="r">{roleLabel(user.role)}</span>
+                  </span>
                 </span>
+                <a className="switch" href="/" title="Switch demo user">Switch</a>
               </span>
             </div>
 
             <div className="mobile-top">
-              <span className="mark">{brandMark(15)}</span>
-              <span className="t">OpenBuild Verify</span>
+              <span className="m-avatar" aria-hidden="true">{initials(user.name)}</span>
+              <span className="m-id">
+                <span className="t">{activeItem?.label ?? props.title}</span>
+                <span className="o">{props.nav.orgName ?? "OpenBuild Verify"}</span>
+              </span>
               <span className="u">
-                {user.name} · {roleLabel(user.role)}
-                <br />
                 <span className="env-tag" style="font-size:8.5px;padding:1px 5px">Demo</span>{" "}
-                <a href="/">switch user</a>
+                <a href="/">switch</a>
               </span>
             </div>
 
@@ -238,7 +269,12 @@ export function AppShell(props: {
         <nav className="bottom-nav" aria-label="Primary">
           {NAV_ITEMS.filter((i) => BOTTOM_NAV.includes(i.key)).map((item) => (
             <a href={item.href} className={active === item.key ? "active" : ""}>
-              {item.icon()}
+              <span className="bn-ico">
+                {item.icon()}
+                {item.key === "approvals" && pendingApprovals > 0 ? (
+                  <span className="bn-badge">{pendingApprovals}</span>
+                ) : null}
+              </span>
               {item.key === "approvals" ? "Approvals" : item.key === "ledger" ? "Ledger" : item.label.split(" ")[0]}
             </a>
           ))}
