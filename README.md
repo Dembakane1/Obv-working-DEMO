@@ -632,7 +632,8 @@ src/
 public/
   styles.css                   institutional design system
   manifest.webmanifest, sw.js  installable PWA + offline shell
-  demo-evidence/*.svg          seeded demo evidence photos
+  demo-evidence/*.jpg          simulated demo evidence photos (procedurally
+                               generated, watermarked "SIMULATED DEMO EVIDENCE")
 scripts/
   gen-icons.js                 dependency-free PNG icon generator
   acceptance-test.js           hero-loop browser test

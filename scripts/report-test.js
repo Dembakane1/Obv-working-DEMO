@@ -88,7 +88,7 @@ async function main() {
   pass(`approval records match application state (${approvals} recorded decisions shown)`);
 
   // ---- 6, 8: evidence images + ledger hashes represented ----
-  if (!html.includes("/demo-evidence/m1-clearing.svg")) fail("evidence image missing");
+  if (!html.includes("/demo-evidence/m1-clearing.jpg")) fail("evidence image missing");
   const lastHash = d1.prepare("SELECT current_hash h FROM ledger_entries ORDER BY seq DESC LIMIT 1").get().h;
   if (!html.includes(lastHash)) fail("full ledger hash missing from appendix");
   if (!html.includes(lastHash.slice(0, 34))) fail("truncated ledger hash missing");

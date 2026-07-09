@@ -210,7 +210,7 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
   }> = [
     {
       milestone: milestones[0],
-      photo: "/demo-evidence/m1-clearing.svg",
+      photo: "/demo-evidence/m1-clearing.jpg",
       lat: -11.9021,
       lng: 33.5714,
       capturedAt: "2026-03-11T08:42:00.000Z",
@@ -220,7 +220,7 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
     },
     {
       milestone: milestones[1],
-      photo: "/demo-evidence/m2-drainage.svg",
+      photo: "/demo-evidence/m2-drainage.jpg",
       lat: -11.8544,
       lng: 33.6012,
       capturedAt: "2026-05-19T13:16:00.000Z",
@@ -355,19 +355,19 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
   repo.insertDemoFallbackPhoto({
     id: "demo-m3-a",
     milestoneId: "ms-3",
-    path: "/demo-evidence/m3-gravel-a.svg",
+    path: "/demo-evidence/m3-gravel-a.jpg",
     label: "Gravel base laid and graded (km 3+400)",
   });
   repo.insertDemoFallbackPhoto({
     id: "demo-m3-b",
     milestoneId: "ms-3",
-    path: "/demo-evidence/m3-gravel-b.svg",
+    path: "/demo-evidence/m3-gravel-b.jpg",
     label: "Grader compacting base layer (km 9+100)",
   });
   repo.insertDemoFallbackPhoto({
     id: "demo-m3-c",
     milestoneId: "ms-3",
-    path: "/demo-evidence/m3-gravel-c.svg",
+    path: "/demo-evidence/m3-gravel-c.jpg",
     label: "Surfaced section with km marker (km 12+000)",
   });
 
@@ -549,17 +549,12 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
   // Communication media lives in data/comm-media (mutable, retention-managed)
   // — never in the WORM evidence store.
   fs.mkdirSync(COMM_MEDIA_DIR, { recursive: true });
-  const stockpileSvg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420" viewBox="0 0 640 420">` +
-    `<rect width="640" height="420" fill="#a9b2a0"/>` +
-    `<rect y="300" width="640" height="120" fill="#7d7365"/>` +
-    `<polygon points="180,300 320,190 460,300" fill="#9d917d"/>` +
-    `<polygon points="300,300 400,235 500,300" fill="#8f8470"/>` +
-    `<rect x="20" y="20" width="290" height="54" fill="#00000066"/>` +
-    `<text x="34" y="42" font-family="monospace" font-size="16" fill="#fff">km 12 gravel stockpile</text>` +
-    `<text x="34" y="62" font-family="monospace" font-size="12" fill="#ffd">WhatsApp communication photo — demo asset, NOT evidence</text>` +
-    `</svg>`;
-  fs.writeFileSync(path.join(COMM_MEDIA_DIR, "seed-wa-stockpile.svg"), stockpileSvg);
+  // Simulated stockpile photo (carries a burned-in "SIMULATED DEMO
+  // EVIDENCE" watermark) — copied from the bundled demo assets.
+  fs.copyFileSync(
+    path.join(process.cwd(), "public", "demo-evidence", "comm-stockpile.jpg"),
+    path.join(COMM_MEDIA_DIR, "seed-wa-stockpile.jpg"),
+  );
   msg({
     id: "wamsg-1", threadId: "thread-m3",
     senderUserId: "user-field", senderDisplayName: "Chikondi Banda",
@@ -576,7 +571,7 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
     body: "Photo of the stockpile as of this morning.",
     attachments: [{
       kind: "IMAGE", name: "km12-stockpile.jpg",
-      url: "/comm-media/seed-wa-stockpile.svg", mimeType: "image/svg+xml",
+      url: "/comm-media/seed-wa-stockpile.jpg", mimeType: "image/jpeg",
     }],
     createdAt: "2026-07-06T09:13:00.000Z",
   });
