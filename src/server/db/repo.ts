@@ -647,6 +647,7 @@ import type {
   UserRole,
   DrawRequest, DrawLineItem, DrawDocumentRequirement, DrawDocument,
   DrawEvidenceLink, DrawEvent, DrawAccountEvent,
+  BudgetLine, BudgetLineMap, VerifiedQuantity,
 } from "../../shared/types";
 
 function toReport(r: Row): Report {
@@ -2354,4 +2355,182 @@ export function listMetricTargets(projectId: string | null): PilotMetricTarget[]
       createdAt: row.created_at as string,
     };
   });
+}
+
+// ============== budget vs verified physical progress (additive) ========
+// Financial-control CRUD only. No function below can create evidence,
+// verifications, approvals, ledger entries, or account events.
+
+function toBudgetLine(r: Row): BudgetLine {
+  const originalBudget = r.original_budget as number;
+  const approvedChanges = (r.approved_changes as number) ?? 0;
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    code: r.code as string,
+    category: r.category as string,
+    description: (r.description as string) ?? "",
+    originalBudget,
+    approvedChanges,
+    committedAmount: (r.committed_amount as number) ?? null,
+    paidToDate: (r.paid_to_date as number) ?? 0,
+    retainageHeld: (r.retainage_held as number) ?? null,
+    currency: (r.currency as string) ?? "USD",
+    sequence: (r.sequence as number) ?? 0,
+    active: Boolean(r.active),
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+    currentBudget: originalBudget + approvedChanges,
+  };
+}
+
+export function insertBudgetLine(b: BudgetLine): void {
+  getDb()
+    .prepare(
+      `INSERT INTO budget_lines (id, project_id, code, category, description,
+         original_budget, approved_changes, committed_amount, paid_to_date,
+         retainage_held, currency, sequence, active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      b.id, b.projectId, b.code, b.category, b.description,
+      b.originalBudget, b.approvedChanges, b.committedAmount, b.paidToDate,
+      b.retainageHeld, b.currency, b.sequence, b.active ? 1 : 0,
+      b.createdAt, b.updatedAt
+    );
+}
+
+export function getBudgetLine(id: string): BudgetLine | null {
+  const r = getDb().prepare("SELECT * FROM budget_lines WHERE id = ?").get(id);
+  return r ? toBudgetLine(r as Row) : null;
+}
+
+export function findBudgetLineByCode(projectId: string, code: string): BudgetLine | null {
+  const r = getDb()
+    .prepare("SELECT * FROM budget_lines WHERE project_id = ? AND code = ?")
+    .get(projectId, code);
+  return r ? toBudgetLine(r as Row) : null;
+}
+
+export function listBudgetLines(projectId: string): BudgetLine[] {
+  return getDb()
+    .prepare("SELECT * FROM budget_lines WHERE project_id = ? ORDER BY sequence, code")
+    .all(projectId)
+    .map((r) => toBudgetLine(r as Row));
+}
+
+export function updateBudgetLine(
+  id: string,
+  patch: Partial<
+    Pick<
+      BudgetLine,
+      | "code" | "category" | "description" | "originalBudget" | "approvedChanges"
+      | "committedAmount" | "paidToDate" | "retainageHeld" | "sequence" | "active"
+    >
+  >
+): void {
+  const cur = getBudgetLine(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE budget_lines SET code = ?, category = ?, description = ?,
+         original_budget = ?, approved_changes = ?, committed_amount = ?,
+         paid_to_date = ?, retainage_held = ?, sequence = ?, active = ?,
+         updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.code ?? cur.code,
+      patch.category ?? cur.category,
+      patch.description ?? cur.description,
+      patch.originalBudget ?? cur.originalBudget,
+      patch.approvedChanges ?? cur.approvedChanges,
+      patch.committedAmount !== undefined ? patch.committedAmount : cur.committedAmount,
+      patch.paidToDate ?? cur.paidToDate,
+      patch.retainageHeld !== undefined ? patch.retainageHeld : cur.retainageHeld,
+      patch.sequence ?? cur.sequence,
+      (patch.active !== undefined ? patch.active : cur.active) ? 1 : 0,
+      new Date().toISOString(),
+      id
+    );
+}
+
+function toBudgetLineMap(r: Row): BudgetLineMap {
+  return {
+    id: r.id as string,
+    budgetLineId: r.budget_line_id as string,
+    milestoneId: (r.milestone_id as string) ?? null,
+    evidenceRequirementId: (r.evidence_requirement_id as string) ?? null,
+    createdAt: r.created_at as string,
+  };
+}
+
+export function insertBudgetLineMap(m: BudgetLineMap): void {
+  getDb()
+    .prepare(
+      `INSERT INTO budget_line_maps (id, budget_line_id, milestone_id,
+         evidence_requirement_id, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(m.id, m.budgetLineId, m.milestoneId, m.evidenceRequirementId, m.createdAt);
+}
+
+export function listBudgetLineMaps(budgetLineId: string): BudgetLineMap[] {
+  return getDb()
+    .prepare("SELECT * FROM budget_line_maps WHERE budget_line_id = ? ORDER BY created_at, rowid")
+    .all(budgetLineId)
+    .map((r) => toBudgetLineMap(r as Row));
+}
+
+export function deleteBudgetLineMap(id: string): void {
+  getDb().prepare("DELETE FROM budget_line_maps WHERE id = ?").run(id);
+}
+
+function toVerifiedQuantity(r: Row): VerifiedQuantity {
+  return {
+    id: r.id as string,
+    milestoneId: r.milestone_id as string,
+    percent: r.percent as number,
+    quantityLabel: r.quantity_label as string,
+    evidenceItemId: r.evidence_item_id as string,
+    reason: r.reason as string,
+    enteredByUserId: r.entered_by_user_id as string,
+    superseded: Boolean(r.superseded),
+    createdAt: r.created_at as string,
+  };
+}
+
+export function insertVerifiedQuantity(q: VerifiedQuantity): void {
+  getDb()
+    .prepare(
+      `INSERT INTO verified_quantities (id, milestone_id, percent, quantity_label,
+         evidence_item_id, reason, entered_by_user_id, superseded, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      q.id, q.milestoneId, q.percent, q.quantityLabel, q.evidenceItemId,
+      q.reason, q.enteredByUserId, q.superseded ? 1 : 0, q.createdAt
+    );
+}
+
+export function supersedeQuantities(milestoneId: string): void {
+  getDb()
+    .prepare("UPDATE verified_quantities SET superseded = 1 WHERE milestone_id = ?")
+    .run(milestoneId);
+}
+
+export function activeQuantityForMilestone(milestoneId: string): VerifiedQuantity | null {
+  const r = getDb()
+    .prepare(
+      "SELECT * FROM verified_quantities WHERE milestone_id = ? AND superseded = 0 ORDER BY created_at DESC LIMIT 1"
+    )
+    .get(milestoneId);
+  return r ? toVerifiedQuantity(r as Row) : null;
+}
+
+export function listQuantitiesForMilestone(milestoneId: string): VerifiedQuantity[] {
+  return getDb()
+    .prepare("SELECT * FROM verified_quantities WHERE milestone_id = ? ORDER BY created_at DESC")
+    .all(milestoneId)
+    .map((r) => toVerifiedQuantity(r as Row));
 }

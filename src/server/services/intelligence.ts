@@ -16,6 +16,8 @@ import * as repo from "../db/repo";
 // Read-only draw helpers (document checklist derivation). Nothing in this
 // module can write draw state or reach the approval/financial paths.
 import * as drawsService from "./draws";
+// Read-only budget vs verified-progress comparisons (deterministic).
+import * as budgetService from "./budgetProgress";
 import type {
   ApprovalRequest,
   ClarificationRequest,
@@ -614,6 +616,101 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
         actionLabel: "Open governance",
         actionHref: `${href}?tab=governance`,
       });
+    }
+  }
+
+  // ---- budget vs verified physical progress signals (deterministic) ----
+  // Rules: budget-financial-ahead, budget-physical-ahead-of-billing,
+  // budget-line-unsupported-request, budget-line-repeated-variance,
+  // budget-line-missing-evidence-requirement. Figures trace to budget
+  // lines, released tranches, open draws and verification records; the
+  // strongest claim made is that financial progress is ahead of currently
+  // verified physical progress.
+  for (const p of projects) {
+    const fin = budgetService.assessFinancialProgress(p.id);
+    if (fin.dataComplete && fin.varianceState === "FINANCIAL_AHEAD") {
+      signals.push({
+        severity: "MEDIUM",
+        rule: "budget-financial-ahead",
+        projectName: p.name,
+        milestoneLabel: null,
+        reason: `Financial progress (${fin.claimedPct}%) is ahead of currently verified physical progress (${fin.verifiedPhysicalPct}%) by ${fin.variancePts} points.`,
+        age: null,
+        actionLabel: "Open Budget & Progress",
+        actionHref: `/project/${p.id}/budget`,
+      });
+    }
+    if (fin.dataComplete && fin.varianceState === "PHYSICAL_AHEAD") {
+      signals.push({
+        severity: "INFO",
+        rule: "budget-physical-ahead-of-billing",
+        projectName: p.name,
+        milestoneLabel: null,
+        reason: `Verified physical progress (${fin.verifiedPhysicalPct}%) is ahead of billing (${fin.claimedPct}%) — review draw cadence.`,
+        age: null,
+        actionLabel: "Open Budget & Progress",
+        actionHref: `/project/${p.id}/budget`,
+      });
+    }
+    const register = budgetService.budgetLineRegister(p.id);
+    for (const row of register) {
+      if (!row.line.active) continue;
+      if (row.openRequested > 0 && (row.verifiedPct === null || row.verifiedPct === 0)) {
+        signals.push({
+          severity: "MEDIUM",
+          rule: "budget-line-unsupported-request",
+          projectName: p.name,
+          milestoneLabel: row.line.code,
+          reason: `Budget line ${row.line.code} has $${row.openRequested.toLocaleString("en-US")} requested in open draws with ${row.verifiedPct === null ? "no mapped verified-progress basis" : "0% verified physical progress"}.`,
+          age: null,
+          actionLabel: "Open Budget & Progress",
+          actionHref: `/project/${p.id}/budget`,
+        });
+      }
+      // Repeated variance: the same budget line drawing ahead of verified
+      // progress (or reviewed as exception) across two or more draws.
+      const drawsWithVariance = repo
+        .listDrawRequestsForProject(p.id)
+        .filter((d) => d.status !== "CANCELLED")
+        .filter((d) =>
+          repo
+            .listDrawLines(d.id)
+            .filter((l) => l.budgetLineId === row.line.code || l.budgetLineId === row.line.id)
+            .some(
+              (l) =>
+                ["EXCEPTION", "REJECTED"].includes(l.status) ||
+                budgetService.compareDrawLine(p.id, l).exceptionCandidate
+            )
+        );
+      if (drawsWithVariance.length >= 2) {
+        signals.push({
+          severity: "MEDIUM",
+          rule: "budget-line-repeated-variance",
+          projectName: p.name,
+          milestoneLabel: row.line.code,
+          reason: `Budget line ${row.line.code} shows financial-ahead variance or review exceptions on ${drawsWithVariance.length} draws (${drawsWithVariance.map((d) => `#${d.drawNumber}`).join(", ")}).`,
+          age: null,
+          actionLabel: "Open draws",
+          actionHref: "/draws",
+        });
+      }
+      // Mapped milestones with no configured evidence requirement.
+      const unrequired = row.mappedMilestoneIds.filter(
+        (id) => repo.listRequirementsForMilestone(id).length === 0
+      );
+      if (unrequired.length > 0 && row.openRequested > 0) {
+        const m = milestoneById.get(unrequired[0]);
+        signals.push({
+          severity: "INFO",
+          rule: "budget-line-missing-evidence-requirement",
+          projectName: p.name,
+          milestoneLabel: m ? msLabel(m) : row.line.code,
+          reason: `Budget line ${row.line.code} is being drawn against, but ${unrequired.length} mapped milestone(s) have no configured evidence requirement.`,
+          age: null,
+          actionLabel: "Open setup",
+          actionHref: `/setup/project/${p.id}`,
+        });
+      }
     }
   }
 

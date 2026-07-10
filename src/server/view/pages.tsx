@@ -708,6 +708,7 @@ export function renderProjectDetail(input: {
             {t.label}
           </a>
         ))}
+        <a href={`/project/${project.id}/budget`}>Budget &amp; Progress</a>
       </nav>
 
       {tab === "overview" ? (

@@ -158,6 +158,7 @@ const NAV_ITEMS_PILOT: NavItem[] = [
 
 const NAV_ITEMS_UTILITY: NavItem[] = [
   { key: "insights", href: "/insights", label: "OBV Intelligence", icon: icons.insights },
+  { key: "budget", href: "/budget", label: "Budget & Progress", icon: icons.ledger },
 ];
 
 const ALL_NAV_ITEMS = [...NAV_ITEMS, ...NAV_ITEMS_PILOT, ...NAV_ITEMS_UTILITY];

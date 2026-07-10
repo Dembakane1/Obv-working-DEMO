@@ -44,6 +44,9 @@ import type {
   DrawCompleteness,
   DrawHeaderSummary,
 } from "../services/draws";
+import type { DrawLineComparison } from "../services/budgetProgress";
+import { VarianceTag, ProgressCompareBars, VARIANCE_META } from "./budgetPages";
+import type { FinancialProgress, PhysicalProgressAssessment } from "../../shared/types";
 
 // ------------------------------------------------------------ chips
 
@@ -316,6 +319,8 @@ export interface DrawDetailData {
   accountEvents: DrawAccountEvent[];
   recommendation: DrawRecommendation;
   completeness: DrawCompleteness;
+  /** Budget-vs-verified comparison per line (advisory; never rejects). */
+  lineComparisons: Map<string, DrawLineComparison>;
   approval: ApprovalRequest | null;
   approvalRecords: ApprovalRecord[];
   users: Map<string, User>;
@@ -537,12 +542,14 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
                 <tr>
                   <th>Line</th><th>Milestone</th><th>Scheduled</th><th>Prev. paid</th>
                   <th>This draw</th><th>Stored</th><th>Retainage</th><th>Balance</th>
-                  <th>% claimed</th><th>% verified</th><th>Variance</th><th>Status</th>
+                  <th>% claimed</th><th>Financial</th><th>Verified physical</th>
+                  <th>Progress variance</th><th>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {d.lines.map((l) => {
                   const ms = l.milestoneId ? d.milestones.find((m) => m.id === l.milestoneId) : null;
+                  const cmp = d.lineComparisons.get(l.id);
                   return (
                     <tr>
                       <td data-l="Line">
@@ -558,9 +565,13 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
                       <td data-l="Retainage" style="font-variant-numeric:tabular-nums">{l.retainageAmount != null ? money(l.retainageAmount) : "—"}</td>
                       <td data-l="Balance" style="font-variant-numeric:tabular-nums">{money(l.balanceToFinish)}</td>
                       <td data-l="% claimed">{l.percentCompleteClaimed != null ? `${l.percentCompleteClaimed}%` : "—"}</td>
-                      <td data-l="% verified">{l.percentCompleteVerified != null ? `${l.percentCompleteVerified}%` : "—"}</td>
-                      <td data-l="Variance" style={l.varianceAmount ? "color:var(--warn);font-weight:600" : ""}>
-                        {l.varianceAmount != null && l.varianceAmount !== 0 ? money(l.varianceAmount) : l.varianceAmount === 0 ? "—" : "n/a"}
+                      <td data-l="Financial">{cmp?.financialPct != null ? `${cmp.financialPct}%` : "—"}</td>
+                      <td data-l="Verified physical">{cmp?.verifiedPct != null ? `${cmp.verifiedPct}%` : "—"}</td>
+                      <td data-l="Progress variance">
+                        {cmp ? <VarianceTag state={cmp.varianceState} /> : "—"}
+                        {cmp?.exceptionCandidate ? (
+                          <span className="sub" style="display:block;color:var(--warn)">Exception candidate — review evidence basis</span>
+                        ) : null}
                       </td>
                       <td data-l="Status"><LineStatusTag status={l.status} /></td>
                     </tr>
@@ -577,7 +588,17 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
             <div className="panel panel-pad" style="margin-top:10px">
               <h3 style="margin:0 0 6px;font-size:12.5px">
                 Review — {l.description} ({money(l.currentRequested)}) <LineStatusTag status={l.status} />
+                {d.lineComparisons.get(l.id)?.exceptionCandidate ? (
+                  <span className="sync-tag bad" style="margin-left:8px">Exception candidate</span>
+                ) : null}
               </h3>
+              {d.lineComparisons.get(l.id)?.exceptionCandidate ? (
+                <p className="sub" style="margin:0 0 8px;font-size:11px">
+                  Financial progress ({d.lineComparisons.get(l.id)!.financialPct}%) is ahead of currently
+                  verified physical progress ({d.lineComparisons.get(l.id)!.verifiedPct}%). Advisory only —
+                  the reviewer decides; the draw is never rejected automatically.
+                </p>
+              ) : null}
               <form method="POST" action={`/api/draws/${draw.id}/lines/${l.id}/review`} className="fo-form">
                 <div className="fo-row">
                   <label>Decision
@@ -1236,6 +1257,10 @@ export interface DrawReportData {
   approvalRecords: ApprovalRecord[];
   accountEvents: DrawAccountEvent[];
   users: Map<string, User>;
+  /** Budget vs verified progress (project + per line), with methodology. */
+  financialProgress: FinancialProgress;
+  physicalProgress: PhysicalProgressAssessment;
+  lineComparisons: Map<string, DrawLineComparison>;
   generatedAt: string;
   generatedBy: User;
   ledger: { valid: boolean; entries: number; brokenAt?: number };
@@ -1412,6 +1437,55 @@ export function renderDrawReport(d: DrawReportData): string {
           {d.funderReports.length
             ? ` Full evidence detail: see Funder Verification Report(s) ${d.funderReports.map((r) => r.filename).join(", ")}.`
             : ""}
+        </p>
+
+        <h2>Budget vs verified physical progress</h2>
+        <p className="muted" style="font-size:8.4pt;margin:2pt 0 6pt">
+          Financial progress and physical progress are different measurements — compared side by
+          side, never merged. A variance means financial progress is ahead of currently verified
+          physical progress; it is not a finding about conduct.
+        </p>
+        <table>
+          <tbody>
+            <tr><td style="width:34%;color:#5b6b7f">Project financial progress (paid + claimed)</td>
+              <td>{d.financialProgress.dataComplete ? `${d.financialProgress.claimedPct}% of ${money(d.financialProgress.budgetBasis)} (paid ${d.financialProgress.paidPct}%)` : "DATA INCOMPLETE"}</td></tr>
+            <tr><td style="color:#5b6b7f">Verified physical progress</td>
+              <td>{d.physicalProgress.verifiedPct}% (weights: {d.physicalProgress.weightSource.replace(/_/g, " ").toLowerCase()})</td></tr>
+            <tr><td style="color:#5b6b7f">Variance</td>
+              <td>
+                {d.financialProgress.dataComplete
+                  ? `${d.financialProgress.variancePts > 0 ? "+" : ""}${d.financialProgress.variancePts} percentage points — ${VARIANCE_META[d.financialProgress.varianceState].label}`
+                  : "DATA INCOMPLETE"}
+              </td></tr>
+          </tbody>
+        </table>
+        {d.lines.length ? (
+          <table style="margin-top:6pt">
+            <thead>
+              <tr><th>Line</th><th className="num">Financial</th><th className="num">Verified physical</th><th>Progress variance</th></tr>
+            </thead>
+            <tbody>
+              {d.lines.map((l) => {
+                const cmp = d.lineComparisons.get(l.id);
+                return (
+                  <tr>
+                    <td>{l.description}</td>
+                    <td className="num">{cmp?.financialPct != null ? `${cmp.financialPct}%` : "—"}</td>
+                    <td className="num">{cmp?.verifiedPct != null ? `${cmp.verifiedPct}%` : "—"}</td>
+                    <td>
+                      <span className={`tag ${cmp ? (cmp.varianceState === "WITHIN_RANGE" ? "ok" : cmp.varianceState === "FINANCIAL_AHEAD" ? "bad" : cmp.varianceState === "DATA_INCOMPLETE" ? "" : "warn") : ""}`}>
+                        {cmp ? VARIANCE_META[cmp.varianceState].label : "—"}
+                      </span>
+                      {cmp?.exceptionCandidate ? " exception candidate (advisory)" : ""}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : null}
+        <p className="muted" style="font-size:7.6pt">
+          Methodology: {d.physicalProgress.methodology}
         </p>
 
         <h2>Governance &amp; financial state</h2>

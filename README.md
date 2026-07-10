@@ -128,6 +128,47 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Budget vs Verified Physical Progress (v14)
+
+A transparent financial-control comparison between money claimed/paid and
+physical progress supported by verified evidence — two different
+measurements, compared side by side, never merged. Not accounting
+software, not forecasting, not an AI prediction engine.
+
+`BudgetLine` cost codes (original budget, approved changes, derived
+current budget, paid to date, retainage) map optionally to milestones and
+draw line items. Physical progress is deterministic and explainable:
+normalized milestone weights (configured weights, else tranche
+proportions — source disclosed) × verified completion. Verified
+milestones contribute their full weight; measurably partial milestones
+contribute only through explicit reviewed `VerifiedQuantity` records
+(authorized reviewer + reason + VERIFIED evidence of the same milestone);
+unverified evidence contributes nothing, and no percentage is ever
+inferred from a photo. Every contribution traces to its evidence item,
+verification, policy version and ledger entry ("View evidence basis").
+
+Financial progress comes from real records (budget lines / released
+tranches / open draw requests): paid %, claimed % and verified physical %
+with deterministic variance states — WITHIN RANGE (≤5 pts), WATCH (5–10),
+FINANCIAL AHEAD (>10), PHYSICAL AHEAD, DATA INCOMPLETE — behind
+configurable thresholds. The permitted language is exactly "financial
+progress is ahead of currently verified physical progress"; the test
+suite greps every surface for anything stronger.
+
+Surfaces: **Budget & Progress** (portfolio + per-project control page
+with dual-bar comparison, category rollups, budget line register,
+methodology panel, audited change control), draw line items showing
+financial vs verified per line with advisory **exception candidate**
+flags (never auto-rejecting), a Budget vs Verified Progress section in
+the Draw Review Summary with methodology disclosure, and five grounded
+OBV Intelligence signals. Post-launch budget changes require an explicit
+reason and produce an audit entry + configuration snapshot + version
+bump. `scripts/budget-test.js` (39 checkpoints) covers the 16 required
+cases; see `docs/BUDGET_VS_PROGRESS.md` for the full methodology and
+known limitations.
+
+---
+
 ## Construction Draw Requests (v13)
 
 A lender-native draw management workflow layered on top of the existing
@@ -642,6 +683,7 @@ node scripts/whatsapp-sync-test.js         # WhatsApp bridge vs Cloud API stub (
 node scripts/fieldops-test.js              # field issues, clarifications, draft promotion — none of it moves money
 node scripts/pilot-test.js                 # pilot onboarding: invitations, config, readiness, launch, change control
 node scripts/draws-test.js                 # draw requests: reconciliation, review, advisory recommendation, exactly-once governed release
+node scripts/budget-test.js                # budget vs verified physical progress: methodology, variance states, traceability, change control
 ```
 
 `scripts/idempotency-test.js` proves accidental repeats cannot duplicate

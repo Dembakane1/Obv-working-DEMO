@@ -85,6 +85,13 @@ import {
 } from "../workflow/orchestrator";
 import * as draws from "../services/draws";
 import { DrawError } from "../services/draws";
+import * as budget from "../services/budgetProgress";
+import { BudgetError } from "../services/budgetProgress";
+import {
+  BudgetPageData,
+  renderBudgetPage,
+  renderBudgetPortfolio,
+} from "../view/budgetPages";
 import {
   DrawDetailData,
   DrawEvidenceRow,
@@ -438,6 +445,9 @@ function assembleDrawDetail(
     accountEvents: repo.listDrawAccountEvents(draw.id),
     recommendation: draws.computeRecommendation(draw.id),
     completeness: draws.completeness(draw.id),
+    lineComparisons: new Map(
+      repo.listDrawLines(draw.id).map((l) => [l.id, budget.compareDrawLine(draw.projectId, l)])
+    ),
     approval,
     approvalRecords,
     users: usersById(),
@@ -486,6 +496,11 @@ async function assembleDrawReportData(
     approvalRecords: approval ? repo.listApprovalRecordsForRequest(approval.id) : [],
     accountEvents: repo.listDrawAccountEvents(draw.id),
     users: usersById(),
+    financialProgress: budget.assessFinancialProgress(project.id),
+    physicalProgress: budget.assessPhysicalProgress(project.id),
+    lineComparisons: new Map(
+      repo.listDrawLines(draw.id).map((l) => [l.id, budget.compareDrawLine(project.id, l)])
+    ),
     generatedAt: new Date().toISOString(),
     generatedBy: user,
     ledger: { valid: chain.valid, entries: chain.entries, brokenAt: chain.brokenAt },
@@ -626,7 +641,11 @@ function stateFingerprint(): string {
               (SELECT COUNT(*) FROM draw_line_items) AS drl,
               (SELECT COUNT(*) FROM draw_documents) AS drd,
               (SELECT COUNT(*) FROM draw_evidence_links) AS drel,
-              (SELECT COUNT(*) FROM draw_events) AS drev`
+              (SELECT COUNT(*) FROM draw_events) AS drev,
+              (SELECT COUNT(*) FROM budget_lines) AS bl,
+              (SELECT COALESCE(MAX(updated_at), '') FROM budget_lines) AS blu,
+              (SELECT COUNT(*) FROM budget_line_maps) AS blm,
+              (SELECT COUNT(*) FROM verified_quantities) AS vq`
     )
     .get();
   return createHash("sha256")
@@ -1591,6 +1610,118 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ==================================== budget vs verified progress ====
+  // Financial-control records and reviewed quantities. Nothing here can
+  // verify evidence, approve anything, or move HELD/RELEASED state.
+
+  if (method === "POST" && pathname === "/api/budget-lines") {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const text = (await readBody(req, 256 * 1024)).toString("utf8");
+    const p = isFormPost(req)
+      ? (Object.fromEntries(new URLSearchParams(text)) as Record<string, string>)
+      : JSON.parse(text || "{}");
+    const line = budget.createBudgetLine(user, {
+      projectId: String(p.projectId ?? ""),
+      code: String(p.code ?? ""),
+      category: String(p.category ?? ""),
+      description: p.description ? String(p.description) : null,
+      originalBudget: p.originalBudget !== undefined && p.originalBudget !== "" ? Number(p.originalBudget) : 0,
+      committedAmount: p.committedAmount !== undefined && p.committedAmount !== "" ? Number(p.committedAmount) : null,
+      paidToDate: p.paidToDate !== undefined && p.paidToDate !== "" ? Number(p.paidToDate) : 0,
+      retainageHeld: p.retainageHeld !== undefined && p.retainageHeld !== "" ? Number(p.retainageHeld) : null,
+      milestoneIds: p.milestoneId ? [String(p.milestoneId)] : Array.isArray(p.milestoneIds) ? p.milestoneIds : [],
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/project/${line.projectId}/budget`);
+    } else {
+      sendJson(res, { line }, 201);
+    }
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/budget-lines/update") {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const text = (await readBody(req, 256 * 1024)).toString("utf8");
+    const p = isFormPost(req)
+      ? (Object.fromEntries(new URLSearchParams(text)) as Record<string, string>)
+      : JSON.parse(text || "{}");
+    const line = budget.updateBudgetLine(user, String(p.budgetLineId ?? ""), {
+      description: p.description !== undefined ? String(p.description) : undefined,
+      category: p.category !== undefined && p.category !== "" ? String(p.category) : undefined,
+      originalBudget: p.originalBudget !== undefined && p.originalBudget !== "" ? Number(p.originalBudget) : undefined,
+      approvedChanges: p.approvedChanges !== undefined && p.approvedChanges !== "" ? Number(p.approvedChanges) : undefined,
+      committedAmount: p.committedAmount !== undefined && p.committedAmount !== "" ? Number(p.committedAmount) : undefined,
+      paidToDate: p.paidToDate !== undefined && p.paidToDate !== "" ? Number(p.paidToDate) : undefined,
+      retainageHeld: p.retainageHeld !== undefined && p.retainageHeld !== "" ? Number(p.retainageHeld) : undefined,
+      active: p.active !== undefined && p.active !== "" ? p.active === "1" || p.active === "true" || p.active === true : undefined,
+      reason: p.reason ? String(p.reason) : null,
+    });
+    if (p.milestoneId) {
+      budget.mapBudgetLine(user, line.id, { milestoneId: String(p.milestoneId) });
+    }
+    if (isFormPost(req)) {
+      redirect(res, `/project/${line.projectId}/budget`);
+    } else {
+      sendJson(res, { line });
+    }
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/verified-quantities") {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const text = (await readBody(req, 256 * 1024)).toString("utf8");
+    const p = isFormPost(req)
+      ? (Object.fromEntries(new URLSearchParams(text)) as Record<string, string>)
+      : JSON.parse(text || "{}");
+    const evidence = repo.getEvidence(String(p.evidenceItemId ?? ""));
+    const record = budget.recordVerifiedQuantity(user, {
+      milestoneId: p.milestoneId ? String(p.milestoneId) : evidence?.milestoneId ?? "",
+      percent: Number(p.percent),
+      quantityLabel: String(p.quantityLabel ?? ""),
+      evidenceItemId: String(p.evidenceItemId ?? ""),
+      reason: String(p.reason ?? ""),
+    });
+    if (isFormPost(req)) {
+      const m = repo.getMilestone(record.milestoneId);
+      redirect(res, `/project/${m?.projectId ?? ""}/budget`);
+    } else {
+      sendJson(res, { record }, 201);
+    }
+    return;
+  }
+
+  const progressApiMatch = /^\/api\/projects\/([^/]+)\/progress$/.exec(pathname);
+  if (method === "GET" && progressApiMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const project = repo.getProject(progressApiMatch[1]);
+    if (!project || !budget.canAccessProjectFinance(user, project)) {
+      sendJson(res, { error: "Project not found" }, 404);
+      return;
+    }
+    sendJson(res, {
+      financial: budget.assessFinancialProgress(project.id),
+      physical: budget.assessPhysicalProgress(project.id),
+      register: budget.budgetLineRegister(project.id),
+    });
+    return;
+  }
+
   // ============================================================ draws
   // Construction Draw Request workflow. Every route below is either an
   // administrative record (draft, lines, documents, evidence links) or an
@@ -2344,7 +2475,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     "/overview", "/dashboard", "/projects", "/project/", "/milestone/",
     "/approvals", "/ledger", "/reports", "/compliance", "/insights", "/more", "/field",
     "/map", "/communications", "/issues", "/issue/", "/evidence-drafts",
-    "/setup", "/pilot", "/draws", "/draw/",
+    "/setup", "/pilot", "/draws", "/draw/", "/budget",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -2426,6 +2557,53 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  const budgetPageMatch = /^\/project\/([^/]+)\/budget$/.exec(pathname);
+  if (method === "GET" && budgetPageMatch) {
+    const project = repo.getProject(budgetPageMatch[1]);
+    // Tenant boundary: unrelated organizations get the same 404 as a
+    // nonexistent project — existence is not disclosed.
+    if (!project || !budget.canAccessProjectFinance(user!, project)) {
+      sendHtml(res, renderError(navFor(user!, "budget"), "Project not found", "No project exists at this address."), 404);
+      return;
+    }
+    const milestones = repo.listMilestones(project.id).filter((m) => !m.archived);
+    const verifiedEvidenceOptions = milestones
+      .filter((m) => !["VERIFIED", "APPROVED", "RELEASED"].includes(m.status))
+      .flatMap((m) =>
+        repo
+          .listEvidenceForMilestone(m.id)
+          .filter((ev) => repo.getVerificationForEvidence(ev.id)?.verdict === "VERIFIED")
+          .map((ev) => ({
+            id: ev.id,
+            milestoneId: m.id,
+            label: `M${m.seq} · verified evidence ${ev.id.slice(0, 8)}… (${ev.capturedAt.slice(0, 10)})`,
+          }))
+      );
+    const data: BudgetPageData = {
+      nav: navFor(user!, "budget"),
+      project,
+      financial: budget.assessFinancialProgress(project.id),
+      physical: budget.assessPhysicalProgress(project.id),
+      register: budget.budgetLineRegister(project.id),
+      categories: budget.categoryComparisons(project.id),
+      milestones,
+      users: usersById(),
+      auditTrail: repo
+        .listConfigAudit(project.id, 30)
+        .filter((e) => e.entityType === "budget_line" || e.entityType === "verified_quantity")
+        .map((e) => ({
+          action: e.action, reason: e.reason, afterSummary: e.afterSummary,
+          createdAt: e.createdAt, actorUserId: e.actorUserId,
+        })),
+      verifiedEvidenceOptions,
+      canManage: budget.canManageBudget(user!),
+      launched: project.status !== "DRAFT",
+    };
+    sendHtml(res, renderBudgetPage(data));
+    return;
+  }
+
+
   if (method === "GET" && pathname.startsWith("/project/")) {
     const data = await projectCardData(pathname.slice("/project/".length));
     if (!data) {
@@ -2495,6 +2673,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         canFieldOps: canManageFieldOps(user!),
       })
     );
+    return;
+  }
+
+  // ---- budget & progress pages ----
+  if (method === "GET" && pathname === "/budget") {
+    const rows = repo
+      .listProjects()
+      .filter((project) => project.status === "ACTIVE" && budget.canAccessProjectFinance(user!, project))
+      .map((project) => ({ project, financial: budget.assessFinancialProgress(project.id) }));
+    sendHtml(res, renderBudgetPortfolio({ nav: navFor(user!, "budget"), rows }));
     return;
   }
 
@@ -3036,7 +3224,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";

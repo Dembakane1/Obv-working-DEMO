@@ -136,6 +136,7 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
         "Photo showing cleared 20 m right-of-way with contractor camp and " +
         "equipment on site at km 0–2 of the R47 alignment.",
       trancheAmount: 240_000,
+      weight: 10,
       status: "RELEASED",
       accountStatus: "HELD", // corrected by releaseTranche() below
     },
@@ -148,6 +149,7 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
         "Photo showing completed box culvert installation with headwalls and " +
         "compacted backfill at the km 6+850 stream crossing.",
       trancheAmount: 480_000,
+      weight: 20,
       status: "RELEASED",
       accountStatus: "HELD",
     },
@@ -161,6 +163,7 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
         "the full carriageway width, with grading equipment or a km marker " +
         "visible for location context.",
       trancheAmount: 600_000,
+      weight: 25,
       status: "PENDING_EVIDENCE",
       accountStatus: "HELD",
     },
@@ -173,6 +176,7 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
         "Photo showing cast bridge deck with guard rails and finished gravel " +
         "approaches on both banks at the Kasitu river crossing.",
       trancheAmount: 560_000,
+      weight: 23,
       status: "NOT_STARTED",
       accountStatus: "HELD",
     },
@@ -185,6 +189,7 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
         "Photo showing finished running surface with road signs and edge " +
         "markers installed, taken at the Kafukule end point (km 14).",
       trancheAmount: 520_000,
+      weight: 22,
       status: "NOT_STARTED",
       accountStatus: "HELD",
     },
@@ -644,6 +649,13 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
   // approvals or the virtual account: it is a request for review.
   seedDemoDraw();
 
+  // ---- seeded budget lines (budget vs verified progress demo) ----
+  // Financial-control records: original budgets reconcile to the project
+  // total ($2.4M); paid-to-date mirrors the released M1/M2 tranches. With
+  // Draw #1 open ($600k claimed), financial progress (55%) reads ahead of
+  // verified physical progress (30%) — a comparison, not an accusation.
+  seedDemoBudget();
+
   const chain = await wormEvidenceStore.verifyChain();
   console.log(
     `Seeded project "${project.name}" with ${milestones.length} milestones, ` +
@@ -693,7 +705,7 @@ function seedDemoDraw(): void {
   };
   repo.insertDrawLine({
     ...lineBase,
-    id: "dline-1", sort: 0, budgetLineId: "02-300 Drainage",
+    id: "dline-1", sort: 0, budgetLineId: "02-300",
     milestoneId: "ms-2", description: "Drainage structures — completion balance",
     scheduledValue: 480_000, previouslyPaid: 400_000, currentRequested: 80_000,
     materialsStored: null, retainageAmount: 8_000,
@@ -704,7 +716,7 @@ function seedDemoDraw(): void {
   });
   repo.insertDrawLine({
     ...lineBase,
-    id: "dline-2", sort: 1, budgetLineId: "02-610 Base course",
+    id: "dline-2", sort: 1, budgetLineId: "02-610",
     milestoneId: "ms-3", description: "Gravel base course placement, km 7–11",
     scheduledValue: 600_000, previouslyPaid: 0, currentRequested: 450_000,
     materialsStored: null, retainageAmount: 45_000,
@@ -715,7 +727,7 @@ function seedDemoDraw(): void {
   });
   repo.insertDrawLine({
     ...lineBase,
-    id: "dline-3", sort: 2, budgetLineId: "02-615 Stored materials",
+    id: "dline-3", sort: 2, budgetLineId: "02-615",
     milestoneId: "ms-3", description: "Stored materials — gravel stockpile km 12",
     scheduledValue: 90_000, previouslyPaid: 0, currentRequested: 70_000,
     materialsStored: 70_000, retainageAmount: 7_000,
@@ -787,6 +799,33 @@ function seedDemoDraw(): void {
     createdAt: t("8T10:00:00.000Z"), deliveryStatus: "SENT", origin: "OBV_LOCAL",
     editedAt: null, originalBody: null, externalDeleted: false,
     attachments: [], location: null,
+  });
+}
+
+function seedDemoBudget(): void {
+  const now = "2026-07-05T09:00:00.000Z";
+  const lines: Array<[string, string, string, string, number, number, number | null, string | null]> = [
+    // id, code, category, description, originalBudget, paidToDate, retainage, milestoneId
+    ["bl-1", "01-000", "Site Work", "Mobilization & vegetation clearing", 240_000, 240_000, null, "ms-1"],
+    ["bl-2", "02-300", "Drainage & Earthworks", "Grading, culverts and drainage structures", 560_000, 480_000, 24_000, "ms-2"],
+    ["bl-3", "02-610", "Base Course", "Gravel base course placement km 0-14", 600_000, 0, null, "ms-3"],
+    ["bl-4", "02-615", "Base Course", "Stored materials - gravel stockpiles", 90_000, 0, null, "ms-3"],
+    ["bl-5", "03-100", "Structures", "Kasitu river crossing bridge deck", 560_000, 0, null, "ms-4"],
+    ["bl-6", "04-100", "Surfacing", "Final surfacing, signage & handover", 350_000, 0, null, "ms-5"],
+  ];
+  lines.forEach(([id, code, category, description, originalBudget, paidToDate, retainageHeld, milestoneId], i) => {
+    repo.insertBudgetLine({
+      id, projectId: "proj-r47", code, category, description,
+      originalBudget, approvedChanges: 0, committedAmount: null, paidToDate,
+      retainageHeld, currency: "USD", sequence: i, active: true,
+      createdAt: now, updatedAt: now, currentBudget: 0,
+    });
+    if (milestoneId) {
+      repo.insertBudgetLineMap({
+        id: `blm-${id}`, budgetLineId: id, milestoneId,
+        evidenceRequirementId: null, createdAt: now,
+      });
+    }
   });
 }
 
@@ -885,6 +924,15 @@ function purgeDemoScopedRows(): void {
     db.prepare(`DELETE FROM draw_document_requirements WHERE draw_request_id IN (${dph})`).run(...drawIds);
     db.prepare(`DELETE FROM draw_line_items WHERE draw_request_id IN (${dph})`).run(...drawIds);
     db.prepare(`DELETE FROM draw_requests WHERE id IN (${dph})`).run(...drawIds);
+  }
+  // Budget vs verified-progress rows for the demo project.
+  db.prepare(
+    `DELETE FROM budget_line_maps WHERE budget_line_id IN
+       (SELECT id FROM budget_lines WHERE project_id = ?)`
+  ).run(DEMO_PROJECT);
+  db.prepare("DELETE FROM budget_lines WHERE project_id = ?").run(DEMO_PROJECT);
+  if (msIds.length) {
+    db.prepare(`DELETE FROM verified_quantities WHERE milestone_id IN (${inList(msIds)})`).run(...msIds);
   }
   db.prepare("DELETE FROM field_assignments WHERE project_id = ?").run(DEMO_PROJECT);
   db.prepare("DELETE FROM verification_policies WHERE project_id = ?").run(DEMO_PROJECT);

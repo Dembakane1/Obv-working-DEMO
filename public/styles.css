@@ -1586,6 +1586,23 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
   vertical-align: 1px; padding: 0 3px;
 }
 .grid-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* ---- budget vs verified progress comparison bars ---- */
+.bvp-bars { display: flex; flex-direction: column; gap: 10px; }
+.bvp-row { display: grid; grid-template-columns: minmax(150px, max-content) 48px 1fr; gap: 8px; align-items: center; }
+.bvp-row.compact { grid-template-columns: minmax(110px, max-content) 42px 1fr; }
+.bvp-label { font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
+.bvp-row.compact .bvp-label { font-size: 9.5px; }
+.bvp-pct { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.bvp-row.compact .bvp-pct { font-size: 12px; }
+.bvp-track { display: block; height: 12px; background: var(--inset); border: 1px solid var(--line); position: relative; }
+.bvp-fill { display: block; height: 100%; }
+.bvp-fill.fin { background: var(--warn); }
+.bvp-fill.phys { background: var(--ok); }
+@media (max-width: 560px) {
+  .bvp-row, .bvp-row.compact { grid-template-columns: 1fr 42px; }
+  .bvp-track { grid-column: 1 / -1; }
+}
 @media (max-width: 860px) {
   .grid-2col { grid-template-columns: 1fr; }
 }

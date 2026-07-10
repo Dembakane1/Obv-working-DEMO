@@ -586,6 +586,57 @@ CREATE TABLE IF NOT EXISTS draw_account_events (
   created_at TEXT NOT NULL,
   UNIQUE (draw_request_id, type)
 );
+
+-- ============== budget vs verified physical progress (additive) ========
+-- Financial-control records only. Nothing here can create evidence,
+-- verifications, approvals, ledger entries, or account events. current
+-- budget is DERIVED (original + approved changes) and post-launch changes
+-- go through the audited change-control path (reason + audit + snapshot).
+
+CREATE TABLE IF NOT EXISTS budget_lines (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  code TEXT NOT NULL,
+  category TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  original_budget INTEGER NOT NULL DEFAULT 0,
+  approved_changes INTEGER NOT NULL DEFAULT 0,
+  committed_amount INTEGER,
+  paid_to_date INTEGER NOT NULL DEFAULT 0,
+  retainage_held INTEGER,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  sequence INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (project_id, code)
+);
+
+-- Optional mapping of budget lines to milestones / evidence requirements
+-- (draw line items map via DrawLineItem.budget_line_id = code or id).
+CREATE TABLE IF NOT EXISTS budget_line_maps (
+  id TEXT PRIMARY KEY,
+  budget_line_id TEXT NOT NULL REFERENCES budget_lines(id),
+  milestone_id TEXT REFERENCES milestones(id),
+  evidence_requirement_id TEXT REFERENCES evidence_requirements(id),
+  created_at TEXT NOT NULL,
+  CHECK (milestone_id IS NOT NULL OR evidence_requirement_id IS NOT NULL)
+);
+
+-- Explicit reviewed partial-progress records. NEVER inferred: entered by
+-- an authorized reviewer, with a reason, referencing VERIFIED evidence of
+-- the same milestone. New rows supersede old ones (history kept).
+CREATE TABLE IF NOT EXISTS verified_quantities (
+  id TEXT PRIMARY KEY,
+  milestone_id TEXT NOT NULL REFERENCES milestones(id),
+  percent REAL NOT NULL CHECK (percent > 0 AND percent < 100),
+  quantity_label TEXT NOT NULL,
+  evidence_item_id TEXT NOT NULL REFERENCES evidence_items(id),
+  reason TEXT NOT NULL,
+  entered_by_user_id TEXT NOT NULL REFERENCES users(id),
+  superseded INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
 `;
 
 export function getDb(): DatabaseSync {

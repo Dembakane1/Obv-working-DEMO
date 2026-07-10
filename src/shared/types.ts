@@ -932,3 +932,174 @@ export interface DrawRecommendation {
   eligibleForGovernance: boolean;
   computedAt: string;
 }
+
+// ============================================================ budget
+// Budget vs Verified Physical Progress (additive financial control).
+//
+// CORE PRINCIPLE — financial progress and physical progress are DIFFERENT
+// MEASUREMENTS. OBV compares them side by side; it never merges them into
+// one number, never predicts, and never claims a variance proves misuse.
+// The strongest statement this module makes is: "financial progress is
+// ahead of currently verified physical progress."
+//
+// Nothing in this section changes evidence verification, the approval
+// workflow, HELD/RELEASED logic, the draw workflow, the Evidence Ledger,
+// configuration snapshots, milestone configuration, launch, or reports.
+
+/** A configured budget line (cost code) for a project. This is a
+ *  financial-control record, not accounting software: OBV tracks the
+ *  budget/paid figures it is given and compares them with verified
+ *  physical progress. currentBudget is DERIVED (original + approved
+ *  changes) — never stored, never silently edited. */
+export interface BudgetLine {
+  id: string;
+  projectId: string;
+  code: string;
+  category: string;
+  description: string;
+  originalBudget: number;
+  /** Sum of approved changes. When a Change Order module exists this must
+   *  be derived from approved change records; until then it is only
+   *  adjustable through the audited change-control path. */
+  approvedChanges: number;
+  committedAmount: number | null;
+  paidToDate: number;
+  retainageHeld: number | null;
+  currency: string;
+  sequence: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  // ---- derived (computed at read time; never stored) ----
+  currentBudget: number;
+}
+
+/** Optional mapping of a budget line to milestones (physical basis) and
+ *  evidence requirements. Draw line items map via their budgetLineId
+ *  matching BudgetLine.code or BudgetLine.id. */
+export interface BudgetLineMap {
+  id: string;
+  budgetLineId: string;
+  milestoneId: string | null;
+  evidenceRequirementId: string | null;
+  createdAt: string;
+}
+
+/**
+ * Explicit, reviewed partial-progress record for a milestone that is
+ * measurably partial (e.g. "9.8 of 14 km base course laid"). NEVER
+ * inferred from a photo: it must be entered by an authorized reviewer,
+ * carry a reason, and reference a VERIFIED evidence item of the same
+ * milestone. A new record supersedes the previous one (history kept).
+ * It contributes only while the milestone itself is not yet fully
+ * verified — a verified milestone always contributes its full weight.
+ */
+export interface VerifiedQuantity {
+  id: string;
+  milestoneId: string;
+  /** 1..99 — full completion comes only from milestone verification. */
+  percent: number;
+  /** Human-readable measured basis, e.g. "9.8 of 14 km base laid". */
+  quantityLabel: string;
+  evidenceItemId: string;
+  reason: string;
+  enteredByUserId: string;
+  superseded: boolean;
+  createdAt: string;
+}
+
+/** Traceable source behind one milestone's physical-progress
+ *  contribution. Every figure must be explainable — no percentage is
+ *  ever shown without this basis. */
+export interface ProgressBasis {
+  evidenceItemId: string | null;
+  verificationId: string | null;
+  verdict: Verdict | null;
+  confidence: number | null;
+  policyVersion: number | null;
+  ledgerSeq: number | null;
+  quantityRecordId: string | null;
+  quantityLabel: string | null;
+}
+
+export interface ProgressContribution {
+  milestoneId: string;
+  milestoneLabel: string;
+  milestoneStatus: MilestoneStatus;
+  /** Normalized weight, 0..1 (source documented in methodology). */
+  weight: number;
+  /** 0, quantity percent/100, or 1 — never inferred. */
+  completion: number;
+  /** weight × completion × 100 (percentage points contributed). */
+  contributionPct: number;
+  state: "VERIFIED" | "PARTIAL_MEASURED" | "NO_VERIFIED_PROGRESS";
+  basis: ProgressBasis;
+}
+
+/** How milestone weights were derived for this assessment. */
+export type WeightSource = "CONFIGURED_WEIGHTS" | "TRANCHE_PROPORTIONS" | "EQUAL_WEIGHTS";
+
+/** Explainable physical-progress assessment. Deterministic: configured
+ *  milestone weights × verified state (+ explicit reviewed quantities).
+ *  No black-box scoring, no inference from photos. */
+export interface PhysicalProgressAssessment {
+  projectId: string;
+  verifiedPct: number;
+  weightSource: WeightSource;
+  contributions: ProgressContribution[];
+  dataComplete: boolean;
+  methodology: string;
+  computedAt: string;
+}
+
+export type VarianceState =
+  | "WITHIN_RANGE"
+  | "WATCH"
+  | "FINANCIAL_AHEAD"
+  | "PHYSICAL_AHEAD"
+  | "DATA_INCOMPLETE";
+
+export interface VarianceThresholds {
+  /** |difference| ≤ withinPts → WITHIN RANGE. */
+  withinPts: number;
+  /** withinPts < difference ≤ watchPts → WATCH; beyond → FINANCIAL AHEAD. */
+  watchPts: number;
+}
+
+/** Side-by-side financial vs verified-physical comparison for a project.
+ *  All figures come from stored records (budget lines, released tranches,
+ *  open draw requests, verifications). */
+export interface FinancialProgress {
+  projectId: string;
+  /** Σ currentBudget of active budget lines, else project.totalBudget. */
+  budgetBasis: number;
+  budgetBasisSource: "BUDGET_LINES" | "PROJECT_TOTAL";
+  originalBudget: number;
+  approvedChanges: number;
+  paidToDate: number;
+  /** Requested on draws currently open (submitted → ready for governance). */
+  openDrawRequested: number;
+  retainageHeld: number;
+  paidPct: number;
+  claimedPct: number;
+  verifiedPhysicalPct: number;
+  /** claimedPct − verifiedPhysicalPct, percentage points (+ = financial ahead). */
+  variancePts: number;
+  varianceState: VarianceState;
+  thresholds: VarianceThresholds;
+  dataComplete: boolean;
+  computedAt: string;
+}
+
+/** One row of the budget line register (financial vs verified per line). */
+export interface BudgetLineProgressRow {
+  line: BudgetLine;
+  mappedMilestoneIds: string[];
+  paid: number;
+  openRequested: number;
+  financialPct: number | null;
+  verifiedPct: number | null;
+  variancePts: number | null;
+  varianceState: VarianceState;
+  nextAction: string;
+}
