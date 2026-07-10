@@ -87,6 +87,14 @@ import * as draws from "../services/draws";
 import { DrawError } from "../services/draws";
 import * as budget from "../services/budgetProgress";
 import { BudgetError } from "../services/budgetProgress";
+import * as exceptions from "../services/exceptions";
+import { ExceptionError } from "../services/exceptions";
+import {
+  ExceptionDetailData,
+  ExceptionRow,
+  renderExceptionDetail,
+  renderExceptionRegister,
+} from "../view/exceptionPages";
 import {
   BudgetPageData,
   renderBudgetPage,
@@ -282,6 +290,13 @@ function navFor(user: User, active: string): NavContext {
     active,
     pendingApprovals: repo.listPendingApprovalRequests().length,
     openIssues: repo.listFieldIssues().filter((i) => !["RESOLVED", "CLOSED"].includes(i.status)).length,
+    openExceptions: repo
+      .listExceptions()
+      .filter(
+        (e) =>
+          ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_RESPONSE"].includes(e.status) &&
+          ["HIGH", "CRITICAL"].includes(e.severity)
+      ).length,
     orgName: org?.name,
     orgKind: org?.kind,
   };
@@ -389,6 +404,36 @@ function approvalQueue(user: User): ApprovalQueueItem[] {
     }
   }
   return items.sort((a, b) => (a.approval.createdAt < b.approval.createdAt ? 1 : -1));
+}
+
+// ------------------------------------------------- exception page data
+
+function exceptionRow(e: import("../../shared/types").ObvException): ExceptionRow {
+  const milestone = e.milestoneId ? repo.getMilestone(e.milestoneId) : null;
+  const draw = e.drawRequestId ? repo.getDrawRequest(e.drawRequestId) : null;
+  const status = e.status;
+  const nextAction =
+    status === "OPEN"
+      ? "Acknowledge & assign"
+      : status === "ACKNOWLEDGED"
+        ? "Start work"
+        : status === "IN_PROGRESS"
+          ? "Clear the source condition, then resolve"
+          : status === "AWAITING_RESPONSE"
+            ? "Awaiting requested response"
+            : status === "RESOLVED"
+              ? "Close"
+              : "No action";
+  return {
+    exception: e,
+    project: repo.getProject(e.projectId),
+    milestone,
+    drawNumber: draw?.drawNumber ?? null,
+    owner: e.ownerUserId ? repo.getUser(e.ownerUserId) : null,
+    ageDays: exceptions.ageDays(e),
+    sla: exceptions.slaState(e),
+    nextAction,
+  };
 }
 
 // ------------------------------------------------------ draw page data
@@ -645,7 +690,9 @@ function stateFingerprint(): string {
               (SELECT COUNT(*) FROM budget_lines) AS bl,
               (SELECT COALESCE(MAX(updated_at), '') FROM budget_lines) AS blu,
               (SELECT COUNT(*) FROM budget_line_maps) AS blm,
-              (SELECT COUNT(*) FROM verified_quantities) AS vq`
+              (SELECT COUNT(*) FROM verified_quantities) AS vq,
+              (SELECT COUNT(*) FROM exceptions) AS exc,
+              (SELECT COALESCE(MAX(updated_at), '') FROM exceptions) AS excu`
     )
     .get();
   return createHash("sha256")
@@ -1610,6 +1657,99 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ======================================= unified exceptions ==========
+  // Control records referencing authoritative sources. No route below can
+  // verify evidence, approve anything, or move HELD/RELEASED state.
+
+  if (method === "POST" && pathname === "/api/exceptions/evaluate") {
+    if (!currentUser(req)) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    sendJson(res, await exceptions.evaluateExceptions());
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/exceptions") {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const text = (await readBody(req, 128 * 1024)).toString("utf8");
+    const p = isFormPost(req)
+      ? (Object.fromEntries(new URLSearchParams(text)) as Record<string, string>)
+      : JSON.parse(text || "{}");
+    const exception = exceptions.createManualException(user, {
+      projectId: String(p.projectId ?? ""),
+      milestoneId: p.milestoneId ? String(p.milestoneId) : null,
+      drawRequestId: p.drawRequestId ? String(p.drawRequestId) : null,
+      category: (p.category ? String(p.category) : "OTHER") as never,
+      severity: (p.severity ? String(p.severity) : "MEDIUM") as never,
+      title: String(p.title ?? ""),
+      description: p.description ? String(p.description) : "",
+      ownerUserId: p.ownerUserId ? String(p.ownerUserId) : null,
+      dueAt: p.dueAt ? String(p.dueAt) : null,
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/exception/${exception.id}`);
+    } else {
+      sendJson(res, { exception }, 201);
+    }
+    return;
+  }
+
+  const excActionMatch = /^\/api\/exceptions\/([^/]+)\/(acknowledge|assign|start|request-response|resolve|close|waive|comment|reference)$/.exec(pathname);
+  if (method === "POST" && excActionMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const [, excId, action] = excActionMatch;
+    const text = (await readBody(req, 64 * 1024)).toString("utf8");
+    const p = isFormPost(req)
+      ? (Object.fromEntries(new URLSearchParams(text)) as Record<string, string>)
+      : JSON.parse(text || "{}");
+    let exception;
+    switch (action) {
+      case "acknowledge":
+        exception = exceptions.acknowledgeException(user, excId);
+        break;
+      case "assign":
+        exception = exceptions.assignException(user, excId, p.ownerUserId ? String(p.ownerUserId) : null);
+        break;
+      case "start":
+        exception = exceptions.startException(user, excId);
+        break;
+      case "request-response":
+        exception = exceptions.requestResponse(user, excId, String(p.note ?? ""));
+        break;
+      case "resolve":
+        exception = await exceptions.resolveException(user, excId, p.summary ? String(p.summary) : null);
+        break;
+      case "close":
+        exception = exceptions.closeException(user, excId);
+        break;
+      case "waive":
+        exception = exceptions.waiveException(user, excId, String(p.reason ?? ""));
+        break;
+      case "comment":
+        exception = exceptions.commentException(user, excId, String(p.note ?? ""));
+        break;
+      default: {
+        exceptions.referenceInThread(user, excId);
+        exception = repo.getException(excId)!;
+      }
+    }
+    if (isFormPost(req)) {
+      redirect(res, `/exception/${excId}`);
+    } else {
+      sendJson(res, { exception });
+    }
+    return;
+  }
+
   // ==================================== budget vs verified progress ====
   // Financial-control records and reviewed quantities. Nothing here can
   // verify evidence, approve anything, or move HELD/RELEASED state.
@@ -2475,7 +2615,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     "/overview", "/dashboard", "/projects", "/project/", "/milestone/",
     "/approvals", "/ledger", "/reports", "/compliance", "/insights", "/more", "/field",
     "/map", "/communications", "/issues", "/issue/", "/evidence-drafts",
-    "/setup", "/pilot", "/draws", "/draw/", "/budget",
+    "/setup", "/pilot", "/draws", "/draw/", "/budget", "/exceptions", "/exception/",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -2521,6 +2661,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       .flatMap((ms) => repo.listClarificationsForMilestone(ms.id))
       .filter((c) => ["OPEN", "RESPONDED", "REOPENED"].includes(c.status)).length;
     const openIssuesOv = repo.listFieldIssues().filter((i) => !["RESOLVED", "CLOSED"].includes(i.status));
+    await exceptions.evaluateExceptions();
+    const openExceptionsOv = repo
+      .listExceptions()
+      .filter((e) => ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_RESPONSE"].includes(e.status));
     const openIssuesByProject = new Map<string, number>();
     for (const issue of openIssuesOv) {
       openIssuesByProject.set(issue.projectId, (openIssuesByProject.get(issue.projectId) ?? 0) + 1);
@@ -2542,6 +2686,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           clarifications: openClarsOv,
           highIssues: openIssuesOv.filter((i) => ["HIGH", "CRITICAL"].includes(i.severity)).length,
           evidenceReview: allMilestonesOv.filter((ms) => ms.status === "UNDER_REVIEW").length,
+          exceptionsOpen: openExceptionsOv.length,
+          exceptionsHighCritical: openExceptionsOv.filter((e) => ["HIGH", "CRITICAL"].includes(e.severity)).length,
+          exceptionsOverdue: openExceptionsOv.filter((e) => exceptions.slaState(e) === "OVERDUE").length,
+          exceptionsAwaiting: openExceptionsOv.filter((e) => e.status === "AWAITING_RESPONSE").length,
         },
         openIssuesByProject,
       })
@@ -2673,6 +2821,83 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         canFieldOps: canManageFieldOps(user!),
       })
     );
+    return;
+  }
+
+  // ---- exception pages ----
+  if (method === "GET" && pathname === "/exceptions") {
+    // Deterministic sweep on view: idempotent create/reopen/auto-resolve.
+    await exceptions.evaluateExceptions();
+    const allRows = exceptions.listExceptionsForUser(user!).map(exceptionRow);
+    const f = {
+      severity: url.searchParams.get("severity") ?? "",
+      category: url.searchParams.get("category") ?? "",
+      project: url.searchParams.get("project") ?? "",
+      owner: url.searchParams.get("owner") ?? "",
+      status: url.searchParams.get("status") ?? "",
+      sourceType: url.searchParams.get("sourceType") ?? "",
+      overdue: url.searchParams.get("overdue") ?? "",
+    };
+    const OPEN = ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_RESPONSE"];
+    const rows = allRows.filter((r) => {
+      const e = r.exception;
+      if (f.severity && e.severity !== f.severity) return false;
+      if (f.category && e.category !== f.category) return false;
+      if (f.project && e.projectId !== f.project) return false;
+      if (f.owner === "unassigned" ? e.ownerUserId !== null : f.owner && e.ownerUserId !== f.owner) return false;
+      if (f.status === "" && !OPEN.includes(e.status)) return false;
+      if (f.status && f.status !== "all" && e.status !== f.status) return false;
+      if (f.sourceType && e.sourceType !== f.sourceType) return false;
+      if (f.overdue === "1" && r.sla !== "OVERDUE") return false;
+      return true;
+    });
+    const sevOrder = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 } as Record<string, number>;
+    rows.sort((a, b) => sevOrder[a.exception.severity] - sevOrder[b.exception.severity] || (a.exception.openedAt < b.exception.openedAt ? -1 : 1));
+    sendHtml(
+      res,
+      renderExceptionRegister({
+        nav: navFor(user!, "exceptions"),
+        rows,
+        allRows,
+        filters: f,
+        projects: repo.listProjects().filter((p) => budget.canAccessProjectFinance(user!, p)),
+        users: repo.listUsers(),
+        rules: exceptions.RULES,
+        canManage: exceptions.canManageExceptions(user!),
+      })
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname.startsWith("/exception/")) {
+    await exceptions.evaluateExceptions();
+    const exception = repo.getException(pathname.slice("/exception/".length));
+    // Tenant boundary: unrelated organizations get the same 404 as a
+    // nonexistent exception — existence is not disclosed.
+    if (!exception || !exceptions.canAccessException(user!, exception)) {
+      sendHtml(res, renderError(navFor(user!, "exceptions"), "Exception not found", "No exception exists at this address."), 404);
+      return;
+    }
+    const draw = exception.drawRequestId ? repo.getDrawRequest(exception.drawRequestId) : null;
+    const data: ExceptionDetailData = {
+      nav: navFor(user!, "exceptions"),
+      exception,
+      project: repo.getProject(exception.projectId)!,
+      milestone: exception.milestoneId ? repo.getMilestone(exception.milestoneId) : null,
+      drawNumber: draw?.drawNumber ?? null,
+      owner: exception.ownerUserId ? repo.getUser(exception.ownerUserId) : null,
+      users: repo.listUsers(),
+      usersById: usersById(),
+      events: repo.listExceptionEvents(exception.id),
+      sla: exceptions.slaState(exception),
+      ageDays: exceptions.ageDays(exception),
+      source: exceptions.sourceContext(exception),
+      sourceActive: await exceptions.sourceStillActive(exception),
+      canManage: exceptions.canManageExceptions(user!),
+      canWaive: exceptions.canWaive(user!, exception),
+      currentUser: user!,
+    };
+    sendHtml(res, renderExceptionDetail(data));
     return;
   }
 
@@ -2853,6 +3078,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (method === "GET" && pathname === "/insights") {
+    await exceptions.evaluateExceptions();
     const chain = await wormEvidenceStore.verifyChain();
     sendHtml(
       res,
@@ -3224,7 +3450,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";

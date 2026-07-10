@@ -17,6 +17,7 @@ import { COMM_MEDIA_DIR } from "../services/whatsappSync/provider";
 import { runVerificationPipeline } from "../services/verification/index";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
 import { virtualAccountService } from "../services/VirtualAccountService";
+import { evaluateExceptions } from "../services/exceptions";
 import type {
   ApprovalRequest,
   ChatMessage,
@@ -656,6 +657,11 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
   // verified physical progress (30%) — a comparison, not an accusation.
   seedDemoBudget();
 
+  // ---- unified exceptions: deterministic sweep over the seeded state ----
+  // Creates the out-of-the-box register (HIGH field issue, missing lien
+  // waiver, budget variance) from real conditions — nothing is invented.
+  await evaluateExceptions();
+
   const chain = await wormEvidenceStore.verifyChain();
   console.log(
     `Seeded project "${project.name}" with ${milestones.length} milestones, ` +
@@ -925,6 +931,12 @@ function purgeDemoScopedRows(): void {
     db.prepare(`DELETE FROM draw_line_items WHERE draw_request_id IN (${dph})`).run(...drawIds);
     db.prepare(`DELETE FROM draw_requests WHERE id IN (${dph})`).run(...drawIds);
   }
+  // Exception control records for the demo project.
+  db.prepare(
+    `DELETE FROM exception_events WHERE exception_id IN
+       (SELECT id FROM exceptions WHERE project_id = ?)`
+  ).run(DEMO_PROJECT);
+  db.prepare("DELETE FROM exceptions WHERE project_id = ?").run(DEMO_PROJECT);
   // Budget vs verified-progress rows for the demo project.
   db.prepare(
     `DELETE FROM budget_line_maps WHERE budget_line_id IN

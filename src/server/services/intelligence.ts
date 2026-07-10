@@ -18,6 +18,9 @@ import * as repo from "../db/repo";
 import * as drawsService from "./draws";
 // Read-only budget vs verified-progress comparisons (deterministic).
 import * as budgetService from "./budgetProgress";
+// Read-only exception queries (SLA state, age). The sweep itself runs in
+// the HTTP layer; intelligence only reads the unified register.
+import * as exceptionsService from "./exceptions";
 import type {
   ApprovalRequest,
   ClarificationRequest,
@@ -714,6 +717,32 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
     }
   }
 
+  // ---- unified exceptions as an attention source ----
+  // The exception register aggregates the conditions above into one
+  // governed queue; intelligence surfaces its OVERDUE entries (with
+  // drill-down to the exception, which links to the authoritative
+  // source record).
+  const openExceptions = repo
+    .listExceptions()
+    .filter(
+      (e) =>
+        projectById.has(e.projectId) &&
+        ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_RESPONSE"].includes(e.status)
+    );
+  for (const e of openExceptions) {
+    if (exceptionsService.slaState(e) !== "OVERDUE") continue;
+    signals.push({
+      severity: e.severity === "CRITICAL" || e.severity === "HIGH" ? "HIGH" : "MEDIUM",
+      rule: "exception-overdue",
+      projectName: projName(e.projectId),
+      milestoneLabel: e.milestoneId ? (milestoneById.has(e.milestoneId) ? msLabel(milestoneById.get(e.milestoneId)!) : null) : null,
+      reason: `${e.severity} ${e.category} exception "${e.title}" is past its ${e.severity.toLowerCase()}-severity age target (${e.status.replace(/_/g, " ").toLowerCase()}).`,
+      age: ageOf(e.openedAt, now),
+      actionLabel: "Open exception",
+      actionHref: `/exception/${e.id}`,
+    });
+  }
+
   const sevOrder: Record<IntelSeverity, number> = { HIGH: 0, MEDIUM: 1, INFO: 2 };
   signals.sort((a, b) => sevOrder[a.severity] - sevOrder[b.severity]);
 
@@ -944,6 +973,24 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
 
   // ----------------------------------------------------- recommendations
   const recommendations: Recommendation[] = [];
+
+  // The unified exception register is the primary attention queue: point
+  // at the oldest overdue high/critical exception first (its detail page
+  // drills down to the authoritative source record).
+  const overdueExc = openExceptions
+    .filter((e) => ["HIGH", "CRITICAL"].includes(e.severity) && exceptionsService.slaState(e) === "OVERDUE")
+    .sort((a, b) => (a.openedAt < b.openedAt ? -1 : 1));
+  if (overdueExc.length > 0) {
+    const e = overdueExc[0];
+    recommendations.push({
+      priority: "HIGH",
+      title: `Work the overdue ${e.severity.toLowerCase()} exception "${e.title}"`,
+      why: `${e.severity} ${e.category} exception has been ${e.status.replace(/_/g, " ").toLowerCase()} for ${ageOf(e.openedAt, now)} on ${projName(e.projectId)} — past its age target${overdueExc.length > 1 ? ` (${overdueExc.length - 1} more overdue in the register)` : ""}.`,
+      sources: [`Exception ${e.id} → ${e.sourceType.replace(/_/g, " ").toLowerCase()} ${e.sourceId}`],
+      actionLabel: "Open exception",
+      actionHref: `/exception/${e.id}`,
+    });
+  }
 
   for (const issue of openIssues
     .filter((i) => i.severity === "HIGH" || i.severity === "CRITICAL")

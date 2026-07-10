@@ -648,6 +648,7 @@ import type {
   DrawRequest, DrawLineItem, DrawDocumentRequirement, DrawDocument,
   DrawEvidenceLink, DrawEvent, DrawAccountEvent,
   BudgetLine, BudgetLineMap, VerifiedQuantity,
+  ObvException, ExceptionEvent,
 } from "../../shared/types";
 
 function toReport(r: Row): Report {
@@ -2533,4 +2534,139 @@ export function listQuantitiesForMilestone(milestoneId: string): VerifiedQuantit
     .prepare("SELECT * FROM verified_quantities WHERE milestone_id = ? ORDER BY created_at DESC")
     .all(milestoneId)
     .map((r) => toVerifiedQuantity(r as Row));
+}
+
+// ================= unified exception management (additive) =============
+// Control-record CRUD only. No function below can create evidence,
+// verifications, approvals, ledger entries, or account events.
+
+function toException(r: Row): ObvException {
+  return {
+    id: r.id as string,
+    organizationId: r.organization_id as string,
+    projectId: r.project_id as string,
+    milestoneId: (r.milestone_id as string) ?? null,
+    drawRequestId: (r.draw_request_id as string) ?? null,
+    budgetLineId: (r.budget_line_id as string) ?? null,
+    sourceType: r.source_type as ObvException["sourceType"],
+    sourceId: r.source_id as string,
+    sourceKey: r.source_key as string,
+    category: r.category as ObvException["category"],
+    severity: r.severity as ObvException["severity"],
+    status: r.status as ObvException["status"],
+    title: r.title as string,
+    description: (r.description as string) ?? "",
+    ownerUserId: (r.owner_user_id as string) ?? null,
+    dueAt: (r.due_at as string) ?? null,
+    openedAt: r.opened_at as string,
+    acknowledgedAt: (r.acknowledged_at as string) ?? null,
+    resolvedAt: (r.resolved_at as string) ?? null,
+    resolutionSummary: (r.resolution_summary as string) ?? null,
+    resolutionType: (r.resolution_type as ObvException["resolutionType"]) ?? null,
+    createdBy: r.created_by as string,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function insertException(e: ObvException): void {
+  getDb()
+    .prepare(
+      `INSERT INTO exceptions (id, organization_id, project_id, milestone_id,
+         draw_request_id, budget_line_id, source_type, source_id, source_key,
+         category, severity, status, title, description, owner_user_id,
+         due_at, opened_at, acknowledged_at, resolved_at, resolution_summary,
+         resolution_type, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      e.id, e.organizationId, e.projectId, e.milestoneId, e.drawRequestId,
+      e.budgetLineId, e.sourceType, e.sourceId, e.sourceKey, e.category,
+      e.severity, e.status, e.title, e.description, e.ownerUserId, e.dueAt,
+      e.openedAt, e.acknowledgedAt, e.resolvedAt, e.resolutionSummary,
+      e.resolutionType, e.createdBy, e.createdAt, e.updatedAt
+    );
+}
+
+export function getException(id: string): ObvException | null {
+  const r = getDb().prepare("SELECT * FROM exceptions WHERE id = ?").get(id);
+  return r ? toException(r as Row) : null;
+}
+
+export function findExceptionBySourceKey(sourceKey: string): ObvException | null {
+  const r = getDb().prepare("SELECT * FROM exceptions WHERE source_key = ?").get(sourceKey);
+  return r ? toException(r as Row) : null;
+}
+
+export function listExceptions(): ObvException[] {
+  return getDb()
+    .prepare("SELECT * FROM exceptions ORDER BY opened_at DESC")
+    .all()
+    .map((r) => toException(r as Row));
+}
+
+export function listExceptionsForProject(projectId: string): ObvException[] {
+  return getDb()
+    .prepare("SELECT * FROM exceptions WHERE project_id = ? ORDER BY opened_at DESC")
+    .all(projectId)
+    .map((r) => toException(r as Row));
+}
+
+export function updateException(
+  id: string,
+  patch: Partial<
+    Pick<
+      ObvException,
+      | "status" | "severity" | "ownerUserId" | "dueAt" | "acknowledgedAt"
+      | "resolvedAt" | "resolutionSummary" | "resolutionType" | "title" | "description"
+    >
+  >
+): void {
+  const cur = getException(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE exceptions SET status = ?, severity = ?, owner_user_id = ?,
+         due_at = ?, acknowledged_at = ?, resolved_at = ?,
+         resolution_summary = ?, resolution_type = ?, title = ?,
+         description = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.status ?? cur.status,
+      patch.severity ?? cur.severity,
+      patch.ownerUserId !== undefined ? patch.ownerUserId : cur.ownerUserId,
+      patch.dueAt !== undefined ? patch.dueAt : cur.dueAt,
+      patch.acknowledgedAt !== undefined ? patch.acknowledgedAt : cur.acknowledgedAt,
+      patch.resolvedAt !== undefined ? patch.resolvedAt : cur.resolvedAt,
+      patch.resolutionSummary !== undefined ? patch.resolutionSummary : cur.resolutionSummary,
+      patch.resolutionType !== undefined ? patch.resolutionType : cur.resolutionType,
+      patch.title ?? cur.title,
+      patch.description ?? cur.description,
+      new Date().toISOString(),
+      id
+    );
+}
+
+export function insertExceptionEvent(e: ExceptionEvent): void {
+  getDb()
+    .prepare(
+      `INSERT INTO exception_events (id, exception_id, type, detail, actor_user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(e.id, e.exceptionId, e.type, e.detail, e.actorUserId, e.createdAt);
+}
+
+export function listExceptionEvents(exceptionId: string): ExceptionEvent[] {
+  return getDb()
+    .prepare("SELECT * FROM exception_events WHERE exception_id = ? ORDER BY created_at, rowid")
+    .all(exceptionId)
+    .map((r) => ({
+      id: r.id as string,
+      exceptionId: r.exception_id as string,
+      type: r.type as ExceptionEvent["type"],
+      detail: r.detail as string,
+      actorUserId: (r.actor_user_id as string) ?? null,
+      createdAt: r.created_at as string,
+    }));
 }

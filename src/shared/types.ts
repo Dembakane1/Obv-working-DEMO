@@ -288,7 +288,8 @@ export type ChatMessageType =
   | "CLARIFICATION_REFERENCE"
   | "DRAW_REFERENCE"
   | "DRAW_LINE_REFERENCE"
-  | "DRAW_DOCUMENT_REFERENCE";
+  | "DRAW_DOCUMENT_REFERENCE"
+  | "EXCEPTION_REFERENCE";
 
 export interface ConversationThread {
   id: string;
@@ -1103,3 +1104,92 @@ export interface BudgetLineProgressRow {
   varianceState: VarianceState;
   nextAction: string;
 }
+
+// ============================================================ exceptions
+// Unified Exception Management (additive operational control layer).
+//
+// CORE PRINCIPLE — an Exception is a CONTROL RECORD that references a
+// source problem. The underlying source record (verification verdict,
+// field issue, clarification, approval, draw document, budget variance,
+// ledger integrity state, integration binding) remains authoritative:
+// exceptions never duplicate or rewrite that truth, and no exception
+// action can release money or bypass governance.
+
+export type ExceptionSourceType =
+  | "EVIDENCE_VERIFICATION"
+  | "DRAW_REQUEST"
+  | "DRAW_LINE_ITEM"
+  | "DRAW_DOCUMENT"
+  | "BUDGET_VARIANCE"
+  | "FIELD_ISSUE"
+  | "CLARIFICATION"
+  | "APPROVAL_REQUEST"
+  | "LEDGER_INTEGRITY"
+  | "INTEGRATION"
+  | "MANUAL";
+
+export type ExceptionCategory =
+  | "EVIDENCE" | "DOCUMENT" | "LOCATION" | "METADATA" | "QUALITY"
+  | "MATERIAL" | "COST" | "SCHEDULE" | "APPROVAL" | "CLARIFICATION"
+  | "INTEGRITY" | "INTEGRATION" | "OTHER";
+
+export type ExceptionSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+
+export type ExceptionStatus =
+  | "OPEN" | "ACKNOWLEDGED" | "IN_PROGRESS" | "AWAITING_RESPONSE"
+  | "RESOLVED" | "CLOSED" | "WAIVED";
+
+export type ExceptionResolutionType =
+  | "SOURCE_CLEARED"   // the underlying condition no longer holds
+  | "MANUAL"           // resolved by a user after the source allowed it
+  | "WAIVED";          // formally waived (authorized role + reason + audit)
+
+export interface ObvException {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  milestoneId: string | null;
+  drawRequestId: string | null;
+  budgetLineId: string | null;
+  sourceType: ExceptionSourceType;
+  /** Id of the authoritative source record (evidence, issue, approval…). */
+  sourceId: string;
+  /** Deterministic idempotency key for auto-created exceptions, e.g.
+   *  "evidence-rejected:<evidenceId>" — repeated rule evaluation can
+   *  never create a duplicate (UNIQUE in the schema). */
+  sourceKey: string;
+  category: ExceptionCategory;
+  severity: ExceptionSeverity;
+  status: ExceptionStatus;
+  title: string;
+  description: string;
+  ownerUserId: string | null;
+  dueAt: string | null;
+  openedAt: string;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
+  resolutionSummary: string | null;
+  resolutionType: ExceptionResolutionType | null;
+  /** User id, or "system" for deterministic auto-created exceptions. */
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Exception operational timeline entry (administrative record — NOT the
+ *  Evidence Ledger and never merged with it). */
+export interface ExceptionEvent {
+  id: string;
+  exceptionId: string;
+  type:
+    | "CREATED" | "ACKNOWLEDGED" | "ASSIGNED" | "STATUS_CHANGED" | "COMMENT"
+    | "RESPONSE_REQUESTED" | "SOURCE_UPDATED" | "RESOLVED" | "REOPENED"
+    | "WAIVED" | "CLOSED";
+  detail: string;
+  actorUserId: string | null;
+  createdAt: string;
+}
+
+/** SLA age state, derived from openedAt/dueAt — descriptive only, never a
+ *  compliance claim. */
+export type ExceptionSlaState = "WITHIN_TARGET" | "DUE_SOON" | "OVERDUE" | "NO_TARGET";

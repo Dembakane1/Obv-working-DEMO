@@ -637,6 +637,53 @@ CREATE TABLE IF NOT EXISTS verified_quantities (
   superseded INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
+
+
+-- ================= unified exception management (additive) =============
+-- Control records referencing authoritative source records. Nothing here
+-- can create evidence, verifications, approvals, ledger entries, or
+-- account events. UNIQUE(source_key) makes deterministic auto-creation
+-- idempotent at the database level.
+CREATE TABLE IF NOT EXISTS exceptions (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  milestone_id TEXT REFERENCES milestones(id),
+  draw_request_id TEXT REFERENCES draw_requests(id),
+  budget_line_id TEXT REFERENCES budget_lines(id),
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  source_key TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL CHECK (category IN
+    ('EVIDENCE','DOCUMENT','LOCATION','METADATA','QUALITY','MATERIAL',
+     'COST','SCHEDULE','APPROVAL','CLARIFICATION','INTEGRITY','INTEGRATION','OTHER')),
+  severity TEXT NOT NULL CHECK (severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN
+    ('OPEN','ACKNOWLEDGED','IN_PROGRESS','AWAITING_RESPONSE','RESOLVED','CLOSED','WAIVED')),
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  owner_user_id TEXT REFERENCES users(id),
+  due_at TEXT,
+  opened_at TEXT NOT NULL,
+  acknowledged_at TEXT,
+  resolved_at TEXT,
+  resolution_summary TEXT,
+  resolution_type TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Exception operational timeline (administrative record, NOT the
+-- Evidence Ledger — never merged with it).
+CREATE TABLE IF NOT EXISTS exception_events (
+  id TEXT PRIMARY KEY,
+  exception_id TEXT NOT NULL REFERENCES exceptions(id),
+  type TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
 `;
 
 export function getDb(): DatabaseSync {

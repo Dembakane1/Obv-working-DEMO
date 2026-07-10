@@ -128,6 +128,36 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Unified Exception Management (v15)
+
+One governed operational register for anything preventing clean
+progression — NEEDS_REVIEW/REJECTED evidence, missing draw documents,
+approval delays, financial-vs-physical variance, high-severity field
+issues, overdue clarifications, ledger integrity alerts and integration
+failures — WITHOUT replacing the underlying records. An Exception is a
+control record that references an authoritative source; the source stays
+the truth.
+
+Deterministic auto-creation rules are idempotent (UNIQUE sourceKey at the
+database level): repeated evaluation never duplicates, cleared conditions
+auto-resolve (SOURCE_CLEARED), recurring conditions reopen, and waivers
+are never overturned by the sweep. Resolution is source-aware — Resolve
+is refused while the source condition still holds. Waivers require an
+authorized lender role (INTEGRITY: compliance reviewer only), a reason,
+and a configuration-audit entry — and never rewrite the source. No
+exception action can release money.
+
+Surfaces: **Exceptions** register (filters, SLA age states — within
+target / due soon / overdue from configurable per-severity targets,
+compact mobile cards), exception detail (source panel, timeline, formal
+actions), Overview action-queue row, OBV Intelligence overdue-exception
+signals + top recommendation, map via source layers, and
+EXCEPTION_REFERENCE cards in Communications (chat cannot resolve an
+exception). `scripts/exceptions-test.js` (34 checkpoints) covers the 16
+required cases; see `docs/EXCEPTIONS.md`.
+
+---
+
 ## Budget vs Verified Physical Progress (v14)
 
 A transparent financial-control comparison between money claimed/paid and
@@ -684,6 +714,7 @@ node scripts/fieldops-test.js              # field issues, clarifications, draft
 node scripts/pilot-test.js                 # pilot onboarding: invitations, config, readiness, launch, change control
 node scripts/draws-test.js                 # draw requests: reconciliation, review, advisory recommendation, exactly-once governed release
 node scripts/budget-test.js                # budget vs verified physical progress: methodology, variance states, traceability, change control
+node scripts/exceptions-test.js            # unified exceptions: idempotent rules, source-aware resolution, waivers, SLA, isolation
 ```
 
 `scripts/idempotency-test.js` proves accidental repeats cannot duplicate

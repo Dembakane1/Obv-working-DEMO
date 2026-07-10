@@ -129,12 +129,14 @@ export interface NavContext {
   pendingApprovals: number;
   /** Open field issues (badge on the Field Issues nav item). */
   openIssues?: number;
+  /** Open HIGH/CRITICAL exceptions (badge on the Exceptions nav item). */
+  openExceptions?: number;
   /** Organization identity shown at the bottom of the sidebar. */
   orgName?: string;
   orgKind?: string;
 }
 
-interface NavItem { key: string; href: string; label: string; icon: () => VNode; badge?: "approvals" | "issues" }
+interface NavItem { key: string; href: string; label: string; icon: () => VNode; badge?: "approvals" | "issues" | "exceptions" }
 
 const NAV_ITEMS: NavItem[] = [
   { key: "overview", href: "/overview", label: "Overview", icon: icons.overview },
@@ -145,6 +147,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: "compliance", href: "/compliance", label: "Evidence Review", icon: icons.shield },
   { key: "comms", href: "/communications", label: "Communications", icon: icons.chat },
   { key: "issues", href: "/issues", label: "Field Issues", icon: icons.alert, badge: "issues" },
+  { key: "exceptions", href: "/exceptions", label: "Exceptions", icon: icons.shield, badge: "exceptions" },
   { key: "field", href: "/field", label: "Field Capture", icon: icons.camera },
   { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
   { key: "ledger", href: "/ledger", label: "Ledger", icon: icons.ledger },
@@ -172,10 +175,16 @@ export function AppShell(props: {
   context?: string;
   children?: Child;
 }): VNode {
-  const { user, active, pendingApprovals, openIssues = 0 } = props.nav;
+  const { user, active, pendingApprovals, openIssues = 0, openExceptions = 0 } = props.nav;
   const activeItem = ALL_NAV_ITEMS.find((i) => i.key === active);
   const badgeCount = (item: NavItem) =>
-    item.badge === "approvals" ? pendingApprovals : item.badge === "issues" ? openIssues : 0;
+    item.badge === "approvals"
+      ? pendingApprovals
+      : item.badge === "issues"
+        ? openIssues
+        : item.badge === "exceptions"
+          ? openExceptions
+          : 0;
   const navLink = (item: NavItem) => (
     <a
       href={item.href}

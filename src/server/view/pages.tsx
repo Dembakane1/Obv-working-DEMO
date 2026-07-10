@@ -102,6 +102,7 @@ const repoView = {
   },
   issue: (id: string) => repo.getFieldIssue(id),
   draw: (id: string) => repo.getDrawRequest(id),
+  exception: (id: string) => repo.getException(id),
   clarification: (id: string) => repo.getClarification(id),
   projectContext: (projectId: string) => {
     const ms = repo.listMilestones(projectId);
@@ -331,6 +332,10 @@ export interface OverviewQueue {
   clarifications: number;
   highIssues: number;
   evidenceReview: number;
+  exceptionsOpen: number;
+  exceptionsHighCritical: number;
+  exceptionsOverdue: number;
+  exceptionsAwaiting: number;
 }
 
 export function renderOverview(input: {
@@ -348,7 +353,8 @@ export function renderOverview(input: {
   const releasedPct = m.totalBudget > 0 ? Math.round((m.released / m.totalBudget) * 100) : 0;
   const q = input.queue;
   const queueEmpty =
-    q.approvals === 0 && q.clarifications === 0 && q.highIssues === 0 && q.evidenceReview === 0;
+    q.approvals === 0 && q.clarifications === 0 && q.highIssues === 0 &&
+    q.evidenceReview === 0 && q.exceptionsOpen === 0;
   return renderDocument(
     <AppShell title="Overview" nav={input.nav} context="Portfolio control center">
       <PageHeader title="Overview" sub="Portfolio control center">
@@ -477,6 +483,18 @@ export function renderOverview(input: {
                     <span className="s">{money(q.approvalsAmount)} across {q.approvalsProjects} project{q.approvalsProjects === 1 ? "" : "s"}</span>
                   </span>
                   <span className="aq-n">{q.approvals}</span>
+                </a>
+              ) : null}
+              {q.exceptionsOpen > 0 ? (
+                <a className="aq-row" href="/exceptions">
+                  <i className={`aq-ico ${q.exceptionsHighCritical > 0 ? "bad" : "warn"}`}>{icons.shield()}</i>
+                  <span className="aq-body">
+                    <span className="t">{q.exceptionsOpen} open exception{q.exceptionsOpen === 1 ? "" : "s"}</span>
+                    <span className="s">
+                      {q.exceptionsHighCritical} high/critical · {q.exceptionsOverdue} overdue · {q.exceptionsAwaiting} awaiting response
+                    </span>
+                  </span>
+                  <span className="aq-n">{q.exceptionsOpen}</span>
                 </a>
               ) : null}
               {q.clarifications > 0 ? (
@@ -2502,6 +2520,20 @@ function MessageRefCard(props: { m: ChatMessage }): VNode | null {
         <span className="k">CLARIFICATION</span>
         {clar ? <span className="s">{clar.responseType.replace(/_/g, " ")} required · {clar.status}</span> : null}
         {clar ? <a href={`/milestone/${clar.milestoneId}`}>View milestone</a> : null}
+      </span>
+    );
+  }
+  if (m.messageType === "EXCEPTION_REFERENCE" && m.refId) {
+    const exc = repoView.exception(m.refId);
+    return (
+      <span className="msg-ref">
+        <span className="k">EXCEPTION</span>
+        {exc ? (
+          <span className="s">
+            {exc.severity} {exc.category} · {exc.status.replace(/_/g, " ")}
+          </span>
+        ) : null}
+        <a href={`/exception/${m.refId}`}>Open exception</a>
       </span>
     );
   }
