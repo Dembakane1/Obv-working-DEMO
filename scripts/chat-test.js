@@ -239,11 +239,11 @@ function govCounts() {
     // thread from the tenant-boundary test survive, while the demo
     // threads/messages are restored to their exact seeded state.
     assert(
-      resetCounts.threads === 3 &&
-        resetCounts.messages === 13 &&
+      resetCounts.threads === 4 &&
+        resetCounts.messages === 15 &&
         resetList.includes("Project General") &&
         !resetList.includes("km 10 marker"),
-      "demo reset restores the seeded demo threads/messages exactly (user-created project preserved)"
+      "demo reset restores the seeded demo threads/messages exactly (incl. draw thread; user-created project preserved)"
     );
     const dReset = db();
     const projX = dReset.prepare("SELECT id FROM projects WHERE id='proj-x'").get();

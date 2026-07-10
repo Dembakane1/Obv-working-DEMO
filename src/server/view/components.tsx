@@ -141,6 +141,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: "projects", href: "/projects", label: "Projects", icon: icons.projects },
   { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
   { key: "approvals", href: "/approvals", label: "Approvals", icon: icons.approvals, badge: "approvals" },
+  { key: "draws", href: "/draws", label: "Draw Requests", icon: icons.dollar },
   { key: "compliance", href: "/compliance", label: "Evidence Review", icon: icons.shield },
   { key: "comms", href: "/communications", label: "Communications", icon: icons.chat },
   { key: "issues", href: "/issues", label: "Field Issues", icon: icons.alert, badge: "issues" },

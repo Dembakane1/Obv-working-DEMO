@@ -13,6 +13,9 @@
  * MOCK_FALLBACK / MOCK_DEFAULT) is surfaced honestly here.
  */
 import * as repo from "../db/repo";
+// Read-only draw helpers (document checklist derivation). Nothing in this
+// module can write draw state or reach the approval/financial paths.
+import * as drawsService from "./draws";
 import type {
   ApprovalRequest,
   ClarificationRequest,
@@ -228,7 +231,7 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
 
   const pendingApprovals = repo
     .listPendingApprovalRequests()
-    .filter((a) => milestoneById.has(a.milestoneId));
+    .filter((a) => milestoneById.has(a.milestoneId!));
   const approvalRecords = new Map(
     pendingApprovals.map((a) => [a.id, repo.listApprovalRecordsForRequest(a.id)]),
   );
@@ -346,7 +349,7 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
   }
 
   for (const approval of pendingApprovals) {
-    const m = milestoneById.get(approval.milestoneId)!;
+    const m = milestoneById.get(approval.milestoneId!)!;
     const ageH = (now - Date.parse(approval.createdAt)) / 3_600_000;
     const records = approvalRecords.get(approval.id) ?? [];
     const recorded = new Set(records.map((r) => r.role));
@@ -482,6 +485,138 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
     });
   }
 
+  // ---- draw request signals (grounded in stored draw state only) ----
+  // Deterministic rules over the lender draw workflow: draw-awaiting-review,
+  // draw-missing-documents, draw-supported-shortfall, draw-cost-ahead-of-
+  // verified-progress, draw-governance-delay, draw-clarification-unanswered,
+  // draw-exception-unresolved. No predictions — every figure traces to
+  // draw_requests / draw_line_items / draw_documents / approval rows.
+  const govSlaHours = Number(process.env.OBV_DRAW_GOVERNANCE_SLA_HOURS ?? 48);
+  const drawLabel = (d: { drawNumber: number }) => `Draw #${d.drawNumber}`;
+  const usd = (n: number) => "$" + n.toLocaleString("en-US");
+  for (const draw of repo.listDrawRequests()) {
+    if (!projectById.has(draw.projectId)) continue;
+    if (["CANCELLED", "RELEASED", "DRAFT"].includes(draw.status)) continue;
+    const lines = repo.listDrawLines(draw.id);
+    const href = `/draw/${draw.id}`;
+
+    if (draw.status === "SUBMITTED") {
+      const ageH = (now - Date.parse(draw.submittedAt ?? draw.createdAt)) / 3_600_000;
+      signals.push({
+        severity: ageH > 48 ? "MEDIUM" : "INFO",
+        rule: "draw-awaiting-review",
+        projectName: projName(draw.projectId),
+        milestoneLabel: drawLabel(draw),
+        reason: `${usd(draw.requestedAmount)} draw submitted with no line-item review recorded yet.`,
+        age: ageOf(draw.submittedAt ?? draw.createdAt, now),
+        actionLabel: "Open draw",
+        actionHref: href,
+      });
+    }
+    const missingDocs = drawsService.missingRequiredDocuments(draw.id);
+    if (missingDocs.length > 0) {
+      signals.push({
+        severity: "MEDIUM",
+        rule: "draw-missing-documents",
+        projectName: projName(draw.projectId),
+        milestoneLabel: drawLabel(draw),
+        reason: `Required document${missingDocs.length > 1 ? "s" : ""} missing: ${missingDocs.map((d) => d.title).join(", ")}.`,
+        age: null,
+        actionLabel: "Open documents",
+        actionHref: `${href}?tab=documents`,
+      });
+    }
+    const supported = lines.reduce(
+      (s, l) =>
+        s +
+        (l.status === "SUPPORTED"
+          ? l.currentRequested
+          : l.status === "PARTIALLY_SUPPORTED"
+            ? l.supportedAmount ?? 0
+            : 0),
+      0,
+    );
+    if (lines.length > 0 && lines.every((l) => l.status !== "PENDING") && supported < draw.requestedAmount) {
+      signals.push({
+        severity: "MEDIUM",
+        rule: "draw-supported-shortfall",
+        projectName: projName(draw.projectId),
+        milestoneLabel: drawLabel(draw),
+        reason: `${usd(draw.requestedAmount)} requested vs ${usd(supported)} supported by review (${usd(draw.requestedAmount - supported)} exception).`,
+        age: null,
+        actionLabel: "Open exceptions",
+        actionHref: `${href}?tab=exceptions`,
+      });
+    }
+    const drawLinks = repo.listDrawEvidenceLinks(draw.id);
+    for (const l of lines) {
+      if (!l.milestoneId || (l.percentCompleteClaimed ?? 0) <= 0) continue;
+      const m = milestoneById.get(l.milestoneId);
+      const msVerified = m && ["VERIFIED", "APPROVED", "RELEASED"].includes(m.status);
+      const hasVerifiedEvidence = drawLinks.some((k) => {
+        const ev = evidenceById.get(k.evidenceItemId);
+        return (
+          ev?.milestoneId === l.milestoneId &&
+          latestVerification.get(k.evidenceItemId)?.verdict === "VERIFIED"
+        );
+      });
+      if (!msVerified && !hasVerifiedEvidence) {
+        signals.push({
+          severity: "MEDIUM",
+          rule: "draw-cost-ahead-of-verified-progress",
+          projectName: projName(draw.projectId),
+          milestoneLabel: m ? msLabel(m) : drawLabel(draw),
+          reason: `${drawLabel(draw)} line "${l.description}" claims ${l.percentCompleteClaimed}% complete, but the milestone has no verified evidence.`,
+          age: null,
+          actionLabel: "Open line items",
+          actionHref: `${href}?tab=lines`,
+        });
+      }
+    }
+    const exceptions = lines.filter((l) => ["EXCEPTION", "REJECTED"].includes(l.status));
+    if (exceptions.length > 0) {
+      signals.push({
+        severity: "MEDIUM",
+        rule: "draw-exception-unresolved",
+        projectName: projName(draw.projectId),
+        milestoneLabel: drawLabel(draw),
+        reason: `${exceptions.length} exception/rejected line(s) totalling ${usd(exceptions.reduce((s, l) => s + l.currentRequested, 0))} remain unresolved.`,
+        age: null,
+        actionLabel: "Open exceptions",
+        actionHref: `${href}?tab=exceptions`,
+      });
+    }
+    if (draw.status === "CLARIFICATION_REQUIRED") {
+      signals.push({
+        severity: "MEDIUM",
+        rule: "draw-clarification-unanswered",
+        projectName: projName(draw.projectId),
+        milestoneLabel: drawLabel(draw),
+        reason: "A reviewer clarification is awaiting the requester's response.",
+        age: ageOf(draw.updatedAt, now),
+        actionLabel: "Open review",
+        actionHref: `${href}?tab=review`,
+      });
+    }
+    if (draw.status === "READY_FOR_GOVERNANCE") {
+      const approval = repo.getApprovalRequestForDraw(draw.id);
+      const ageH = approval ? (now - Date.parse(approval.createdAt)) / 3_600_000 : 0;
+      signals.push({
+        severity: ageH > govSlaHours ? "MEDIUM" : "INFO",
+        rule: ageH > govSlaHours ? "draw-governance-delay" : "draw-awaiting-governance",
+        projectName: projName(draw.projectId),
+        milestoneLabel: drawLabel(draw),
+        reason:
+          ageH > govSlaHours
+            ? `Awaiting formal approval for ${Math.round(ageH)}h (threshold ${govSlaHours}h). ${usd(draw.recommendedAmount ?? draw.requestedAmount)} recommended (advisory).`
+            : `${usd(draw.recommendedAmount ?? draw.requestedAmount)} recommended (advisory) — awaiting the formal approval matrix.`,
+        age: approval ? ageOf(approval.createdAt, now) : null,
+        actionLabel: "Open governance",
+        actionHref: `${href}?tab=governance`,
+      });
+    }
+  }
+
   const sevOrder: Record<IntelSeverity, number> = { HIGH: 0, MEDIUM: 1, INFO: 2 };
   signals.sort((a, b) => sevOrder[a.severity] - sevOrder[b.severity]);
 
@@ -576,7 +711,7 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
   const oldestPendingReq = [...pendingApprovals].sort((a, b) =>
     a.createdAt < b.createdAt ? -1 : 1,
   )[0];
-  const oldestMilestone = oldestPendingReq ? milestoneById.get(oldestPendingReq.milestoneId)! : null;
+  const oldestMilestone = oldestPendingReq ? milestoneById.get(oldestPendingReq.milestoneId!)! : null;
 
   const governance: GovernanceIntel = {
     pending: pendingApprovals.length,
@@ -598,7 +733,7 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
           }
         : null,
     fundsHeldPendingGovernance: pendingApprovals.reduce(
-      (s, a) => s + (milestoneById.get(a.milestoneId)?.trancheAmount ?? 0),
+      (s, a) => s + (milestoneById.get(a.milestoneId!)?.trancheAmount ?? 0),
       0,
     ),
     totalHeld: milestones.filter((m) => m.accountStatus === "HELD").reduce((s, m) => s + m.trancheAmount, 0),
@@ -642,7 +777,7 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
     const projIssues = openIssues.filter((i) => i.projectId === p.id);
     const projClars = openClars.filter((c) => milestoneById.get(c.milestoneId)?.projectId === p.id);
     const projPending = pendingApprovals.filter(
-      (a) => milestoneById.get(a.milestoneId)?.projectId === p.id,
+      (a) => milestoneById.get(a.milestoneId!)?.projectId === p.id,
     );
     const projReview = outstandingReview.filter(
       (e) => milestoneById.get(e.milestoneId)?.projectId === p.id,
@@ -741,7 +876,7 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
   for (const approval of pendingApprovals) {
     const records = approvalRecords.get(approval.id) ?? [];
     if (records.length === 0) continue;
-    const m = milestoneById.get(approval.milestoneId)!;
+    const m = milestoneById.get(approval.milestoneId!)!;
     const recorded = new Set(records.map((r) => r.role));
     const awaiting = approval.requiredRoles.filter((r) => !recorded.has(r));
     if (awaiting.length === 0) continue;

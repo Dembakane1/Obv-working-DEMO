@@ -83,6 +83,18 @@ import {
   processEvidenceSubmission,
   SubmissionError,
 } from "../workflow/orchestrator";
+import * as draws from "../services/draws";
+import { DrawError } from "../services/draws";
+import {
+  DrawDetailData,
+  DrawEvidenceRow,
+  DrawRegisterRow,
+  DrawTab,
+  renderDrawDetail,
+  renderDrawNew,
+  renderDrawRegister,
+  renderDrawReport,
+} from "../view/drawPages";
 import {
   ApprovalQueueItem,
   ComplianceData,
@@ -333,7 +345,7 @@ function overviewMetrics(projects: ProjectCardData[]): OverviewMetrics {
     held: projects.reduce((s, p) => s + p.summary.held, 0),
     pendingApprovals: pendingRequests.length,
     pendingValue: pendingRequests.reduce(
-      (s, a) => s + (repo.getMilestone(a.milestoneId)?.trancheAmount ?? 0),
+      (s, a) => s + (repo.getMilestone(a.milestoneId!)?.trancheAmount ?? 0),
       0
     ),
     verifiedMilestones: allRows.filter((m) =>
@@ -349,7 +361,7 @@ function approvalQueue(user: User): ApprovalQueueItem[] {
   const projects = new Map(repo.listProjects().map((p) => [p.id, p]));
   for (const project of projects.values()) {
     for (const approval of repo.listApprovalRequestsForProject(project.id)) {
-      const milestone = repo.getMilestone(approval.milestoneId)!;
+      const milestone = repo.getMilestone(approval.milestoneId!)!;
       const records = repo.listApprovalRecordsForRequest(approval.id);
       const bundles = evidenceBundlesForMilestone(milestone.id);
       const bundle =
@@ -370,6 +382,191 @@ function approvalQueue(user: User): ApprovalQueueItem[] {
     }
   }
   return items.sort((a, b) => (a.approval.createdAt < b.approval.createdAt ? 1 : -1));
+}
+
+// ------------------------------------------------------ draw page data
+
+function drawEvidenceRows(drawId: string): DrawEvidenceRow[] {
+  const lines = repo.listDrawLines(drawId);
+  return repo.listDrawEvidenceLinks(drawId).map((link) => {
+    const evidence = repo.getEvidence(link.evidenceItemId);
+    const milestone = evidence ? repo.getMilestone(evidence.milestoneId) : null;
+    return {
+      link,
+      evidence,
+      verification: evidence ? repo.getVerificationForEvidence(evidence.id) : null,
+      milestone,
+      ledgerEntry: evidence ? repo.getLedgerEntryForEvidence(evidence.id) : null,
+      line: link.lineItemId ? lines.find((l) => l.id === link.lineItemId) ?? null : null,
+    };
+  });
+}
+
+function assembleDrawDetail(
+  user: User,
+  draw: import("../../shared/types").DrawRequest,
+  tab: DrawTab
+): DrawDetailData {
+  const project = repo.getProject(draw.projectId)!;
+  const summary = draws.drawHeaderSummary(draw.id);
+  const milestones = repo.listMilestones(project.id).filter((m) => !m.archived);
+  const approval = summary.approval;
+  const approvalRecords = summary.approvalRecords;
+  const alreadyDecided = Boolean(approval && approvalRecords.some((r) => r.role === user.role));
+  const isSubmitter = draw.requestedByUserId === user.id;
+  return {
+    nav: navFor(user, "draws"),
+    tab,
+    draw,
+    project,
+    borrowerOrg: draw.requestedByOrganizationId ? repo.getOrganization(draw.requestedByOrganizationId) : null,
+    lenderOrg: repo.getOrganization(draw.organizationId),
+    summary,
+    lines: repo.listDrawLines(draw.id),
+    milestones,
+    checklist: draws.documentChecklist(draw.id),
+    documents: repo.listDrawDocuments(draw.id),
+    evidenceRows: drawEvidenceRows(draw.id),
+    projectEvidence: milestones.flatMap((m) =>
+      repo.listEvidenceForMilestone(m.id).map((evidence) => ({
+        evidence,
+        milestone: m,
+        verification: repo.getVerificationForEvidence(evidence.id),
+      }))
+    ),
+    events: repo.listDrawEvents(draw.id),
+    accountEvents: repo.listDrawAccountEvents(draw.id),
+    recommendation: draws.computeRecommendation(draw.id),
+    completeness: draws.completeness(draw.id),
+    approval,
+    approvalRecords,
+    users: usersById(),
+    threadId: repo.findThreadForDraw(draw.id)?.id ?? null,
+    reports: repo
+      .listReports()
+      .filter(
+        (r) =>
+          r.projectId === draw.projectId &&
+          r.reportType === "DRAW_REVIEW_SUMMARY" &&
+          r.filename.includes(`Draw-${draw.drawNumber}-`)
+      ),
+    canEdit: draws.canAccessDraw(user, draw) && user.role !== "FIELD",
+    canReview: draws.canReviewDraw(user, draw),
+    canDecide: Boolean(
+      approval &&
+        approval.status === "PENDING" &&
+        approval.requiredRoles.includes(user.role) &&
+        !alreadyDecided &&
+        !isSubmitter &&
+        draws.canAccessDraw(user, draw)
+    ),
+    alreadyDecided,
+    isSubmitter,
+  };
+}
+
+async function assembleDrawReportData(
+  draw: import("../../shared/types").DrawRequest,
+  user: User
+): Promise<import("../view/drawPages").DrawReportData> {
+  const project = repo.getProject(draw.projectId)!;
+  const chain = await wormEvidenceStore.verifyChain();
+  const approval = repo.getApprovalRequestForDraw(draw.id);
+  return {
+    draw,
+    project,
+    lenderOrg: repo.getOrganization(draw.organizationId),
+    borrowerOrg: draw.requestedByOrganizationId ? repo.getOrganization(draw.requestedByOrganizationId) : null,
+    lines: repo.listDrawLines(draw.id),
+    milestones: repo.listMilestones(project.id),
+    checklist: draws.documentChecklist(draw.id),
+    evidenceRows: drawEvidenceRows(draw.id),
+    recommendation: draws.computeRecommendation(draw.id),
+    approval,
+    approvalRecords: approval ? repo.listApprovalRecordsForRequest(approval.id) : [],
+    accountEvents: repo.listDrawAccountEvents(draw.id),
+    users: usersById(),
+    generatedAt: new Date().toISOString(),
+    generatedBy: user,
+    ledger: { valid: chain.valid, entries: chain.entries, brokenAt: chain.brokenAt },
+    funderReports: repo
+      .listReports()
+      .filter((r) => r.projectId === project.id && r.reportType === "VERIFICATION_FUND_RELEASE"),
+  };
+}
+
+/** Generate and store the Draw Review Summary PDF (mirrors the funder
+ *  report pipeline; degrades to the HTML preview when Chromium is
+ *  unavailable). */
+async function generateDrawReport(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  user: User,
+  drawId: string
+): Promise<void> {
+  const draw = repo.getDrawRequest(drawId);
+  if (!draw || !draws.canAccessDraw(user, draw)) {
+    sendJson(res, { error: "Draw request not found" }, 404);
+    return;
+  }
+  const data = await assembleDrawReportData(draw, user);
+  const report: Report = {
+    id: repo.newId(),
+    projectId: draw.projectId,
+    reportType: "DRAW_REVIEW_SUMMARY",
+    filename: `OBV-Draw-${draw.drawNumber}-Review-Summary-${data.generatedAt.slice(0, 10)}.pdf`,
+    generatedAt: data.generatedAt,
+    generatedBy: user.id,
+    integrityStatus: data.ledger.valid ? "INTACT" : `TAMPERED_AT:${data.ledger.brokenAt}`,
+    ledgerEntries: data.ledger.entries,
+  };
+  pendingReportHtml.set(report.id, renderDrawReport(data));
+  try {
+    const outDir = path.join(REPORTS_DIR, report.id);
+    fs.mkdirSync(outDir, { recursive: true });
+    const outPath = path.join(outDir, report.filename);
+    const config = Buffer.from(
+      JSON.stringify({
+        url: `http://127.0.0.1:${PORT}/report-cache/${report.id}?token=${previewToken}`,
+        outPath,
+        projectName: `Draw #${draw.drawNumber} — ${data.project.name}`,
+        generatedAt: data.generatedAt.replace("T", " ").replace(/\.\d+Z$/, " UTC"),
+      })
+    ).toString("base64");
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        process.execPath,
+        [RENDER_SCRIPT, config],
+        { env: { ...process.env, NODE_PATH: PLAYWRIGHT_NODE_PATH }, timeout: 90_000 },
+        (err, _stdout, stderr) => (err ? reject(new Error(stderr || err.message)) : resolve())
+      );
+    });
+    if (!fs.existsSync(outPath)) throw new Error("Renderer produced no output file");
+    repo.insertReport(report);
+    await teamsNotifier.notify(
+      "DRAW_REPORT_GENERATED",
+      `Draw Review Summary generated for Draw #${draw.drawNumber} by ${user.name} (ledger: ${report.integrityStatus}).`,
+      { projectId: draw.projectId }
+    );
+    if (isFormPost(req)) {
+      redirect(res, `/reports/file/${report.id}`);
+    } else {
+      sendJson(res, { report }, 201);
+    }
+  } catch (err) {
+    console.error("[draw-report] PDF generation failed:", (err as Error).message);
+    if (isFormPost(req)) {
+      redirect(res, `/draw/${draw.id}?tab=governance&reportError=1`);
+    } else {
+      sendJson(
+        res,
+        { error: "PDF generation failed — the printable HTML preview remains available at /draw/:id/report" },
+        500
+      );
+    }
+  } finally {
+    pendingReportHtml.delete(report.id);
+  }
 }
 
 function money(amount: number): string {
@@ -423,7 +620,13 @@ function stateFingerprint(): string {
               (SELECT COALESCE(MAX(updated_at), '') FROM field_issues) AS fiu,
               (SELECT COUNT(*) FROM clarification_requests) AS cr,
               (SELECT COALESCE(MAX(updated_at), '') FROM clarification_requests) AS cru,
-              (SELECT COUNT(*) FROM evidence_drafts) AS ed`
+              (SELECT COUNT(*) FROM evidence_drafts) AS ed,
+              (SELECT COUNT(*) FROM draw_requests) AS dr,
+              (SELECT COALESCE(MAX(updated_at), '') FROM draw_requests) AS dru,
+              (SELECT COUNT(*) FROM draw_line_items) AS drl,
+              (SELECT COUNT(*) FROM draw_documents) AS drd,
+              (SELECT COUNT(*) FROM draw_evidence_links) AS drel,
+              (SELECT COUNT(*) FROM draw_events) AS drev`
     )
     .get();
   return createHash("sha256")
@@ -1365,19 +1568,231 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     const body = (await readBody(req, 64 * 1024)).toString("utf8");
-    const decision = isFormPost(req)
-      ? new URLSearchParams(body).get("decision")
-      : JSON.parse(body || "{}").decision;
+    const form = isFormPost(req) ? new URLSearchParams(body) : null;
+    const decision = form ? form.get("decision") : JSON.parse(body || "{}").decision;
     if (decision !== "APPROVED" && decision !== "REJECTED") {
       sendJson(res, { error: "decision must be APPROVED or REJECTED" }, 400);
       return;
     }
-    const result = await processApprovalDecision(approvalMatch[1], user.id, decision);
-    if (isFormPost(req)) {
-      redirect(res, "/approvals");
+    // Same governance endpoint, two subjects: MILESTONE requests release
+    // milestone tranches; DRAW requests run the draw governance gate.
+    // Both use ApprovalRecords, matrices and separation of duties.
+    const subject = repo.getApprovalRequest(approvalMatch[1]);
+    const result =
+      subject && (subject.subjectType ?? "MILESTONE") === "DRAW"
+        ? await draws.processDrawApprovalDecision(approvalMatch[1], user.id, decision)
+        : await processApprovalDecision(approvalMatch[1], user.id, decision);
+    if (form) {
+      const back = form.get("redirect") ?? "";
+      redirect(res, back.startsWith("/") && !back.startsWith("//") ? back : "/approvals");
     } else {
       sendJson(res, result);
     }
+    return;
+  }
+
+  // ============================================================ draws
+  // Construction Draw Request workflow. Every route below is either an
+  // administrative record (draft, lines, documents, evidence links) or an
+  // advisory action (review, recommendation). None of them can release
+  // funds — the only financial transition is the DRAW-subject approval
+  // decision handled by the shared /api/approvals/:id/decision route.
+
+  const readParams = async (): Promise<Record<string, string>> => {
+    const text = (await readBody(req, 256 * 1024)).toString("utf8");
+    if (isFormPost(req)) return Object.fromEntries(new URLSearchParams(text));
+    return text ? JSON.parse(text) : {};
+  };
+  const finishDrawPost = (drawId: string, tab: DrawTab, json: unknown, status = 200): void => {
+    if (isFormPost(req)) {
+      redirect(res, `/draw/${drawId}?tab=${tab}`);
+    } else {
+      sendJson(res, json, status);
+    }
+  };
+  const drawUser = (): User | null => currentUser(req);
+
+  if (method === "POST" && pathname === "/api/draws") {
+    const user = drawUser();
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const p = await readParams();
+    const draw = draws.createDraw(user, {
+      projectId: String(p.projectId ?? ""),
+      drawNumber: p.drawNumber ? Number(p.drawNumber) : undefined,
+      requestedAmount: p.requestedAmount !== undefined ? Number(p.requestedAmount) : 0,
+      currency: p.currency ? String(p.currency) : undefined,
+      periodStart: p.periodStart ? String(p.periodStart) : null,
+      periodEnd: p.periodEnd ? String(p.periodEnd) : null,
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/draw/${draw.id}?tab=lines`);
+    } else {
+      sendJson(res, { draw }, 201);
+    }
+    return;
+  }
+
+  const drawApiMatch = /^\/api\/draws\/([^/]+)(?:\/(.+))?$/.exec(pathname);
+  if (method === "POST" && drawApiMatch) {
+    const user = drawUser();
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const drawId = drawApiMatch[1];
+    const action = drawApiMatch[2] ?? "";
+    const p = await readParams();
+
+    if (action === "update") {
+      const draw = draws.updateDraft(user, drawId, {
+        requestedAmount: p.requestedAmount !== undefined && p.requestedAmount !== "" ? Number(p.requestedAmount) : undefined,
+        periodStart: p.periodStart !== undefined ? String(p.periodStart) || null : undefined,
+        periodEnd: p.periodEnd !== undefined ? String(p.periodEnd) || null : undefined,
+        currency: p.currency ? String(p.currency) : undefined,
+      });
+      finishDrawPost(drawId, "overview", { draw });
+      return;
+    }
+    if (action === "submit") {
+      const draw = await draws.submitDraw(user, drawId);
+      finishDrawPost(drawId, "review", { draw });
+      return;
+    }
+    if (action === "cancel") {
+      const draw = draws.cancelDraw(user, drawId);
+      finishDrawPost(drawId, "overview", { draw });
+      return;
+    }
+    if (action === "return") {
+      const draw = draws.returnDraw(user, drawId, String(p.reason ?? ""));
+      finishDrawPost(drawId, "overview", { draw });
+      return;
+    }
+    if (action === "clarification") {
+      const draw = draws.requestClarification(user, drawId, String(p.question ?? ""));
+      finishDrawPost(drawId, "review", { draw });
+      return;
+    }
+    if (action === "clarification/resolve") {
+      const draw = draws.resolveClarification(user, drawId, String(p.note ?? ""));
+      finishDrawPost(drawId, "review", { draw });
+      return;
+    }
+    if (action === "governance") {
+      const result = await draws.sendToGovernance(user, drawId, p.summary ? String(p.summary) : null);
+      finishDrawPost(drawId, "governance", result);
+      return;
+    }
+    if (action === "lines") {
+      const line = draws.addLine(user, drawId, {
+        description: String(p.description ?? ""),
+        budgetLineId: p.budgetLineId ? String(p.budgetLineId) : null,
+        milestoneId: p.milestoneId ? String(p.milestoneId) : null,
+        scheduledValue: p.scheduledValue !== undefined && p.scheduledValue !== "" ? Number(p.scheduledValue) : 0,
+        previouslyPaid: p.previouslyPaid !== undefined && p.previouslyPaid !== "" ? Number(p.previouslyPaid) : 0,
+        currentRequested: p.currentRequested !== undefined && p.currentRequested !== "" ? Number(p.currentRequested) : 0,
+        materialsStored: p.materialsStored !== undefined && p.materialsStored !== "" ? Number(p.materialsStored) : null,
+        retainageAmount: p.retainageAmount !== undefined && p.retainageAmount !== "" ? Number(p.retainageAmount) : null,
+        percentCompleteClaimed:
+          p.percentCompleteClaimed !== undefined && p.percentCompleteClaimed !== "" ? Number(p.percentCompleteClaimed) : null,
+      });
+      finishDrawPost(drawId, "lines", { line }, 201);
+      return;
+    }
+    const lineActionMatch = /^lines\/([^/]+)\/(review|delete|update)$/.exec(action);
+    if (lineActionMatch) {
+      const [, lineId, lineAction] = lineActionMatch;
+      if (lineAction === "review") {
+        const line = draws.reviewLine(user, lineId, {
+          decision: String(p.decision ?? "") as never,
+          reason: p.reason ? String(p.reason) : null,
+          supportedAmount: p.supportedAmount !== undefined && p.supportedAmount !== "" ? Number(p.supportedAmount) : null,
+          percentCompleteVerified:
+            p.percentCompleteVerified !== undefined && p.percentCompleteVerified !== "" ? Number(p.percentCompleteVerified) : null,
+        });
+        finishDrawPost(drawId, "lines", { line });
+        return;
+      }
+      if (lineAction === "delete") {
+        draws.deleteLine(user, lineId);
+        finishDrawPost(drawId, "lines", { ok: true });
+        return;
+      }
+      const line = draws.updateLine(user, lineId, p as never);
+      finishDrawPost(drawId, "lines", { line });
+      return;
+    }
+    if (action === "documents") {
+      const doc = draws.recordDocument(user, drawId, {
+        requirementId: p.requirementId ? String(p.requirementId) : null,
+        lineItemId: p.lineItemId ? String(p.lineItemId) : null,
+        docType: p.docType ? (String(p.docType) as never) : undefined,
+        title: String(p.title ?? ""),
+        note: p.note ? String(p.note) : null,
+        expiresAt: p.expiresAt ? String(p.expiresAt) : null,
+      });
+      finishDrawPost(drawId, "documents", { document: doc }, 201);
+      return;
+    }
+    const docReviewMatch = /^documents\/([^/]+)\/review$/.exec(action);
+    if (docReviewMatch) {
+      const decision = String(p.decision ?? "");
+      if (decision !== "ACCEPTED" && decision !== "REJECTED") {
+        sendJson(res, { error: "decision must be ACCEPTED or REJECTED" }, 400);
+        return;
+      }
+      const doc = draws.reviewDocument(user, docReviewMatch[1], decision, p.note ? String(p.note) : null);
+      finishDrawPost(drawId, "documents", { document: doc });
+      return;
+    }
+    if (action === "requirements") {
+      const requirement = draws.addRequirement(user, drawId, {
+        docType: (p.docType ? String(p.docType) : "OTHER") as never,
+        title: String(p.title ?? ""),
+        required: p.required === "1" || p.required === "true" || p.required === undefined,
+        notes: p.notes ? String(p.notes) : null,
+      });
+      finishDrawPost(drawId, "documents", { requirement }, 201);
+      return;
+    }
+    if (action === "evidence") {
+      const link = draws.linkEvidence(user, drawId, {
+        evidenceItemId: String(p.evidenceItemId ?? ""),
+        lineItemId: p.lineItemId ? String(p.lineItemId) : null,
+        note: p.note ? String(p.note) : null,
+      });
+      finishDrawPost(drawId, "evidence", { link }, 201);
+      return;
+    }
+    const unlinkMatch = /^evidence\/([^/]+)\/unlink$/.exec(action);
+    if (unlinkMatch) {
+      draws.unlinkEvidence(user, unlinkMatch[1]);
+      finishDrawPost(drawId, "evidence", { ok: true });
+      return;
+    }
+    if (action === "report") {
+      await generateDrawReport(req, res, user, drawId);
+      return;
+    }
+    sendJson(res, { error: `Unknown draw action: ${action}` }, 404);
+    return;
+  }
+
+  if (method === "GET" && drawApiMatch && drawApiMatch[2] === "recommendation") {
+    const user = drawUser();
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const draw = repo.getDrawRequest(drawApiMatch[1]);
+    if (!draw || !draws.canAccessDraw(user, draw)) {
+      sendJson(res, { error: "Draw request not found" }, 404);
+      return;
+    }
+    sendJson(res, draws.computeRecommendation(draw.id));
     return;
   }
 
@@ -1929,7 +2344,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     "/overview", "/dashboard", "/projects", "/project/", "/milestone/",
     "/approvals", "/ledger", "/reports", "/compliance", "/insights", "/more", "/field",
     "/map", "/communications", "/issues", "/issue/", "/evidence-drafts",
-    "/setup", "/pilot",
+    "/setup", "/pilot", "/draws", "/draw/",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -1952,7 +2367,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const pendingReqs = repo.listPendingApprovalRequests();
     const nextReleases = pendingReqs
       .map((req2) => {
-        const ms = repo.getMilestone(req2.milestoneId)!;
+        const ms = repo.getMilestone(req2.milestoneId!)!;
         const proj = repo.getProject(ms.projectId)!;
         const approvedRoles = new Set(
           repo.listApprovalRecordsForRequest(req2.id).filter((r) => r.decision === "APPROVED").map((r) => r.role)
@@ -2031,7 +2446,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         approvals: repo.listApprovalRequestsForProject(data.project.id).map((approval) => ({
           approval,
           records: repo.listApprovalRecordsForRequest(approval.id),
-          milestone: repo.getMilestone(approval.milestoneId)!,
+          milestone: repo.getMilestone(approval.milestoneId!)!,
         })),
         evidenceBundles: data.milestones.flatMap((r) => evidenceBundlesForMilestone(r.milestone.id)),
         ledger: repo.listLedgerEntries(),
@@ -2080,6 +2495,71 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         canFieldOps: canManageFieldOps(user!),
       })
     );
+    return;
+  }
+
+  // ---- draw request pages ----
+  if (method === "GET" && pathname === "/draws") {
+    const rows: DrawRegisterRow[] = draws.listDrawsForUser(user!).map((draw) => {
+      const summary = draws.drawHeaderSummary(draw.id);
+      return {
+        draw,
+        project: repo.getProject(draw.projectId),
+        summary,
+        nextAction: draws.nextAction(draw, summary),
+      };
+    });
+    sendHtml(
+      res,
+      renderDrawRegister({ nav: navFor(user!, "draws"), rows, canCreate: user!.role !== "FIELD" })
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname === "/draws/new") {
+    if (user!.role === "FIELD") {
+      sendHtml(res, renderError(navFor(user!, "draws"), "Not authorized", "Field users cannot create draw requests."), 403);
+      return;
+    }
+    sendHtml(
+      res,
+      renderDrawNew({
+        nav: navFor(user!, "draws"),
+        projects: repo
+          .listProjects()
+          .filter((p) => p.status === "ACTIVE")
+          .map((project) => ({ project, nextNumber: repo.nextDrawNumber(project.id) })),
+      })
+    );
+    return;
+  }
+
+  const drawReportMatch = /^\/draw\/([^/]+)\/report$/.exec(pathname);
+  if (method === "GET" && drawReportMatch) {
+    const draw = repo.getDrawRequest(drawReportMatch[1]);
+    if (!draw || !draws.canAccessDraw(user!, draw)) {
+      sendHtml(res, renderError(navFor(user!, "draws"), "Draw not found", "No draw request exists at this address."), 404);
+      return;
+    }
+    sendHtml(res, renderDrawReport(await assembleDrawReportData(draw, user!)));
+    return;
+  }
+
+  if (method === "GET" && pathname.startsWith("/draw/")) {
+    const draw = repo.getDrawRequest(pathname.slice("/draw/".length));
+    // Tenant boundary: unrelated organizations get the same 404 as a
+    // nonexistent draw — existence is not disclosed.
+    if (!draw || !draws.canAccessDraw(user!, draw)) {
+      sendHtml(res, renderError(navFor(user!, "draws"), "Draw not found", "No draw request exists at this address."), 404);
+      return;
+    }
+    const tabParam = (url.searchParams.get("tab") ?? "overview") as DrawTab;
+    const tab: DrawTab = ([
+      "overview", "lines", "evidence", "documents", "exceptions", "review", "governance", "activity",
+    ] as DrawTab[]).includes(tabParam)
+      ? tabParam
+      : "overview";
+    sendHtml(res, renderDrawDetail(assembleDrawDetail(user!, draw, tab)));
     return;
   }
 
@@ -2155,7 +2635,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       needsReview: bundles.filter((b) => b.verification?.verdict === "NEEDS_REVIEW"),
       rejected: bundles.filter((b) => b.verification?.verdict === "REJECTED"),
       awaitingApproval: repo.listPendingApprovalRequests().map((approval) => {
-        const milestone = repo.getMilestone(approval.milestoneId)!;
+        const milestone = repo.getMilestone(approval.milestoneId!)!;
         return {
           approval,
           milestone,
@@ -2556,7 +3036,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError;
+    const known = err instanceof SubmissionError || err instanceof DrawError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";

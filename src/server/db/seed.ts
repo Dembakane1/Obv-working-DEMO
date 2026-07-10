@@ -634,11 +634,160 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
     createdAt: "2026-07-06T10:06:00.000Z",
   });
 
+  // ---- seeded draw request (lender draw workflow demo) ----
+  // Draw #1 covers the gravel-base phase and sits mid-review: one line is
+  // supported by verified M2 evidence, one is held as an exception (cost
+  // ahead of verified M3 progress), one is partially supported (stored
+  // materials). The conditional lien waiver is still missing, so the
+  // deterministic recommendation reads HOLD — DOCUMENTS MISSING with the
+  // open HIGH gravel-shortfall issue also on record. Nothing here touches
+  // approvals or the virtual account: it is a request for review.
+  seedDemoDraw();
+
   const chain = await wormEvidenceStore.verifyChain();
   console.log(
     `Seeded project "${project.name}" with ${milestones.length} milestones, ` +
     `4 users, ${chain.entries} ledger entries (chain valid: ${chain.valid}).`
   );
+}
+
+function seedDemoDraw(): void {
+  const t = (s: string) => `2026-07-0${s}`;
+  repo.insertDrawRequest({
+    id: "draw-1",
+    organizationId: "org-cdfc",
+    projectId: "proj-r47",
+    drawNumber: 1,
+    requestedByUserId: "user-pm",
+    requestedByOrganizationId: "org-crra",
+    submittedAt: t("7T09:00:00.000Z"),
+    requestedAmount: 600_000,
+    approvedAmount: null,
+    recommendedAmount: null,
+    currency: "USD",
+    periodStart: "2026-06-01",
+    periodEnd: "2026-06-30",
+    status: "UNDER_REVIEW",
+    reviewRecommendation: null,
+    reviewSummary: null,
+    createdAt: t("6T15:00:00.000Z"),
+    updatedAt: t("8T11:00:00.000Z"),
+  });
+  const reqs: Array<[string, string, string, number]> = [
+    ["dreq-1", "PAY_APPLICATION", "Pay application / schedule of values", 1],
+    ["dreq-2", "CONTRACTOR_INVOICE", "Contractor invoice", 1],
+    ["dreq-3", "CONDITIONAL_LIEN_WAIVER", "Conditional lien waiver", 1],
+    ["dreq-4", "INSPECTION_REPORT", "Inspection report", 0],
+    ["dreq-5", "MATERIAL_INVOICE", "Material invoices (stored materials)", 0],
+  ];
+  reqs.forEach(([id, docType, title, required], i) =>
+    repo.insertDrawRequirement({
+      id, drawRequestId: "draw-1", sort: i,
+      docType: docType as never, title, required: Boolean(required), notes: null,
+    })
+  );
+  const lineBase = {
+    drawRequestId: "draw-1",
+    totalCompletedAndStored: 0, balanceToFinish: 0,
+    varianceAmount: null, variancePercent: null,
+  };
+  repo.insertDrawLine({
+    ...lineBase,
+    id: "dline-1", sort: 0, budgetLineId: "02-300 Drainage",
+    milestoneId: "ms-2", description: "Drainage structures — completion balance",
+    scheduledValue: 480_000, previouslyPaid: 400_000, currentRequested: 80_000,
+    materialsStored: null, retainageAmount: 8_000,
+    percentCompleteClaimed: 100, percentCompleteVerified: 100,
+    supportedAmount: null, status: "SUPPORTED",
+    reviewNotes: null, reviewedByUserId: "user-compliance",
+    reviewedAt: t("8T10:20:00.000Z"),
+  });
+  repo.insertDrawLine({
+    ...lineBase,
+    id: "dline-2", sort: 1, budgetLineId: "02-610 Base course",
+    milestoneId: "ms-3", description: "Gravel base course placement, km 7–11",
+    scheduledValue: 600_000, previouslyPaid: 0, currentRequested: 450_000,
+    materialsStored: null, retainageAmount: 45_000,
+    percentCompleteClaimed: 75, percentCompleteVerified: 0,
+    supportedAmount: null, status: "EXCEPTION",
+    reviewNotes: "Claimed 75% exceeds verified physical progress — M3 evidence not yet verified through the OBV pipeline.",
+    reviewedByUserId: "user-compliance", reviewedAt: t("8T10:35:00.000Z"),
+  });
+  repo.insertDrawLine({
+    ...lineBase,
+    id: "dline-3", sort: 2, budgetLineId: "02-615 Stored materials",
+    milestoneId: "ms-3", description: "Stored materials — gravel stockpile km 12",
+    scheduledValue: 90_000, previouslyPaid: 0, currentRequested: 70_000,
+    materialsStored: 70_000, retainageAmount: 7_000,
+    percentCompleteClaimed: null, percentCompleteVerified: null,
+    supportedAmount: 40_000, status: "PARTIALLY_SUPPORTED",
+    reviewNotes: "Delivery documentation covers ≈$40,000 of the stored material; supplier interruption (field issue) leaves the balance unsupported.",
+    reviewedByUserId: "user-funder", reviewedAt: t("8T10:50:00.000Z"),
+  });
+  repo.insertDrawDocument({
+    id: "ddoc-1", drawRequestId: "draw-1", requirementId: "dreq-1",
+    lineItemId: null, docType: "PAY_APPLICATION", title: "Pay Application #1 (June 2026)",
+    filePath: null, note: null, status: "RECEIVED", expiresAt: null,
+    uploadedByUserId: "user-pm", receivedAt: t("7T09:05:00.000Z"),
+    reviewedByUserId: null, reviewedAt: null, reviewNote: null,
+  });
+  repo.insertDrawDocument({
+    id: "ddoc-2", drawRequestId: "draw-1", requirementId: "dreq-2",
+    lineItemId: null, docType: "CONTRACTOR_INVOICE", title: "Contractor invoice CRRA-2026-014",
+    filePath: null, note: null, status: "ACCEPTED", expiresAt: null,
+    uploadedByUserId: "user-pm", receivedAt: t("7T09:06:00.000Z"),
+    reviewedByUserId: "user-compliance", reviewedAt: t("8T10:10:00.000Z"),
+    reviewNote: "Amounts agree with the schedule of values.",
+  });
+  repo.insertDrawEvidenceLink({
+    id: "dlink-1", drawRequestId: "draw-1", lineItemId: "dline-1",
+    evidenceItemId: "ev-ms-2",
+    note: "Verified culvert completion evidence supports the drainage balance.",
+    linkedByUserId: "user-pm", createdAt: t("7T09:10:00.000Z"),
+  });
+  const drawEvents: Array<[string, string, string, string | null, string]> = [
+    ["dev-1", "CREATED", "Draft draw #1 created by Daniel Phiri for $600,000.", "user-pm", t("6T15:00:00.000Z")],
+    ["dev-2", "SUBMITTED", "Draw #1 submitted by Daniel Phiri — $600,000 requested. Awaiting lender review; no funds are authorized by submission.", "user-pm", t("7T09:00:00.000Z")],
+    ["dev-3", "LINE_REVIEWED", "Line \"Drainage structures — completion balance\" marked SUPPORTED by Amina Ndlovu. Line review is advisory: it cannot release funds.", "user-compliance", t("8T10:20:00.000Z")],
+    ["dev-4", "LINE_REVIEWED", "Line \"Gravel base course placement, km 7–11\" marked EXCEPTION by Amina Ndlovu — claimed progress exceeds verified physical progress.", "user-compliance", t("8T10:35:00.000Z")],
+    ["dev-5", "LINE_REVIEWED", "Line \"Stored materials — gravel stockpile km 12\" marked PARTIALLY SUPPORTED by Margaret Osei ($40,000 of $70,000 supported).", "user-funder", t("8T10:50:00.000Z")],
+  ];
+  for (const [id, type, detail, actor, createdAt] of drawEvents) {
+    repo.insertDrawEvent({ id, drawRequestId: "draw-1", type: type as never, detail, actorUserId: actor, createdAt });
+  }
+  repo.insertThread({
+    id: "thread-draw-1",
+    organizationId: "org-cdfc",
+    projectId: "proj-r47",
+    milestoneId: null,
+    evidenceItemId: null,
+    approvalRequestId: null,
+    drawRequestId: "draw-1",
+    title: "Draw #1 · Review",
+    scope: "DRAW",
+    createdAt: t("7T09:00:30.000Z"),
+    createdBy: "user-pm",
+  });
+  repo.insertChatMessage({
+    id: "dmsg-1", threadId: "thread-draw-1",
+    senderUserId: null, senderDisplayName: "OBV", provider: "OBV",
+    externalThreadId: null, externalMessageId: null,
+    body: "Draw #1 submitted for review — $600,000 requested. Review and formal governance still required; nothing is released by submission.",
+    messageType: "DRAW_REFERENCE", refId: "draw-1",
+    createdAt: t("7T09:00:31.000Z"), deliveryStatus: "SENT", origin: "OBV_LOCAL",
+    editedAt: null, originalBody: null, externalDeleted: false,
+    attachments: [], location: null,
+  });
+  repo.insertChatMessage({
+    id: "dmsg-2", threadId: "thread-draw-1",
+    senderUserId: "user-compliance", senderDisplayName: "Amina Ndlovu", provider: "OBV",
+    externalThreadId: null, externalMessageId: null,
+    body: "Reviewing the June draw now. The conditional lien waiver is still outstanding — the draw stays on documents-hold until it is on file, whatever we conclude on the line items.",
+    messageType: "TEXT", refId: null,
+    createdAt: t("8T10:00:00.000Z"), deliveryStatus: "SENT", origin: "OBV_LOCAL",
+    editedAt: null, originalBody: null, externalDeleted: false,
+    attachments: [], location: null,
+  });
 }
 
 /**
@@ -715,6 +864,27 @@ function purgeDemoScopedRows(): void {
     db.prepare(`DELETE FROM demo_fallback_photos WHERE milestone_id IN (${ph})`).run(...msIds);
     db.prepare(`DELETE FROM evidence_requirements WHERE milestone_id IN (${ph})`).run(...msIds);
     db.prepare(`DELETE FROM approval_policies WHERE project_id = ?`).run(DEMO_PROJECT);
+  }
+  // Draw-workflow rows for the demo project (draw threads/messages were
+  // already removed with the project threads above).
+  const drawIds = db
+    .prepare("SELECT id FROM draw_requests WHERE project_id = ?")
+    .all(DEMO_PROJECT)
+    .map((r) => (r as { id: string }).id);
+  if (drawIds.length) {
+    const dph = inList(drawIds);
+    db.prepare(
+      `DELETE FROM approval_records WHERE approval_request_id IN
+         (SELECT id FROM approval_requests WHERE draw_request_id IN (${dph}))`
+    ).run(...drawIds);
+    db.prepare(`DELETE FROM approval_requests WHERE draw_request_id IN (${dph})`).run(...drawIds);
+    db.prepare(`DELETE FROM draw_account_events WHERE draw_request_id IN (${dph})`).run(...drawIds);
+    db.prepare(`DELETE FROM draw_events WHERE draw_request_id IN (${dph})`).run(...drawIds);
+    db.prepare(`DELETE FROM draw_evidence_links WHERE draw_request_id IN (${dph})`).run(...drawIds);
+    db.prepare(`DELETE FROM draw_documents WHERE draw_request_id IN (${dph})`).run(...drawIds);
+    db.prepare(`DELETE FROM draw_document_requirements WHERE draw_request_id IN (${dph})`).run(...drawIds);
+    db.prepare(`DELETE FROM draw_line_items WHERE draw_request_id IN (${dph})`).run(...drawIds);
+    db.prepare(`DELETE FROM draw_requests WHERE id IN (${dph})`).run(...drawIds);
   }
   db.prepare("DELETE FROM field_assignments WHERE project_id = ?").run(DEMO_PROJECT);
   db.prepare("DELETE FROM verification_policies WHERE project_id = ?").run(DEMO_PROJECT);

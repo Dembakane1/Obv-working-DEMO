@@ -128,6 +128,56 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Construction Draw Requests (v13)
+
+A lender-native draw management workflow layered on top of the existing
+evidence, verification, approval, ledger and financial-state architecture —
+for rehab lenders, private construction lenders, development lenders and
+draw administrators.
+
+**Doctrine.** A Draw Request is a REQUEST FOR REVIEW — it does not
+authorize money. A reviewer recommendation is ADVISORY — it does not
+authorize money. Only the existing formal governance path (an
+`ApprovalRequest` with its configured approval matrix, one decision per
+role, separation of duties) creates release eligibility, and the release
+transition is recorded exactly once through the `VirtualAccountService`
+(`draw_account_events` carries a DB-level `UNIQUE(draw, type)`
+exactly-once constraint). Draw releases never touch milestone tranche
+HELD/RELEASED state.
+
+The flow: borrower/contractor submits a draw (drafts save independently;
+line items must reconcile exactly to the requested amount) -> supporting
+documents tracked against a configurable checklist (a document on file is
+never treated as verified physical progress) -> existing governed evidence
+linked by reference (never copied or re-verified) -> authorized reviewers
+decide each line (SUPPORTED / PARTIALLY_SUPPORTED / EXCEPTION / REJECTED,
+reasons required for anything but full support) -> a deterministic advisory
+recommendation explains its reasons (READY FOR GOVERNANCE / HOLD —
+DOCUMENTS MISSING / HOLD — EVIDENCE NEEDS REVIEW / HOLD — OPEN
+HIGH-SEVERITY ISSUE / PARTIAL SUPPORT / RETURN FOR CLARIFICATION) ->
+READY_FOR_GOVERNANCE opens a DRAW-subject `ApprovalRequest` using the
+project's approval matrix -> first approval leaves funds HELD; the final
+required approval produces exactly one governed release transition.
+
+Surfaces: **Draw Requests** register (Draw # / requested / supported /
+exception / retainage / recommendation / governance state / age / next
+action; compact cards on mobile), a draw detail workspace (Overview, Line
+Items, Evidence, Documents, Exceptions, Review, Governance, Activity), a
+per-draw coordination thread ("Approve Draw 1" in chat approves nothing),
+grounded Verification Insights signals (awaiting review, missing required
+document, requested exceeds supported, cost ahead of verified progress,
+pending governance beyond threshold, clarification unanswered, exception
+unresolved — no fake predictions), and a printable **Draw Review Summary**
+report (PDF via the existing renderer) whose totals come from the same
+stored records and which references the Funder Verification Report rather
+than duplicating it.
+
+`scripts/draws-test.js` (45 checkpoints) proves the trust model: reviews
+and recommendations move no money, chat cannot approve, duplicate
+approvals cannot duplicate the release, unrelated tenants cannot see the
+draw, and report totals match the database. See `docs/DRAW_REQUESTS.md`
+for the lender demo runbook.
+
 ## Pilot readiness & customer onboarding (v12)
 
 OBV can now onboard a real customer project — organization, team, project,
@@ -591,6 +641,7 @@ node scripts/teams-sync-test.js            # Teams conversation sync vs Graph st
 node scripts/whatsapp-sync-test.js         # WhatsApp bridge vs Cloud API stub (signatures, media, policy, governance)
 node scripts/fieldops-test.js              # field issues, clarifications, draft promotion — none of it moves money
 node scripts/pilot-test.js                 # pilot onboarding: invitations, config, readiness, launch, change control
+node scripts/draws-test.js                 # draw requests: reconciliation, review, advisory recommendation, exactly-once governed release
 ```
 
 `scripts/idempotency-test.js` proves accidental repeats cannot duplicate

@@ -314,6 +314,12 @@ export async function processApprovalDecision(
 ): Promise<ApprovalDecisionResult> {
   const request = repo.getApprovalRequest(approvalRequestId);
   if (!request) throw new SubmissionError("Unknown approval request", 404);
+  // DRAW-subject requests have their own governance gate (draws service)
+  // with draw-specific separation of duties; they never reach the
+  // milestone release path below.
+  if (!request.milestoneId || (request.subjectType ?? "MILESTONE") !== "MILESTONE") {
+    throw new SubmissionError("This approval request governs a draw — use the draw governance action", 400);
+  }
   if (request.status !== "PENDING") {
     throw new SubmissionError("This approval request has already been resolved", 409);
   }

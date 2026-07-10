@@ -21,6 +21,7 @@ import type {
   ChatMessage,
   ChatMessageType,
   ConversationThread,
+  DrawRequest,
   Project,
   User,
 } from "../../shared/types";
@@ -108,6 +109,29 @@ export function ensureProjectThread(projectId: string, createdBy: User): Convers
   return thread;
 }
 
+/** Find or create the coordination thread for a draw request. Chat about
+ *  a draw stays coordination only — a message saying "Approve Draw 4"
+ *  approves nothing; governance lives in the ApprovalRequest workflow. */
+export function ensureDrawThread(draw: DrawRequest, createdBy: User): ConversationThread {
+  const existing = repo.findThreadForDraw(draw.id);
+  if (existing) return existing;
+  const thread: ConversationThread = {
+    id: repo.newId(),
+    organizationId: draw.organizationId,
+    projectId: draw.projectId,
+    milestoneId: null,
+    evidenceItemId: null,
+    approvalRequestId: null,
+    drawRequestId: draw.id,
+    title: `Draw #${draw.drawNumber} · Review`,
+    scope: "DRAW",
+    createdAt: new Date().toISOString(),
+    createdBy: createdBy.id,
+  };
+  repo.insertThread(thread);
+  return thread;
+}
+
 // ------------------------------------------------------------ messages
 
 /** Post a human text message (no editing/deletion is supported). */
@@ -143,11 +167,14 @@ export function postMessage(thread: ConversationThread, sender: User, body: stri
 export interface MirrorContext {
   projectId: string;
   milestoneId?: string;
+  /** Prefer the draw's own thread when set. */
+  drawRequestId?: string;
   /** Referenced record for a compact context card in the thread. */
   refType?: Extract<
     ChatMessageType,
     | "EVIDENCE_REFERENCE" | "MILESTONE_REFERENCE" | "APPROVAL_REFERENCE"
     | "REPORT_REFERENCE" | "ISSUE_REFERENCE" | "CLARIFICATION_REFERENCE"
+    | "DRAW_REFERENCE" | "DRAW_LINE_REFERENCE" | "DRAW_DOCUMENT_REFERENCE"
   >;
   refId?: string;
 }
@@ -162,6 +189,7 @@ export interface MirrorContext {
  */
 export function mirrorEvent(body: string, ctx: MirrorContext): ChatMessage | null {
   const thread =
+    (ctx.drawRequestId ? repo.findThreadForDraw(ctx.drawRequestId) : null) ??
     (ctx.milestoneId ? repo.findThreadForMilestone(ctx.milestoneId) : null) ??
     repo.findProjectThread(ctx.projectId);
   if (!thread) return null;

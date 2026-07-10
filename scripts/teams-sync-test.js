@@ -689,8 +689,8 @@ const GRAPH_ENV = {
       .get();
     d.close();
     assert(
-      after.bindings === 0 && after.mappings === 1 && after.messages === 13,
-      "demo reset restores seeded state (Teams bindings/mappings cleared; 13 seeded messages incl. WhatsApp scenario)"
+      after.bindings === 0 && after.mappings === 1 && after.messages === 15,
+      "demo reset restores seeded state (Teams bindings/mappings cleared; 15 seeded messages incl. WhatsApp + draw scenario)"
     );
 
     console.log(`\nTEAMS CONVERSATION-SYNC TESTS PASSED — ${n} checkpoints.`);

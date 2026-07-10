@@ -124,7 +124,9 @@ function toLedgerEntry(r: Row): LedgerEntry {
 function toApprovalRequest(r: Row): ApprovalRequest {
   return {
     id: r.id as string,
-    milestoneId: r.milestone_id as string,
+    milestoneId: (r.milestone_id as string) ?? null,
+    drawRequestId: (r.draw_request_id as string) ?? null,
+    subjectType: ((r.subject_type as string) ?? "MILESTONE") as ApprovalRequest["subjectType"],
     status: r.status as ApprovalRequest["status"],
     requiredRoles: JSON.parse(r.required_roles as string),
     createdAt: r.created_at as string,
@@ -431,10 +433,15 @@ export function getLedgerEntryForEvidence(evidenceItemId: string): LedgerEntry |
 export function insertApprovalRequest(a: ApprovalRequest): void {
   getDb()
     .prepare(
-      `INSERT INTO approval_requests (id, milestone_id, status, required_roles, created_at)
-       VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO approval_requests (id, milestone_id, draw_request_id,
+         subject_type, status, required_roles, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(a.id, a.milestoneId, a.status, JSON.stringify(a.requiredRoles), a.createdAt);
+    .run(
+      a.id, a.milestoneId, a.drawRequestId ?? null,
+      a.subjectType ?? "MILESTONE", a.status,
+      JSON.stringify(a.requiredRoles), a.createdAt
+    );
 }
 
 export function listApprovalRequestsForProject(projectId: string): ApprovalRequest[] {
@@ -460,11 +467,33 @@ export function getApprovalRequest(id: string): ApprovalRequest | null {
   return r ? toApprovalRequest(r as Row) : null;
 }
 
+/** Pending MILESTONE-subject requests only (every legacy call site
+ *  dereferences milestoneId). Draw approvals have their own listing. */
 export function listPendingApprovalRequests(): ApprovalRequest[] {
   return getDb()
-    .prepare("SELECT * FROM approval_requests WHERE status = 'PENDING' ORDER BY created_at")
+    .prepare(
+      "SELECT * FROM approval_requests WHERE status = 'PENDING' AND milestone_id IS NOT NULL ORDER BY created_at"
+    )
     .all()
     .map((r) => toApprovalRequest(r as Row));
+}
+
+export function listPendingDrawApprovalRequests(): ApprovalRequest[] {
+  return getDb()
+    .prepare(
+      "SELECT * FROM approval_requests WHERE status = 'PENDING' AND draw_request_id IS NOT NULL ORDER BY created_at"
+    )
+    .all()
+    .map((r) => toApprovalRequest(r as Row));
+}
+
+export function getApprovalRequestForDraw(drawRequestId: string): ApprovalRequest | null {
+  const r = getDb()
+    .prepare(
+      "SELECT * FROM approval_requests WHERE draw_request_id = ? ORDER BY created_at DESC LIMIT 1"
+    )
+    .get(drawRequestId);
+  return r ? toApprovalRequest(r as Row) : null;
 }
 
 export function updateApprovalRequestStatus(
@@ -616,6 +645,8 @@ import type {
   Invitation, EvidenceRequirement, VerificationPolicyConfig, ApprovalPolicy,
   FieldAssignment, ConfigSnapshot, ConfigAuditEntry, PilotMetricTarget,
   UserRole,
+  DrawRequest, DrawLineItem, DrawDocumentRequirement, DrawDocument,
+  DrawEvidenceLink, DrawEvent, DrawAccountEvent,
 } from "../../shared/types";
 
 function toReport(r: Row): Report {
@@ -702,6 +733,7 @@ function toThread(r: Row): ConversationThread {
     milestoneId: (r.milestone_id as string) ?? null,
     evidenceItemId: (r.evidence_item_id as string) ?? null,
     approvalRequestId: (r.approval_request_id as string) ?? null,
+    drawRequestId: (r.draw_request_id as string) ?? null,
     title: r.title as string,
     scope: r.scope as ConversationThread["scope"],
     createdAt: r.created_at as string,
@@ -713,13 +745,22 @@ export function insertThread(t: ConversationThread): void {
   getDb()
     .prepare(
       `INSERT INTO conversation_threads (id, organization_id, project_id, milestone_id,
-         evidence_item_id, approval_request_id, title, scope, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         evidence_item_id, approval_request_id, draw_request_id, title, scope, created_at, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       t.id, t.organizationId, t.projectId, t.milestoneId, t.evidenceItemId,
-      t.approvalRequestId, t.title, t.scope, t.createdAt, t.createdBy
+      t.approvalRequestId, t.drawRequestId ?? null, t.title, t.scope, t.createdAt, t.createdBy
     );
+}
+
+export function findThreadForDraw(drawRequestId: string): ConversationThread | null {
+  const r = getDb()
+    .prepare(
+      "SELECT * FROM conversation_threads WHERE draw_request_id = ? AND scope = 'DRAW' LIMIT 1"
+    )
+    .get(drawRequestId);
+  return r ? toThread(r as Row) : null;
 }
 
 export function getThread(id: string): ConversationThread | null {
@@ -1851,6 +1892,451 @@ export function upsertMetricTarget(t: PilotMetricTarget): void {
        VALUES (?, ?, ?, ?, ?, ?)`
     )
     .run(t.id, t.projectId, t.metric, t.target, t.createdBy, t.createdAt);
+}
+
+// ====================== construction draw requests (additive) ==========
+// A Draw Request is a REQUEST FOR REVIEW. No function in this section can
+// create approval records, ledger entries, or account events — the
+// governed release path stays exclusively with the workflow orchestrator
+// and the VirtualAccountService.
+
+function toDrawRequest(r: Row): DrawRequest {
+  return {
+    id: r.id as string,
+    organizationId: r.organization_id as string,
+    projectId: r.project_id as string,
+    drawNumber: r.draw_number as number,
+    requestedByUserId: (r.requested_by_user_id as string) ?? null,
+    requestedByOrganizationId: (r.requested_by_organization_id as string) ?? null,
+    submittedAt: (r.submitted_at as string) ?? null,
+    requestedAmount: r.requested_amount as number,
+    approvedAmount: (r.approved_amount as number) ?? null,
+    recommendedAmount: (r.recommended_amount as number) ?? null,
+    currency: (r.currency as string) ?? "USD",
+    periodStart: (r.period_start as string) ?? null,
+    periodEnd: (r.period_end as string) ?? null,
+    status: r.status as DrawRequest["status"],
+    reviewRecommendation: (r.review_recommendation as DrawRequest["reviewRecommendation"]) ?? null,
+    reviewSummary: (r.review_summary as string) ?? null,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function insertDrawRequest(d: DrawRequest): void {
+  getDb()
+    .prepare(
+      `INSERT INTO draw_requests (id, organization_id, project_id, draw_number,
+         requested_by_user_id, requested_by_organization_id, submitted_at,
+         requested_amount, approved_amount, recommended_amount, currency,
+         period_start, period_end, status, review_recommendation,
+         review_summary, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      d.id, d.organizationId, d.projectId, d.drawNumber,
+      d.requestedByUserId, d.requestedByOrganizationId, d.submittedAt,
+      d.requestedAmount, d.approvedAmount, d.recommendedAmount, d.currency,
+      d.periodStart, d.periodEnd, d.status, d.reviewRecommendation,
+      d.reviewSummary, d.createdAt, d.updatedAt
+    );
+}
+
+export function getDrawRequest(id: string): DrawRequest | null {
+  const r = getDb().prepare("SELECT * FROM draw_requests WHERE id = ?").get(id);
+  return r ? toDrawRequest(r as Row) : null;
+}
+
+export function listDrawRequests(): DrawRequest[] {
+  return getDb()
+    .prepare("SELECT * FROM draw_requests ORDER BY created_at DESC")
+    .all()
+    .map((r) => toDrawRequest(r as Row));
+}
+
+export function listDrawRequestsForProject(projectId: string): DrawRequest[] {
+  return getDb()
+    .prepare("SELECT * FROM draw_requests WHERE project_id = ? ORDER BY draw_number")
+    .all(projectId)
+    .map((r) => toDrawRequest(r as Row));
+}
+
+export function nextDrawNumber(projectId: string): number {
+  const r = getDb()
+    .prepare("SELECT COALESCE(MAX(draw_number), 0) AS m FROM draw_requests WHERE project_id = ?")
+    .get(projectId) as Row;
+  return (r.m as number) + 1;
+}
+
+/**
+ * Persistence-level field update. Status transitions are validated in the
+ * draw service / orchestrator — routes never call this directly with a
+ * status, so direct mutation cannot bypass workflow rules.
+ */
+export function updateDrawRequest(
+  id: string,
+  patch: Partial<
+    Pick<
+      DrawRequest,
+      | "requestedAmount" | "approvedAmount" | "recommendedAmount" | "currency"
+      | "periodStart" | "periodEnd" | "status" | "reviewRecommendation"
+      | "reviewSummary" | "submittedAt" | "requestedByUserId"
+      | "requestedByOrganizationId" | "drawNumber"
+    >
+  >
+): void {
+  const cur = getDrawRequest(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE draw_requests SET draw_number = ?, requested_by_user_id = ?,
+         requested_by_organization_id = ?, submitted_at = ?, requested_amount = ?,
+         approved_amount = ?, recommended_amount = ?, currency = ?,
+         period_start = ?, period_end = ?, status = ?, review_recommendation = ?,
+         review_summary = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.drawNumber ?? cur.drawNumber,
+      patch.requestedByUserId !== undefined ? patch.requestedByUserId : cur.requestedByUserId,
+      patch.requestedByOrganizationId !== undefined
+        ? patch.requestedByOrganizationId
+        : cur.requestedByOrganizationId,
+      patch.submittedAt !== undefined ? patch.submittedAt : cur.submittedAt,
+      patch.requestedAmount ?? cur.requestedAmount,
+      patch.approvedAmount !== undefined ? patch.approvedAmount : cur.approvedAmount,
+      patch.recommendedAmount !== undefined ? patch.recommendedAmount : cur.recommendedAmount,
+      patch.currency ?? cur.currency,
+      patch.periodStart !== undefined ? patch.periodStart : cur.periodStart,
+      patch.periodEnd !== undefined ? patch.periodEnd : cur.periodEnd,
+      patch.status ?? cur.status,
+      patch.reviewRecommendation !== undefined ? patch.reviewRecommendation : cur.reviewRecommendation,
+      patch.reviewSummary !== undefined ? patch.reviewSummary : cur.reviewSummary,
+      new Date().toISOString(),
+      id
+    );
+}
+
+// ---------- draw line items ----------
+
+function toDrawLine(r: Row): DrawLineItem {
+  const previouslyPaid = r.previously_paid as number;
+  const currentRequested = r.current_requested as number;
+  const materialsStored = (r.materials_stored as number) ?? null;
+  const scheduledValue = r.scheduled_value as number;
+  const status = r.status as DrawLineItem["status"];
+  const supportedAmount = (r.supported_amount as number) ?? null;
+  // Derived pay-application arithmetic (computed, never stored):
+  const totalCompletedAndStored = previouslyPaid + currentRequested + (materialsStored ?? 0);
+  const supportedFor =
+    status === "SUPPORTED"
+      ? currentRequested
+      : status === "PARTIALLY_SUPPORTED"
+        ? supportedAmount ?? 0
+        : status === "PENDING"
+          ? null
+          : 0; // EXCEPTION / REJECTED
+  const varianceAmount = supportedFor === null ? null : currentRequested - supportedFor;
+  return {
+    id: r.id as string,
+    drawRequestId: r.draw_request_id as string,
+    sort: r.sort as number,
+    budgetLineId: (r.budget_line_id as string) ?? null,
+    milestoneId: (r.milestone_id as string) ?? null,
+    description: r.description as string,
+    scheduledValue,
+    previouslyPaid,
+    currentRequested,
+    materialsStored,
+    retainageAmount: (r.retainage_amount as number) ?? null,
+    percentCompleteClaimed: (r.percent_complete_claimed as number) ?? null,
+    percentCompleteVerified: (r.percent_complete_verified as number) ?? null,
+    supportedAmount,
+    status,
+    reviewNotes: (r.review_notes as string) ?? null,
+    reviewedByUserId: (r.reviewed_by_user_id as string) ?? null,
+    reviewedAt: (r.reviewed_at as string) ?? null,
+    totalCompletedAndStored,
+    balanceToFinish: scheduledValue - totalCompletedAndStored,
+    varianceAmount,
+    variancePercent:
+      varianceAmount !== null && currentRequested > 0
+        ? Math.round((varianceAmount / currentRequested) * 1000) / 10
+        : null,
+  };
+}
+
+export function insertDrawLine(l: DrawLineItem): void {
+  getDb()
+    .prepare(
+      `INSERT INTO draw_line_items (id, draw_request_id, sort, budget_line_id,
+         milestone_id, description, scheduled_value, previously_paid,
+         current_requested, materials_stored, retainage_amount,
+         percent_complete_claimed, percent_complete_verified, supported_amount,
+         status, review_notes, reviewed_by_user_id, reviewed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      l.id, l.drawRequestId, l.sort, l.budgetLineId, l.milestoneId,
+      l.description, l.scheduledValue, l.previouslyPaid, l.currentRequested,
+      l.materialsStored, l.retainageAmount, l.percentCompleteClaimed,
+      l.percentCompleteVerified, l.supportedAmount, l.status, l.reviewNotes,
+      l.reviewedByUserId, l.reviewedAt
+    );
+}
+
+export function getDrawLine(id: string): DrawLineItem | null {
+  const r = getDb().prepare("SELECT * FROM draw_line_items WHERE id = ?").get(id);
+  return r ? toDrawLine(r as Row) : null;
+}
+
+export function listDrawLines(drawRequestId: string): DrawLineItem[] {
+  return getDb()
+    .prepare("SELECT * FROM draw_line_items WHERE draw_request_id = ? ORDER BY sort, rowid")
+    .all(drawRequestId)
+    .map((r) => toDrawLine(r as Row));
+}
+
+export function updateDrawLine(
+  id: string,
+  patch: Partial<
+    Pick<
+      DrawLineItem,
+      | "sort" | "budgetLineId" | "milestoneId" | "description" | "scheduledValue"
+      | "previouslyPaid" | "currentRequested" | "materialsStored"
+      | "retainageAmount" | "percentCompleteClaimed" | "percentCompleteVerified"
+      | "supportedAmount" | "status" | "reviewNotes" | "reviewedByUserId" | "reviewedAt"
+    >
+  >
+): void {
+  const cur = getDrawLine(id);
+  if (!cur) return;
+  const v = <K extends keyof typeof patch>(k: K) =>
+    patch[k] !== undefined ? patch[k] : (cur as never as typeof patch)[k];
+  getDb()
+    .prepare(
+      `UPDATE draw_line_items SET sort = ?, budget_line_id = ?, milestone_id = ?,
+         description = ?, scheduled_value = ?, previously_paid = ?,
+         current_requested = ?, materials_stored = ?, retainage_amount = ?,
+         percent_complete_claimed = ?, percent_complete_verified = ?,
+         supported_amount = ?, status = ?, review_notes = ?,
+         reviewed_by_user_id = ?, reviewed_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      v("sort") ?? 0, v("budgetLineId") ?? null, v("milestoneId") ?? null,
+      v("description") ?? "", v("scheduledValue") ?? 0, v("previouslyPaid") ?? 0,
+      v("currentRequested") ?? 0, v("materialsStored") ?? null,
+      v("retainageAmount") ?? null, v("percentCompleteClaimed") ?? null,
+      v("percentCompleteVerified") ?? null, v("supportedAmount") ?? null,
+      v("status") ?? "PENDING", v("reviewNotes") ?? null,
+      v("reviewedByUserId") ?? null, v("reviewedAt") ?? null, id
+    );
+}
+
+export function deleteDrawLine(id: string): void {
+  getDb().prepare("DELETE FROM draw_evidence_links WHERE line_item_id = ?").run(id);
+  getDb().prepare("UPDATE draw_documents SET line_item_id = NULL WHERE line_item_id = ?").run(id);
+  getDb().prepare("DELETE FROM draw_line_items WHERE id = ?").run(id);
+}
+
+// ---------- draw document requirements & documents ----------
+
+function toDrawRequirement(r: Row): DrawDocumentRequirement {
+  return {
+    id: r.id as string,
+    drawRequestId: r.draw_request_id as string,
+    sort: r.sort as number,
+    docType: r.doc_type as DrawDocumentRequirement["docType"],
+    title: r.title as string,
+    required: Boolean(r.required),
+    notes: (r.notes as string) ?? null,
+  };
+}
+
+export function insertDrawRequirement(req: DrawDocumentRequirement): void {
+  getDb()
+    .prepare(
+      `INSERT INTO draw_document_requirements (id, draw_request_id, sort, doc_type, title, required, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(req.id, req.drawRequestId, req.sort, req.docType, req.title, req.required ? 1 : 0, req.notes);
+}
+
+export function getDrawRequirement(id: string): DrawDocumentRequirement | null {
+  const r = getDb().prepare("SELECT * FROM draw_document_requirements WHERE id = ?").get(id);
+  return r ? toDrawRequirement(r as Row) : null;
+}
+
+export function listDrawRequirements(drawRequestId: string): DrawDocumentRequirement[] {
+  return getDb()
+    .prepare("SELECT * FROM draw_document_requirements WHERE draw_request_id = ? ORDER BY sort, rowid")
+    .all(drawRequestId)
+    .map((r) => toDrawRequirement(r as Row));
+}
+
+export function deleteDrawRequirement(id: string): void {
+  getDb().prepare("UPDATE draw_documents SET requirement_id = NULL WHERE requirement_id = ?").run(id);
+  getDb().prepare("DELETE FROM draw_document_requirements WHERE id = ?").run(id);
+}
+
+function toDrawDocument(r: Row): DrawDocument {
+  return {
+    id: r.id as string,
+    drawRequestId: r.draw_request_id as string,
+    requirementId: (r.requirement_id as string) ?? null,
+    lineItemId: (r.line_item_id as string) ?? null,
+    docType: r.doc_type as DrawDocument["docType"],
+    title: r.title as string,
+    filePath: (r.file_path as string) ?? null,
+    note: (r.note as string) ?? null,
+    status: r.status as DrawDocument["status"],
+    expiresAt: (r.expires_at as string) ?? null,
+    uploadedByUserId: (r.uploaded_by_user_id as string) ?? null,
+    receivedAt: r.received_at as string,
+    reviewedByUserId: (r.reviewed_by_user_id as string) ?? null,
+    reviewedAt: (r.reviewed_at as string) ?? null,
+    reviewNote: (r.review_note as string) ?? null,
+  };
+}
+
+export function insertDrawDocument(d: DrawDocument): void {
+  getDb()
+    .prepare(
+      `INSERT INTO draw_documents (id, draw_request_id, requirement_id,
+         line_item_id, doc_type, title, file_path, note, status, expires_at,
+         uploaded_by_user_id, received_at, reviewed_by_user_id, reviewed_at, review_note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      d.id, d.drawRequestId, d.requirementId, d.lineItemId, d.docType,
+      d.title, d.filePath, d.note, d.status, d.expiresAt, d.uploadedByUserId,
+      d.receivedAt, d.reviewedByUserId, d.reviewedAt, d.reviewNote
+    );
+}
+
+export function getDrawDocument(id: string): DrawDocument | null {
+  const r = getDb().prepare("SELECT * FROM draw_documents WHERE id = ?").get(id);
+  return r ? toDrawDocument(r as Row) : null;
+}
+
+export function listDrawDocuments(drawRequestId: string): DrawDocument[] {
+  return getDb()
+    .prepare("SELECT * FROM draw_documents WHERE draw_request_id = ? ORDER BY received_at, rowid")
+    .all(drawRequestId)
+    .map((r) => toDrawDocument(r as Row));
+}
+
+export function updateDrawDocument(
+  id: string,
+  patch: Partial<Pick<DrawDocument, "status" | "reviewedByUserId" | "reviewedAt" | "reviewNote" | "requirementId" | "lineItemId">>
+): void {
+  const cur = getDrawDocument(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE draw_documents SET status = ?, reviewed_by_user_id = ?,
+         reviewed_at = ?, review_note = ?, requirement_id = ?, line_item_id = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.status ?? cur.status,
+      patch.reviewedByUserId !== undefined ? patch.reviewedByUserId : cur.reviewedByUserId,
+      patch.reviewedAt !== undefined ? patch.reviewedAt : cur.reviewedAt,
+      patch.reviewNote !== undefined ? patch.reviewNote : cur.reviewNote,
+      patch.requirementId !== undefined ? patch.requirementId : cur.requirementId,
+      patch.lineItemId !== undefined ? patch.lineItemId : cur.lineItemId,
+      id
+    );
+}
+
+// ---------- draw evidence links ----------
+
+function toDrawEvidenceLink(r: Row): DrawEvidenceLink {
+  return {
+    id: r.id as string,
+    drawRequestId: r.draw_request_id as string,
+    lineItemId: (r.line_item_id as string) ?? null,
+    evidenceItemId: r.evidence_item_id as string,
+    note: (r.note as string) ?? null,
+    linkedByUserId: r.linked_by_user_id as string,
+    createdAt: r.created_at as string,
+  };
+}
+
+export function insertDrawEvidenceLink(l: DrawEvidenceLink): void {
+  getDb()
+    .prepare(
+      `INSERT INTO draw_evidence_links (id, draw_request_id, line_item_id,
+         evidence_item_id, note, linked_by_user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(l.id, l.drawRequestId, l.lineItemId, l.evidenceItemId, l.note, l.linkedByUserId, l.createdAt);
+}
+
+export function getDrawEvidenceLink(id: string): DrawEvidenceLink | null {
+  const r = getDb().prepare("SELECT * FROM draw_evidence_links WHERE id = ?").get(id);
+  return r ? toDrawEvidenceLink(r as Row) : null;
+}
+
+export function listDrawEvidenceLinks(drawRequestId: string): DrawEvidenceLink[] {
+  return getDb()
+    .prepare("SELECT * FROM draw_evidence_links WHERE draw_request_id = ? ORDER BY created_at, rowid")
+    .all(drawRequestId)
+    .map((r) => toDrawEvidenceLink(r as Row));
+}
+
+export function deleteDrawEvidenceLink(id: string): void {
+  getDb().prepare("DELETE FROM draw_evidence_links WHERE id = ?").run(id);
+}
+
+// ---------- draw events (operational timeline) ----------
+
+export function insertDrawEvent(e: DrawEvent): void {
+  getDb()
+    .prepare(
+      `INSERT INTO draw_events (id, draw_request_id, type, detail, actor_user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(e.id, e.drawRequestId, e.type, e.detail, e.actorUserId, e.createdAt);
+}
+
+export function listDrawEvents(drawRequestId: string): DrawEvent[] {
+  return getDb()
+    .prepare("SELECT * FROM draw_events WHERE draw_request_id = ? ORDER BY created_at, rowid")
+    .all(drawRequestId)
+    .map((r) => ({
+      id: r.id as string,
+      drawRequestId: r.draw_request_id as string,
+      type: r.type as DrawEvent["type"],
+      detail: r.detail as string,
+      actorUserId: (r.actor_user_id as string) ?? null,
+      createdAt: r.created_at as string,
+    }));
+}
+
+// ---------- draw account events (written ONLY by VirtualAccountService) --
+
+export function insertDrawAccountEvent(e: DrawAccountEvent): void {
+  getDb()
+    .prepare(
+      `INSERT INTO draw_account_events (id, draw_request_id, type, amount, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(e.id, e.drawRequestId, e.type, e.amount, e.createdAt);
+}
+
+export function listDrawAccountEvents(drawRequestId: string): DrawAccountEvent[] {
+  return getDb()
+    .prepare("SELECT * FROM draw_account_events WHERE draw_request_id = ? ORDER BY created_at")
+    .all(drawRequestId)
+    .map((r) => ({
+      id: r.id as string,
+      drawRequestId: r.draw_request_id as string,
+      type: r.type as DrawAccountEvent["type"],
+      amount: r.amount as number,
+      createdAt: r.created_at as string,
+    }));
 }
 
 export function listMetricTargets(projectId: string | null): PilotMetricTarget[] {

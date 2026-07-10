@@ -110,12 +110,20 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
   current_hash TEXT NOT NULL
 );
 
+-- Approval requests govern MILESTONE tranches (original workflow) or
+-- lender DRAW requests (additive). Exactly one subject pointer is set.
 CREATE TABLE IF NOT EXISTS approval_requests (
   id TEXT PRIMARY KEY,
-  milestone_id TEXT NOT NULL REFERENCES milestones(id),
+  milestone_id TEXT REFERENCES milestones(id),
+  draw_request_id TEXT REFERENCES draw_requests(id),
+  subject_type TEXT NOT NULL DEFAULT 'MILESTONE' CHECK (subject_type IN ('MILESTONE','DRAW')),
   status TEXT NOT NULL DEFAULT 'PENDING',
   required_roles TEXT NOT NULL, -- JSON UserRole[]
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  CHECK (
+    (subject_type = 'MILESTONE' AND milestone_id IS NOT NULL) OR
+    (subject_type = 'DRAW' AND draw_request_id IS NOT NULL)
+  )
 );
 
 -- Placeholder relationship for the full multi-role approval workflow
@@ -179,8 +187,9 @@ CREATE TABLE IF NOT EXISTS conversation_threads (
   milestone_id TEXT REFERENCES milestones(id),
   evidence_item_id TEXT REFERENCES evidence_items(id),
   approval_request_id TEXT REFERENCES approval_requests(id),
+  draw_request_id TEXT REFERENCES draw_requests(id),
   title TEXT NOT NULL,
-  scope TEXT NOT NULL CHECK (scope IN ('ORGANIZATION','PROJECT','MILESTONE','EVIDENCE','APPROVAL')),
+  scope TEXT NOT NULL CHECK (scope IN ('ORGANIZATION','PROJECT','MILESTONE','EVIDENCE','APPROVAL','DRAW')),
   created_at TEXT NOT NULL,
   created_by TEXT NOT NULL REFERENCES users(id)
 );
@@ -457,6 +466,126 @@ CREATE TABLE IF NOT EXISTS pilot_metric_targets (
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- ====================== construction draw requests (additive) ==========
+-- A DRAW REQUEST IS A REQUEST FOR REVIEW — nothing in these tables can
+-- move money. Release eligibility exists only through approval_requests
+-- (subject_type DRAW) + approval_records, and the release transition is
+-- recorded exactly once in draw_account_events by the
+-- VirtualAccountService from the completed-governance orchestrator path.
+
+CREATE TABLE IF NOT EXISTS draw_requests (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  draw_number INTEGER NOT NULL,
+  requested_by_user_id TEXT REFERENCES users(id),
+  requested_by_organization_id TEXT REFERENCES organizations(id),
+  submitted_at TEXT,
+  requested_amount INTEGER NOT NULL DEFAULT 0,
+  approved_amount INTEGER,
+  recommended_amount INTEGER,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  period_start TEXT,
+  period_end TEXT,
+  status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN
+    ('DRAFT','SUBMITTED','UNDER_REVIEW','CLARIFICATION_REQUIRED',
+     'READY_FOR_GOVERNANCE','PARTIALLY_APPROVED','APPROVED','RELEASED',
+     'RETURNED','CANCELLED')),
+  review_recommendation TEXT,
+  review_summary TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (project_id, draw_number)
+);
+
+CREATE TABLE IF NOT EXISTS draw_line_items (
+  id TEXT PRIMARY KEY,
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  sort INTEGER NOT NULL DEFAULT 0,
+  budget_line_id TEXT,
+  milestone_id TEXT REFERENCES milestones(id),
+  description TEXT NOT NULL,
+  scheduled_value INTEGER NOT NULL DEFAULT 0,
+  previously_paid INTEGER NOT NULL DEFAULT 0,
+  current_requested INTEGER NOT NULL DEFAULT 0,
+  materials_stored INTEGER,
+  retainage_amount INTEGER,
+  percent_complete_claimed REAL,
+  percent_complete_verified REAL,
+  supported_amount INTEGER,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN
+    ('PENDING','SUPPORTED','PARTIALLY_SUPPORTED','EXCEPTION','REJECTED')),
+  review_notes TEXT,
+  reviewed_by_user_id TEXT REFERENCES users(id),
+  reviewed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS draw_document_requirements (
+  id TEXT PRIMARY KEY,
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  sort INTEGER NOT NULL DEFAULT 0,
+  doc_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  required INTEGER NOT NULL DEFAULT 1,
+  notes TEXT
+);
+
+-- A document on file is an administrative record, never verified
+-- physical progress.
+CREATE TABLE IF NOT EXISTS draw_documents (
+  id TEXT PRIMARY KEY,
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  requirement_id TEXT REFERENCES draw_document_requirements(id),
+  line_item_id TEXT REFERENCES draw_line_items(id),
+  doc_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  file_path TEXT,
+  note TEXT,
+  status TEXT NOT NULL DEFAULT 'RECEIVED' CHECK (status IN
+    ('RECEIVED','ACCEPTED','REJECTED','EXPIRED')),
+  expires_at TEXT,
+  uploaded_by_user_id TEXT REFERENCES users(id),
+  received_at TEXT NOT NULL,
+  reviewed_by_user_id TEXT REFERENCES users(id),
+  reviewed_at TEXT,
+  review_note TEXT
+);
+
+-- Links to EXISTING governed evidence records only. Linking never copies,
+-- re-verifies, or alters an EvidenceItem or its ledger entry.
+CREATE TABLE IF NOT EXISTS draw_evidence_links (
+  id TEXT PRIMARY KEY,
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  line_item_id TEXT REFERENCES draw_line_items(id),
+  evidence_item_id TEXT NOT NULL REFERENCES evidence_items(id),
+  note TEXT,
+  linked_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+-- Draw operational timeline (administrative record, NOT the Evidence
+-- Ledger).
+CREATE TABLE IF NOT EXISTS draw_events (
+  id TEXT PRIMARY KEY,
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  type TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+-- Draw-scoped virtual account events, written ONLY by the
+-- VirtualAccountService. UNIQUE(draw_request_id, type) makes the
+-- governed release transition exactly-once at the database level.
+CREATE TABLE IF NOT EXISTS draw_account_events (
+  id TEXT PRIMARY KEY,
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  type TEXT NOT NULL CHECK (type IN ('HELD','RELEASED')),
+  amount INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (draw_request_id, type)
+);
 `;
 
 export function getDb(): DatabaseSync {
@@ -550,6 +679,14 @@ export function getDb(): DatabaseSync {
         /* column already present */
       }
     }
+    // ---- draw-workflow structural migrations (legacy databases) ----
+    // approval_requests gains a DRAW subject (nullable milestone_id +
+    // draw_request_id + subject_type) and conversation_threads gains the
+    // DRAW scope. SQLite cannot ALTER constraints, so pre-draw databases
+    // are rebuilt in place: identical data, new column/constraint set.
+    // Fresh databases already match the SCHEMA above and are untouched.
+    migrateApprovalRequestsForDraws(db);
+    migrateThreadsForDraws(db);
     // Database-level inbound dedupe: one Message per external message id
     // per thread (notification replays hit this even if app checks race).
     db.exec(
@@ -574,6 +711,82 @@ export function getDb(): DatabaseSync {
     }
   }
   return db;
+}
+
+/** Whether a table already has a column (PRAGMA table_info). */
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(
+    (c) => c.name === column
+  );
+}
+
+/**
+ * Rebuild approval_requests for pre-draw databases: milestone_id becomes
+ * nullable and draw_request_id / subject_type are added. Data is copied
+ * verbatim (all legacy rows are MILESTONE-subject). FK enforcement is
+ * suspended only for the rename swap; approval_records and
+ * conversation_threads reference approval_requests(id), which is
+ * preserved exactly.
+ */
+function migrateApprovalRequestsForDraws(db: DatabaseSync): void {
+  if (hasColumn(db, "approval_requests", "draw_request_id")) return;
+  db.exec("PRAGMA foreign_keys = OFF;");
+  db.exec("BEGIN;");
+  db.exec(`CREATE TABLE approval_requests_new (
+    id TEXT PRIMARY KEY,
+    milestone_id TEXT REFERENCES milestones(id),
+    draw_request_id TEXT REFERENCES draw_requests(id),
+    subject_type TEXT NOT NULL DEFAULT 'MILESTONE' CHECK (subject_type IN ('MILESTONE','DRAW')),
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    required_roles TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (
+      (subject_type = 'MILESTONE' AND milestone_id IS NOT NULL) OR
+      (subject_type = 'DRAW' AND draw_request_id IS NOT NULL)
+    )
+  );`);
+  db.exec(`INSERT INTO approval_requests_new
+    (id, milestone_id, draw_request_id, subject_type, status, required_roles, created_at)
+    SELECT id, milestone_id, NULL, 'MILESTONE', status, required_roles, created_at
+    FROM approval_requests;`);
+  db.exec("DROP TABLE approval_requests;");
+  db.exec("ALTER TABLE approval_requests_new RENAME TO approval_requests;");
+  db.exec("COMMIT;");
+  db.exec("PRAGMA foreign_keys = ON;");
+}
+
+/**
+ * Rebuild conversation_threads for pre-draw databases: adds the DRAW
+ * scope to the CHECK constraint and the draw_request_id column. Messages
+ * reference threads by id, which is preserved exactly.
+ */
+function migrateThreadsForDraws(db: DatabaseSync): void {
+  if (hasColumn(db, "conversation_threads", "draw_request_id")) return;
+  db.exec("PRAGMA foreign_keys = OFF;");
+  db.exec("BEGIN;");
+  db.exec(`CREATE TABLE conversation_threads_new (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    project_id TEXT REFERENCES projects(id),
+    milestone_id TEXT REFERENCES milestones(id),
+    evidence_item_id TEXT REFERENCES evidence_items(id),
+    approval_request_id TEXT REFERENCES approval_requests(id),
+    draw_request_id TEXT REFERENCES draw_requests(id),
+    title TEXT NOT NULL,
+    scope TEXT NOT NULL CHECK (scope IN ('ORGANIZATION','PROJECT','MILESTONE','EVIDENCE','APPROVAL','DRAW')),
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES users(id)
+  );`);
+  db.exec(`INSERT INTO conversation_threads_new
+    (id, organization_id, project_id, milestone_id, evidence_item_id,
+     approval_request_id, draw_request_id, title, scope, created_at, created_by)
+    SELECT id, organization_id, project_id, milestone_id, evidence_item_id,
+           approval_request_id, NULL, title, scope, created_at, created_by
+    FROM conversation_threads;`);
+  db.exec("DROP TABLE conversation_threads;");
+  db.exec("ALTER TABLE conversation_threads_new RENAME TO conversation_threads;");
+  db.exec("COMMIT;");
+  db.exec("PRAGMA foreign_keys = ON;");
 }
 
 export function resetDb(): void {

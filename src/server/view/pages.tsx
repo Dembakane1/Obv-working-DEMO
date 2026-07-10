@@ -71,7 +71,7 @@ const repoView = {
   approval: (approvalId: string) => {
     const a = repo.getApprovalRequest(approvalId);
     if (!a) return null;
-    const m = repo.getMilestone(a.milestoneId);
+    const m = a.milestoneId ? repo.getMilestone(a.milestoneId) : null;
     const records = repo
       .listApprovalRecordsForRequest(a.id)
       .filter((r) => r.decision === "APPROVED").length;
@@ -101,6 +101,7 @@ const repoView = {
     };
   },
   issue: (id: string) => repo.getFieldIssue(id),
+  draw: (id: string) => repo.getDrawRequest(id),
   clarification: (id: string) => repo.getClarification(id),
   projectContext: (projectId: string) => {
     const ms = repo.listMilestones(projectId);
@@ -2500,6 +2501,20 @@ function MessageRefCard(props: { m: ChatMessage }): VNode | null {
         <span className="k">CLARIFICATION</span>
         {clar ? <span className="s">{clar.responseType.replace(/_/g, " ")} required · {clar.status}</span> : null}
         {clar ? <a href={`/milestone/${clar.milestoneId}`}>View milestone</a> : null}
+      </span>
+    );
+  }
+  if (m.messageType === "DRAW_REFERENCE" && m.refId) {
+    const draw = repoView.draw(m.refId);
+    return (
+      <span className="msg-ref">
+        <span className="k">DRAW REQUEST</span>
+        {draw ? (
+          <span className="s">
+            Draw #{draw.drawNumber} · {money(draw.requestedAmount)} · {draw.status.replace(/_/g, " ")}
+          </span>
+        ) : null}
+        <a href={`/draw/${m.refId}`}>Open draw</a>
       </span>
     );
   }

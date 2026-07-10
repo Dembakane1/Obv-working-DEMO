@@ -139,9 +139,18 @@ export interface Verification {
   policyVersion?: number | null;
 }
 
+/** What an ApprovalRequest governs. MILESTONE is the original evidence-
+ *  driven tranche gate; DRAW governs a lender Draw Request. Both use the
+ *  same ApprovalRecord machinery, matrices and separation of duties. */
+export type ApprovalSubjectType = "MILESTONE" | "DRAW";
+
 export interface ApprovalRequest {
   id: string;
-  milestoneId: string;
+  /** Set when subjectType is MILESTONE. */
+  milestoneId: string | null;
+  /** Set when subjectType is DRAW (additive; null on legacy rows). */
+  drawRequestId?: string | null;
+  subjectType?: ApprovalSubjectType;
   status: ApprovalStatus;
   requiredRoles: UserRole[];
   createdAt: string;
@@ -262,7 +271,7 @@ export interface SpatialFeature {
 // ApprovalRequest workflow can create release eligibility.
 // ---------------------------------------------------------------------
 
-export type ThreadScope = "ORGANIZATION" | "PROJECT" | "MILESTONE" | "EVIDENCE" | "APPROVAL";
+export type ThreadScope = "ORGANIZATION" | "PROJECT" | "MILESTONE" | "EVIDENCE" | "APPROVAL" | "DRAW";
 
 /** OBV is the real internal provider; TEAMS/WHATSAPP are architecture-
  *  ready seams for future sync (see docs/COMMUNICATIONS_INTEGRATION.md). */
@@ -276,7 +285,10 @@ export type ChatMessageType =
   | "APPROVAL_REFERENCE"
   | "REPORT_REFERENCE"
   | "ISSUE_REFERENCE"
-  | "CLARIFICATION_REFERENCE";
+  | "CLARIFICATION_REFERENCE"
+  | "DRAW_REFERENCE"
+  | "DRAW_LINE_REFERENCE"
+  | "DRAW_DOCUMENT_REFERENCE";
 
 export interface ConversationThread {
   id: string;
@@ -285,6 +297,8 @@ export interface ConversationThread {
   milestoneId: string | null;
   evidenceItemId: string | null;
   approvalRequestId: string | null;
+  /** Set for DRAW-scope threads (additive; null on legacy rows). */
+  drawRequestId?: string | null;
   title: string;
   scope: ThreadScope;
   createdAt: string;
@@ -709,4 +723,212 @@ export interface ReadinessCheck {
   /** Setup stage slug the blocker links to. */
   stage: string;
   optional?: boolean;
+}
+
+// ============================================================ draws
+// Construction Draw Request workflow (additive, lender-native).
+//
+// DOCTRINE — A DRAW REQUEST IS A REQUEST FOR REVIEW. It does not
+// authorize money. A reviewer recommendation is ADVISORY. It does not
+// authorize money. Only the existing formal ApprovalRequest governance
+// path (matrices, separation of duties, exactly-once release through
+// the VirtualAccountService) can create release eligibility. Nothing in
+// this section weakens Field Capture, EvidenceItem, verification, the
+// Evidence Ledger, or HELD/RELEASED milestone state.
+
+export type DrawRequestStatus =
+  | "DRAFT"                 // borrower/contractor assembling the request
+  | "SUBMITTED"             // formally submitted for lender review
+  | "UNDER_REVIEW"          // reviewer working line items / documents
+  | "CLARIFICATION_REQUIRED"// reviewer sent it back with questions
+  | "READY_FOR_GOVERNANCE"  // recommendation finalized; ApprovalRequest open
+  | "PARTIALLY_APPROVED"    // governance approved less than requested
+  | "APPROVED"              // governance approved the full requested amount
+  | "RELEASED"              // governed release transition recorded
+  | "RETURNED"              // returned to requester (rework or governance reject)
+  | "CANCELLED";            // withdrawn before governance
+
+export type DrawLineItemStatus =
+  | "PENDING"               // not yet reviewed
+  | "SUPPORTED"             // evidence/documents support the full amount
+  | "PARTIALLY_SUPPORTED"   // a lower amount is supported (reason required)
+  | "EXCEPTION"             // disputed / ahead of verified progress (reason required)
+  | "REJECTED";             // not supported at all (reason required)
+
+/** Advisory recommendation results. Deterministic — computed from real
+ *  draw state only; never predictive, never able to release funds. */
+export type DrawRecommendationResult =
+  | "READY_FOR_GOVERNANCE"
+  | "HOLD_DOCUMENTS_MISSING"
+  | "HOLD_EVIDENCE_NEEDS_REVIEW"
+  | "HOLD_OPEN_HIGH_SEVERITY_ISSUE"
+  | "PARTIAL_SUPPORT"
+  | "RETURN_FOR_CLARIFICATION";
+
+export interface DrawRequest {
+  id: string;
+  /** Lender / governing organization (the project's organization). */
+  organizationId: string;
+  projectId: string;
+  drawNumber: number;
+  requestedByUserId: string | null;
+  /** Borrower / implementing organization submitting the draw. */
+  requestedByOrganizationId: string | null;
+  submittedAt: string | null;
+  requestedAmount: number;
+  /** Set only by completed governance; null until then. */
+  approvedAmount: number | null;
+  /** Reviewer-finalized advisory amount carried into governance. */
+  recommendedAmount: number | null;
+  currency: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  status: DrawRequestStatus;
+  reviewRecommendation: DrawRecommendationResult | null;
+  reviewSummary: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DrawLineItem {
+  id: string;
+  drawRequestId: string;
+  sort: number;
+  /** Free-form budget line / cost-code reference (no budget ledger yet). */
+  budgetLineId: string | null;
+  /** Anchors the line to a governed milestone for verified-progress context. */
+  milestoneId: string | null;
+  description: string;
+  scheduledValue: number;
+  previouslyPaid: number;
+  currentRequested: number;
+  materialsStored: number | null;
+  retainageAmount: number | null;
+  /** Requester-claimed completion (0..100). */
+  percentCompleteClaimed: number | null;
+  /** Reviewer-recorded verified completion (0..100) — grounded in linked
+   *  evidence and milestone verification state, never auto-fabricated. */
+  percentCompleteVerified: number | null;
+  /** Reviewer-entered supported amount for PARTIALLY_SUPPORTED lines. */
+  supportedAmount: number | null;
+  status: DrawLineItemStatus;
+  reviewNotes: string | null;
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  // ---- derived (computed at read time; never stored) ----
+  totalCompletedAndStored: number;
+  balanceToFinish: number;
+  varianceAmount: number | null;
+  variancePercent: number | null;
+}
+
+export type DrawDocumentType =
+  | "CONTRACTOR_INVOICE" | "PAY_APPLICATION" | "LIEN_WAIVER"
+  | "CONDITIONAL_LIEN_WAIVER" | "INSPECTION_REPORT" | "PROGRESS_PHOTOS"
+  | "PERMIT" | "CERTIFICATE" | "MATERIAL_INVOICE" | "CHANGE_ORDER_SUPPORT"
+  | "PROOF_OF_INSURANCE" | "OTHER";
+
+/** Configured checklist entry: which documents this draw must carry.
+ *  A document on file is an administrative record — NEVER verified
+ *  physical progress (that stays with the evidence pipeline). */
+export interface DrawDocumentRequirement {
+  id: string;
+  drawRequestId: string;
+  sort: number;
+  docType: DrawDocumentType;
+  title: string;
+  required: boolean;
+  notes: string | null;
+}
+
+export type DrawDocumentStatus = "RECEIVED" | "ACCEPTED" | "REJECTED" | "EXPIRED";
+
+/** Derived checklist state for one requirement (computed, not stored). */
+export type DrawRequirementState = "REQUIRED" | "RECEIVED" | "ACCEPTED" | "MISSING" | "REJECTED" | "EXPIRED";
+
+export interface DrawDocument {
+  id: string;
+  drawRequestId: string;
+  requirementId: string | null;
+  lineItemId: string | null;
+  docType: DrawDocumentType;
+  title: string;
+  /** Optional stored file path (demo: metadata records are sufficient). */
+  filePath: string | null;
+  note: string | null;
+  status: DrawDocumentStatus;
+  expiresAt: string | null;
+  uploadedByUserId: string | null;
+  receivedAt: string;
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+}
+
+/** Reference from a draw (or a specific line) to an existing governed
+ *  EvidenceItem. Linking NEVER re-verifies, copies or alters evidence —
+ *  the item stays owned by its milestone workflow and ledger entry. */
+export interface DrawEvidenceLink {
+  id: string;
+  drawRequestId: string;
+  lineItemId: string | null;
+  evidenceItemId: string;
+  note: string | null;
+  linkedByUserId: string;
+  createdAt: string;
+}
+
+/** Draw operational timeline entry (administrative record — NOT the
+ *  Evidence Ledger and NOT the virtual account event stream). */
+export interface DrawEvent {
+  id: string;
+  drawRequestId: string;
+  type:
+    | "CREATED" | "UPDATED" | "SUBMITTED" | "LINE_ADDED" | "LINE_UPDATED"
+    | "LINE_REVIEWED" | "DOCUMENT_RECORDED" | "DOCUMENT_REVIEWED"
+    | "EVIDENCE_LINKED" | "EVIDENCE_UNLINKED" | "CLARIFICATION_REQUESTED"
+    | "CLARIFICATION_RESOLVED" | "RECOMMENDATION_FINALIZED"
+    | "SENT_TO_GOVERNANCE" | "GOVERNANCE_DECISION" | "RELEASE_TRANSITION"
+    | "RETURNED" | "CANCELLED";
+  detail: string;
+  actorUserId: string | null;
+  createdAt: string;
+}
+
+/** Draw-scoped virtual account event. Written ONLY by the
+ *  VirtualAccountService, and only from the completed-governance path in
+ *  the workflow orchestrator. UNIQUE(draw, type) in the schema enforces
+ *  the exactly-once release transition at the database level. */
+export interface DrawAccountEvent {
+  id: string;
+  drawRequestId: string;
+  type: AccountStatus; // HELD or RELEASED
+  amount: number;
+  createdAt: string;
+}
+
+/** One reason line inside an advisory recommendation. */
+export interface DrawRecommendationReason {
+  /** Blocking reasons hold the draw; informational ones explain amounts. */
+  kind: "BLOCKER" | "EXCEPTION" | "INFO";
+  detail: string;
+  amount: number | null;
+  lineItemId: string | null;
+}
+
+/** Deterministic advisory recommendation. Computed from real draw state
+ *  (line reviews, document checklist, linked evidence verification, open
+ *  issues, clarifications). ADVISORY ONLY — carries no authority and no
+ *  code path to the VirtualAccountService. */
+export interface DrawRecommendation {
+  drawRequestId: string;
+  result: DrawRecommendationResult;
+  requestedAmount: number;
+  supportedAmount: number;
+  exceptionAmount: number;
+  retainageAmount: number;
+  reasons: DrawRecommendationReason[];
+  /** True when the draw may be sent to formal governance. */
+  eligibleForGovernance: boolean;
+  computedAt: string;
 }
