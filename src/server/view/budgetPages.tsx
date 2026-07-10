@@ -21,6 +21,14 @@ import type {
   VarianceState,
 } from "../../shared/types";
 import type { CategoryComparison } from "../services/budgetProgress";
+import type {
+  RetainageCondition,
+  RetainagePolicy,
+  RetainageReleaseRequest,
+  RetainageSummary,
+  ApprovalRecord,
+  ApprovalRequest,
+} from "../../shared/types";
 
 export const VARIANCE_META: Record<VarianceState, { label: string; tone: string }> = {
   WITHIN_RANGE: { label: "Within range", tone: "ok" },
@@ -119,6 +127,17 @@ export interface BudgetPageData {
   users: Map<string, User>;
   auditTrail: Array<{ action: string; reason: string | null; afterSummary: string | null; createdAt: string; actorUserId: string }>;
   verifiedEvidenceOptions: Array<{ id: string; milestoneId: string; label: string }>;
+  retainage: {
+    policy: RetainagePolicy;
+    summary: RetainageSummary;
+    releases: Array<{
+      release: RetainageReleaseRequest;
+      conditions: RetainageCondition[];
+      approval: ApprovalRequest | null;
+      approvalRecords: ApprovalRecord[];
+      canDecide: boolean;
+    }>;
+  };
   canManage: boolean;
   launched: boolean;
 }
@@ -432,6 +451,104 @@ export function renderBudgetPage(d: BudgetPageData): string {
           )}
         </div>
       ) : null}
+
+      <div className="panel" style="margin-top:12px">
+        <div className="panel-head">
+          <h3>Retainage</h3>
+          <span className="right">
+            Policy {d.retainage.policy.retainagePercent}% · withheld only inside governed draw
+            releases · released only through its own formal approval
+          </span>
+        </div>
+        <div className="fin-band">
+          <div className="fin-cell"><div className="v">{money(d.retainage.summary.withheldToDate)}</div><div className="l">Total retainage held</div></div>
+          <div className="fin-cell"><div className={`v ${d.retainage.summary.releasedToDate > 0 ? "green" : ""}`}>{money(d.retainage.summary.releasedToDate)}</div><div className="l">Retainage released</div></div>
+          <div className="fin-cell"><div className="v">{money(d.retainage.summary.remaining)}</div><div className="l">Retainage remaining</div></div>
+          <div className="fin-cell"><div className={`v ${d.retainage.summary.conditionsOutstanding > 0 ? "amber" : ""}`}>{d.retainage.summary.conditionsOutstanding}</div><div className="l">Conditions outstanding</div></div>
+          <div className="fin-cell"><div className="v">{d.retainage.summary.pendingReleaseRequests}</div><div className="l">Pending release requests</div></div>
+        </div>
+        {d.retainage.releases.length > 0 ? (
+          <div style="padding:12px 16px;border-top:1px solid var(--line)">
+            {d.retainage.releases.map((r) => (
+              <div style="border:1px solid var(--line);padding:10px 12px;margin-bottom:10px">
+                <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+                  <b style="font-size:12.5px">Release request · {money(r.release.amount)}</b>
+                  <span className={`sync-tag ${r.release.status === "RELEASED" ? "ok" : r.release.status === "RETURNED" ? "bad" : "warn"}`}>
+                    {r.release.status.replace(/_/g, " ")}
+                  </span>
+                  {r.release.note ? <span className="sub">{r.release.note}</span> : null}
+                </div>
+                <ul style="margin:8px 0 0;padding:0;list-style:none;font-size:12px">
+                  {r.conditions.map((c) => (
+                    <li style="display:flex;gap:8px;padding:4px 0;border-top:1px solid var(--line);align-items:center;flex-wrap:wrap">
+                      <span style={`font-weight:700;color:var(--${c.satisfied ? "ok" : "warn"})`}>{c.satisfied ? "✓" : "○"}</span>
+                      <span style="flex:1;min-width:160px">
+                        {c.condition.replace(/_/g, " ").toLowerCase()}
+                        {c.note ? <span className="sub" style="display:block">{c.note}</span> : null}
+                      </span>
+                      {!c.satisfied && c.condition !== "ALL_EXCEPTIONS_RESOLVED" && d.canManage && r.release.status === "PENDING_CONDITIONS" ? (
+                        <form method="POST" action={`/api/retainage/releases/${r.release.id}/condition`} style="display:flex;gap:5px">
+                          <input type="hidden" name="condition" value={c.condition} />
+                          <input name="note" placeholder="Closeout document / verification note" style="width:220px;font-size:11px" required />
+                          <button className="btn ghost sm" type="submit">Record</button>
+                        </form>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                {r.release.status === "PENDING_CONDITIONS" && d.canManage ? (
+                  <form method="POST" action={`/api/retainage/releases/${r.release.id}/governance`} style="margin-top:8px">
+                    <button className="btn sm" type="submit" disabled={r.conditions.some((c) => !c.satisfied)}>
+                      Send to formal approval
+                    </button>
+                  </form>
+                ) : null}
+                {r.approval ? (
+                  <div style="margin-top:8px;font-size:12px">
+                    Governance: {r.approval.status === "PENDING"
+                      ? `${r.approvalRecords.filter((rec) => rec.decision === "APPROVED").length} of ${r.approval.requiredRoles.length} approvals — retainage remains held`
+                      : r.approval.status}
+                    {r.canDecide && r.approval.status === "PENDING" ? (
+                      <form method="POST" action={`/api/approvals/${r.approval.id}/decision`} style="display:inline-flex;gap:6px;margin-left:10px">
+                        <input type="hidden" name="redirect" value={`/project/${d.project.id}/budget`} />
+                        <button className="btn sm" name="decision" value="APPROVED" type="submit">Approve release</button>
+                        <button className="btn ghost sm" name="decision" value="REJECTED" type="submit">Reject</button>
+                      </form>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {d.canManage ? (
+          <div className="grid-2col" style="padding:12px 16px;border-top:1px solid var(--line)">
+            <form method="POST" action="/api/retainage/policy" className="fo-form">
+              <input type="hidden" name="projectId" value={d.project.id} />
+              <label>Retainage policy % (0–20, audited)
+                <input name="retainagePercent" type="number" min="0" max="20" step="0.5" value={String(d.retainage.policy.retainagePercent)} />
+              </label>
+              <button className="btn ghost sm" type="submit">Save policy</button>
+            </form>
+            <form method="POST" action="/api/retainage/releases" className="fo-form">
+              <input type="hidden" name="projectId" value={d.project.id} />
+              <div className="fo-row">
+                <label>Request release (blank = all remaining)
+                  <input name="amount" type="number" min="1" step="1" placeholder={String(d.retainage.summary.remaining)} />
+                </label>
+                <label>Note
+                  <input name="note" placeholder="optional" />
+                </label>
+              </div>
+              <button className="btn sm" type="submit" disabled={d.retainage.summary.remaining <= 0}>Create release request</button>
+              <p className="sub" style="margin:4px 0 0;font-size:10.5px">
+                Retainage is never released automatically: required closeout conditions must be
+                recorded, then the release passes the formal approval matrix — exactly once.
+              </p>
+            </form>
+          </div>
+        ) : null}
+      </div>
 
       {d.auditTrail.length > 0 ? (
         <div className="panel" style="margin-top:12px">

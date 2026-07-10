@@ -321,6 +321,12 @@ export interface DrawDetailData {
   completeness: DrawCompleteness;
   /** Budget-vs-verified comparison per line (advisory; never rejects). */
   lineComparisons: Map<string, DrawLineComparison>;
+  /** Contract position: original value, approved change orders, current. */
+  contract: { original: number; approvedChanges: number; current: number };
+  /** Change orders referenced by draw lines (id → CO summary). */
+  lineChangeOrders: Map<string, { number: number; status: string; approved: boolean }>;
+  /** Retainage computed at governance-finalize (null before). */
+  retainage: { rate: number; withheld: number; netEligible: number } | null;
   approval: ApprovalRequest | null;
   approvalRecords: ApprovalRecord[];
   users: Map<string, User>;
@@ -427,6 +433,9 @@ function renderOverviewTab(d: DrawDetailData, editable: boolean): VNode {
             <dt>Borrower / implementer</dt><dd>{d.borrowerOrg?.name ?? "—"}</dd>
             <dt>Lender / governing org</dt><dd>{d.lenderOrg?.name ?? "—"}</dd>
             <dt>Draw number</dt><dd>#{draw.drawNumber}</dd>
+            <dt>Original contract value</dt><dd>{money(d.contract.original)}</dd>
+            <dt>Approved change orders</dt><dd>{d.contract.approvedChanges !== 0 ? money(d.contract.approvedChanges) : "—"}</dd>
+            <dt>Current contract value</dt><dd><b>{money(d.contract.current)}</b></dd>
             <dt>Period</dt><dd>{draw.periodStart ?? "—"} → {draw.periodEnd ?? "—"}</dd>
             <dt>Currency</dt><dd>{draw.currency}</dd>
             <dt>Requested by</dt><dd>{draw.requestedByUserId ? d.users.get(draw.requestedByUserId)?.name ?? "—" : "—"}</dd>
@@ -555,6 +564,14 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
                       <td data-l="Line">
                         <b>{l.description}</b>
                         {l.budgetLineId ? <span className="sub" style="display:block">{l.budgetLineId}</span> : null}
+                        {l.changeOrderId && d.lineChangeOrders.get(l.id) ? (
+                          <span
+                            className={`sync-tag ${d.lineChangeOrders.get(l.id)!.approved ? "ok" : "bad"}`}
+                            style="margin:2px 0 0"
+                          >
+                            CO-{d.lineChangeOrders.get(l.id)!.number}{d.lineChangeOrders.get(l.id)!.approved ? "" : " UNAPPROVED — held for review"}
+                          </span>
+                        ) : null}
                         {l.reviewNotes ? <span className="sub" style="display:block;color:var(--warn)">{l.reviewNotes}</span> : null}
                       </td>
                       <td data-l="Milestone">{ms ? <a href={`/milestone/${ms.id}`} style="color:var(--action)">M{ms.seq}</a> : "—"}</td>
@@ -1076,6 +1093,20 @@ function renderGovernanceTab(d: DrawDetailData): VNode {
               <dt>Requested amount</dt><dd>{money(draw.requestedAmount)}</dd>
               <dt>Supported amount</dt><dd>{money(d.summary.supported)}</dd>
               <dt>Recommended amount</dt><dd>{draw.recommendedAmount !== null ? money(draw.recommendedAmount) : "—"} <span className="sub">(advisory)</span></dd>
+              {d.retainage ? (
+                <>
+                  <dt>Gross supported</dt><dd>{money(draw.recommendedAmount ?? 0)}</dd>
+                  <dt>Retainage withheld</dt><dd>{money(d.retainage.withheld)} ({d.retainage.rate}%)</dd>
+                  <dt>Net release eligible</dt>
+                  <dd>
+                    <b>{money(d.retainage.netEligible)}</b>
+                    <span className="sub" style="display:block">
+                      Retainage is withheld inside the governed release and released only through its
+                      own formal RetainageReleaseRequest.
+                    </span>
+                  </dd>
+                </>
+              ) : null}
               <dt>Exceptions</dt><dd>{d.summary.exception > 0 ? money(d.summary.exception) : "None"}</dd>
               <dt>Evidence basis</dt><dd>{d.summary.evidenceLinks} linked evidence record(s), each governed by its own verification and ledger entry</dd>
               <dt>Required roles</dt><dd>{approval.requiredRoles.map((r) => roleLabel(r)).join(" + ")}</dd>
@@ -1261,6 +1292,9 @@ export interface DrawReportData {
   financialProgress: FinancialProgress;
   physicalProgress: PhysicalProgressAssessment;
   lineComparisons: Map<string, DrawLineComparison>;
+  contract: { original: number; approvedChanges: number; current: number };
+  retainage: { rate: number; withheld: number; netEligible: number } | null;
+  drawChangeOrders: Array<{ number: number; title: string; status: string; amount: number }>;
   generatedAt: string;
   generatedBy: User;
   ledger: { valid: boolean; entries: number; brokenAt?: number };
@@ -1487,6 +1521,42 @@ export function renderDrawReport(d: DrawReportData): string {
         <p className="muted" style="font-size:7.6pt">
           Methodology: {d.physicalProgress.methodology}
         </p>
+
+        <h2>Contract, change orders &amp; retainage</h2>
+        <table>
+          <tbody>
+            <tr><td style="width:34%;color:#5b6b7f">Original contract / project value</td><td>{money(d.contract.original)}</td></tr>
+            <tr><td style="color:#5b6b7f">Approved change orders</td><td>{d.contract.approvedChanges !== 0 ? money(d.contract.approvedChanges) : "—"}</td></tr>
+            <tr><td style="color:#5b6b7f">Current contract / project value</td><td><b>{money(d.contract.current)}</b></td></tr>
+            <tr><td style="color:#5b6b7f">Gross supported (this draw)</td><td>{d.draw.recommendedAmount !== null ? money(d.draw.recommendedAmount) : "Not finalized"}</td></tr>
+            <tr><td style="color:#5b6b7f">Retainage withheld</td>
+              <td>{d.retainage ? `${money(d.retainage.withheld)} (${d.retainage.rate}%)` : "None (no policy or not finalized)"}</td></tr>
+            <tr><td style="color:#5b6b7f">Net recommended release</td>
+              <td><b>{d.retainage ? money(d.retainage.netEligible) : d.draw.recommendedAmount !== null ? money(d.draw.recommendedAmount) : "—"}</b></td></tr>
+          </tbody>
+        </table>
+        {d.drawChangeOrders.length > 0 ? (
+          <>
+            <p className="muted" style="font-size:8.4pt;margin:6pt 0 2pt"><b>Change orders affecting this draw:</b></p>
+            <table>
+              <thead><tr><th>CO #</th><th>Title</th><th>Status</th><th className="num">Line amount</th></tr></thead>
+              <tbody>
+                {d.drawChangeOrders.map((co) => (
+                  <tr>
+                    <td>CO-{co.number}</td>
+                    <td>{co.title}</td>
+                    <td>
+                      <span className={`tag ${["APPROVED", "PARTIALLY_APPROVED", "IMPLEMENTED"].includes(co.status) ? "ok" : "bad"}`}>
+                        {co.status.replace(/_/g, " ")}{["APPROVED", "PARTIALLY_APPROVED", "IMPLEMENTED"].includes(co.status) ? "" : " — UNAPPROVED CHANGE COST"}
+                      </span>
+                    </td>
+                    <td className="num">{money(co.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : null}
 
         <h2>Governance &amp; financial state</h2>
         <table>

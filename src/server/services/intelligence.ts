@@ -21,6 +21,8 @@ import * as budgetService from "./budgetProgress";
 // Read-only exception queries (SLA state, age). The sweep itself runs in
 // the HTTP layer; intelligence only reads the unified register.
 import * as exceptionsService from "./exceptions";
+// Read-only retainage condition states (release gating visibility).
+import * as retainageService from "./retainage";
 import type {
   ApprovalRequest,
   ClarificationRequest,
@@ -712,6 +714,108 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
           age: null,
           actionLabel: "Open setup",
           actionHref: `/setup/project/${p.id}`,
+        });
+      }
+    }
+  }
+
+  // ---- change order + retainage signals (grounded, deterministic) ----
+  for (const p of projects) {
+    const cos = repo.listChangeOrdersForProject(p.id);
+    for (const co of cos) {
+      if (["SUBMITTED", "UNDER_REVIEW", "CLARIFICATION_REQUIRED"].includes(co.status)) {
+        const ageH = (now - Date.parse(co.requestedAt ?? co.createdAt)) / 3_600_000;
+        if (ageH > 7 * 24) {
+          signals.push({
+            severity: "MEDIUM",
+            rule: "change-order-aging",
+            projectName: p.name,
+            milestoneLabel: `CO-${co.changeOrderNumber}`,
+            reason: `Change order "${co.title}" ($${co.requestedAmount.toLocaleString("en-US")}) has been unapproved for ${Math.round(ageH / 24)} days.`,
+            age: ageOf(co.requestedAt ?? co.createdAt, now),
+            actionLabel: "Open change order",
+            actionHref: `/change-order/${co.id}`,
+          });
+        }
+      }
+      if (["APPROVED", "PARTIALLY_APPROVED"].includes(co.status) && !co.appliedSnapshotVersion) {
+        signals.push({
+          severity: "HIGH",
+          rule: "change-order-not-snapshotted",
+          projectName: p.name,
+          milestoneLabel: `CO-${co.changeOrderNumber}`,
+          reason: `Approved change order "${co.title}" has no linked configuration snapshot — the applied configuration cannot be traced.`,
+          age: null,
+          actionLabel: "Open change order",
+          actionHref: `/change-order/${co.id}`,
+        });
+      }
+    }
+    // unapproved change cost included in a draw
+    for (const draw of repo.listDrawRequestsForProject(p.id)) {
+      if (!["SUBMITTED", "UNDER_REVIEW", "CLARIFICATION_REQUIRED", "READY_FOR_GOVERNANCE"].includes(draw.status)) continue;
+      for (const line of repo.listDrawLines(draw.id)) {
+        if (!line.changeOrderId) continue;
+        const co = repo.getChangeOrder(line.changeOrderId);
+        if (!co || ["APPROVED", "PARTIALLY_APPROVED", "IMPLEMENTED"].includes(co.status)) continue;
+        signals.push({
+          severity: "MEDIUM",
+          rule: "unapproved-change-cost-in-draw",
+          projectName: p.name,
+          milestoneLabel: `Draw #${draw.drawNumber}`,
+          reason: `UNAPPROVED CHANGE COST INCLUDED IN DRAW: "${line.description}" bills $${line.currentRequested.toLocaleString("en-US")} against CO-${co.changeOrderNumber} (${co.status.replace(/_/g, " ")}).`,
+          age: null,
+          actionLabel: "Open draw lines",
+          actionHref: `/draw/${draw.id}?tab=lines`,
+        });
+      }
+    }
+    // change-order volume materially affecting the budget
+    const approvedCoTotal = cos
+      .filter((co) => ["APPROVED", "PARTIALLY_APPROVED", "IMPLEMENTED"].includes(co.status))
+      .reduce((s, co) => s + (co.approvedAmount ?? 0), 0);
+    if (p.totalBudget > 0 && Math.abs(approvedCoTotal) / p.totalBudget > 0.1) {
+      signals.push({
+        severity: "MEDIUM",
+        rule: "change-order-volume",
+        projectName: p.name,
+        milestoneLabel: null,
+        reason: `Approved change orders total $${approvedCoTotal.toLocaleString("en-US")} — ${Math.round((Math.abs(approvedCoTotal) / p.totalBudget) * 100)}% of the original budget.`,
+        age: null,
+        actionLabel: "Open change orders",
+        actionHref: "/change-orders",
+      });
+    }
+    // retainage release requests: blocked by exceptions / missing docs
+    for (const rel of repo.listRetainageReleasesForProject(p.id)) {
+      if (rel.status !== "PENDING_CONDITIONS") continue;
+      const conditions = retainageService.conditionStates(rel.id);
+      const excCond = conditions.find((c) => c.condition === "ALL_EXCEPTIONS_RESOLVED" && !c.satisfied);
+      if (excCond) {
+        signals.push({
+          severity: "MEDIUM",
+          rule: "retainage-blocked-by-exception",
+          projectName: p.name,
+          milestoneLabel: null,
+          reason: `Retainage release of $${rel.amount.toLocaleString("en-US")} is blocked: open exceptions on the project (${excCond.note ?? ""}).`,
+          age: ageOf(rel.createdAt, now),
+          actionLabel: "Open exceptions",
+          actionHref: "/exceptions",
+        });
+      }
+      const missingDocs = conditions.filter(
+        (c) => !c.satisfied && c.condition !== "ALL_EXCEPTIONS_RESOLVED"
+      );
+      if (missingDocs.length > 0) {
+        signals.push({
+          severity: "INFO",
+          rule: "retainage-missing-closeout",
+          projectName: p.name,
+          milestoneLabel: null,
+          reason: `Retainage release of $${rel.amount.toLocaleString("en-US")} awaits closeout: ${missingDocs.map((c) => c.condition.replace(/_/g, " ").toLowerCase()).join(", ")}.`,
+          age: ageOf(rel.createdAt, now),
+          actionLabel: "Open Budget & Progress",
+          actionHref: `/project/${p.id}/budget`,
         });
       }
     }

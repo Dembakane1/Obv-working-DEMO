@@ -142,7 +142,7 @@ export interface Verification {
 /** What an ApprovalRequest governs. MILESTONE is the original evidence-
  *  driven tranche gate; DRAW governs a lender Draw Request. Both use the
  *  same ApprovalRecord machinery, matrices and separation of duties. */
-export type ApprovalSubjectType = "MILESTONE" | "DRAW";
+export type ApprovalSubjectType = "MILESTONE" | "DRAW" | "CHANGE_ORDER" | "RETAINAGE";
 
 export interface ApprovalRequest {
   id: string;
@@ -150,6 +150,9 @@ export interface ApprovalRequest {
   milestoneId: string | null;
   /** Set when subjectType is DRAW (additive; null on legacy rows). */
   drawRequestId?: string | null;
+  /** Set when subjectType is CHANGE_ORDER / RETAINAGE respectively. */
+  changeOrderId?: string | null;
+  retainageReleaseId?: string | null;
   subjectType?: ApprovalSubjectType;
   status: ApprovalStatus;
   requiredRoles: UserRole[];
@@ -785,6 +788,10 @@ export interface DrawRequest {
   periodStart: string | null;
   periodEnd: string | null;
   status: DrawRequestStatus;
+  /** Retainage computed at governance-finalize from the project policy
+   *  (or a bounded draw override). Null until finalized / no policy. */
+  retainageRate: number | null;
+  retainageWithheld: number | null;
   reviewRecommendation: DrawRecommendationResult | null;
   reviewSummary: string | null;
   createdAt: string;
@@ -799,6 +806,10 @@ export interface DrawLineItem {
   budgetLineId: string | null;
   /** Anchors the line to a governed milestone for verified-progress context. */
   milestoneId: string | null;
+  /** Links the line to a change order. Billing against a change order
+   *  that is not yet APPROVED requires an explicit exception
+   *  acknowledgement and is surfaced for review — never silent. */
+  changeOrderId?: string | null;
   description: string;
   scheduledValue: number;
   previouslyPaid: number;
@@ -1193,3 +1204,159 @@ export interface ExceptionEvent {
 /** SLA age state, derived from openedAt/dueAt — descriptive only, never a
  *  compliance claim. */
 export type ExceptionSlaState = "WITHIN_TARGET" | "DUE_SOON" | "OVERDUE" | "NO_TARGET";
+
+// ========================================================= change orders
+// Change Order Management (additive construction financial governance).
+//
+// A submitted change order NEVER modifies budget or milestone
+// configuration. Only a change order approved through the formal
+// ApprovalRequest governance path is applied — transactionally, with a
+// configuration audit event and a new configuration snapshot/version
+// linked back to the change order. Historic evidence keeps the policy /
+// configuration version it was evaluated under.
+
+export type ChangeOrderReason =
+  | "OWNER_REQUEST" | "DESIGN_CHANGE" | "SITE_CONDITION" | "MATERIAL_CHANGE"
+  | "SCOPE_CHANGE" | "REGULATORY" | "SCHEDULE" | "CORRECTION" | "OTHER";
+
+export type ChangeOrderStatus =
+  | "DRAFT" | "SUBMITTED" | "UNDER_REVIEW" | "CLARIFICATION_REQUIRED"
+  | "APPROVED" | "PARTIALLY_APPROVED" | "REJECTED" | "CANCELLED" | "IMPLEMENTED";
+
+export interface ChangeOrder {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  changeOrderNumber: number;
+  title: string;
+  description: string;
+  reasonCategory: ChangeOrderReason;
+  requestedByUserId: string;
+  requestedAt: string | null;
+  requestedAmount: number;
+  approvedAmount: number | null;
+  currency: string;
+  scheduleImpactDays: number | null;
+  status: ChangeOrderStatus;
+  affectedMilestoneIds: string[];
+  affectedBudgetLineIds: string[];
+  /** When the approved impact was applied (exactly once) and the
+   *  configuration snapshot version it produced. */
+  appliedAt: string | null;
+  appliedSnapshotVersion: number | null;
+  createdAt: string;
+  updatedAt: string;
+  // ---- derived ----
+  supportingDocumentCount: number;
+}
+
+/** How the requested amount distributes across budget lines. Must
+ *  reconcile exactly to requestedAmount before submission. On approval
+ *  each allocation becomes part of the line's approvedChanges. */
+export interface ChangeOrderAllocation {
+  id: string;
+  changeOrderId: string;
+  budgetLineId: string;
+  amount: number;
+  note: string | null;
+}
+
+/** Supporting document metadata (administrative record). */
+export interface ChangeOrderDocument {
+  id: string;
+  changeOrderId: string;
+  title: string;
+  docType: string;
+  note: string | null;
+  uploadedByUserId: string;
+  createdAt: string;
+}
+
+/** Change-order operational timeline (NOT the Evidence Ledger). */
+export interface ChangeOrderEvent {
+  id: string;
+  changeOrderId: string;
+  type:
+    | "CREATED" | "UPDATED" | "SUBMITTED" | "CLARIFICATION_REQUESTED"
+    | "CLARIFICATION_RESOLVED" | "SENT_TO_GOVERNANCE" | "GOVERNANCE_DECISION"
+    | "APPLIED" | "IMPLEMENTED" | "RETURNED" | "CANCELLED" | "COMMENT";
+  detail: string;
+  actorUserId: string | null;
+  createdAt: string;
+}
+
+// ============================================================ retainage
+// Retainage control (additive). Retainage is financial-control state on
+// the virtual project account — not real bank movement. Withholding
+// happens only inside the governed draw release transition; releasing
+// retainage requires its own RetainageReleaseRequest approved through
+// the formal ApprovalRequest governance path, exactly once.
+
+/** Project retainage policy. Percent is clamped to safe bounds (0–20%).
+ *  No policy configured = 0% (nothing is ever withheld silently). */
+export interface RetainagePolicy {
+  projectId: string;
+  retainagePercent: number;
+  /** Conditions every release request must satisfy (configurable). */
+  requiredConditions: RetainageConditionType[];
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+export type RetainageConditionType =
+  | "SUBSTANTIAL_COMPLETION" | "FINAL_COMPLETION" | "PUNCH_LIST_CLOSURE"
+  | "FINAL_LIEN_WAIVER" | "CERTIFICATE_OF_COMPLETION" | "FINAL_INSPECTION"
+  | "ALL_EXCEPTIONS_RESOLVED";
+
+export type RetainageReleaseStatus =
+  | "PENDING_CONDITIONS" | "READY_FOR_GOVERNANCE" | "APPROVED"
+  | "RELEASED" | "RETURNED" | "CANCELLED";
+
+export interface RetainageReleaseRequest {
+  id: string;
+  projectId: string;
+  requestedByUserId: string;
+  amount: number;
+  status: RetainageReleaseStatus;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** One required condition on a release request. ALL_EXCEPTIONS_RESOLVED
+ *  is computed live from the exception register; the others are recorded
+ *  by an authorized reviewer with a note (audited). */
+export interface RetainageCondition {
+  id: string;
+  releaseRequestId: string;
+  condition: RetainageConditionType;
+  satisfied: boolean;
+  note: string | null;
+  satisfiedByUserId: string | null;
+  satisfiedAt: string | null;
+}
+
+/** Retainage financial-control events, written ONLY by the
+ *  VirtualAccountService from governed transitions. WITHHELD accompanies
+ *  a draw release; RELEASED accompanies a completed retainage-release
+ *  approval (UNIQUE per release request — exactly once). */
+export interface RetainageEvent {
+  id: string;
+  projectId: string;
+  drawRequestId: string | null;
+  retainageReleaseId: string | null;
+  type: "WITHHELD" | "RELEASED";
+  amount: number;
+  createdAt: string;
+}
+
+/** Per-project retainage position, derived from events. */
+export interface RetainageSummary {
+  projectId: string;
+  retainagePercent: number;
+  withheldToDate: number;
+  releasedToDate: number;
+  remaining: number;
+  pendingReleaseRequests: number;
+  conditionsOutstanding: number;
+}

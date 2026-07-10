@@ -89,6 +89,11 @@ import * as budget from "../services/budgetProgress";
 import { BudgetError } from "../services/budgetProgress";
 import * as exceptions from "../services/exceptions";
 import { ExceptionError } from "../services/exceptions";
+import * as changeOrders from "../services/changeOrders";
+import { ChangeOrderError } from "../services/changeOrders";
+import * as retainage from "../services/retainage";
+import { RetainageError } from "../services/retainage";
+import { CoDetailData, renderCoDetail, renderCoNew, renderCoRegister } from "../view/coPages";
 import {
   ExceptionDetailData,
   ExceptionRow,
@@ -406,6 +411,43 @@ function approvalQueue(user: User): ApprovalQueueItem[] {
   return items.sort((a, b) => (a.approval.createdAt < b.approval.createdAt ? 1 : -1));
 }
 
+
+function drawContractContext(projectId: string): { original: number; approvedChanges: number; current: number } {
+  const lines = repo.listBudgetLines(projectId).filter((l) => l.active);
+  const original = lines.length
+    ? lines.reduce((s2, l) => s2 + l.originalBudget, 0)
+    : repo.getProject(projectId)?.totalBudget ?? 0;
+  const approvedChanges = lines.length
+    ? lines.reduce((s2, l) => s2 + l.approvedChanges, 0)
+    : changeOrders.approvedChangeTotal(projectId);
+  return { original, approvedChanges, current: original + approvedChanges };
+}
+
+function drawLineChangeOrders(drawId: string): Map<string, { number: number; status: string; approved: boolean }> {
+  return new Map(
+    repo
+      .listDrawLines(drawId)
+      .filter((l) => l.changeOrderId)
+      .map((l) => {
+        const co = repo.getChangeOrder(l.changeOrderId!)!;
+        return [
+          l.id,
+          {
+            number: co.changeOrderNumber,
+            status: co.status,
+            approved: ["APPROVED", "PARTIALLY_APPROVED", "IMPLEMENTED"].includes(co.status),
+          },
+        ];
+      })
+  );
+}
+
+function drawRetainageContext(draw: import("../../shared/types").DrawRequest): { rate: number; withheld: number; netEligible: number } | null {
+  if (draw.retainageRate === null || draw.retainageWithheld === null) return null;
+  const gross = draw.recommendedAmount ?? 0;
+  return { rate: draw.retainageRate, withheld: draw.retainageWithheld, netEligible: gross - draw.retainageWithheld };
+}
+
 // ------------------------------------------------- exception page data
 
 function exceptionRow(e: import("../../shared/types").ObvException): ExceptionRow {
@@ -493,6 +535,9 @@ function assembleDrawDetail(
     lineComparisons: new Map(
       repo.listDrawLines(draw.id).map((l) => [l.id, budget.compareDrawLine(draw.projectId, l)])
     ),
+    contract: drawContractContext(draw.projectId),
+    lineChangeOrders: drawLineChangeOrders(draw.id),
+    retainage: drawRetainageContext(draw),
     approval,
     approvalRecords,
     users: usersById(),
@@ -546,6 +591,20 @@ async function assembleDrawReportData(
     lineComparisons: new Map(
       repo.listDrawLines(draw.id).map((l) => [l.id, budget.compareDrawLine(project.id, l)])
     ),
+    contract: drawContractContext(project.id),
+    retainage: drawRetainageContext(draw),
+    drawChangeOrders: (() => {
+      const byCo = new Map<string, { number: number; title: string; status: string; amount: number }>();
+      for (const l of repo.listDrawLines(draw.id)) {
+        if (!l.changeOrderId) continue;
+        const co = repo.getChangeOrder(l.changeOrderId);
+        if (!co) continue;
+        const cur = byCo.get(co.id) ?? { number: co.changeOrderNumber, title: co.title, status: co.status, amount: 0 };
+        cur.amount += l.currentRequested;
+        byCo.set(co.id, cur);
+      }
+      return [...byCo.values()];
+    })(),
     generatedAt: new Date().toISOString(),
     generatedBy: user,
     ledger: { valid: chain.valid, entries: chain.entries, brokenAt: chain.brokenAt },
@@ -692,7 +751,12 @@ function stateFingerprint(): string {
               (SELECT COUNT(*) FROM budget_line_maps) AS blm,
               (SELECT COUNT(*) FROM verified_quantities) AS vq,
               (SELECT COUNT(*) FROM exceptions) AS exc,
-              (SELECT COALESCE(MAX(updated_at), '') FROM exceptions) AS excu`
+              (SELECT COALESCE(MAX(updated_at), '') FROM exceptions) AS excu,
+              (SELECT COUNT(*) FROM change_orders) AS co,
+              (SELECT COALESCE(MAX(updated_at), '') FROM change_orders) AS cou,
+              (SELECT COUNT(*) FROM retainage_events) AS re,
+              (SELECT COUNT(*) FROM retainage_release_requests) AS rrr,
+              (SELECT COALESCE(MAX(updated_at), '') FROM retainage_release_requests) AS rrru`
     )
     .get();
   return createHash("sha256")
@@ -1644,15 +1708,192 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // milestone tranches; DRAW requests run the draw governance gate.
     // Both use ApprovalRecords, matrices and separation of duties.
     const subject = repo.getApprovalRequest(approvalMatch[1]);
+    const subjectType = subject?.subjectType ?? "MILESTONE";
     const result =
-      subject && (subject.subjectType ?? "MILESTONE") === "DRAW"
+      subjectType === "DRAW"
         ? await draws.processDrawApprovalDecision(approvalMatch[1], user.id, decision)
-        : await processApprovalDecision(approvalMatch[1], user.id, decision);
+        : subjectType === "CHANGE_ORDER"
+          ? await changeOrders.processChangeOrderApprovalDecision(approvalMatch[1], user.id, decision)
+          : subjectType === "RETAINAGE"
+            ? await retainage.processRetainageApprovalDecision(approvalMatch[1], user.id, decision)
+            : await processApprovalDecision(approvalMatch[1], user.id, decision);
     if (form) {
       const back = form.get("redirect") ?? "";
       redirect(res, back.startsWith("/") && !back.startsWith("//") ? back : "/approvals");
     } else {
       sendJson(res, result);
+    }
+    return;
+  }
+
+  // ============================== change orders + retainage ============
+  // Governance-controlled records. No route below can directly edit a
+  // change-order state or release retainage — transitions run through the
+  // services, and approvals through the shared governed endpoint.
+
+  const coParams = async (): Promise<Record<string, string>> => {
+    const text = (await readBody(req, 128 * 1024)).toString("utf8");
+    if (isFormPost(req)) return Object.fromEntries(new URLSearchParams(text));
+    return text ? JSON.parse(text) : {};
+  };
+
+  if (method === "POST" && pathname === "/api/change-orders") {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const p = await coParams();
+    const co = changeOrders.createChangeOrder(user, {
+      projectId: String(p.projectId ?? ""),
+      title: String(p.title ?? ""),
+      description: p.description ? String(p.description) : "",
+      reasonCategory: (p.reasonCategory ? String(p.reasonCategory) : "OTHER") as never,
+      requestedAmount: p.requestedAmount !== undefined && p.requestedAmount !== "" ? Number(p.requestedAmount) : 0,
+      scheduleImpactDays: p.scheduleImpactDays !== undefined && p.scheduleImpactDays !== "" ? Number(p.scheduleImpactDays) : null,
+      affectedMilestoneIds: p.milestoneId ? [String(p.milestoneId)] : Array.isArray(p.affectedMilestoneIds) ? p.affectedMilestoneIds : [],
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/change-order/${co.id}`);
+    } else {
+      sendJson(res, { changeOrder: co }, 201);
+    }
+    return;
+  }
+
+  const coActionMatch = /^\/api\/change-orders\/([^/]+)\/(allocations|documents|submit|clarification|governance|implemented|cancel)$/.exec(pathname);
+  if (method === "POST" && coActionMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const [, coId, action] = coActionMatch;
+    const p = await coParams();
+    let body: unknown;
+    switch (action) {
+      case "allocations":
+        body = { allocation: changeOrders.allocate(user, coId, {
+          budgetLineId: String(p.budgetLineId ?? ""),
+          amount: Number(p.amount),
+          note: p.note ? String(p.note) : null,
+        }) };
+        break;
+      case "documents":
+        changeOrders.addDocument(user, coId, {
+          title: String(p.title ?? ""),
+          docType: p.docType ? String(p.docType) : undefined,
+          note: p.note ? String(p.note) : null,
+        });
+        body = { ok: true };
+        break;
+      case "submit":
+        body = { changeOrder: changeOrders.submitChangeOrder(user, coId) };
+        break;
+      case "clarification":
+        body = { changeOrder: changeOrders.requestClarification(user, coId, String(p.question ?? "")) };
+        break;
+      case "governance":
+        body = changeOrders.sendToGovernance(
+          user, coId,
+          p.approvedAmount !== undefined && p.approvedAmount !== "" ? Number(p.approvedAmount) : null
+        );
+        break;
+      case "implemented":
+        body = { changeOrder: changeOrders.markImplemented(user, coId, p.note ? String(p.note) : null) };
+        break;
+      default:
+        body = { changeOrder: changeOrders.cancelChangeOrder(user, coId) };
+    }
+    if (isFormPost(req)) {
+      redirect(res, `/change-order/${coId}`);
+    } else {
+      sendJson(res, body);
+    }
+    return;
+  }
+
+  const coPreviewMatch = /^\/api\/change-orders\/([^/]+)\/preview$/.exec(pathname);
+  if (method === "GET" && coPreviewMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const co = repo.getChangeOrder(coPreviewMatch[1]);
+    const project = co ? repo.getProject(co.projectId) : null;
+    if (!co || !project || !budget.canAccessProjectFinance(user, project)) {
+      sendJson(res, { error: "Change order not found" }, 404);
+      return;
+    }
+    sendJson(res, changeOrders.impactPreview(co.id));
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/retainage/policy") {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const p = await coParams();
+    const policy = retainage.setPolicy(user, {
+      projectId: String(p.projectId ?? ""),
+      retainagePercent: Number(p.retainagePercent),
+      requiredConditions: Array.isArray(p.requiredConditions) ? p.requiredConditions : undefined,
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/project/${policy.projectId}/budget`);
+    } else {
+      sendJson(res, { policy });
+    }
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/retainage/releases") {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const p = await coParams();
+    const release = retainage.createReleaseRequest(user, {
+      projectId: String(p.projectId ?? ""),
+      amount: p.amount !== undefined && p.amount !== "" ? Number(p.amount) : undefined,
+      note: p.note ? String(p.note) : null,
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/project/${release.projectId}/budget`);
+    } else {
+      sendJson(res, { release }, 201);
+    }
+    return;
+  }
+
+  const retActionMatch = /^\/api\/retainage\/releases\/([^/]+)\/(condition|governance)$/.exec(pathname);
+  if (method === "POST" && retActionMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const [, relId, action] = retActionMatch;
+    const p = await coParams();
+    let body: unknown;
+    if (action === "condition") {
+      body = {
+        conditions: retainage.satisfyCondition(
+          user, relId, String(p.condition ?? "") as never, String(p.note ?? "")
+        ),
+      };
+    } else {
+      body = retainage.sendReleaseToGovernance(user, relId);
+    }
+    const projectId = repo.getRetainageRelease(relId)?.projectId ?? "";
+    if (isFormPost(req)) {
+      redirect(res, `/project/${projectId}/budget`);
+    } else {
+      sendJson(res, body);
     }
     return;
   }
@@ -1962,6 +2203,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         description: String(p.description ?? ""),
         budgetLineId: p.budgetLineId ? String(p.budgetLineId) : null,
         milestoneId: p.milestoneId ? String(p.milestoneId) : null,
+        changeOrderId: p.changeOrderId ? String(p.changeOrderId) : null,
+        exceptionAcknowledged: ["1", "true"].includes(String(p.exceptionAcknowledged)),
         scheduledValue: p.scheduledValue !== undefined && p.scheduledValue !== "" ? Number(p.scheduledValue) : 0,
         previouslyPaid: p.previouslyPaid !== undefined && p.previouslyPaid !== "" ? Number(p.previouslyPaid) : 0,
         currentRequested: p.currentRequested !== undefined && p.currentRequested !== "" ? Number(p.currentRequested) : 0,
@@ -2615,7 +2858,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     "/overview", "/dashboard", "/projects", "/project/", "/milestone/",
     "/approvals", "/ledger", "/reports", "/compliance", "/insights", "/more", "/field",
     "/map", "/communications", "/issues", "/issue/", "/evidence-drafts",
-    "/setup", "/pilot", "/draws", "/draw/", "/budget", "/exceptions", "/exception/",
+    "/setup", "/pilot", "/draws", "/draw/", "/budget", "/exceptions", "/exception/", "/change-orders", "/change-order/",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -2744,6 +2987,27 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           createdAt: e.createdAt, actorUserId: e.actorUserId,
         })),
       verifiedEvidenceOptions,
+      retainage: {
+        policy: retainage.effectivePolicy(project.id),
+        summary: retainage.retainageSummary(project.id),
+        releases: repo.listRetainageReleasesForProject(project.id).map((release) => {
+          const approval = repo.getApprovalRequestForRetainageRelease(release.id);
+          const approvalRecords = approval ? repo.listApprovalRecordsForRequest(approval.id) : [];
+          return {
+            release,
+            conditions: retainage.conditionStates(release.id),
+            approval,
+            approvalRecords,
+            canDecide: Boolean(
+              approval &&
+                approval.status === "PENDING" &&
+                approval.requiredRoles.includes(user!.role) &&
+                !approvalRecords.some((r) => r.role === user!.role) &&
+                release.requestedByUserId !== user!.id
+            ),
+          };
+        }),
+      },
       canManage: budget.canManageBudget(user!),
       launched: project.status !== "DRAFT",
     };
@@ -2821,6 +3085,85 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         canFieldOps: canManageFieldOps(user!),
       })
     );
+    return;
+  }
+
+  // ---- change order pages ----
+  if (method === "GET" && pathname === "/change-orders") {
+    const rows = changeOrders.listChangeOrdersForUser(user!).map((co) => ({
+      co,
+      project: repo.getProject(co.projectId),
+      ageDays: Math.max(0, Math.floor((Date.now() - Date.parse(co.requestedAt ?? co.createdAt)) / 86_400_000)),
+      nextAction: changeOrders.nextAction(co),
+    }));
+    sendHtml(res, renderCoRegister({ nav: navFor(user!, "change-orders"), rows, canCreate: changeOrders.canManageChangeOrders(user!) }));
+    return;
+  }
+
+  if (method === "GET" && pathname === "/change-orders/new") {
+    if (!changeOrders.canManageChangeOrders(user!)) {
+      sendHtml(res, renderError(navFor(user!, "change-orders"), "Not authorized", "Field users cannot create change orders."), 403);
+      return;
+    }
+    sendHtml(
+      res,
+      renderCoNew({
+        nav: navFor(user!, "change-orders"),
+        projects: repo
+          .listProjects()
+          .filter((p) => p.status === "ACTIVE" && budget.canAccessProjectFinance(user!, p))
+          .map((project) => ({
+            project,
+            milestones: repo.listMilestones(project.id).filter((m) => !m.archived),
+            nextNumber: repo.nextChangeOrderNumber(project.id),
+          })),
+      })
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname.startsWith("/change-order/")) {
+    const co = repo.getChangeOrder(pathname.slice("/change-order/".length));
+    const coProject = co ? repo.getProject(co.projectId) : null;
+    // Tenant boundary: unrelated organizations get the same 404.
+    if (!co || !coProject || !budget.canAccessProjectFinance(user!, coProject)) {
+      sendHtml(res, renderError(navFor(user!, "change-orders"), "Change order not found", "No change order exists at this address."), 404);
+      return;
+    }
+    const approval = repo.getApprovalRequestForChangeOrder(co.id);
+    const approvalRecords = approval ? repo.listApprovalRecordsForRequest(approval.id) : [];
+    const alreadyDecided = approvalRecords.some((r) => r.role === user!.role);
+    const data: CoDetailData = {
+      nav: navFor(user!, "change-orders"),
+      co,
+      project: coProject,
+      requestedBy: repo.getUser(co.requestedByUserId),
+      allocations: repo.listCoAllocations(co.id).map((allocation) => ({
+        allocation,
+        line: repo.getBudgetLine(allocation.budgetLineId),
+      })),
+      budgetLines: repo.listBudgetLines(co.projectId).filter((l) => l.active),
+      documents: repo.listCoDocuments(co.id),
+      events: repo.listCoEvents(co.id),
+      affectedMilestones: co.affectedMilestoneIds
+        .map((id) => repo.getMilestone(id))
+        .filter((m): m is NonNullable<typeof m> => Boolean(m)),
+      preview: changeOrders.impactPreview(co.id),
+      approval,
+      approvalRecords,
+      users: usersById(),
+      canManage: changeOrders.canManageChangeOrders(user!),
+      canGovern: budget.canManageBudget(user!),
+      canDecide: Boolean(
+        approval &&
+          approval.status === "PENDING" &&
+          approval.requiredRoles.includes(user!.role) &&
+          !alreadyDecided &&
+          co.requestedByUserId !== user!.id
+      ),
+      isSubmitter: co.requestedByUserId === user!.id,
+    };
+    sendHtml(res, renderCoDetail(data));
     return;
   }
 
@@ -3450,7 +3793,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";

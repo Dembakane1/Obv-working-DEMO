@@ -270,6 +270,7 @@ export const RULES: Array<{ key: string; severity: string; rule: string }> = [
   { key: "draw-doc-missing", severity: "MEDIUM", rule: "Required draw document missing while the draw is in review" },
   { key: "field-issue", severity: "mirrors issue", rule: "Open HIGH or CRITICAL field issue" },
   { key: "clarification-overdue", severity: "MEDIUM", rule: "Clarification open past its due date or older than 3 days" },
+  { key: "draw-unapproved-co", severity: "MEDIUM", rule: "Draw line bills against a change order that is not yet approved" },
   { key: "integration-binding", severity: "MEDIUM", rule: "Teams thread binding degraded or missing permissions" },
 ];
 
@@ -383,6 +384,26 @@ async function activeConditions(): Promise<RuleCondition[]> {
             category: "DOCUMENT", severity: "MEDIUM",
             title: `Missing required document — Draw #${draw.drawNumber}: ${req.title}`,
             description: `The draw is in review without its required "${req.title}". The document checklist on the draw remains authoritative.`,
+          },
+        });
+      }
+    }
+
+    // -- unapproved change-order cost included in a draw --
+    for (const draw of repo.listDrawRequestsForProject(project.id)) {
+      if (!ACTIVE_DRAW_STATES.has(draw.status)) continue;
+      for (const line of repo.listDrawLines(draw.id)) {
+        if (!line.changeOrderId) continue;
+        const co = repo.getChangeOrder(line.changeOrderId);
+        if (!co || ["APPROVED", "PARTIALLY_APPROVED", "IMPLEMENTED"].includes(co.status)) continue;
+        out.push({
+          seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "DRAW_LINE_ITEM", sourceId: line.id,
+            sourceKey: `draw-unapproved-co:${line.id}`,
+            category: "COST", severity: "MEDIUM",
+            title: `Unapproved change cost in Draw #${draw.drawNumber}: ${line.description.slice(0, 60)}`,
+            description: `UNAPPROVED CHANGE COST INCLUDED IN DRAW — line "${line.description}" bills $${line.currentRequested.toLocaleString("en-US")} against CO-${co.changeOrderNumber} (${co.status.replace(/_/g, " ")}). The change order record remains authoritative.`,
           },
         });
       }

@@ -657,6 +657,20 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
   // verified physical progress (30%) — a comparison, not an accusation.
   seedDemoBudget();
 
+  // ---- retainage policy (10%, default closeout conditions) ----
+  repo.upsertRetainagePolicy({
+    projectId: "proj-r47",
+    retainagePercent: 10,
+    requiredConditions: ["FINAL_LIEN_WAIVER", "CERTIFICATE_OF_COMPLETION", "ALL_EXCEPTIONS_RESOLVED"],
+    updatedAt: "2026-07-05T09:00:00.000Z",
+    updatedBy: "user-funder",
+  });
+
+  // ---- seeded change order (SUBMITTED — pending review, nothing applied) ----
+  // A submitted change order is a request: budget, milestones and schedule
+  // stay untouched until the formal governance path approves it.
+  seedDemoChangeOrder();
+
   // ---- unified exceptions: deterministic sweep over the seeded state ----
   // Creates the out-of-the-box register (HIGH field issue, missing lien
   // waiver, budget variance) from real conditions — nothing is invented.
@@ -667,6 +681,50 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
     `Seeded project "${project.name}" with ${milestones.length} milestones, ` +
     `4 users, ${chain.entries} ledger entries (chain valid: ${chain.valid}).`
   );
+}
+
+function seedDemoChangeOrder(): void {
+  const t = (s: string) => `2026-07-0${s}`;
+  repo.insertChangeOrder({
+    id: "co-1",
+    organizationId: "org-cdfc",
+    projectId: "proj-r47",
+    changeOrderNumber: 1,
+    title: "Additional drainage structures — km 9+200",
+    description:
+      "Unrecorded seasonal stream crossing at km 9+200 requires two extra " +
+      "box culverts and headwalls beyond the contracted drainage scope. " +
+      "Submitted for review; no budget or schedule change until approved.",
+    reasonCategory: "SITE_CONDITION",
+    requestedByUserId: "user-pm",
+    requestedAt: t("6T10:30:00.000Z"),
+    requestedAmount: 85_000,
+    approvedAmount: null,
+    currency: "USD",
+    scheduleImpactDays: 6,
+    status: "SUBMITTED",
+    affectedMilestoneIds: ["ms-2"],
+    affectedBudgetLineIds: ["bl-2"],
+    appliedAt: null,
+    appliedSnapshotVersion: null,
+    createdAt: t("5T14:00:00.000Z"),
+    updatedAt: t("6T10:30:00.000Z"),
+    supportingDocumentCount: 0,
+  });
+  repo.insertCoAllocation({
+    id: "coa-1",
+    changeOrderId: "co-1",
+    budgetLineId: "bl-2",
+    amount: 85_000,
+    note: "Two box culverts + headwalls, km 9+200",
+  });
+  const events: Array<[string, "CREATED" | "SUBMITTED", string, string]> = [
+    ["coe-1", "CREATED", "Change order drafted", t("5T14:00:00.000Z")],
+    ["coe-2", "SUBMITTED", "Submitted for review — allocations reconcile to $85,000", t("6T10:30:00.000Z")],
+  ];
+  for (const [id, type, detail, createdAt] of events) {
+    repo.insertCoEvent({ id, changeOrderId: "co-1", type, detail, actorUserId: "user-pm", createdAt });
+  }
 }
 
 function seedDemoDraw(): void {
@@ -685,6 +743,8 @@ function seedDemoDraw(): void {
     currency: "USD",
     periodStart: "2026-06-01",
     periodEnd: "2026-06-30",
+    retainageRate: null,
+    retainageWithheld: null,
     status: "UNDER_REVIEW",
     reviewRecommendation: null,
     reviewSummary: null,
@@ -931,6 +991,39 @@ function purgeDemoScopedRows(): void {
     db.prepare(`DELETE FROM draw_line_items WHERE draw_request_id IN (${dph})`).run(...drawIds);
     db.prepare(`DELETE FROM draw_requests WHERE id IN (${dph})`).run(...drawIds);
   }
+  // Change orders + retainage rows for the demo project.
+  const coIds = db
+    .prepare("SELECT id FROM change_orders WHERE project_id = ?")
+    .all(DEMO_PROJECT)
+    .map((r) => (r as { id: string }).id);
+  if (coIds.length) {
+    const cph = inList(coIds);
+    db.prepare(
+      `DELETE FROM approval_records WHERE approval_request_id IN
+         (SELECT id FROM approval_requests WHERE change_order_id IN (${cph}))`
+    ).run(...coIds);
+    db.prepare(`DELETE FROM approval_requests WHERE change_order_id IN (${cph})`).run(...coIds);
+    db.prepare(`DELETE FROM change_order_events WHERE change_order_id IN (${cph})`).run(...coIds);
+    db.prepare(`DELETE FROM change_order_documents WHERE change_order_id IN (${cph})`).run(...coIds);
+    db.prepare(`DELETE FROM change_order_allocations WHERE change_order_id IN (${cph})`).run(...coIds);
+    db.prepare(`DELETE FROM change_orders WHERE id IN (${cph})`).run(...coIds);
+  }
+  const relIds = db
+    .prepare("SELECT id FROM retainage_release_requests WHERE project_id = ?")
+    .all(DEMO_PROJECT)
+    .map((r) => (r as { id: string }).id);
+  if (relIds.length) {
+    const rph = inList(relIds);
+    db.prepare(
+      `DELETE FROM approval_records WHERE approval_request_id IN
+         (SELECT id FROM approval_requests WHERE retainage_release_id IN (${rph}))`
+    ).run(...relIds);
+    db.prepare(`DELETE FROM approval_requests WHERE retainage_release_id IN (${rph})`).run(...relIds);
+    db.prepare(`DELETE FROM retainage_conditions WHERE release_request_id IN (${rph})`).run(...relIds);
+    db.prepare(`DELETE FROM retainage_release_requests WHERE id IN (${rph})`).run(...relIds);
+  }
+  db.prepare("DELETE FROM retainage_events WHERE project_id = ?").run(DEMO_PROJECT);
+  db.prepare("DELETE FROM retainage_policies WHERE project_id = ?").run(DEMO_PROJECT);
   // Exception control records for the demo project.
   db.prepare(
     `DELETE FROM exception_events WHERE exception_id IN

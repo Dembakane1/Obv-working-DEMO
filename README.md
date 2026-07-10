@@ -128,6 +128,43 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Change Orders + Retainage Control (v16)
+
+Construction-native change control and retainage discipline that
+preserve the existing governed release path. **A submitted change order
+changes nothing** — budget, milestones and schedule stay as configured
+until every required role approves through the formal ApprovalRequest
+path (≥2 distinct roles, one decision per role, no submitter
+self-approval, no direct state-edit endpoint). Allocations must
+reconcile exactly to the requested amount before submission; the impact
+preview is PREVIEW ONLY and writes nothing.
+
+The final approval applies the impact **exactly once, transactionally,
+audited**: budget-line `approvedChanges` (scaled to a partial approved
+amount when set), planned-date shifts on affected milestones, a new
+configuration version + snapshot linked to the change order, and a
+`CHANGE_ORDER_APPLIED` audit event. Historic verifications keep their
+original policy/config references. Billing a draw line against an
+unapproved change order is refused unless explicitly
+exception-acknowledged — then held for review with a deterministic
+exception and the exact intelligence signal **UNAPPROVED CHANGE COST
+INCLUDED IN DRAW**.
+
+Retainage: an audited per-project policy (0–20%, default closeout
+conditions) computes withholding transparently at draw finalize —
+governance shows gross / retainage / net, and the governed release moves
+net while recording the held position exactly once. Release is never
+automatic: a condition-gated `RetainageReleaseRequest`
+(ALL_EXCEPTIONS_RESOLVED computed live from the exception register) goes
+through its own formal approval and releases exactly once (database
+UNIQUE constraints). Surfaces: **Change Orders** register/detail, a
+retainage panel on **Budget & Progress**, contract/CO/retainage sections
+on draw detail + report, and six deterministic intelligence signals.
+`scripts/changeorders-test.js` (40 checkpoints) covers the 18 required
+cases; see `docs/CHANGE_ORDERS_RETAINAGE.md`.
+
+---
+
 ## Unified Exception Management (v15)
 
 One governed operational register for anything preventing clean

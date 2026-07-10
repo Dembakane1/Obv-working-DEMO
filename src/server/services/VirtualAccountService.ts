@@ -10,7 +10,10 @@
  *       interface so application logic is unchanged.
  */
 import * as repo from "../db/repo";
-import type { DrawAccountEvent, DrawRequest, Milestone, VirtualAccountEvent } from "../../shared/types";
+import type {
+  DrawAccountEvent, DrawRequest, Milestone, RetainageEvent,
+  RetainageReleaseRequest, VirtualAccountEvent,
+} from "../../shared/types";
 
 export interface ProjectAccountSummary {
   totalBudget: number;
@@ -33,6 +36,18 @@ export interface VirtualAccountService {
    * releases never touch milestone tranche HELD/RELEASED state.
    */
   releaseDraw(draw: DrawRequest, amount: number, createdAt?: string): Promise<DrawAccountEvent>;
+  /**
+   * Record retainage WITHHELD as part of a governed draw release
+   * transition (UNIQUE(draw, type) — exactly once per draw). Never
+   * callable outside the completed-governance path.
+   */
+  withholdRetainage(draw: DrawRequest, amount: number, createdAt?: string): Promise<RetainageEvent>;
+  /**
+   * Record retainage RELEASED for a completed retainage-release approval
+   * (UNIQUE(retainage_release_id) — exactly once per request). Only the
+   * formal RETAINAGE ApprovalRequest path reaches this.
+   */
+  releaseRetainage(release: RetainageReleaseRequest, createdAt?: string): Promise<RetainageEvent>;
   /** Aggregate held/released amounts for a project. */
   getProjectSummary(projectId: string): Promise<ProjectAccountSummary>;
 }
@@ -78,6 +93,50 @@ export class MockVirtualAccountService implements VirtualAccountService {
     // UNIQUE(draw_request_id, type) backstops the check above at the DB
     // level — concurrent duplicates throw here rather than double-insert.
     repo.insertDrawAccountEvent(event);
+    return event;
+  }
+
+  async withholdRetainage(draw: DrawRequest, amount: number, createdAt?: string): Promise<RetainageEvent> {
+    if (
+      repo
+        .listRetainageEventsForProject(draw.projectId)
+        .some((e) => e.drawRequestId === draw.id && e.type === "WITHHELD")
+    ) {
+      throw new Error(`Retainage for draw ${draw.drawNumber} has already been withheld`);
+    }
+    const event: RetainageEvent = {
+      id: repo.newId(),
+      projectId: draw.projectId,
+      drawRequestId: draw.id,
+      retainageReleaseId: null,
+      type: "WITHHELD",
+      amount,
+      createdAt: createdAt ?? new Date().toISOString(),
+    };
+    // UNIQUE(draw_request_id, type) backstops at the database level.
+    repo.insertRetainageEvent(event);
+    return event;
+  }
+
+  async releaseRetainage(release: RetainageReleaseRequest, createdAt?: string): Promise<RetainageEvent> {
+    if (
+      repo
+        .listRetainageEventsForProject(release.projectId)
+        .some((e) => e.retainageReleaseId === release.id)
+    ) {
+      throw new Error("This retainage release has already been recorded");
+    }
+    const event: RetainageEvent = {
+      id: repo.newId(),
+      projectId: release.projectId,
+      drawRequestId: null,
+      retainageReleaseId: release.id,
+      type: "RELEASED",
+      amount: release.amount,
+      createdAt: createdAt ?? new Date().toISOString(),
+    };
+    // UNIQUE(retainage_release_id) backstops at the database level.
+    repo.insertRetainageEvent(event);
     return event;
   }
 

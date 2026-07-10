@@ -126,6 +126,8 @@ function toApprovalRequest(r: Row): ApprovalRequest {
     id: r.id as string,
     milestoneId: (r.milestone_id as string) ?? null,
     drawRequestId: (r.draw_request_id as string) ?? null,
+    changeOrderId: (r.change_order_id as string) ?? null,
+    retainageReleaseId: (r.retainage_release_id as string) ?? null,
     subjectType: ((r.subject_type as string) ?? "MILESTONE") as ApprovalRequest["subjectType"],
     status: r.status as ApprovalRequest["status"],
     requiredRoles: JSON.parse(r.required_roles as string),
@@ -434,11 +436,13 @@ export function insertApprovalRequest(a: ApprovalRequest): void {
   getDb()
     .prepare(
       `INSERT INTO approval_requests (id, milestone_id, draw_request_id,
-         subject_type, status, required_roles, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+         change_order_id, retainage_release_id, subject_type, status,
+         required_roles, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       a.id, a.milestoneId, a.drawRequestId ?? null,
+      a.changeOrderId ?? null, a.retainageReleaseId ?? null,
       a.subjectType ?? "MILESTONE", a.status,
       JSON.stringify(a.requiredRoles), a.createdAt
     );
@@ -485,6 +489,24 @@ export function listPendingDrawApprovalRequests(): ApprovalRequest[] {
     )
     .all()
     .map((r) => toApprovalRequest(r as Row));
+}
+
+export function getApprovalRequestForChangeOrder(changeOrderId: string): ApprovalRequest | null {
+  const r = getDb()
+    .prepare(
+      "SELECT * FROM approval_requests WHERE change_order_id = ? ORDER BY created_at DESC LIMIT 1"
+    )
+    .get(changeOrderId);
+  return r ? toApprovalRequest(r as Row) : null;
+}
+
+export function getApprovalRequestForRetainageRelease(releaseId: string): ApprovalRequest | null {
+  const r = getDb()
+    .prepare(
+      "SELECT * FROM approval_requests WHERE retainage_release_id = ? ORDER BY created_at DESC LIMIT 1"
+    )
+    .get(releaseId);
+  return r ? toApprovalRequest(r as Row) : null;
 }
 
 export function getApprovalRequestForDraw(drawRequestId: string): ApprovalRequest | null {
@@ -649,6 +671,8 @@ import type {
   DrawEvidenceLink, DrawEvent, DrawAccountEvent,
   BudgetLine, BudgetLineMap, VerifiedQuantity,
   ObvException, ExceptionEvent,
+  ChangeOrder, ChangeOrderAllocation, ChangeOrderDocument, ChangeOrderEvent,
+  RetainagePolicy, RetainageReleaseRequest, RetainageCondition, RetainageEvent,
 } from "../../shared/types";
 
 function toReport(r: Row): Report {
@@ -1917,6 +1941,8 @@ function toDrawRequest(r: Row): DrawRequest {
     currency: (r.currency as string) ?? "USD",
     periodStart: (r.period_start as string) ?? null,
     periodEnd: (r.period_end as string) ?? null,
+    retainageRate: (r.retainage_rate as number) ?? null,
+    retainageWithheld: (r.retainage_withheld as number) ?? null,
     status: r.status as DrawRequest["status"],
     reviewRecommendation: (r.review_recommendation as DrawRequest["reviewRecommendation"]) ?? null,
     reviewSummary: (r.review_summary as string) ?? null,
@@ -1931,16 +1957,16 @@ export function insertDrawRequest(d: DrawRequest): void {
       `INSERT INTO draw_requests (id, organization_id, project_id, draw_number,
          requested_by_user_id, requested_by_organization_id, submitted_at,
          requested_amount, approved_amount, recommended_amount, currency,
-         period_start, period_end, status, review_recommendation,
-         review_summary, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         period_start, period_end, retainage_rate, retainage_withheld,
+         status, review_recommendation, review_summary, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       d.id, d.organizationId, d.projectId, d.drawNumber,
       d.requestedByUserId, d.requestedByOrganizationId, d.submittedAt,
       d.requestedAmount, d.approvedAmount, d.recommendedAmount, d.currency,
-      d.periodStart, d.periodEnd, d.status, d.reviewRecommendation,
-      d.reviewSummary, d.createdAt, d.updatedAt
+      d.periodStart, d.periodEnd, d.retainageRate, d.retainageWithheld,
+      d.status, d.reviewRecommendation, d.reviewSummary, d.createdAt, d.updatedAt
     );
 }
 
@@ -1984,6 +2010,7 @@ export function updateDrawRequest(
       | "periodStart" | "periodEnd" | "status" | "reviewRecommendation"
       | "reviewSummary" | "submittedAt" | "requestedByUserId"
       | "requestedByOrganizationId" | "drawNumber"
+      | "retainageRate" | "retainageWithheld"
     >
   >
 ): void {
@@ -1994,7 +2021,8 @@ export function updateDrawRequest(
       `UPDATE draw_requests SET draw_number = ?, requested_by_user_id = ?,
          requested_by_organization_id = ?, submitted_at = ?, requested_amount = ?,
          approved_amount = ?, recommended_amount = ?, currency = ?,
-         period_start = ?, period_end = ?, status = ?, review_recommendation = ?,
+         period_start = ?, period_end = ?, retainage_rate = ?,
+         retainage_withheld = ?, status = ?, review_recommendation = ?,
          review_summary = ?, updated_at = ?
        WHERE id = ?`
     )
@@ -2011,6 +2039,8 @@ export function updateDrawRequest(
       patch.currency ?? cur.currency,
       patch.periodStart !== undefined ? patch.periodStart : cur.periodStart,
       patch.periodEnd !== undefined ? patch.periodEnd : cur.periodEnd,
+      patch.retainageRate !== undefined ? patch.retainageRate : cur.retainageRate,
+      patch.retainageWithheld !== undefined ? patch.retainageWithheld : cur.retainageWithheld,
       patch.status ?? cur.status,
       patch.reviewRecommendation !== undefined ? patch.reviewRecommendation : cur.reviewRecommendation,
       patch.reviewSummary !== undefined ? patch.reviewSummary : cur.reviewSummary,
@@ -2045,6 +2075,7 @@ function toDrawLine(r: Row): DrawLineItem {
     sort: r.sort as number,
     budgetLineId: (r.budget_line_id as string) ?? null,
     milestoneId: (r.milestone_id as string) ?? null,
+    changeOrderId: (r.change_order_id as string) ?? null,
     description: r.description as string,
     scheduledValue,
     previouslyPaid,
@@ -2072,14 +2103,15 @@ export function insertDrawLine(l: DrawLineItem): void {
   getDb()
     .prepare(
       `INSERT INTO draw_line_items (id, draw_request_id, sort, budget_line_id,
-         milestone_id, description, scheduled_value, previously_paid,
+         milestone_id, change_order_id, description, scheduled_value, previously_paid,
          current_requested, materials_stored, retainage_amount,
          percent_complete_claimed, percent_complete_verified, supported_amount,
          status, review_notes, reviewed_by_user_id, reviewed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       l.id, l.drawRequestId, l.sort, l.budgetLineId, l.milestoneId,
+      l.changeOrderId ?? null,
       l.description, l.scheduledValue, l.previouslyPaid, l.currentRequested,
       l.materialsStored, l.retainageAmount, l.percentCompleteClaimed,
       l.percentCompleteVerified, l.supportedAmount, l.status, l.reviewNotes,
@@ -2667,6 +2699,367 @@ export function listExceptionEvents(exceptionId: string): ExceptionEvent[] {
       type: r.type as ExceptionEvent["type"],
       detail: r.detail as string,
       actorUserId: (r.actor_user_id as string) ?? null,
+      createdAt: r.created_at as string,
+    }));
+}
+
+// ============== change orders + retainage (additive) ===================
+// Financial-governance CRUD only. No function below can create evidence,
+// verifications, approval records, ledger entries, or account events.
+
+function toChangeOrder(r: Row): ChangeOrder {
+  return {
+    id: r.id as string,
+    organizationId: r.organization_id as string,
+    projectId: r.project_id as string,
+    changeOrderNumber: r.change_order_number as number,
+    title: r.title as string,
+    description: (r.description as string) ?? "",
+    reasonCategory: r.reason_category as ChangeOrder["reasonCategory"],
+    requestedByUserId: r.requested_by_user_id as string,
+    requestedAt: (r.requested_at as string) ?? null,
+    requestedAmount: r.requested_amount as number,
+    approvedAmount: (r.approved_amount as number) ?? null,
+    currency: (r.currency as string) ?? "USD",
+    scheduleImpactDays: (r.schedule_impact_days as number) ?? null,
+    status: r.status as ChangeOrder["status"],
+    affectedMilestoneIds: JSON.parse((r.affected_milestone_ids as string) || "[]"),
+    affectedBudgetLineIds: JSON.parse((r.affected_budget_line_ids as string) || "[]"),
+    appliedAt: (r.applied_at as string) ?? null,
+    appliedSnapshotVersion: (r.applied_snapshot_version as number) ?? null,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+    supportingDocumentCount: countChangeOrderDocuments(r.id as string),
+  };
+}
+
+function countChangeOrderDocuments(changeOrderId: string): number {
+  const r = getDb()
+    .prepare("SELECT COUNT(*) AS c FROM change_order_documents WHERE change_order_id = ?")
+    .get(changeOrderId) as Row;
+  return r.c as number;
+}
+
+export function insertChangeOrder(c: ChangeOrder): void {
+  getDb()
+    .prepare(
+      `INSERT INTO change_orders (id, organization_id, project_id,
+         change_order_number, title, description, reason_category,
+         requested_by_user_id, requested_at, requested_amount, approved_amount,
+         currency, schedule_impact_days, status, affected_milestone_ids,
+         affected_budget_line_ids, applied_at, applied_snapshot_version,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      c.id, c.organizationId, c.projectId, c.changeOrderNumber, c.title,
+      c.description, c.reasonCategory, c.requestedByUserId, c.requestedAt,
+      c.requestedAmount, c.approvedAmount, c.currency, c.scheduleImpactDays,
+      c.status, JSON.stringify(c.affectedMilestoneIds),
+      JSON.stringify(c.affectedBudgetLineIds), c.appliedAt,
+      c.appliedSnapshotVersion, c.createdAt, c.updatedAt
+    );
+}
+
+export function getChangeOrder(id: string): ChangeOrder | null {
+  const r = getDb().prepare("SELECT * FROM change_orders WHERE id = ?").get(id);
+  return r ? toChangeOrder(r as Row) : null;
+}
+
+export function listChangeOrdersForProject(projectId: string): ChangeOrder[] {
+  return getDb()
+    .prepare("SELECT * FROM change_orders WHERE project_id = ? ORDER BY change_order_number")
+    .all(projectId)
+    .map((r) => toChangeOrder(r as Row));
+}
+
+export function listChangeOrders(): ChangeOrder[] {
+  return getDb()
+    .prepare("SELECT * FROM change_orders ORDER BY created_at DESC")
+    .all()
+    .map((r) => toChangeOrder(r as Row));
+}
+
+export function nextChangeOrderNumber(projectId: string): number {
+  const r = getDb()
+    .prepare("SELECT COALESCE(MAX(change_order_number), 0) AS m FROM change_orders WHERE project_id = ?")
+    .get(projectId) as Row;
+  return (r.m as number) + 1;
+}
+
+export function updateChangeOrder(
+  id: string,
+  patch: Partial<
+    Pick<
+      ChangeOrder,
+      | "title" | "description" | "reasonCategory" | "requestedAt"
+      | "requestedAmount" | "approvedAmount" | "scheduleImpactDays" | "status"
+      | "affectedMilestoneIds" | "affectedBudgetLineIds" | "appliedAt"
+      | "appliedSnapshotVersion"
+    >
+  >
+): void {
+  const cur = getChangeOrder(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE change_orders SET title = ?, description = ?, reason_category = ?,
+         requested_at = ?, requested_amount = ?, approved_amount = ?,
+         schedule_impact_days = ?, status = ?, affected_milestone_ids = ?,
+         affected_budget_line_ids = ?, applied_at = ?,
+         applied_snapshot_version = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.title ?? cur.title,
+      patch.description ?? cur.description,
+      patch.reasonCategory ?? cur.reasonCategory,
+      patch.requestedAt !== undefined ? patch.requestedAt : cur.requestedAt,
+      patch.requestedAmount ?? cur.requestedAmount,
+      patch.approvedAmount !== undefined ? patch.approvedAmount : cur.approvedAmount,
+      patch.scheduleImpactDays !== undefined ? patch.scheduleImpactDays : cur.scheduleImpactDays,
+      patch.status ?? cur.status,
+      JSON.stringify(patch.affectedMilestoneIds ?? cur.affectedMilestoneIds),
+      JSON.stringify(patch.affectedBudgetLineIds ?? cur.affectedBudgetLineIds),
+      patch.appliedAt !== undefined ? patch.appliedAt : cur.appliedAt,
+      patch.appliedSnapshotVersion !== undefined ? patch.appliedSnapshotVersion : cur.appliedSnapshotVersion,
+      new Date().toISOString(),
+      id
+    );
+}
+
+function toCoAllocation(r: Row): ChangeOrderAllocation {
+  return {
+    id: r.id as string,
+    changeOrderId: r.change_order_id as string,
+    budgetLineId: r.budget_line_id as string,
+    amount: r.amount as number,
+    note: (r.note as string) ?? null,
+  };
+}
+
+export function insertCoAllocation(a: ChangeOrderAllocation): void {
+  getDb()
+    .prepare(
+      `INSERT INTO change_order_allocations (id, change_order_id, budget_line_id, amount, note)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(a.id, a.changeOrderId, a.budgetLineId, a.amount, a.note);
+}
+
+export function listCoAllocations(changeOrderId: string): ChangeOrderAllocation[] {
+  return getDb()
+    .prepare("SELECT * FROM change_order_allocations WHERE change_order_id = ? ORDER BY rowid")
+    .all(changeOrderId)
+    .map((r) => toCoAllocation(r as Row));
+}
+
+export function deleteCoAllocation(id: string): void {
+  getDb().prepare("DELETE FROM change_order_allocations WHERE id = ?").run(id);
+}
+
+export function insertCoDocument(d: ChangeOrderDocument): void {
+  getDb()
+    .prepare(
+      `INSERT INTO change_order_documents (id, change_order_id, title, doc_type,
+         note, uploaded_by_user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(d.id, d.changeOrderId, d.title, d.docType, d.note, d.uploadedByUserId, d.createdAt);
+}
+
+export function listCoDocuments(changeOrderId: string): ChangeOrderDocument[] {
+  return getDb()
+    .prepare("SELECT * FROM change_order_documents WHERE change_order_id = ? ORDER BY created_at")
+    .all(changeOrderId)
+    .map((r) => ({
+      id: r.id as string,
+      changeOrderId: r.change_order_id as string,
+      title: r.title as string,
+      docType: r.doc_type as string,
+      note: (r.note as string) ?? null,
+      uploadedByUserId: r.uploaded_by_user_id as string,
+      createdAt: r.created_at as string,
+    }));
+}
+
+export function insertCoEvent(e: ChangeOrderEvent): void {
+  getDb()
+    .prepare(
+      `INSERT INTO change_order_events (id, change_order_id, type, detail, actor_user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(e.id, e.changeOrderId, e.type, e.detail, e.actorUserId, e.createdAt);
+}
+
+export function listCoEvents(changeOrderId: string): ChangeOrderEvent[] {
+  return getDb()
+    .prepare("SELECT * FROM change_order_events WHERE change_order_id = ? ORDER BY created_at, rowid")
+    .all(changeOrderId)
+    .map((r) => ({
+      id: r.id as string,
+      changeOrderId: r.change_order_id as string,
+      type: r.type as ChangeOrderEvent["type"],
+      detail: r.detail as string,
+      actorUserId: (r.actor_user_id as string) ?? null,
+      createdAt: r.created_at as string,
+    }));
+}
+
+// ---------- retainage ----------
+
+export function getRetainagePolicy(projectId: string): RetainagePolicy | null {
+  const r = getDb().prepare("SELECT * FROM retainage_policies WHERE project_id = ?").get(projectId);
+  if (!r) return null;
+  const row = r as Row;
+  return {
+    projectId: row.project_id as string,
+    retainagePercent: row.retainage_percent as number,
+    requiredConditions: JSON.parse((row.required_conditions as string) || "[]"),
+    updatedAt: row.updated_at as string,
+    updatedBy: (row.updated_by as string) ?? null,
+  };
+}
+
+export function upsertRetainagePolicy(p: RetainagePolicy): void {
+  getDb()
+    .prepare(
+      `INSERT INTO retainage_policies (project_id, retainage_percent, required_conditions, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(project_id) DO UPDATE SET
+         retainage_percent = excluded.retainage_percent,
+         required_conditions = excluded.required_conditions,
+         updated_at = excluded.updated_at,
+         updated_by = excluded.updated_by`
+    )
+    .run(p.projectId, p.retainagePercent, JSON.stringify(p.requiredConditions), p.updatedAt, p.updatedBy);
+}
+
+function toRetainageRelease(r: Row): RetainageReleaseRequest {
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    requestedByUserId: r.requested_by_user_id as string,
+    amount: r.amount as number,
+    status: r.status as RetainageReleaseRequest["status"],
+    note: (r.note as string) ?? null,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function insertRetainageRelease(rr: RetainageReleaseRequest): void {
+  getDb()
+    .prepare(
+      `INSERT INTO retainage_release_requests (id, project_id, requested_by_user_id,
+         amount, status, note, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(rr.id, rr.projectId, rr.requestedByUserId, rr.amount, rr.status, rr.note, rr.createdAt, rr.updatedAt);
+}
+
+export function getRetainageRelease(id: string): RetainageReleaseRequest | null {
+  const r = getDb().prepare("SELECT * FROM retainage_release_requests WHERE id = ?").get(id);
+  return r ? toRetainageRelease(r as Row) : null;
+}
+
+export function listRetainageReleasesForProject(projectId: string): RetainageReleaseRequest[] {
+  return getDb()
+    .prepare("SELECT * FROM retainage_release_requests WHERE project_id = ? ORDER BY created_at DESC")
+    .all(projectId)
+    .map((r) => toRetainageRelease(r as Row));
+}
+
+export function updateRetainageRelease(
+  id: string,
+  patch: Partial<Pick<RetainageReleaseRequest, "status" | "note" | "amount">>
+): void {
+  const cur = getRetainageRelease(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      "UPDATE retainage_release_requests SET status = ?, note = ?, amount = ?, updated_at = ? WHERE id = ?"
+    )
+    .run(
+      patch.status ?? cur.status,
+      patch.note !== undefined ? patch.note : cur.note,
+      patch.amount ?? cur.amount,
+      new Date().toISOString(),
+      id
+    );
+}
+
+function toRetainageCondition(r: Row): RetainageCondition {
+  return {
+    id: r.id as string,
+    releaseRequestId: r.release_request_id as string,
+    condition: r.condition as RetainageCondition["condition"],
+    satisfied: Boolean(r.satisfied),
+    note: (r.note as string) ?? null,
+    satisfiedByUserId: (r.satisfied_by_user_id as string) ?? null,
+    satisfiedAt: (r.satisfied_at as string) ?? null,
+  };
+}
+
+export function insertRetainageCondition(c: RetainageCondition): void {
+  getDb()
+    .prepare(
+      `INSERT INTO retainage_conditions (id, release_request_id, condition,
+         satisfied, note, satisfied_by_user_id, satisfied_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(c.id, c.releaseRequestId, c.condition, c.satisfied ? 1 : 0, c.note, c.satisfiedByUserId, c.satisfiedAt);
+}
+
+export function listRetainageConditions(releaseRequestId: string): RetainageCondition[] {
+  return getDb()
+    .prepare("SELECT * FROM retainage_conditions WHERE release_request_id = ? ORDER BY rowid")
+    .all(releaseRequestId)
+    .map((r) => toRetainageCondition(r as Row));
+}
+
+export function updateRetainageCondition(
+  id: string,
+  patch: Partial<Pick<RetainageCondition, "satisfied" | "note" | "satisfiedByUserId" | "satisfiedAt">>
+): void {
+  const r = getDb().prepare("SELECT * FROM retainage_conditions WHERE id = ?").get(id);
+  if (!r) return;
+  const cur = toRetainageCondition(r as Row);
+  getDb()
+    .prepare(
+      "UPDATE retainage_conditions SET satisfied = ?, note = ?, satisfied_by_user_id = ?, satisfied_at = ? WHERE id = ?"
+    )
+    .run(
+      (patch.satisfied !== undefined ? patch.satisfied : cur.satisfied) ? 1 : 0,
+      patch.note !== undefined ? patch.note : cur.note,
+      patch.satisfiedByUserId !== undefined ? patch.satisfiedByUserId : cur.satisfiedByUserId,
+      patch.satisfiedAt !== undefined ? patch.satisfiedAt : cur.satisfiedAt,
+      id
+    );
+}
+
+// Retainage events — inserted ONLY by the VirtualAccountService.
+export function insertRetainageEvent(e: RetainageEvent): void {
+  getDb()
+    .prepare(
+      `INSERT INTO retainage_events (id, project_id, draw_request_id,
+         retainage_release_id, type, amount, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(e.id, e.projectId, e.drawRequestId, e.retainageReleaseId, e.type, e.amount, e.createdAt);
+}
+
+export function listRetainageEventsForProject(projectId: string): RetainageEvent[] {
+  return getDb()
+    .prepare("SELECT * FROM retainage_events WHERE project_id = ? ORDER BY created_at")
+    .all(projectId)
+    .map((r) => ({
+      id: r.id as string,
+      projectId: r.project_id as string,
+      drawRequestId: (r.draw_request_id as string) ?? null,
+      retainageReleaseId: (r.retainage_release_id as string) ?? null,
+      type: r.type as RetainageEvent["type"],
+      amount: r.amount as number,
       createdAt: r.created_at as string,
     }));
 }

@@ -116,13 +116,17 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   id TEXT PRIMARY KEY,
   milestone_id TEXT REFERENCES milestones(id),
   draw_request_id TEXT REFERENCES draw_requests(id),
-  subject_type TEXT NOT NULL DEFAULT 'MILESTONE' CHECK (subject_type IN ('MILESTONE','DRAW')),
+  change_order_id TEXT REFERENCES change_orders(id),
+  retainage_release_id TEXT REFERENCES retainage_release_requests(id),
+  subject_type TEXT NOT NULL DEFAULT 'MILESTONE' CHECK (subject_type IN ('MILESTONE','DRAW','CHANGE_ORDER','RETAINAGE')),
   status TEXT NOT NULL DEFAULT 'PENDING',
   required_roles TEXT NOT NULL, -- JSON UserRole[]
   created_at TEXT NOT NULL,
   CHECK (
     (subject_type = 'MILESTONE' AND milestone_id IS NOT NULL) OR
-    (subject_type = 'DRAW' AND draw_request_id IS NOT NULL)
+    (subject_type = 'DRAW' AND draw_request_id IS NOT NULL) OR
+    (subject_type = 'CHANGE_ORDER' AND change_order_id IS NOT NULL) OR
+    (subject_type = 'RETAINAGE' AND retainage_release_id IS NOT NULL)
   )
 );
 
@@ -488,6 +492,8 @@ CREATE TABLE IF NOT EXISTS draw_requests (
   currency TEXT NOT NULL DEFAULT 'USD',
   period_start TEXT,
   period_end TEXT,
+  retainage_rate REAL,
+  retainage_withheld INTEGER,
   status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN
     ('DRAFT','SUBMITTED','UNDER_REVIEW','CLARIFICATION_REQUIRED',
      'READY_FOR_GOVERNANCE','PARTIALLY_APPROVED','APPROVED','RELEASED',
@@ -511,6 +517,7 @@ CREATE TABLE IF NOT EXISTS draw_line_items (
   current_requested INTEGER NOT NULL DEFAULT 0,
   materials_stored INTEGER,
   retainage_amount INTEGER,
+  change_order_id TEXT,
   percent_complete_claimed REAL,
   percent_complete_verified REAL,
   supported_amount INTEGER,
@@ -684,6 +691,114 @@ CREATE TABLE IF NOT EXISTS exception_events (
   actor_user_id TEXT REFERENCES users(id),
   created_at TEXT NOT NULL
 );
+
+
+-- ============== change orders + retainage (additive) ===================
+-- A submitted change order NEVER changes configuration; only formal
+-- approval applies it (transactionally, audited, snapshotted). Retainage
+-- state changes only inside governed transitions via VirtualAccountService.
+
+CREATE TABLE IF NOT EXISTS change_orders (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  change_order_number INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  reason_category TEXT NOT NULL CHECK (reason_category IN
+    ('OWNER_REQUEST','DESIGN_CHANGE','SITE_CONDITION','MATERIAL_CHANGE',
+     'SCOPE_CHANGE','REGULATORY','SCHEDULE','CORRECTION','OTHER')),
+  requested_by_user_id TEXT NOT NULL REFERENCES users(id),
+  requested_at TEXT,
+  requested_amount INTEGER NOT NULL DEFAULT 0,
+  approved_amount INTEGER,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  schedule_impact_days INTEGER,
+  status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN
+    ('DRAFT','SUBMITTED','UNDER_REVIEW','CLARIFICATION_REQUIRED','APPROVED',
+     'PARTIALLY_APPROVED','REJECTED','CANCELLED','IMPLEMENTED')),
+  affected_milestone_ids TEXT NOT NULL DEFAULT '[]',
+  affected_budget_line_ids TEXT NOT NULL DEFAULT '[]',
+  applied_at TEXT,
+  applied_snapshot_version INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (project_id, change_order_number)
+);
+
+CREATE TABLE IF NOT EXISTS change_order_allocations (
+  id TEXT PRIMARY KEY,
+  change_order_id TEXT NOT NULL REFERENCES change_orders(id),
+  budget_line_id TEXT NOT NULL REFERENCES budget_lines(id),
+  amount INTEGER NOT NULL,
+  note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS change_order_documents (
+  id TEXT PRIMARY KEY,
+  change_order_id TEXT NOT NULL REFERENCES change_orders(id),
+  title TEXT NOT NULL,
+  doc_type TEXT NOT NULL DEFAULT 'OTHER',
+  note TEXT,
+  uploaded_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS change_order_events (
+  id TEXT PRIMARY KEY,
+  change_order_id TEXT NOT NULL REFERENCES change_orders(id),
+  type TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+-- Retainage policy: clamped percent; no row = 0% (never silent).
+CREATE TABLE IF NOT EXISTS retainage_policies (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id),
+  retainage_percent REAL NOT NULL DEFAULT 0,
+  required_conditions TEXT NOT NULL DEFAULT '[]', -- JSON RetainageConditionType[]
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS retainage_release_requests (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  requested_by_user_id TEXT NOT NULL REFERENCES users(id),
+  amount INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING_CONDITIONS' CHECK (status IN
+    ('PENDING_CONDITIONS','READY_FOR_GOVERNANCE','APPROVED','RELEASED','RETURNED','CANCELLED')),
+  note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS retainage_conditions (
+  id TEXT PRIMARY KEY,
+  release_request_id TEXT NOT NULL REFERENCES retainage_release_requests(id),
+  condition TEXT NOT NULL,
+  satisfied INTEGER NOT NULL DEFAULT 0,
+  note TEXT,
+  satisfied_by_user_id TEXT REFERENCES users(id),
+  satisfied_at TEXT,
+  UNIQUE (release_request_id, condition)
+);
+
+-- Retainage financial-control events, written ONLY by the
+-- VirtualAccountService from governed transitions. Uniqueness makes both
+-- the per-draw withhold and the per-request release exactly-once.
+CREATE TABLE IF NOT EXISTS retainage_events (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  draw_request_id TEXT REFERENCES draw_requests(id),
+  retainage_release_id TEXT REFERENCES retainage_release_requests(id),
+  type TEXT NOT NULL CHECK (type IN ('WITHHELD','RELEASED')),
+  amount INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (draw_request_id, type),
+  UNIQUE (retainage_release_id)
+);
 `;
 
 export function getDb(): DatabaseSync {
@@ -777,6 +892,18 @@ export function getDb(): DatabaseSync {
         /* column already present */
       }
     }
+    // ---- change-order / retainage additive columns (legacy databases) ----
+    for (const ddl of [
+      "ALTER TABLE draw_line_items ADD COLUMN change_order_id TEXT",
+      "ALTER TABLE draw_requests ADD COLUMN retainage_rate REAL",
+      "ALTER TABLE draw_requests ADD COLUMN retainage_withheld INTEGER",
+    ]) {
+      try {
+        db.exec(ddl);
+      } catch {
+        /* column already present */
+      }
+    }
     // ---- draw-workflow structural migrations (legacy databases) ----
     // approval_requests gains a DRAW subject (nullable milestone_id +
     // draw_request_id + subject_type) and conversation_threads gains the
@@ -784,6 +911,7 @@ export function getDb(): DatabaseSync {
     // are rebuilt in place: identical data, new column/constraint set.
     // Fresh databases already match the SCHEMA above and are untouched.
     migrateApprovalRequestsForDraws(db);
+    migrateApprovalRequestsForChangeOrders(db);
     migrateThreadsForDraws(db);
     // Database-level inbound dedupe: one Message per external message id
     // per thread (notification replays hit this even if app checks race).
@@ -846,6 +974,45 @@ function migrateApprovalRequestsForDraws(db: DatabaseSync): void {
   db.exec(`INSERT INTO approval_requests_new
     (id, milestone_id, draw_request_id, subject_type, status, required_roles, created_at)
     SELECT id, milestone_id, NULL, 'MILESTONE', status, required_roles, created_at
+    FROM approval_requests;`);
+  db.exec("DROP TABLE approval_requests;");
+  db.exec("ALTER TABLE approval_requests_new RENAME TO approval_requests;");
+  db.exec("COMMIT;");
+  db.exec("PRAGMA foreign_keys = ON;");
+}
+
+/**
+ * Rebuild approval_requests for pre-change-order databases: adds
+ * change_order_id / retainage_release_id and the extended subject CHECK.
+ * Data is copied verbatim; ids referenced by approval_records and
+ * conversation_threads are preserved exactly.
+ */
+function migrateApprovalRequestsForChangeOrders(db: DatabaseSync): void {
+  if (hasColumn(db, "approval_requests", "change_order_id")) return;
+  db.exec("PRAGMA foreign_keys = OFF;");
+  db.exec("BEGIN;");
+  db.exec(`CREATE TABLE approval_requests_new (
+    id TEXT PRIMARY KEY,
+    milestone_id TEXT REFERENCES milestones(id),
+    draw_request_id TEXT REFERENCES draw_requests(id),
+    change_order_id TEXT REFERENCES change_orders(id),
+    retainage_release_id TEXT REFERENCES retainage_release_requests(id),
+    subject_type TEXT NOT NULL DEFAULT 'MILESTONE' CHECK (subject_type IN ('MILESTONE','DRAW','CHANGE_ORDER','RETAINAGE')),
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    required_roles TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (
+      (subject_type = 'MILESTONE' AND milestone_id IS NOT NULL) OR
+      (subject_type = 'DRAW' AND draw_request_id IS NOT NULL) OR
+      (subject_type = 'CHANGE_ORDER' AND change_order_id IS NOT NULL) OR
+      (subject_type = 'RETAINAGE' AND retainage_release_id IS NOT NULL)
+    )
+  );`);
+  db.exec(`INSERT INTO approval_requests_new
+    (id, milestone_id, draw_request_id, change_order_id, retainage_release_id,
+     subject_type, status, required_roles, created_at)
+    SELECT id, milestone_id, draw_request_id, NULL, NULL, subject_type,
+           status, required_roles, created_at
     FROM approval_requests;`);
   db.exec("DROP TABLE approval_requests;");
   db.exec("ALTER TABLE approval_requests_new RENAME TO approval_requests;");

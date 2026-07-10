@@ -25,6 +25,7 @@ import * as repo from "../db/repo";
 import { virtualAccountService } from "./VirtualAccountService";
 import { teamsNotifier } from "./TeamsNotifier";
 import { mirrorEvent, ensureDrawThread } from "./chat";
+import { computeRetainage, rateForDraw } from "./retainage";
 import type {
   ApprovalRecord,
   ApprovalRequest,
@@ -188,6 +189,8 @@ export function createDraw(
     currency: input.currency?.trim().toUpperCase().slice(0, 3) || project.pilot?.currency || "USD",
     periodStart: input.periodStart || null,
     periodEnd: input.periodEnd || null,
+    retainageRate: null,
+    retainageWithheld: null,
     status: "DRAFT",
     reviewRecommendation: null,
     reviewSummary: null,
@@ -260,6 +263,12 @@ export function addLine(
     description: string;
     budgetLineId?: string | null;
     milestoneId?: string | null;
+    changeOrderId?: string | null;
+    /** Required when billing against a change order that is not yet
+     *  APPROVED: the requester explicitly acknowledges the exception and
+     *  the line is surfaced for review — never silent, never automatic
+     *  rejection. */
+    exceptionAcknowledged?: boolean;
     scheduledValue?: number;
     previouslyPaid?: number;
     currentRequested?: number;
@@ -281,6 +290,19 @@ export function addLine(
       throw new DrawError("milestoneId must reference a milestone of the draw's project");
     }
   }
+  if (input.changeOrderId) {
+    const co = repo.getChangeOrder(input.changeOrderId);
+    if (!co || co.projectId !== draw.projectId) {
+      throw new DrawError("changeOrderId must reference a change order of the draw's project");
+    }
+    const approved = ["APPROVED", "PARTIALLY_APPROVED", "IMPLEMENTED"].includes(co.status);
+    if (!approved && !input.exceptionAcknowledged) {
+      throw new DrawError(
+        `Change order CO-${co.changeOrderNumber} is ${co.status.replace(/_/g, " ")} — billing against an unapproved change order requires an explicit exception acknowledgement and is held for review`,
+        422
+      );
+    }
+  }
   const num = (v: unknown, label: string, min = 0): number => {
     const n = Math.round(Number(v ?? 0));
     if (!Number.isFinite(n) || n < min) throw new DrawError(`${label} must be a number >= ${min}`);
@@ -292,6 +314,7 @@ export function addLine(
     sort: repo.listDrawLines(draw.id).length,
     budgetLineId: input.budgetLineId?.trim() || null,
     milestoneId: input.milestoneId || null,
+    changeOrderId: input.changeOrderId || null,
     description,
     scheduledValue: num(input.scheduledValue, "scheduledValue"),
     previouslyPaid: num(input.previouslyPaid, "previouslyPaid"),
@@ -314,7 +337,17 @@ export function addLine(
     variancePercent: null,
   };
   repo.insertDrawLine(line);
-  event(draw.id, "LINE_ADDED", `Line added: "${description}" — ${money(line.currentRequested)} requested.`, user.id);
+  const coNote = (() => {
+    if (!line.changeOrderId) return "";
+    const co = repo.getChangeOrder(line.changeOrderId);
+    const approved = co && ["APPROVED", "PARTIALLY_APPROVED", "IMPLEMENTED"].includes(co.status);
+    return co
+      ? approved
+        ? ` (change order CO-${co.changeOrderNumber})`
+        : ` (UNAPPROVED change order CO-${co.changeOrderNumber} — exception acknowledged, held for review)`
+      : "";
+  })();
+  event(draw.id, "LINE_ADDED", `Line added: "${description}" — ${money(line.currentRequested)} requested${coNote}.`, user.id);
   return repo.getDrawLine(line.id)!;
 }
 
@@ -893,6 +926,20 @@ export function computeRecommendation(drawRequestId: string): DrawRecommendation
     }
   }
 
+  // ---- unapproved change-order billing (deterministic signal) ----
+  for (const l of lines) {
+    if (!l.changeOrderId) continue;
+    const co = repo.getChangeOrder(l.changeOrderId);
+    if (co && !["APPROVED", "PARTIALLY_APPROVED", "IMPLEMENTED"].includes(co.status)) {
+      reasons.push({
+        kind: "EXCEPTION",
+        detail: `UNAPPROVED CHANGE COST INCLUDED IN DRAW: line "${l.description}" (${money(l.currentRequested)}) bills against CO-${co.changeOrderNumber} which is ${co.status.replace(/_/g, " ")}`,
+        amount: l.currentRequested,
+        lineItemId: l.id,
+      });
+    }
+  }
+
   // ---- grounded progress cross-check (informational) ----
   const links = repo.listDrawEvidenceLinks(draw.id);
   for (const l of lines) {
@@ -982,13 +1029,25 @@ export async function sendToGovernance(
       422
     );
   }
+  // Retainage computed transparently at finalize: gross supported ×
+  // policy rate (no policy = 0%). Withholding itself happens only inside
+  // the governed release transition.
+  const retainage = computeRetainage(
+    recommendation.supportedAmount,
+    rateForDraw(draw.projectId)
+  );
   repo.updateDrawRequest(draw.id, {
     status: "READY_FOR_GOVERNANCE",
     reviewRecommendation: recommendation.result,
     recommendedAmount: recommendation.supportedAmount,
+    retainageRate: retainage.ratePct,
+    retainageWithheld: retainage.withheld,
     reviewSummary:
       summary?.trim() ||
-      `${recommendation.result.replace(/_/g, " ")}: ${money(recommendation.supportedAmount)} of ${money(recommendation.requestedAmount)} supported.`,
+      `${recommendation.result.replace(/_/g, " ")}: ${money(recommendation.supportedAmount)} of ${money(recommendation.requestedAmount)} supported.` +
+        (retainage.withheld > 0
+          ? ` Retainage ${retainage.ratePct}% (${money(retainage.withheld)}) — net release eligible ${money(retainage.netEligible)}.`
+          : ""),
   });
   event(
     draw.id,
@@ -1116,18 +1175,25 @@ export async function processDrawApprovalDecision(
       event(
         draw.id,
         "GOVERNANCE_DECISION",
-        `All required approvals complete (${request.requiredRoles.join(" + ")}). Draw ${partial ? "partially approved" : "approved"} for ${money(releaseAmount)}.`,
+        `All required approvals complete (${request.requiredRoles.join(" + ")}). Draw ${partial ? "partially approved" : "approved"} for ${money(releaseAmount)} gross.`,
         user.id
       );
       // Governed release transition — exactly once, through the
-      // VirtualAccountService (the only financial gateway).
-      await virtualAccountService.releaseDraw(repo.getDrawRequest(draw.id)!, releaseAmount);
+      // VirtualAccountService (the only financial gateway). Retainage
+      // computed at finalize is withheld inside the same governed
+      // transition; the draw releases the NET amount.
+      const withheld = draw.retainageWithheld ?? 0;
+      const netRelease = releaseAmount - withheld;
+      await virtualAccountService.releaseDraw(repo.getDrawRequest(draw.id)!, netRelease);
+      if (withheld > 0) {
+        await virtualAccountService.withholdRetainage(repo.getDrawRequest(draw.id)!, withheld);
+      }
       repo.updateDrawRequest(draw.id, { status: "RELEASED" });
       released = true;
       event(
         draw.id,
         "RELEASE_TRANSITION",
-        `Governed release transition recorded on the virtual project account: ${money(releaseAmount)}${partial ? ` of ${money(draw.requestedAmount)} requested` : ""}.`,
+        `Governed release transition recorded on the virtual project account: ${money(netRelease)} net${withheld > 0 ? ` (${money(releaseAmount)} gross − ${money(withheld)} retainage at ${draw.retainageRate}%)` : ""}${partial ? ` · ${money(draw.requestedAmount)} was requested` : ""}. Retainage is released only through its own governed RetainageReleaseRequest.`,
         user.id
       );
       mirrorDraw(
