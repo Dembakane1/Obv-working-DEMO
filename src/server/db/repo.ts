@@ -673,6 +673,7 @@ import type {
   ObvException, ExceptionEvent,
   ChangeOrder, ChangeOrderAllocation, ChangeOrderDocument, ChangeOrderEvent,
   RetainagePolicy, RetainageReleaseRequest, RetainageCondition, RetainageEvent,
+  AuditPackage,
 } from "../../shared/types";
 
 function toReport(r: Row): Report {
@@ -3062,4 +3063,117 @@ export function listRetainageEventsForProject(projectId: string): RetainageEvent
       amount: r.amount as number,
       createdAt: r.created_at as string,
     }));
+}
+
+// ======================================================= audit packages
+
+function toAuditPackage(r: Row): AuditPackage {
+  return {
+    id: r.id as string,
+    organizationId: r.organization_id as string,
+    projectId: r.project_id as string,
+    packageVersion: r.package_version as number,
+    requestedBy: r.requested_by as string,
+    requestedAt: r.requested_at as string,
+    status: r.status as AuditPackage["status"],
+    asOfTimestamp: r.as_of_timestamp as string,
+    configurationVersion: r.configuration_version as number,
+    ledgerIntegrityState: r.ledger_integrity_state as string,
+    integrityState: r.integrity_state as AuditPackage["integrityState"],
+    manifestHash: (r.manifest_hash as string) ?? null,
+    storageObjectKey: (r.storage_object_key as string) ?? null,
+    completedAt: (r.completed_at as string) ?? null,
+    failureCategory: (r.failure_category as string) ?? null,
+    includeReports: Boolean(r.include_reports),
+    includeCommMetadata: Boolean(r.include_comm_metadata),
+    fileCount: r.file_count as number,
+    sizeBytes: r.size_bytes as number,
+  };
+}
+
+export function insertAuditPackage(p: AuditPackage): void {
+  getDb()
+    .prepare(
+      `INSERT INTO audit_packages (id, organization_id, project_id, package_version,
+         requested_by, requested_at, status, as_of_timestamp, configuration_version,
+         ledger_integrity_state, integrity_state, manifest_hash, storage_object_key,
+         completed_at, failure_category, include_reports, include_comm_metadata,
+         file_count, size_bytes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      p.id, p.organizationId, p.projectId, p.packageVersion,
+      p.requestedBy, p.requestedAt, p.status, p.asOfTimestamp, p.configurationVersion,
+      p.ledgerIntegrityState, p.integrityState, p.manifestHash, p.storageObjectKey,
+      p.completedAt, p.failureCategory, p.includeReports ? 1 : 0,
+      p.includeCommMetadata ? 1 : 0, p.fileCount, p.sizeBytes
+    );
+}
+
+export function getAuditPackage(id: string): AuditPackage | null {
+  const r = getDb().prepare("SELECT * FROM audit_packages WHERE id = ?").get(id) as Row | undefined;
+  return r ? toAuditPackage(r) : null;
+}
+
+export function listAuditPackagesForProject(projectId: string): AuditPackage[] {
+  return (getDb()
+    .prepare("SELECT * FROM audit_packages WHERE project_id = ? ORDER BY package_version DESC")
+    .all(projectId) as Row[]).map(toAuditPackage);
+}
+
+export function nextAuditPackageVersion(projectId: string): number {
+  const r = getDb()
+    .prepare("SELECT MAX(package_version) AS v FROM audit_packages WHERE project_id = ?")
+    .get(projectId) as Row;
+  return ((r?.v as number) ?? 0) + 1;
+}
+
+export function updateAuditPackage(
+  id: string,
+  patch: Partial<
+    Pick<
+      AuditPackage,
+      | "status" | "ledgerIntegrityState" | "integrityState" | "manifestHash"
+      | "storageObjectKey" | "completedAt" | "failureCategory" | "fileCount" | "sizeBytes"
+    >
+  >
+): void {
+  const cur = getAuditPackage(id);
+  if (!cur) return;
+  getDb()
+    .prepare(
+      `UPDATE audit_packages SET status = ?, ledger_integrity_state = ?,
+         integrity_state = ?, manifest_hash = ?, storage_object_key = ?,
+         completed_at = ?, failure_category = ?, file_count = ?, size_bytes = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.status ?? cur.status,
+      patch.ledgerIntegrityState ?? cur.ledgerIntegrityState,
+      patch.integrityState ?? cur.integrityState,
+      patch.manifestHash !== undefined ? patch.manifestHash : cur.manifestHash,
+      patch.storageObjectKey !== undefined ? patch.storageObjectKey : cur.storageObjectKey,
+      patch.completedAt !== undefined ? patch.completedAt : cur.completedAt,
+      patch.failureCategory !== undefined ? patch.failureCategory : cur.failureCategory,
+      patch.fileCount ?? cur.fileCount,
+      patch.sizeBytes ?? cur.sizeBytes,
+      id
+    );
+}
+
+/** Every approval request governing this project, across ALL subject
+ *  types (milestone, draw, change order, retainage) — audit-package use. */
+export function listAllApprovalRequestsForProject(projectId: string): ApprovalRequest[] {
+  return getDb()
+    .prepare(
+      `SELECT ar.* FROM approval_requests ar
+       LEFT JOIN milestones m ON m.id = ar.milestone_id
+       LEFT JOIN draw_requests d ON d.id = ar.draw_request_id
+       LEFT JOIN change_orders c ON c.id = ar.change_order_id
+       LEFT JOIN retainage_release_requests rr ON rr.id = ar.retainage_release_id
+       WHERE COALESCE(m.project_id, d.project_id, c.project_id, rr.project_id) = ?
+       ORDER BY ar.created_at`
+    )
+    .all(projectId)
+    .map((r) => toApprovalRequest(r as Row));
 }

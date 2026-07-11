@@ -128,6 +128,41 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Project Audit Package (v17)
+
+One-click, auditor/funder/regulator-ready export answering: what was the
+configuration, what changed, what evidence was submitted, how it was
+verified, what exceptions occurred, who approved what, what money state
+changed, which change orders were approved, what retainage remains, and
+whether the Evidence Ledger is intact. The package is a structured ZIP —
+not merely another PDF — that ASSEMBLES and REFERENCES the governed
+sources (configuration snapshots, Evidence Ledger, verifications,
+approvals, draws, budget, exceptions, change orders, retainage, report
+index) without duplicating or rewriting them.
+
+Contents: `manifest.json` (record counts, integrity results, hashed file
+inventory, recomputable manifest hash), a human-readable cover summary
+PDF (printable HTML when no renderer), and numbered register sections
+(`00_project_summary` … `11_reports`). All timestamped registers are
+consistent to an explicit **as-of** point. Before a package is READY,
+integrity is validated: ledger chain, configuration snapshot hashes,
+exactly-once release transitions, approval-record consistency, evidence
+object existence. Failures are represented honestly — **READY WITH
+INTEGRITY WARNING** — never hidden.
+
+Controls: generation/download restricted to funder rep, project manager
+and compliance reviewer with tenant access (cross-tenant → 404); every
+generation and download is written to the configuration audit trail;
+packages are immutable once READY; regeneration creates a new version
+and retains prior versions as SUPERSEDED (still downloadable). Never
+included: secrets, invitation tokens, provider credentials, chat
+transcripts (communication metadata counts are an explicit opt-in),
+evidence media (hashes + protected references instead).
+`scripts/auditpackage-test.js` (30 checkpoints) covers the 20 required
+cases; see `docs/AUDIT_PACKAGE.md`.
+
+---
+
 ## Change Orders + Retainage Control (v16)
 
 Construction-native change control and retainage discipline that

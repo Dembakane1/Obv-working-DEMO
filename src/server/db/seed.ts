@@ -11,7 +11,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getDb, resetDb } from "./index";
+import { AUDIT_PACKAGES_DIR, getDb, resetDb } from "./index";
 import * as repo from "./repo";
 import { COMM_MEDIA_DIR } from "../services/whatsappSync/provider";
 import { runVerificationPipeline } from "../services/verification/index";
@@ -1024,6 +1024,15 @@ function purgeDemoScopedRows(): void {
   }
   db.prepare("DELETE FROM retainage_events WHERE project_id = ?").run(DEMO_PROJECT);
   db.prepare("DELETE FROM retainage_policies WHERE project_id = ?").run(DEMO_PROJECT);
+  // Audit packages generated against the demo project (rows + ZIP files).
+  const apIds = db
+    .prepare("SELECT id FROM audit_packages WHERE project_id = ?")
+    .all(DEMO_PROJECT)
+    .map((r) => (r as { id: string }).id);
+  for (const id of apIds) {
+    fs.rmSync(path.join(AUDIT_PACKAGES_DIR, id), { recursive: true, force: true });
+  }
+  db.prepare("DELETE FROM audit_packages WHERE project_id = ?").run(DEMO_PROJECT);
   // Exception control records for the demo project.
   db.prepare(
     `DELETE FROM exception_events WHERE exception_id IN

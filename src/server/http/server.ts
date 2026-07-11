@@ -93,6 +93,9 @@ import * as changeOrders from "../services/changeOrders";
 import { ChangeOrderError } from "../services/changeOrders";
 import * as retainage from "../services/retainage";
 import { RetainageError } from "../services/retainage";
+import * as auditPackages from "../services/auditPackage";
+import { AuditPackageError } from "../services/auditPackage";
+import { renderAuditCover } from "../view/auditCover";
 import { CoDetailData, renderCoDetail, renderCoNew, renderCoRegister } from "../view/coPages";
 import {
   ExceptionDetailData,
@@ -756,7 +759,9 @@ function stateFingerprint(): string {
               (SELECT COALESCE(MAX(updated_at), '') FROM change_orders) AS cou,
               (SELECT COUNT(*) FROM retainage_events) AS re,
               (SELECT COUNT(*) FROM retainage_release_requests) AS rrr,
-              (SELECT COALESCE(MAX(updated_at), '') FROM retainage_release_requests) AS rrru`
+              (SELECT COALESCE(MAX(updated_at), '') FROM retainage_release_requests) AS rrru,
+              (SELECT COUNT(*) FROM audit_packages) AS ap,
+              (SELECT COALESCE(MAX(completed_at), '') FROM audit_packages) AS apu`
     )
     .get();
   return createHash("sha256")
@@ -2500,6 +2505,131 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ========================= project audit packages =====================
+  // One-click auditor-ready export. Generation ASSEMBLES governed sources;
+  // nothing in these routes can create evidence, approvals, ledger entries
+  // or release state. Generation and every download are audited.
+
+  const apGenerateMatch = /^\/api\/projects\/([^/]+)\/audit-packages$/.exec(pathname);
+  if (method === "POST" && apGenerateMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const text = (await readBody(req, 64 * 1024)).toString("utf8");
+    const p: Record<string, unknown> = isFormPost(req)
+      ? Object.fromEntries(new URLSearchParams(text))
+      : text
+        ? JSON.parse(text)
+        : {};
+    const truthy = (v: unknown) => v === true || v === "true" || v === "1" || v === "on";
+    try {
+      const pkg = await auditPackages.generateAuditPackage(user, apGenerateMatch[1], {
+        asOf: p.asOf ? String(p.asOf) : null,
+        includeReports: p.includeReports === undefined ? true : truthy(p.includeReports),
+        includeCommMetadata: truthy(p.includeCommMetadata),
+        renderCoverHtml: renderAuditCover,
+        renderCoverPdf: async (html) => {
+          if (!pdfRendererAvailable()) return null;
+          const key = `audit-cover-${randomUUID()}`;
+          const outPath = path.join(REPORTS_DIR, `${key}.pdf`);
+          pendingReportHtml.set(key, html);
+          try {
+            fs.mkdirSync(REPORTS_DIR, { recursive: true });
+            const config = Buffer.from(
+              JSON.stringify({
+                url: `http://127.0.0.1:${PORT}/report-cache/${key}?token=${previewToken}`,
+                outPath,
+                projectName: "Project Audit Package",
+                generatedAt: new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC"),
+              })
+            ).toString("base64");
+            await new Promise<void>((resolve, reject) => {
+              execFile(
+                process.execPath,
+                [RENDER_SCRIPT, config],
+                { env: { ...process.env, NODE_PATH: PLAYWRIGHT_NODE_PATH }, timeout: 90_000 },
+                (err, _stdout, stderr) => (err ? reject(new Error(stderr || err.message)) : resolve())
+              );
+            });
+            return fs.existsSync(outPath) ? fs.readFileSync(outPath) : null;
+          } catch (err) {
+            // Honest fallback: the package ships the printable HTML cover.
+            console.error("[audit-package] cover PDF render failed:", (err as Error).message);
+            return null;
+          } finally {
+            pendingReportHtml.delete(key);
+            try {
+              fs.unlinkSync(outPath);
+            } catch {
+              /* not created */
+            }
+          }
+        },
+      });
+      if (isFormPost(req)) {
+        redirect(res, `/reports?apReady=${pkg.id}`);
+      } else {
+        sendJson(res, { auditPackage: pkg }, 201);
+      }
+    } catch (err) {
+      if (isFormPost(req) && err instanceof AuditPackageError) {
+        redirect(res, `/reports?apError=${encodeURIComponent(err.message)}`);
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
+
+  if (method === "GET" && apGenerateMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    sendJson(res, { auditPackages: auditPackages.listPackages(user, apGenerateMatch[1]) });
+    return;
+  }
+
+  const apStatusMatch = /^\/api\/audit-packages\/([^/]+)$/.exec(pathname);
+  if (method === "GET" && apStatusMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const pkg = repo.getAuditPackage(apStatusMatch[1]);
+    if (!pkg) {
+      sendJson(res, { error: "Unknown audit package" }, 404);
+      return;
+    }
+    // Same tenant + role gate as generation/download (404 across tenants).
+    auditPackages.listPackages(user, pkg.projectId);
+    sendJson(res, { auditPackage: pkg });
+    return;
+  }
+
+  const apDownloadMatch = /^\/audit-packages\/([^/]+)\/download$/.exec(pathname);
+  if (method === "GET" && apDownloadMatch) {
+    const user = currentUser(req);
+    if (!user) {
+      redirect(res, "/");
+      return;
+    }
+    const { pkg, filePath, filename } = auditPackages.resolvePackageDownload(user, apDownloadMatch[1]);
+    auditPackages.auditPackageDownload(user, pkg);
+    res.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Length": fs.statSync(filePath).size,
+      "Cache-Control": "no-cache",
+    });
+    res.end(fs.readFileSync(filePath));
+    return;
+  }
+
   // Reset the DEMO data to its seeded state. Pilot projects created
   // through onboarding are preserved — wiping everything requires the
   // explicitly gated Development Full Reset below.
@@ -3375,6 +3505,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         reports: repo.listReports(),
         users: usersById(),
         pdfError: url.searchParams.get("error") === "pdf",
+        auditPackages: repo
+          .listProjects()
+          .filter((p) => budget.canAccessProjectFinance(user!, p))
+          .flatMap((p) => repo.listAuditPackagesForProject(p.id))
+          .sort((a, b) => b.requestedAt.localeCompare(a.requestedAt)),
+        canGenerateAudit: ["FUNDER_REP", "PROJECT_MANAGER", "COMPLIANCE_REVIEWER"].includes(user!.role),
+        apReady: url.searchParams.get("apReady"),
+        apError: url.searchParams.get("apError"),
       })
     );
     return;
@@ -3793,7 +3931,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";

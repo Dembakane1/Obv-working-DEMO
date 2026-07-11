@@ -1171,6 +1171,32 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
     });
   }
 
+  // Audit-readiness pointer — NOT an audit conclusion. Offered only where
+  // useful: governed releases exist and no current audit package covers
+  // the present configuration version.
+  for (const p of projects) {
+    const hasReleases = repo
+      .listAccountEventsForProject(p.id)
+      .some((e) => e.type === "RELEASED");
+    if (!hasReleases) continue;
+    const packages = repo.listAuditPackagesForProject(p.id);
+    const current = packages.find(
+      (pkg) => pkg.status === "READY" && pkg.configurationVersion === (p.pilot?.configVersion ?? 1)
+    );
+    if (current) continue;
+    recommendations.push({
+      priority: "INFO",
+      title: `Generate an audit package for ${p.name}`,
+      why: packages.length
+        ? "Funds have been released and the configuration version has changed since the last audit package — a fresh package captures the current governed state."
+        : "Funds have been released under governance and no audit package has been generated yet. The package assembles registers and integrity checks; it draws no conclusions.",
+      sources: [`Project ${p.id}`],
+      actionLabel: "Open Reports",
+      actionHref: "/reports",
+    });
+    break; // one gentle pointer at most
+  }
+
   recommendations.sort((a, b) => sevOrder[a.priority] - sevOrder[b.priority]);
 
   // ------------------------------------------------------------ summary

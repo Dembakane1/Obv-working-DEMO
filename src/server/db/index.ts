@@ -28,6 +28,8 @@ export const WORM_DIR = path.join(DATA_DIR, "worm");
 export const REPORTS_DIR = process.env.OBV_REPORT_STORAGE_PATH
   ? path.resolve(process.env.OBV_REPORT_STORAGE_PATH)
   : path.join(DATA_DIR, "reports");
+// Generated audit-package ZIPs (immutable once READY; write-once files).
+export const AUDIT_PACKAGES_DIR = path.join(DATA_DIR, "audit-packages");
 const DB_PATH = path.join(DATA_DIR, "obv.db");
 
 let db: DatabaseSync | null = null;
@@ -799,6 +801,36 @@ CREATE TABLE IF NOT EXISTS retainage_events (
   UNIQUE (draw_request_id, type),
   UNIQUE (retainage_release_id)
 );
+
+-- ==================== project audit packages (additive) =================
+-- Generated auditor-ready export packages. Rows are control records; the
+-- ZIP file is written once (immutable) under DATA_DIR/audit-packages/.
+-- Nothing here can create evidence, approvals, ledger entries, or release
+-- state — a package only ASSEMBLES and REFERENCES governed sources.
+CREATE TABLE IF NOT EXISTS audit_packages (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  package_version INTEGER NOT NULL,
+  requested_by TEXT NOT NULL REFERENCES users(id),
+  requested_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN
+    ('QUEUED','GENERATING','READY','FAILED','SUPERSEDED')),
+  as_of_timestamp TEXT NOT NULL,
+  configuration_version INTEGER NOT NULL,
+  ledger_integrity_state TEXT NOT NULL DEFAULT 'NOT_EVALUATED',
+  integrity_state TEXT NOT NULL DEFAULT 'NOT_EVALUATED' CHECK (integrity_state IN
+    ('CLEAN','WARNINGS','NOT_EVALUATED')),
+  manifest_hash TEXT,
+  storage_object_key TEXT,
+  completed_at TEXT,
+  failure_category TEXT,
+  include_reports INTEGER NOT NULL DEFAULT 1,
+  include_comm_metadata INTEGER NOT NULL DEFAULT 0,
+  file_count INTEGER NOT NULL DEFAULT 0,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (project_id, package_version)
+);
 `;
 
 export function getDb(): DatabaseSync {
@@ -1065,5 +1097,6 @@ export function resetDb(): void {
   fs.rmSync(UPLOADS_DIR, { recursive: true, force: true });
   fs.rmSync(WORM_DIR, { recursive: true, force: true });
   fs.rmSync(REPORTS_DIR, { recursive: true, force: true });
+  fs.rmSync(AUDIT_PACKAGES_DIR, { recursive: true, force: true });
   getDb();
 }

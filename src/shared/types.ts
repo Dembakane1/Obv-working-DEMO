@@ -1360,3 +1360,54 @@ export interface RetainageSummary {
   pendingReleaseRequests: number;
   conditionsOutstanding: number;
 }
+
+// ============================================================ audit package
+
+/** Lifecycle of a generated Project Audit Package. */
+export type AuditPackageStatus =
+  | "QUEUED"
+  | "GENERATING"
+  | "READY"
+  | "FAILED"
+  | "SUPERSEDED";
+
+/** Explicit integrity outcome — READY never silently implies clean. */
+export type AuditPackageIntegrityState = "CLEAN" | "WARNINGS" | "NOT_EVALUATED";
+
+/**
+ * One-click auditor/funder/regulator-ready project export. The package
+ * REFERENCES and assembles the governed sources (configuration snapshots,
+ * Evidence Ledger, verification results, approvals, draws, budget,
+ * exceptions, change orders, retainage, reports) — it never rewrites them.
+ * Generation and download are audited; packages are immutable once READY
+ * and regeneration creates a new version (prior versions are retained as
+ * SUPERSEDED, still downloadable).
+ */
+export interface AuditPackage {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  /** Monotonic per-project version; regeneration bumps it. */
+  packageVersion: number;
+  requestedBy: string; // user id
+  requestedAt: string;
+  status: AuditPackageStatus;
+  /** Consistent audit point — registers exclude records after this. */
+  asOfTimestamp: string;
+  configurationVersion: number;
+  /** 'INTACT' or 'TAMPERED_AT:<seq>' — ledger state at generation. */
+  ledgerIntegrityState: string;
+  /** Overall integrity outcome across all validations. */
+  integrityState: AuditPackageIntegrityState;
+  /** sha256 over the canonical manifest (without this field). */
+  manifestHash: string | null;
+  /** Storage key of the ZIP relative to the data root. */
+  storageObjectKey: string | null;
+  completedAt: string | null;
+  failureCategory: string | null;
+  /** Options snapshot (no secrets): what the requester included. */
+  includeReports: boolean;
+  includeCommMetadata: boolean;
+  fileCount: number;
+  sizeBytes: number;
+}
