@@ -128,6 +128,42 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Milestone Completion Gates (v19)
+
+**Photographic completion is not legal or contractual completion.** One
+ambiguous COMPLETE status is replaced by six separate authoritative
+dimensions, all visible at once on every milestone: (1) contractor
+completion (REPORTED COMPLETE is a representation — attributable,
+audited, never verification), (2) OBV evidence review (derived live from
+the governed evidence pipeline; VERIFIED means the OBV evidence policy
+only), (3) jurisdictional inspection requirement (UNKNOWN / NOT_REQUIRED
+/ REQUIRED — always an attributable determination with a stated basis,
+snapshotted with configuration; UNKNOWN never behaves as NOT REQUIRED),
+(4) inspection scheduling and (5) inspection outcome (first-class
+inspection records; the government inspector is a text identity, the
+result is recorded by an attributable lender-side reviewer, and an
+uploaded document never becomes PASSED), and (6) draw eligibility — a
+deterministic derived state (NOT_ELIGIBLE / ELIGIBLE_FOR_DRAW_REVIEW /
+READY_FOR_GOVERNANCE / BLOCKED / RELEASED) with machine-readable reason
+codes and plain-language explanations that can never release funds.
+
+A milestone can honestly read: evidence VERIFIED · inspection SCHEDULED ·
+draw eligibility BLOCKED · funds HELD. Draw lines show the gates and the
+recommendation holds only the inspection-blocked line amount (never the
+whole draw); deterministic exceptions cover unknown requirements,
+unscheduled/overdue/failed/expired inspections, missing result documents
+and inspection-blocked draw lines, reconciling when the authoritative
+condition clears; seven grounded intelligence signals follow the same
+records. The six gates appear in the Draw Verification Package (PDF
+section D2 + milestone-gates.csv + draw-summary.json), the Draw Review
+Summary, and the Project Audit Package. Migration is conservative — no
+invented contractor reports or inspection history; existing governance
+and exactly-once release are untouched. `scripts/gates-test.js`
+(35 checkpoints) covers the 22 required cases; see
+`docs/COMPLETION_GATES.md`.
+
+---
+
 ## Lender Draw Verification Package (v18)
 
 One standardized ZIP per draw answering the lender's questions directly:

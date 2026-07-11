@@ -29,6 +29,7 @@ import { assessFinancialProgress, assessPhysicalProgress, canAccessProjectFinanc
 import { retainageSummary } from "./retainage";
 import { audit } from "./pilot/onboarding";
 import * as drawPackage from "./drawPackage";
+import * as completionGates from "./completionGates";
 import type {
   ApprovalRequest, AuditPackage, Project, User,
 } from "../../shared/types";
@@ -589,6 +590,27 @@ function buildRegisters(
       r.minCount ?? "", (r.mediaTypes ?? []).join("|"),
       r.geolocationRequired ? "yes" : "no", r.recencyDays ?? "",
     ])
+  );
+  add(
+    "02_milestones/milestone-gates.csv",
+    csv(
+      ["milestone", "contractorCompletion", "obvEvidenceReview", "inspectionRequirement", "requirementBasis", "inspectionStatus", "drawEligibility", "blockingReasonCodes"],
+      milestones.map((m) => {
+        const g = completionGates.milestoneGates(m.id);
+        return [
+          `M${m.seq} · ${m.title}`,
+          g.contractor.status,
+          g.evidenceReview.status,
+          g.requirementValue,
+          g.requirement?.requirementBasis ?? "NOT DETERMINED",
+          g.inspectionGate,
+          g.eligibility.result,
+          g.eligibility.reasons.filter((r) => r.blocking).map((r) => r.code).join("|"),
+        ];
+      })
+    ),
+    "02_milestones",
+    milestones.length
   );
   add(
     "02_milestones/evidence-requirements.csv",

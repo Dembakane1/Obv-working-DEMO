@@ -1026,6 +1026,9 @@ function purgeDemoScopedRows(): void {
   }
   db.prepare("DELETE FROM retainage_events WHERE project_id = ?").run(DEMO_PROJECT);
   db.prepare("DELETE FROM retainage_policies WHERE project_id = ?").run(DEMO_PROJECT);
+  // Milestone completion gate records for the demo project.
+  db.prepare("DELETE FROM jurisdictional_inspections WHERE project_id = ?").run(DEMO_PROJECT);
+  db.prepare("DELETE FROM inspection_requirements WHERE project_id = ?").run(DEMO_PROJECT);
   // Audit packages generated against the demo project (rows + ZIP files).
   const apIds = db
     .prepare("SELECT id FROM audit_packages WHERE project_id = ?")

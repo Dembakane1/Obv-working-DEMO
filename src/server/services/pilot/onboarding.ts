@@ -1244,6 +1244,7 @@ export function snapshotProject(projectId: string, reason: string, actor: User) 
     })),
     verificationPolicy: repo.getVerificationPolicy(projectId),
     approvalPolicies: repo.listApprovalPolicies(projectId),
+    inspectionRequirements: repo.listInspectionRequirementsForProject(projectId),
     assignments: repo.listAssignmentsForProject(projectId),
     participants: projectParticipants(projectId).map((u) => ({ id: u.id, name: u.name, role: u.role })),
   };

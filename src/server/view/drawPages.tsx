@@ -325,6 +325,8 @@ export interface DrawDetailData {
   contract: { original: number; approvedChanges: number; current: number };
   /** Change orders referenced by draw lines (id → CO summary). */
   lineChangeOrders: Map<string, { number: number; status: string; approved: boolean }>;
+  /** Six-gate summary + eligibility per line milestone (Part 8). */
+  lineMilestoneGates: Map<string, { summary: string; eligibility: string; blocking: string[] }>;
   /** Retainage computed at governance-finalize (null before). */
   retainage: { rate: number; withheld: number; netEligible: number } | null;
   approval: ApprovalRequest | null;
@@ -573,6 +575,16 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
                           </span>
                         ) : null}
                         {l.reviewNotes ? <span className="sub" style="display:block;color:var(--warn)">{l.reviewNotes}</span> : null}
+                        {l.milestoneId && d.lineMilestoneGates.get(l.milestoneId) ? (
+                          <span className="sub" style="display:block;font-size:10px;margin-top:2px">
+                            {d.lineMilestoneGates.get(l.milestoneId)!.summary}
+                            {d.lineMilestoneGates.get(l.milestoneId)!.blocking.length ? (
+                              <span style="color:var(--bad);display:block">
+                                Blocked: {d.lineMilestoneGates.get(l.milestoneId)!.blocking.join("; ")}
+                              </span>
+                            ) : null}
+                          </span>
+                        ) : null}
                       </td>
                       <td data-l="Milestone">{ms ? <a href={`/milestone/${ms.id}`} style="color:var(--action)">M{ms.seq}</a> : "—"}</td>
                       <td data-l="Scheduled" style="font-variant-numeric:tabular-nums">{money(l.scheduledValue)}</td>
@@ -1291,6 +1303,8 @@ const DRAW_REPORT_CSS = `
 `;
 
 export interface DrawReportData {
+  /** Six-gate summary per milestone referenced by the draw lines. */
+  milestoneGateSummaries: Map<string, string>;
   draw: DrawRequest;
   project: Project;
   lenderOrg: Organization | null;
@@ -1537,6 +1551,31 @@ export function renderDrawReport(d: DrawReportData): string {
         <p className="muted" style="font-size:7.6pt">
           Methodology: {d.physicalProgress.methodology}
         </p>
+
+        {d.milestoneGateSummaries.size ? (
+          <>
+            <h2>Milestone completion gates</h2>
+            <table>
+              <thead><tr><th>Milestone</th><th>Six-gate state (each dimension is a separate authoritative record)</th></tr></thead>
+              <tbody>
+                {[...d.milestoneGateSummaries.entries()].map(([mid, label]) => {
+                  const m = d.milestones.find((x) => x.id === mid);
+                  return (
+                    <tr>
+                      <td style="width:26%">{m ? `M${m.seq} · ${m.title}` : mid}</td>
+                      <td>{label}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="muted" style="font-size:7.6pt">
+              CONTRACTOR-REPORTED COMPLETE, OBV EVIDENCE VERIFIED, JURISDICTIONAL INSPECTION PASSED,
+              READY FOR GOVERNANCE, FORMALLY APPROVED and RELEASED are six different facts —
+              photographic completion is never legal, contractual or financial completion by itself.
+            </p>
+          </>
+        ) : null}
 
         <h2>Contract, change orders &amp; retainage</h2>
         <table>

@@ -95,6 +95,8 @@ import * as retainage from "../services/retainage";
 import { RetainageError } from "../services/retainage";
 import * as auditPackages from "../services/auditPackage";
 import * as drawPackage from "../services/drawPackage";
+import * as completionGates from "../services/completionGates";
+import { GateError } from "../services/completionGates";
 import { renderDrawVerificationDoc } from "../view/drawVerificationDoc";
 import { AuditPackageError } from "../services/auditPackage";
 import { renderAuditCover } from "../view/auditCover";
@@ -542,6 +544,19 @@ function assembleDrawDetail(
     ),
     contract: drawContractContext(draw.projectId),
     lineChangeOrders: drawLineChangeOrders(draw.id),
+    lineMilestoneGates: (() => {
+      const out = new Map<string, { summary: string; eligibility: string; blocking: string[] }>();
+      for (const l of repo.listDrawLines(draw.id)) {
+        if (!l.milestoneId || out.has(l.milestoneId)) continue;
+        const g = completionGates.milestoneGates(l.milestoneId);
+        out.set(l.milestoneId, {
+          summary: completionGates.gateSummaryLabel(g),
+          eligibility: g.eligibility.result,
+          blocking: g.eligibility.reasons.filter((r) => r.blocking).map((r) => r.detail),
+        });
+      }
+      return out;
+    })(),
     retainage: drawRetainageContext(draw),
     approval,
     approvalRecords,
@@ -598,6 +613,15 @@ async function assembleDrawReportData(
     ),
     contract: drawContractContext(project.id),
     retainage: drawRetainageContext(draw),
+    milestoneGateSummaries: (() => {
+      const out = new Map<string, string>();
+      for (const l of repo.listDrawLines(draw.id)) {
+        if (l.milestoneId && !out.has(l.milestoneId)) {
+          out.set(l.milestoneId, completionGates.gateSummaryLabel(completionGates.milestoneGates(l.milestoneId)));
+        }
+      }
+      return out;
+    })(),
     drawChangeOrders: (() => {
       const byCo = new Map<string, { number: number; title: string; status: string; amount: number }>();
       for (const l of repo.listDrawLines(draw.id)) {
@@ -839,7 +863,12 @@ function stateFingerprint(): string {
               (SELECT COUNT(*) FROM retainage_release_requests) AS rrr,
               (SELECT COALESCE(MAX(updated_at), '') FROM retainage_release_requests) AS rrru,
               (SELECT COUNT(*) FROM audit_packages) AS ap,
-              (SELECT COALESCE(MAX(completed_at), '') FROM audit_packages) AS apu`
+              (SELECT COALESCE(MAX(completed_at), '') FROM audit_packages) AS apu,
+              (SELECT COUNT(*) FROM jurisdictional_inspections) AS ji,
+              (SELECT COALESCE(MAX(updated_at), '') FROM jurisdictional_inspections) AS jiu,
+              (SELECT COUNT(*) FROM inspection_requirements) AS ir,
+              (SELECT COALESCE(MAX(updated_at), '') FROM inspection_requirements) AS iru,
+              (SELECT COUNT(*) FROM milestones WHERE contractor_completion_status != 'NOT_REPORTED') AS ccm`
     )
     .get();
   return createHash("sha256")
@@ -2738,6 +2767,140 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // =================== milestone completion gates =====================
+  // Six separate dimensions — contractor report, OBV evidence review,
+  // inspection requirement, schedule, result, draw eligibility. Nothing
+  // here can verify evidence, approve, or release funds.
+
+  const gateParams = async (): Promise<Record<string, unknown>> => {
+    const text = (await readBody(req, 64 * 1024)).toString("utf8");
+    if (isFormPost(req)) return Object.fromEntries(new URLSearchParams(text));
+    return text ? JSON.parse(text) : {};
+  };
+  const gateTruthy = (v: unknown) => v === true || v === "true" || v === "1" || v === "on";
+
+  const gatesMatch = /^\/api\/milestones\/([^/]+)\/gates$/.exec(pathname);
+  if (method === "GET" && gatesMatch) {
+    const user2 = currentUser(req);
+    if (!user2) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    sendJson(res, { gates: completionGates.gatesForUser(user2, gatesMatch[1]) });
+    return;
+  }
+
+  const contractorMatch = /^\/api\/milestones\/([^/]+)\/contractor-completion$/.exec(pathname);
+  if (method === "POST" && contractorMatch) {
+    const user2 = currentUser(req);
+    if (!user2) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const p = await gateParams();
+    const milestone = completionGates.reportContractorCompletion(user2, contractorMatch[1], {
+      status: String(p.status ?? "") as never,
+      notes: p.notes ? String(p.notes) : null,
+      linkedEvidenceIds: Array.isArray(p.linkedEvidenceIds)
+        ? (p.linkedEvidenceIds as string[])
+        : p.linkedEvidenceIds
+          ? String(p.linkedEvidenceIds).split(",").map((x) => x.trim()).filter(Boolean)
+          : [],
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/milestone/${milestone.id}`);
+    } else {
+      sendJson(res, { milestone, gates: completionGates.milestoneGates(milestone.id) });
+    }
+    return;
+  }
+
+  const requirementMatch = /^\/api\/milestones\/([^/]+)\/inspection-requirement$/.exec(pathname);
+  if (method === "POST" && requirementMatch) {
+    const user2 = currentUser(req);
+    if (!user2) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const p = await gateParams();
+    const requirement = completionGates.determineInspectionRequirement(user2, requirementMatch[1], {
+      requirement: String(p.requirement ?? "") as never,
+      requirementBasis: String(p.requirementBasis ?? ""),
+      jurisdiction: p.jurisdiction ? String(p.jurisdiction) : null,
+      inspectionType: p.inspectionType ? String(p.inspectionType) : null,
+      issuingAuthority: p.issuingAuthority ? String(p.issuingAuthority) : null,
+      mustPassBeforeDrawReview: gateTruthy(p.mustPassBeforeDrawReview),
+      mustPassBeforeGovernance:
+        p.mustPassBeforeGovernance === undefined ? true : gateTruthy(p.mustPassBeforeGovernance),
+      finalCompletionOnly: gateTruthy(p.finalCompletionOnly),
+      resultDocumentRequired: gateTruthy(p.resultDocumentRequired),
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/milestone/${requirementMatch[1]}`);
+    } else {
+      sendJson(res, { requirement, gates: completionGates.milestoneGates(requirementMatch[1]) });
+    }
+    return;
+  }
+
+  const inspCreateMatch = /^\/api\/milestones\/([^/]+)\/inspections$/.exec(pathname);
+  if (method === "POST" && inspCreateMatch) {
+    const user2 = currentUser(req);
+    if (!user2) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const p = await gateParams();
+    const inspection = completionGates.createInspection(user2, inspCreateMatch[1], {
+      scheduledAt: p.scheduledAt ? String(p.scheduledAt) : null,
+      inspectionType: p.inspectionType ? String(p.inspectionType) : null,
+      jurisdiction: p.jurisdiction ? String(p.jurisdiction) : null,
+      issuingAuthority: p.issuingAuthority ? String(p.issuingAuthority) : null,
+      inspectionReference: p.inspectionReference ? String(p.inspectionReference) : null,
+      permitId: p.permitId ? String(p.permitId) : null,
+      notes: p.notes ? String(p.notes) : null,
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/milestone/${inspCreateMatch[1]}`);
+    } else {
+      sendJson(res, { inspection }, 201);
+    }
+    return;
+  }
+
+  const inspActionMatch = /^\/api\/inspections\/([^/]+)\/(schedule|complete|result|cancel)$/.exec(pathname);
+  if (method === "POST" && inspActionMatch) {
+    const user2 = currentUser(req);
+    if (!user2) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const p = await gateParams();
+    const [, inspId, act] = inspActionMatch;
+    let inspection;
+    if (act === "schedule") {
+      inspection = completionGates.scheduleInspection(user2, inspId, String(p.scheduledAt ?? ""));
+    } else if (act === "complete") {
+      inspection = completionGates.markInspectionCompleted(user2, inspId, p.completedAt ? String(p.completedAt) : null);
+    } else if (act === "result") {
+      inspection = completionGates.recordInspectionResult(user2, inspId, {
+        result: String(p.result ?? "") as never,
+        governmentInspectorName: p.governmentInspectorName ? String(p.governmentInspectorName) : null,
+        inspectionReference: p.inspectionReference ? String(p.inspectionReference) : null,
+        supportingDocumentId: p.supportingDocumentId ? String(p.supportingDocumentId) : null,
+        notes: p.notes ? String(p.notes) : null,
+      });
+    } else {
+      inspection = completionGates.cancelInspection(user2, inspId, p.reason ? String(p.reason) : null);
+    }
+    if (isFormPost(req)) {
+      redirect(res, `/milestone/${inspection.milestoneId}`);
+    } else {
+      sendJson(res, { inspection, gates: completionGates.milestoneGates(inspection.milestoneId) });
+    }
+    return;
+  }
+
   // Reset the DEMO data to its seeded state. Pilot projects created
   // through onboarding are preserved — wiping everything requires the
   // explicitly gated Development Full Reset below.
@@ -3321,6 +3484,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         clarifications: repo.listClarificationsForMilestone(milestone.id),
         drafts: repo.listDraftsForMilestone(milestone.id),
         canFieldOps: canManageFieldOps(user!),
+        gates: completionGates.milestoneGates(milestone.id),
+        canReportCompletion: ["PROJECT_MANAGER", "FIELD"].includes(user!.role),
+        canDetermineInspection: ["FUNDER_REP", "COMPLIANCE_REVIEWER"].includes(user!.role),
       })
     );
     return;
@@ -4049,7 +4215,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";

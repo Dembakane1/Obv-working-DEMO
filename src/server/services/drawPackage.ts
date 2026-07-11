@@ -25,6 +25,7 @@ import type {
   ObvException, Project, RetainageEvent, User, Verification,
 } from "../../shared/types";
 import { slaState, ageDays } from "./exceptions";
+import * as completionGates from "./completionGates";
 
 export const DRAW_PACKAGE_SCHEMA_VERSION = 1;
 export const NOT_AVAILABLE = "NOT AVAILABLE";
@@ -244,6 +245,8 @@ export interface DrawPackageData {
   discrepancies: Array<{ kind: string; detail: string; sourceRef: string }>;
   approval: ApprovalRequest | null;
   approvalRecords: ApprovalRecord[];
+  /** Six completion gates per milestone referenced by this draw's lines. */
+  milestoneGates: Array<{ milestoneLabel: string; gates: import("../../shared/types").MilestoneGates }>;
   recommendation: ReturnType<typeof draws.computeRecommendation>;
   accountEvents: DrawAccountEvent[];
   retainageEvents: RetainageEvent[];
@@ -744,6 +747,13 @@ export async function assembleDrawPackageData(user: User, drawId: string): Promi
     discrepancies,
     approval,
     approvalRecords,
+    milestoneGates: [...lineMilestoneIds].map((id) => {
+      const m = milestones.get(id);
+      return {
+        milestoneLabel: m ? `M${m.seq} · ${m.title}` : id,
+        gates: completionGates.milestoneGates(id),
+      };
+    }),
     recommendation: draws.computeRecommendation(draw.id),
     accountEvents: repo.listDrawAccountEvents(draw.id),
     retainageEvents: repo
@@ -846,6 +856,16 @@ export function buildDrawPackageFiles(d: DrawPackageData): {
         criticalIntegrityFindings: d.criticalIntegrityFindings,
         missingRequiredLienWaiver: d.missingRequiredWaiver,
         inspectionRecorded: d.inspectionRecorded,
+        completionGates: d.milestoneGates.map(({ milestoneLabel, gates }) => ({
+          milestone: milestoneLabel,
+          milestoneId: gates.milestoneId,
+          contractorCompletion: gates.contractor.status,
+          obvEvidenceReview: gates.evidenceReview.status,
+          inspectionRequirement: gates.requirementValue,
+          inspectionStatus: gates.inspectionGate,
+          drawEligibility: gates.eligibility.result,
+          blockingReasonCodes: gates.eligibility.reasons.filter((r) => r.blocking).map((r) => r.code),
+        })),
       },
       null,
       2
@@ -1030,6 +1050,35 @@ export function buildDrawPackageFiles(d: DrawPackageData): {
       ]
     ),
     d.accountEvents.length + d.retainageEvents.length
+  );
+
+  add(
+    "milestone-gates.csv",
+    csv(
+      [
+        "milestone", "contractorCompletion", "contractorReportedAt", "obvEvidenceReview",
+        "inspectionRequirement", "requirementBasis", "inspectionStatus", "inspectionScheduledAt",
+        "inspectionResult", "resultRecordedBy", "governmentInspector", "drawEligibility", "blockingReasons",
+      ],
+      d.milestoneGates.map(({ milestoneLabel, gates }) => [
+        milestoneLabel,
+        gates.contractor.status,
+        gates.contractor.reportedAt ?? NOT_AVAILABLE,
+        gates.evidenceReview.status,
+        gates.requirementValue,
+        gates.requirement?.requirementBasis ?? "NOT DETERMINED",
+        gates.inspectionGate,
+        gates.inspection?.scheduledAt ?? NOT_AVAILABLE,
+        gates.inspection?.result ?? NOT_AVAILABLE,
+        gates.inspection?.reviewedByUserId
+          ? d.users.get(gates.inspection.reviewedByUserId)?.name ?? gates.inspection.reviewedByUserId
+          : NOT_AVAILABLE,
+        gates.inspection?.governmentInspectorName ?? NOT_AVAILABLE,
+        gates.eligibility.result,
+        gates.eligibility.reasons.filter((r) => r.blocking).map((r) => r.code).join("|"),
+      ])
+    ),
+    d.milestoneGates.length
   );
 
   add(

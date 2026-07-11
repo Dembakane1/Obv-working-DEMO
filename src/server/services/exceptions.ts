@@ -272,6 +272,13 @@ export const RULES: Array<{ key: string; severity: string; rule: string }> = [
   { key: "clarification-overdue", severity: "MEDIUM", rule: "Clarification open past its due date or older than 3 days" },
   { key: "draw-unapproved-co", severity: "MEDIUM", rule: "Draw line bills against a change order that is not yet approved" },
   { key: "integration-binding", severity: "MEDIUM", rule: "Teams thread binding degraded or missing permissions" },
+  { key: "inspection-requirement-unknown", severity: "MEDIUM", rule: "Contractor reported work complete but the jurisdictional inspection requirement is undetermined (UNKNOWN)" },
+  { key: "inspection-unscheduled", severity: "MEDIUM", rule: "Required jurisdictional inspection not scheduled although the contractor reported the work complete" },
+  { key: "inspection-overdue", severity: "MEDIUM", rule: "Scheduled jurisdictional inspection is past its scheduled time without a recorded result" },
+  { key: "inspection-failed", severity: "HIGH", rule: "Latest jurisdictional inspection FAILED" },
+  { key: "inspection-doc-missing", severity: "MEDIUM", rule: "Inspection recorded PASSED without the configured result document reference" },
+  { key: "inspection-expired", severity: "MEDIUM", rule: "Jurisdictional inspection or its permit is EXPIRED" },
+  { key: "draw-inspection-blocked", severity: "MEDIUM", rule: "Open draw line references a milestone whose required jurisdictional inspection has not passed" },
 ];
 
 const ISSUE_CATEGORY: Record<FieldIssue["category"], ObvException["category"]> = {
@@ -481,6 +488,120 @@ async function activeConditions(): Promise<RuleCondition[]> {
         description: "The Teams conversation binding is not healthy; coordination sync may be interrupted. The binding record remains authoritative.",
       },
     });
+  }
+
+  // -- milestone completion gates: jurisdictional inspections --
+  // All conditions read the authoritative inspection/configuration
+  // records; clearing the source reconciles the exception on the next
+  // sweep. Conservative scoping: "unknown"/"unscheduled" fire only once
+  // the contractor has formally reported the work complete (the decision
+  // point where the gap matters) — migration defaults create nothing.
+  for (const project of projects) {
+    const milestones = repo.listMilestones(project.id).filter((m) => !m.archived);
+    for (const m of milestones) {
+      const req = repo.getInspectionRequirement(m.id);
+      const inspections = repo
+        .listInspectionsForMilestone(m.id)
+        .filter((i) => i.status !== "CANCELLED");
+      const latest = inspections.length ? inspections[inspections.length - 1] : null;
+      const reported = (m.contractorCompletionStatus ?? "NOT_REPORTED") === "REPORTED_COMPLETE";
+
+      if (!req && reported && m.accountStatus !== "RELEASED") {
+        out.push({
+          seed: {
+            projectId: project.id, milestoneId: m.id,
+            sourceType: "INSPECTION_REQUIREMENT", sourceId: m.id,
+            sourceKey: `inspection-requirement-unknown:${m.id}`,
+            category: "DOCUMENT", severity: "MEDIUM",
+            title: `Inspection requirement undetermined — M${m.seq}`,
+            description:
+              "The contractor reported this milestone complete but whether a jurisdictional inspection is required has not been determined. UNKNOWN never behaves as NOT REQUIRED.",
+          },
+        });
+      }
+      if (req?.requirement === "REQUIRED") {
+        const passed = latest?.status === "PASSED";
+        if (!latest && reported) {
+          out.push({
+            seed: {
+              projectId: project.id, milestoneId: m.id,
+              sourceType: "INSPECTION_REQUIREMENT", sourceId: req.id,
+              sourceKey: `inspection-unscheduled:${m.id}`,
+              category: "SCHEDULE", severity: "MEDIUM",
+              title: `Required inspection not scheduled — M${m.seq}`,
+              description: `A ${req.inspectionType ?? "jurisdictional"} inspection is REQUIRED (${req.requirementBasis}) and the contractor has reported the work complete, but no inspection is scheduled.`,
+            },
+          });
+        }
+        if (latest?.status === "SCHEDULED" && latest.scheduledAt && Date.parse(latest.scheduledAt) < now) {
+          out.push({
+            seed: {
+              projectId: project.id, milestoneId: m.id,
+              sourceType: "INSPECTION", sourceId: latest.id,
+              sourceKey: `inspection-overdue:${latest.id}`,
+              category: "SCHEDULE", severity: "MEDIUM",
+              title: `Scheduled inspection overdue — M${m.seq}`,
+              description: `The ${latest.inspectionType ?? "jurisdictional"} inspection was scheduled for ${latest.scheduledAt} and no result has been recorded.`,
+            },
+          });
+        }
+        if (latest?.status === "FAILED") {
+          out.push({
+            seed: {
+              projectId: project.id, milestoneId: m.id,
+              sourceType: "INSPECTION", sourceId: latest.id,
+              sourceKey: `inspection-failed:${latest.id}`,
+              category: "QUALITY", severity: "HIGH",
+              title: `Jurisdictional inspection FAILED — M${m.seq}`,
+              description: `The ${latest.inspectionType ?? "jurisdictional"} inspection was recorded FAILED${latest.governmentInspectorName ? ` (inspector: ${latest.governmentInspectorName})` : ""}. Reinspection is required before the milestone can pass its legal gate.`,
+            },
+          });
+        }
+        if (latest?.status === "PASSED" && req.resultDocumentRequired && !latest.supportingDocumentId) {
+          out.push({
+            seed: {
+              projectId: project.id, milestoneId: m.id,
+              sourceType: "INSPECTION", sourceId: latest.id,
+              sourceKey: `inspection-doc-missing:${latest.id}`,
+              category: "DOCUMENT", severity: "MEDIUM",
+              title: `Inspection result document missing — M${m.seq}`,
+              description: "The inspection is recorded PASSED but the configured result document reference is missing.",
+            },
+          });
+        }
+        if (latest?.status === "EXPIRED") {
+          out.push({
+            seed: {
+              projectId: project.id, milestoneId: m.id,
+              sourceType: "INSPECTION", sourceId: latest.id,
+              sourceKey: `inspection-expired:${latest.id}`,
+              category: "DOCUMENT", severity: "MEDIUM",
+              title: `Inspection or permit expired — M${m.seq}`,
+              description: "The jurisdictional inspection (or its permit) has EXPIRED and must be renewed.",
+            },
+          });
+        }
+        // Draws billing against an inspection-blocked milestone.
+        if (!passed && (req.mustPassBeforeGovernance || req.mustPassBeforeDrawReview)) {
+          for (const d of repo.listDrawRequestsForProject(project.id)) {
+            if (!ACTIVE_DRAW_STATES.has(d.status)) continue;
+            for (const l of repo.listDrawLines(d.id)) {
+              if (l.milestoneId !== m.id) continue;
+              out.push({
+                seed: {
+                  projectId: project.id, milestoneId: m.id, drawRequestId: d.id,
+                  sourceType: "DRAW_LINE_ITEM", sourceId: l.id,
+                  sourceKey: `draw-inspection-blocked:${l.id}`,
+                  category: "APPROVAL", severity: "MEDIUM",
+                  title: `Draw line blocked by required inspection — M${m.seq}`,
+                  description: `Draw #${d.drawNumber} line "${l.description}" references M${m.seq}, whose required ${req.inspectionType ?? "jurisdictional"} inspection has not passed.`,
+                },
+              });
+            }
+          }
+        }
+      }
+    }
   }
 
   return out;
@@ -734,6 +855,18 @@ export function sourceContext(e: ObvException): {
       return { label: "Evidence Ledger", href: "/ledger", latitude: null, longitude: null };
     case "INTEGRATION":
       return { label: "Teams connection", href: "/communications/integrations", latitude: null, longitude: null };
+    case "INSPECTION":
+      return {
+        label: "Jurisdictional inspection record",
+        href: e.milestoneId ? `/milestone/${e.milestoneId}` : `/project/${e.projectId}`,
+        latitude: null, longitude: null,
+      };
+    case "INSPECTION_REQUIREMENT":
+      return {
+        label: "Inspection requirement configuration",
+        href: e.milestoneId ? `/milestone/${e.milestoneId}` : `/project/${e.projectId}`,
+        latitude: null, longitude: null,
+      };
     case "MANUAL":
       return { label: "Manually raised", href: `/project/${e.projectId}`, latitude: null, longitude: null };
   }

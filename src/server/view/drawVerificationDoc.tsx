@@ -215,6 +215,38 @@ export function renderDrawVerificationDoc(d: DrawPackageData): string {
           </tbody>
         </table>
 
+        {/* ============ D2. Milestone completion gates ============ */}
+        <h2><span className="sec">D2</span>Milestone completion gates</h2>
+        {d.milestoneGates.length === 0 ? (
+          <p className="muted">No draw line references a governed milestone.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr><th>Milestone</th><th>Contractor completion</th><th>OBV evidence review</th><th>Inspection requirement</th><th>Inspection status</th><th>Draw eligibility</th><th>Blocking reasons</th></tr>
+            </thead>
+            <tbody>
+              {d.milestoneGates.map(({ milestoneLabel, gates }) => (
+                <tr>
+                  <td>{milestoneLabel}</td>
+                  <td><span className="tag">{gates.contractor.status.replace(/_/g, " ")}</span></td>
+                  <td><span className="tag">{gates.evidenceReview.status.replace(/_/g, " ")}</span></td>
+                  <td><span className="tag">{gates.requirementValue.replace(/_/g, " ")}</span>{gates.requirement ? <span className="muted" style="display:block">{gates.requirement.requirementBasis}</span> : null}</td>
+                  <td><span className="tag">{gates.inspectionGate.replace(/_/g, " ")}</span></td>
+                  <td><span className="tag">{gates.eligibility.result.replace(/_/g, " ")}</span></td>
+                  <td className="muted">
+                    {gates.eligibility.reasons.filter((r) => r.blocking).map((r) => r.detail).join(" ") || "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="muted">
+          CONTRACTOR-REPORTED COMPLETE, OBV EVIDENCE VERIFIED, JURISDICTIONAL INSPECTION PASSED,
+          READY FOR GOVERNANCE, FORMALLY APPROVED and RELEASED are six different facts. Photographic
+          completion is never legal, contractual or financial completion by itself.
+        </p>
+
         {/* ============ E. Budget vs verified progress ============ */}
         <h2><span className="sec">E</span>Budget versus verified physical progress</h2>
         <table className="kv">

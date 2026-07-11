@@ -23,6 +23,7 @@ import * as budgetService from "./budgetProgress";
 import * as exceptionsService from "./exceptions";
 // Read-only retainage condition states (release gating visibility).
 import * as retainageService from "./retainage";
+import * as completionGates from "./completionGates";
 import type {
   ApprovalRequest,
   ClarificationRequest,
@@ -816,6 +817,121 @@ export function computeIntelligence(opts: { chainValid: boolean }): Intelligence
           age: ageOf(rel.createdAt, now),
           actionLabel: "Open Budget & Progress",
           actionHref: `/project/${p.id}/budget`,
+        });
+      }
+    }
+  }
+
+  // ---- milestone completion gates (deterministic, grounded) ----
+  // Each signal reads the authoritative contractor/evidence/inspection
+  // records. PHOTOGRAPHIC COMPLETION IS NOT LEGAL OR CONTRACTUAL
+  // COMPLETION — the gates stay separate here too. No predictions.
+  for (const p of projects) {
+    for (const m of repo.listMilestones(p.id).filter((x) => !x.archived)) {
+      const gates = completionGates.milestoneGates(m.id);
+      const label = `M${m.seq} · ${m.title}`;
+      if (
+        gates.contractor.status === "REPORTED_COMPLETE" &&
+        !["VERIFIED"].includes(gates.evidenceReview.status) &&
+        m.accountStatus !== "RELEASED"
+      ) {
+        signals.push({
+          severity: "MEDIUM",
+          rule: "contractor-complete-evidence-pending",
+          projectName: p.name,
+          milestoneLabel: label,
+          reason: `Contractor reported the work complete but OBV evidence review is ${gates.evidenceReview.status.replace(/_/g, " ")} — a contractor report is a representation, not verification.`,
+          age: gates.contractor.reportedAt ? ageOf(gates.contractor.reportedAt, now) : null,
+          actionLabel: "Open milestone",
+          actionHref: `/milestone/${m.id}`,
+        });
+      }
+      if (
+        gates.evidenceReview.status === "VERIFIED" &&
+        gates.requirementValue === "UNKNOWN" &&
+        m.accountStatus !== "RELEASED"
+      ) {
+        signals.push({
+          severity: "MEDIUM",
+          rule: "verified-inspection-requirement-unknown",
+          projectName: p.name,
+          milestoneLabel: label,
+          reason: "Evidence is OBV-verified but whether a jurisdictional inspection is required has not been determined — UNKNOWN never behaves as NOT REQUIRED.",
+          age: null,
+          actionLabel: "Open milestone",
+          actionHref: `/milestone/${m.id}`,
+        });
+      }
+      if (gates.inspectionGate === "REQUIRED_UNSCHEDULED" && gates.contractor.status === "REPORTED_COMPLETE") {
+        signals.push({
+          severity: "MEDIUM",
+          rule: "inspection-required-not-scheduled",
+          projectName: p.name,
+          milestoneLabel: label,
+          reason: `A ${gates.requirement?.inspectionType ?? "jurisdictional"} inspection is REQUIRED and the contractor has reported completion, but no inspection is scheduled.`,
+          age: null,
+          actionLabel: "Open milestone",
+          actionHref: `/milestone/${m.id}`,
+        });
+      }
+      if (
+        gates.inspection?.status === "SCHEDULED" &&
+        gates.inspection.scheduledAt &&
+        Date.parse(gates.inspection.scheduledAt) < now
+      ) {
+        signals.push({
+          severity: "MEDIUM",
+          rule: "inspection-scheduled-overdue",
+          projectName: p.name,
+          milestoneLabel: label,
+          reason: `The ${gates.inspection.inspectionType ?? "jurisdictional"} inspection was scheduled for ${gates.inspection.scheduledAt.slice(0, 16).replace("T", " ")} and no result has been recorded.`,
+          age: ageOf(gates.inspection.scheduledAt, now),
+          actionLabel: "Open milestone",
+          actionHref: `/milestone/${m.id}`,
+        });
+      }
+      if (gates.inspectionGate === "FAILED") {
+        signals.push({
+          severity: "HIGH",
+          rule: "inspection-failed",
+          projectName: p.name,
+          milestoneLabel: label,
+          reason: `The required ${gates.inspection?.inspectionType ?? "jurisdictional"} inspection FAILED — the milestone cannot pass its legal gate until reinspection passes.`,
+          age: null,
+          actionLabel: "Open milestone",
+          actionHref: `/milestone/${m.id}`,
+        });
+      }
+      if (
+        gates.evidenceReview.status === "VERIFIED" &&
+        gates.eligibility.result === "BLOCKED" &&
+        gates.eligibility.reasons.some((r) => r.code === "JURISDICTIONAL_INSPECTION_NOT_PASSED")
+      ) {
+        signals.push({
+          severity: "MEDIUM",
+          rule: "verified-but-inspection-blocked",
+          projectName: p.name,
+          milestoneLabel: label,
+          reason: "Evidence is OBV-verified but draw eligibility is BLOCKED: the required jurisdictional inspection has not passed. Photographic completion is not legal completion.",
+          age: null,
+          actionLabel: "Open milestone",
+          actionHref: `/milestone/${m.id}`,
+        });
+      }
+      if (
+        gates.inspectionGate === "PASSED" &&
+        gates.eligibility.result === "READY_FOR_GOVERNANCE" &&
+        gates.eligibility.reasons.some((r) => r.code === "FORMAL_APPROVAL_PENDING")
+      ) {
+        signals.push({
+          severity: "INFO",
+          rule: "inspection-passed-governance-pending",
+          projectName: p.name,
+          milestoneLabel: label,
+          reason: "The jurisdictional inspection passed and pre-governance gates are satisfied, but formal approval decisions are still pending — a passed inspection authorizes nothing by itself.",
+          age: null,
+          actionLabel: "Open approvals",
+          actionHref: "/approvals",
         });
       }
     }

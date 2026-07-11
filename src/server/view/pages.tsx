@@ -53,6 +53,7 @@ import type {
   Project,
   Report,
   AuditPackage,
+  MilestoneGates,
   User,
   Verification,
   VirtualAccountEvent,
@@ -949,6 +950,9 @@ export function renderMilestoneDetail(input: {
   clarifications: ClarificationRequest[];
   drafts: EvidenceDraft[];
   canFieldOps: boolean;
+  gates: MilestoneGates;
+  canReportCompletion: boolean;
+  canDetermineInspection: boolean;
 }): string {
   const { project, row } = input;
   const { milestone, approval, approvalRecords } = row;
@@ -992,6 +996,159 @@ export function renderMilestoneDetail(input: {
           <a className="btn ghost sm" href={`/project/${project.id}?tab=map`}>{icons.map(13)} View on map</a>
         </div>
       </div>
+
+      {(() => {
+        const g = input.gates;
+        const fmtTs = (iso: string | null) => (iso ? fmtDate(iso) : null);
+        const userNameOf = (id: string | null) => (id ? input.users.get(id)?.name ?? id : null);
+        const chip = (tone: "ok" | "warn" | "bad" | "neutral", label: string) => (
+          <span className={`status ${tone === "neutral" ? "" : tone}`}>
+            <span className="g">{tone === "ok" ? "✓" : tone === "bad" ? "✕" : "●"}</span>
+            {label}
+          </span>
+        );
+        const gateRow = (title: string, state: unknown, sub: unknown) => (
+          <div style="display:grid;grid-template-columns:190px 1fr;gap:10px;padding:9px 0;border-top:1px solid var(--line);align-items:baseline">
+            <span style="font:600 10.5px/1.3 var(--sans,inherit);letter-spacing:.7px;color:var(--ink-3);text-transform:uppercase">{title}</span>
+            <span style="font-size:12.5px">
+              {state}
+              {sub ? <span className="sub" style="display:block;font-size:11px;margin-top:2px">{sub}</span> : null}
+            </span>
+          </div>
+        );
+        const contractorTone =
+          g.contractor.status === "REPORTED_COMPLETE" ? "ok" : g.contractor.status === "WITHDRAWN" ? "warn" : "neutral";
+        const evTone =
+          g.evidenceReview.status === "VERIFIED" ? "ok" : g.evidenceReview.status === "REJECTED" ? "bad"
+            : g.evidenceReview.status === "NOT_SUBMITTED" ? "neutral" : "warn";
+        const reqTone = g.requirementValue === "REQUIRED" ? "warn" : g.requirementValue === "NOT_REQUIRED" ? "ok" : "neutral";
+        const inspTone =
+          g.inspectionGate === "PASSED" || g.inspectionGate === "NOT_APPLICABLE" ? "ok"
+            : g.inspectionGate === "FAILED" || g.inspectionGate === "EXPIRED" ? "bad"
+              : "warn";
+        const eligTone =
+          g.eligibility.result === "RELEASED" || g.eligibility.result === "READY_FOR_GOVERNANCE" ? "ok"
+            : g.eligibility.result === "BLOCKED" ? "bad"
+              : g.eligibility.result === "ELIGIBLE_FOR_DRAW_REVIEW" ? "warn" : "neutral";
+        const blocking = g.eligibility.reasons.filter((r) => r.blocking);
+        return (
+          <div className="panel panel-pad" style="margin-top:12px">
+            <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+              <h3 style="margin:0;font-size:13px">Completion gates</h3>
+              <span className="sub" style="font-size:11px">
+                Photographic completion is NOT legal or contractual completion — each gate is a separate authoritative record.
+              </span>
+            </div>
+            {gateRow(
+              "1 · Contractor completion",
+              chip(contractorTone as never, g.contractor.status.replace(/_/g, " ")),
+              g.contractor.reportedAt
+                ? `${fmtTs(g.contractor.reportedAt)} · ${userNameOf(g.contractor.reportedByUserId)}${g.contractor.notes ? ` — ${g.contractor.notes}` : ""} · a contractor representation, not verification`
+                : "The contractor has not reported this work complete."
+            )}
+            {gateRow(
+              "2 · OBV evidence review",
+              chip(evTone as never, g.evidenceReview.status.replace(/_/g, " ")),
+              `${g.evidenceReview.evidenceCount} evidence item(s)${g.evidenceReview.policyVersion ? ` · policy v${g.evidenceReview.policyVersion}` : ""} · satisfies the OBV evidence policy only — not a jurisdictional inspection`
+            )}
+            {gateRow(
+              "3 · Jurisdictional inspection requirement",
+              chip(reqTone as never, g.requirementValue === "UNKNOWN" ? "UNKNOWN — NOT DETERMINED" : g.requirementValue.replace(/_/g, " ")),
+              g.requirement
+                ? `${g.requirement.inspectionType ?? ""}${g.requirement.jurisdiction ? ` · ${g.requirement.jurisdiction}` : ""} — basis: ${g.requirement.requirementBasis} (determined by ${userNameOf(g.requirement.determinedBy)}, config v${g.requirement.configurationVersion})`
+                : "No attributable determination on record. UNKNOWN never behaves as NOT REQUIRED."
+            )}
+            {gateRow(
+              "4 · Inspection schedule",
+              g.requirementValue === "NOT_REQUIRED"
+                ? chip("ok", "NOT APPLICABLE")
+                : g.inspection?.scheduledAt
+                  ? chip(g.inspection.status === "SCHEDULED" ? "warn" : "ok", `SCHEDULED ${fmtTs(g.inspection.scheduledAt)}`)
+                  : chip("neutral", g.requirementValue === "REQUIRED" ? "NOT SCHEDULED" : "—"),
+              g.inspection?.issuingAuthority ?? null
+            )}
+            {gateRow(
+              "5 · Inspection result",
+              g.requirementValue === "NOT_REQUIRED"
+                ? chip("ok", "NOT APPLICABLE")
+                : g.inspectionGate === "PASSED"
+                  ? chip("ok", "INSPECTION PASSED")
+                  : g.inspectionGate === "FAILED"
+                    ? chip("bad", "INSPECTION FAILED")
+                    : chip("neutral", g.inspectionGate === "COMPLETED_PENDING_RESULT" ? "COMPLETED — RESULT PENDING" : "PENDING"),
+              g.inspection?.result
+                ? `${g.inspection.result} recorded ${fmtTs(g.inspection.resultRecordedAt)} by ${userNameOf(g.inspection.reviewedByUserId)}${g.inspection.governmentInspectorName ? ` · government inspector: ${g.inspection.governmentInspectorName}` : ""}${g.inspection.inspectionReference ? ` · ref ${g.inspection.inspectionReference}` : ""} — a passed inspection authorizes nothing by itself`
+                : null
+            )}
+            {gateRow(
+              "6 · Draw eligibility",
+              chip(eligTone as never, g.eligibility.result.replace(/_/g, " ")),
+              blocking.length
+                ? `Blocking: ${blocking.map((r) => `${r.detail} [${r.code}]`).join(" ")}`
+                : g.eligibility.reasons.length
+                  ? g.eligibility.reasons.map((r) => `${r.detail} [${r.code}]`).join(" ")
+                  : null
+            )}
+
+            <div style="display:flex;gap:14px;margin-top:12px;flex-wrap:wrap;align-items:flex-end">
+              {input.canReportCompletion && g.contractor.status !== "REPORTED_COMPLETE" ? (
+                <form method="POST" action={`/api/milestones/${milestone.id}/contractor-completion`} style="display:flex;gap:6px;align-items:flex-end;margin:0;flex-wrap:wrap">
+                  <input type="hidden" name="status" value="REPORTED_COMPLETE" />
+                  <input name="notes" placeholder="Completion notes (optional)" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;min-width:200px" />
+                  <button className="btn sm" type="submit">Report work complete (contractor)</button>
+                </form>
+              ) : null}
+              {input.canReportCompletion && g.contractor.status === "REPORTED_COMPLETE" ? (
+                <form method="POST" action={`/api/milestones/${milestone.id}/contractor-completion`} style="margin:0">
+                  <input type="hidden" name="status" value="WITHDRAWN" />
+                  <button className="btn ghost sm" type="submit">Withdraw completion report</button>
+                </form>
+              ) : null}
+              {input.canDetermineInspection && g.requirementValue === "UNKNOWN" ? (
+                <form method="POST" action={`/api/milestones/${milestone.id}/inspection-requirement`} style="display:flex;gap:6px;align-items:flex-end;margin:0;flex-wrap:wrap">
+                  <select name="requirement" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px">
+                    <option value="REQUIRED">REQUIRED</option>
+                    <option value="NOT_REQUIRED">NOT_REQUIRED</option>
+                  </select>
+                  <input name="inspectionType" placeholder="Inspection type" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px" />
+                  <input name="jurisdiction" placeholder="Jurisdiction" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px" />
+                  <input name="requirementBasis" placeholder="Basis (required)" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;min-width:180px" />
+                  <button className="btn secondary sm" type="submit">Record determination</button>
+                </form>
+              ) : null}
+              {g.requirementValue === "REQUIRED" && !g.inspection && input.nav.user?.role !== "FIELD" ? (
+                <form method="POST" action={`/api/milestones/${milestone.id}/inspections`} style="display:flex;gap:6px;align-items:flex-end;margin:0;flex-wrap:wrap">
+                  <input type="datetime-local" name="scheduledAtLocal" className="insp-sched" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px" />
+                  <button className="btn secondary sm" type="submit">Schedule inspection</button>
+                </form>
+              ) : null}
+              {input.canDetermineInspection && g.inspection && !["PASSED", "FAILED", "CANCELLED"].includes(g.inspection.status) ? (
+                <form method="POST" action={`/api/inspections/${g.inspection.id}/result`} style="display:flex;gap:6px;align-items:flex-end;margin:0;flex-wrap:wrap">
+                  <select name="result" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px">
+                    <option value="PASSED">PASSED</option>
+                    <option value="FAILED">FAILED</option>
+                  </select>
+                  <input name="governmentInspectorName" placeholder="Government inspector (name)" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px" />
+                  <input name="inspectionReference" placeholder="Reference #" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;max-width:120px" />
+                  <button className="btn sm" type="submit">Record reviewed result</button>
+                </form>
+              ) : null}
+            </div>
+            {raw(`<script>
+              document.querySelectorAll('input.insp-sched').forEach(function (inp) {
+                inp.form && inp.form.addEventListener('submit', function () {
+                  if (inp.value) {
+                    var hidden = document.createElement('input');
+                    hidden.type = 'hidden'; hidden.name = 'scheduledAt';
+                    hidden.value = new Date(inp.value).toISOString();
+                    inp.form.appendChild(hidden);
+                  }
+                });
+              });
+            </script>`)}
+          </div>
+        );
+      })()}
 
       {input.drafts.length > 0 ? (
         <div className="panel" style="margin-top:12px">

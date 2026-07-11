@@ -89,6 +89,13 @@ export interface Milestone {
   weight?: number | null;
   spatialLabel?: string | null;
   archived?: boolean;
+  // ---- gate 1: contractor completion (additive; never verification) ----
+  contractorCompletionStatus?: ContractorCompletionStatus;
+  contractorReportedByUserId?: string | null;
+  contractorReportedAt?: string | null;
+  contractorCompletionNotes?: string | null;
+  /** Evidence submissions the contractor cited with the report. */
+  contractorLinkedEvidenceIds?: string[];
 }
 
 export interface DeviceMetadata {
@@ -1156,6 +1163,8 @@ export type ExceptionSourceType =
   | "APPROVAL_REQUEST"
   | "LEDGER_INTEGRITY"
   | "INTEGRATION"
+  | "INSPECTION"
+  | "INSPECTION_REQUIREMENT"
   | "MANUAL";
 
 export type ExceptionCategory =
@@ -1435,4 +1444,131 @@ export interface AuditPackage {
   includeEvidenceMedia: boolean;
   fileCount: number;
   sizeBytes: number;
+}
+
+// ======================================================= completion gates
+
+/** Gate 1 — the contractor's own representation. REPORTED_COMPLETE means
+ *  only "the contractor represents that the configured milestone work is
+ *  complete". It is NOT an OBV verification result, NOT an inspection
+ *  result, NOT an approval and NOT a release authorization. */
+export type ContractorCompletionStatus =
+  | "NOT_REPORTED" | "IN_PROGRESS" | "REPORTED_COMPLETE" | "WITHDRAWN";
+
+/** Gate 2 — DERIVED from the governed evidence pipeline (EvidenceItems +
+ *  VerificationAggregator results). Never a second verification truth.
+ *  VERIFIED means only "the submitted evidence satisfies the configured
+ *  OBV evidence-verification policy" — not a jurisdictional inspection. */
+export type EvidenceReviewStatus =
+  | "NOT_SUBMITTED" | "SUBMITTED" | "UNDER_REVIEW" | "NEEDS_REVIEW"
+  | "REJECTED" | "VERIFIED";
+
+/** Gate 3 — configured / determined, never inferred. Absence of a
+ *  determination is UNKNOWN; UNKNOWN never behaves as NOT_REQUIRED. */
+export type InspectionRequirementValue = "UNKNOWN" | "NOT_REQUIRED" | "REQUIRED";
+
+export interface InspectionRequirement {
+  id: string;
+  projectId: string;
+  milestoneId: string;
+  requirement: InspectionRequirementValue;
+  /** Why: statute/code reference, configured template, reviewed
+   *  determination — REQUIRED for NOT_REQUIRED determinations. */
+  requirementBasis: string;
+  determinedBy: string; // user id (attributable reviewed determination)
+  determinedAt: string;
+  jurisdiction: string | null;
+  inspectionType: string | null;
+  issuingAuthority: string | null;
+  /** Gate configuration (snapshotted with project configuration). */
+  mustPassBeforeDrawReview: boolean;
+  mustPassBeforeGovernance: boolean;
+  finalCompletionOnly: boolean;
+  resultDocumentRequired: boolean;
+  configurationVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Gates 4–5 — the inspection record lifecycle. An uploaded document can
+ *  NEVER become PASSED automatically: a formal reviewed result recorded
+ *  by an attributable internal reviewer is required. */
+export type JurisdictionalInspectionStatus =
+  | "REQUIRED_UNSCHEDULED" | "SCHEDULED" | "COMPLETED_PENDING_RESULT"
+  | "PASSED" | "FAILED" | "CANCELLED" | "EXPIRED";
+
+export interface JurisdictionalInspection {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  milestoneId: string;
+  permitId: string | null;
+  inspectionType: string | null;
+  jurisdiction: string | null;
+  issuingAuthority: string | null;
+  inspectionReference: string | null;
+  required: boolean;
+  status: JurisdictionalInspectionStatus;
+  scheduledAt: string | null;
+  completedAt: string | null;
+  resultRecordedAt: string | null;
+  result: "PASSED" | "FAILED" | null;
+  /** External government inspector — recorded as text, NEVER an OBV user
+   *  unless they actually hold an authenticated OBV identity. */
+  governmentInspectorName: string | null;
+  /** Attributable internal reviewer who recorded the external result. */
+  reviewedByUserId: string | null;
+  supportingDocumentId: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Milestone-level inspection gate, derived from the requirement + the
+ *  latest active inspection record. */
+export type InspectionGateState =
+  | "REQUIREMENT_UNKNOWN" | "NOT_APPLICABLE" | "REQUIRED_UNSCHEDULED"
+  | "SCHEDULED" | "COMPLETED_PENDING_RESULT" | "PASSED" | "FAILED" | "EXPIRED";
+
+/** Gate 6 — DERIVED governance state. Deterministic; never a synonym for
+ *  physical completion and never able to release funds itself. */
+export type MilestoneDrawEligibilityResult =
+  | "NOT_ELIGIBLE" | "ELIGIBLE_FOR_DRAW_REVIEW" | "READY_FOR_GOVERNANCE"
+  | "BLOCKED" | "RELEASED";
+
+export interface GateReason {
+  code: string; // machine-readable, e.g. JURISDICTIONAL_INSPECTION_NOT_PASSED
+  detail: string; // plain-language explanation
+  blocking: boolean;
+}
+
+export interface MilestoneDrawEligibility {
+  milestoneId: string;
+  result: MilestoneDrawEligibilityResult;
+  reasons: GateReason[];
+  computedAt: string;
+}
+
+/** The six-gate view of one milestone. PHOTOGRAPHIC COMPLETION IS NOT
+ *  LEGAL OR CONTRACTUAL COMPLETION — each dimension stays separate. */
+export interface MilestoneGates {
+  milestoneId: string;
+  contractor: {
+    status: ContractorCompletionStatus;
+    reportedByUserId: string | null;
+    reportedAt: string | null;
+    notes: string | null;
+    linkedEvidenceIds: string[];
+  };
+  evidenceReview: {
+    status: EvidenceReviewStatus;
+    evidenceCount: number;
+    latestVerdict: string | null;
+    policyVersion: number | null;
+  };
+  requirement: InspectionRequirement | null; // null = UNKNOWN (undetermined)
+  requirementValue: InspectionRequirementValue;
+  inspection: JurisdictionalInspection | null; // latest active record
+  inspectionGate: InspectionGateState;
+  eligibility: MilestoneDrawEligibility;
 }

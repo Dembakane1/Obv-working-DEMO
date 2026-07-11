@@ -833,6 +833,59 @@ CREATE TABLE IF NOT EXISTS audit_packages (
   size_bytes INTEGER NOT NULL DEFAULT 0,
   UNIQUE (project_id, package_version)
 );
+
+-- ==================== milestone completion gates (additive) =============
+-- PHOTOGRAPHIC COMPLETION IS NOT LEGAL OR CONTRACTUAL COMPLETION.
+-- Jurisdictional inspection requirement: one determined row per milestone;
+-- ABSENCE of a row means UNKNOWN — never inferred as NOT_REQUIRED.
+CREATE TABLE IF NOT EXISTS inspection_requirements (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  milestone_id TEXT NOT NULL UNIQUE REFERENCES milestones(id),
+  requirement TEXT NOT NULL CHECK (requirement IN ('REQUIRED','NOT_REQUIRED')),
+  requirement_basis TEXT NOT NULL,
+  determined_by TEXT NOT NULL REFERENCES users(id),
+  determined_at TEXT NOT NULL,
+  jurisdiction TEXT,
+  inspection_type TEXT,
+  issuing_authority TEXT,
+  must_pass_before_draw_review INTEGER NOT NULL DEFAULT 0,
+  must_pass_before_governance INTEGER NOT NULL DEFAULT 1,
+  final_completion_only INTEGER NOT NULL DEFAULT 0,
+  result_document_required INTEGER NOT NULL DEFAULT 0,
+  configuration_version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Jurisdictional inspection records. A recorded document NEVER becomes
+-- PASSED automatically: results are recorded by an attributable internal
+-- reviewer; the government inspector is text, not an OBV identity.
+CREATE TABLE IF NOT EXISTS jurisdictional_inspections (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  milestone_id TEXT NOT NULL REFERENCES milestones(id),
+  permit_id TEXT,
+  inspection_type TEXT,
+  jurisdiction TEXT,
+  issuing_authority TEXT,
+  inspection_reference TEXT,
+  required INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'REQUIRED_UNSCHEDULED' CHECK (status IN
+    ('REQUIRED_UNSCHEDULED','SCHEDULED','COMPLETED_PENDING_RESULT',
+     'PASSED','FAILED','CANCELLED','EXPIRED')),
+  scheduled_at TEXT,
+  completed_at TEXT,
+  result_recorded_at TEXT,
+  result TEXT CHECK (result IN ('PASSED','FAILED')),
+  government_inspector_name TEXT,
+  reviewed_by_user_id TEXT REFERENCES users(id),
+  supporting_document_id TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 export function getDb(): DatabaseSync {
@@ -887,6 +940,13 @@ export function getDb(): DatabaseSync {
       "ALTER TABLE draw_documents ADD COLUMN reference_number TEXT",
       "ALTER TABLE draw_documents ADD COLUMN inspection_date TEXT",
       "ALTER TABLE draw_documents ADD COLUMN inspection_result TEXT",
+      // ---- milestone completion gates (additive; conservative defaults:
+      // contractor NOT_REPORTED, inspection requirement UNKNOWN-by-absence) ----
+      "ALTER TABLE milestones ADD COLUMN contractor_completion_status TEXT NOT NULL DEFAULT 'NOT_REPORTED'",
+      "ALTER TABLE milestones ADD COLUMN contractor_reported_by TEXT",
+      "ALTER TABLE milestones ADD COLUMN contractor_reported_at TEXT",
+      "ALTER TABLE milestones ADD COLUMN contractor_completion_notes TEXT",
+      "ALTER TABLE milestones ADD COLUMN contractor_linked_evidence TEXT",
       "ALTER TABLE messages ADD COLUMN edited_at TEXT",
       "ALTER TABLE messages ADD COLUMN original_body TEXT",
       "ALTER TABLE messages ADD COLUMN external_deleted INTEGER NOT NULL DEFAULT 0",

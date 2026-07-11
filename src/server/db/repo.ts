@@ -73,6 +73,14 @@ function toMilestone(r: Row): Milestone {
     weight: (r.weight as number) ?? null,
     spatialLabel: (r.spatial_label as string) ?? null,
     archived: Boolean(r.archived),
+    contractorCompletionStatus:
+      (r.contractor_completion_status as Milestone["contractorCompletionStatus"]) ?? "NOT_REPORTED",
+    contractorReportedByUserId: (r.contractor_reported_by as string) ?? null,
+    contractorReportedAt: (r.contractor_reported_at as string) ?? null,
+    contractorCompletionNotes: (r.contractor_completion_notes as string) ?? null,
+    contractorLinkedEvidenceIds: r.contractor_linked_evidence
+      ? (JSON.parse(r.contractor_linked_evidence as string) as string[])
+      : [],
   };
 }
 
@@ -674,6 +682,7 @@ import type {
   ChangeOrder, ChangeOrderAllocation, ChangeOrderDocument, ChangeOrderEvent,
   RetainagePolicy, RetainageReleaseRequest, RetainageCondition, RetainageEvent,
   AuditPackage,
+  InspectionRequirement, JurisdictionalInspection,
 } from "../../shared/types";
 
 function toReport(r: Row): Report {
@@ -3196,4 +3205,198 @@ export function listAllApprovalRequestsForProject(projectId: string): ApprovalRe
     )
     .all(projectId)
     .map((r) => toApprovalRequest(r as Row));
+}
+
+// ==================================================== completion gates
+
+export function updateContractorCompletion(
+  milestoneId: string,
+  patch: {
+    status: Milestone["contractorCompletionStatus"];
+    reportedByUserId: string | null;
+    reportedAt: string | null;
+    notes: string | null;
+    linkedEvidenceIds: string[];
+  }
+): void {
+  getDb()
+    .prepare(
+      `UPDATE milestones SET contractor_completion_status = ?,
+         contractor_reported_by = ?, contractor_reported_at = ?,
+         contractor_completion_notes = ?, contractor_linked_evidence = ?
+       WHERE id = ?`
+    )
+    .run(
+      patch.status ?? "NOT_REPORTED",
+      patch.reportedByUserId,
+      patch.reportedAt,
+      patch.notes,
+      JSON.stringify(patch.linkedEvidenceIds ?? []),
+      milestoneId
+    );
+}
+
+function toInspectionRequirement(r: Row): InspectionRequirement {
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    milestoneId: r.milestone_id as string,
+    requirement: r.requirement as InspectionRequirement["requirement"],
+    requirementBasis: r.requirement_basis as string,
+    determinedBy: r.determined_by as string,
+    determinedAt: r.determined_at as string,
+    jurisdiction: (r.jurisdiction as string) ?? null,
+    inspectionType: (r.inspection_type as string) ?? null,
+    issuingAuthority: (r.issuing_authority as string) ?? null,
+    mustPassBeforeDrawReview: Boolean(r.must_pass_before_draw_review),
+    mustPassBeforeGovernance: Boolean(r.must_pass_before_governance),
+    finalCompletionOnly: Boolean(r.final_completion_only),
+    resultDocumentRequired: Boolean(r.result_document_required),
+    configurationVersion: r.configuration_version as number,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function upsertInspectionRequirement(req: InspectionRequirement): void {
+  getDb()
+    .prepare(
+      `INSERT INTO inspection_requirements (id, project_id, milestone_id, requirement,
+         requirement_basis, determined_by, determined_at, jurisdiction, inspection_type,
+         issuing_authority, must_pass_before_draw_review, must_pass_before_governance,
+         final_completion_only, result_document_required, configuration_version,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(milestone_id) DO UPDATE SET
+         requirement = excluded.requirement,
+         requirement_basis = excluded.requirement_basis,
+         determined_by = excluded.determined_by,
+         determined_at = excluded.determined_at,
+         jurisdiction = excluded.jurisdiction,
+         inspection_type = excluded.inspection_type,
+         issuing_authority = excluded.issuing_authority,
+         must_pass_before_draw_review = excluded.must_pass_before_draw_review,
+         must_pass_before_governance = excluded.must_pass_before_governance,
+         final_completion_only = excluded.final_completion_only,
+         result_document_required = excluded.result_document_required,
+         configuration_version = excluded.configuration_version,
+         updated_at = excluded.updated_at`
+    )
+    .run(
+      req.id, req.projectId, req.milestoneId, req.requirement, req.requirementBasis,
+      req.determinedBy, req.determinedAt, req.jurisdiction, req.inspectionType,
+      req.issuingAuthority, req.mustPassBeforeDrawReview ? 1 : 0,
+      req.mustPassBeforeGovernance ? 1 : 0, req.finalCompletionOnly ? 1 : 0,
+      req.resultDocumentRequired ? 1 : 0, req.configurationVersion,
+      req.createdAt, req.updatedAt
+    );
+}
+
+export function getInspectionRequirement(milestoneId: string): InspectionRequirement | null {
+  const r = getDb()
+    .prepare("SELECT * FROM inspection_requirements WHERE milestone_id = ?")
+    .get(milestoneId) as Row | undefined;
+  return r ? toInspectionRequirement(r) : null;
+}
+
+export function listInspectionRequirementsForProject(projectId: string): InspectionRequirement[] {
+  return (getDb()
+    .prepare("SELECT * FROM inspection_requirements WHERE project_id = ? ORDER BY milestone_id")
+    .all(projectId) as Row[]).map(toInspectionRequirement);
+}
+
+function toInspection(r: Row): JurisdictionalInspection {
+  return {
+    id: r.id as string,
+    organizationId: r.organization_id as string,
+    projectId: r.project_id as string,
+    milestoneId: r.milestone_id as string,
+    permitId: (r.permit_id as string) ?? null,
+    inspectionType: (r.inspection_type as string) ?? null,
+    jurisdiction: (r.jurisdiction as string) ?? null,
+    issuingAuthority: (r.issuing_authority as string) ?? null,
+    inspectionReference: (r.inspection_reference as string) ?? null,
+    required: Boolean(r.required),
+    status: r.status as JurisdictionalInspection["status"],
+    scheduledAt: (r.scheduled_at as string) ?? null,
+    completedAt: (r.completed_at as string) ?? null,
+    resultRecordedAt: (r.result_recorded_at as string) ?? null,
+    result: (r.result as JurisdictionalInspection["result"]) ?? null,
+    governmentInspectorName: (r.government_inspector_name as string) ?? null,
+    reviewedByUserId: (r.reviewed_by_user_id as string) ?? null,
+    supportingDocumentId: (r.supporting_document_id as string) ?? null,
+    notes: (r.notes as string) ?? null,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function insertInspection(i: JurisdictionalInspection): void {
+  getDb()
+    .prepare(
+      `INSERT INTO jurisdictional_inspections (id, organization_id, project_id,
+         milestone_id, permit_id, inspection_type, jurisdiction, issuing_authority,
+         inspection_reference, required, status, scheduled_at, completed_at,
+         result_recorded_at, result, government_inspector_name, reviewed_by_user_id,
+         supporting_document_id, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      i.id, i.organizationId, i.projectId, i.milestoneId, i.permitId,
+      i.inspectionType, i.jurisdiction, i.issuingAuthority, i.inspectionReference,
+      i.required ? 1 : 0, i.status, i.scheduledAt, i.completedAt,
+      i.resultRecordedAt, i.result, i.governmentInspectorName, i.reviewedByUserId,
+      i.supportingDocumentId, i.notes, i.createdAt, i.updatedAt
+    );
+}
+
+export function getInspection(id: string): JurisdictionalInspection | null {
+  const r = getDb()
+    .prepare("SELECT * FROM jurisdictional_inspections WHERE id = ?")
+    .get(id) as Row | undefined;
+  return r ? toInspection(r) : null;
+}
+
+export function listInspectionsForMilestone(milestoneId: string): JurisdictionalInspection[] {
+  return (getDb()
+    .prepare("SELECT * FROM jurisdictional_inspections WHERE milestone_id = ? ORDER BY created_at")
+    .all(milestoneId) as Row[]).map(toInspection);
+}
+
+export function listInspectionsForProject(projectId: string): JurisdictionalInspection[] {
+  return (getDb()
+    .prepare("SELECT * FROM jurisdictional_inspections WHERE project_id = ? ORDER BY created_at")
+    .all(projectId) as Row[]).map(toInspection);
+}
+
+export function updateInspection(
+  id: string,
+  patch: Partial<
+    Pick<
+      JurisdictionalInspection,
+      | "status" | "scheduledAt" | "completedAt" | "resultRecordedAt" | "result"
+      | "governmentInspectorName" | "reviewedByUserId" | "supportingDocumentId"
+      | "notes" | "inspectionReference" | "inspectionType" | "jurisdiction" | "issuingAuthority"
+    >
+  >
+): void {
+  const cur = getInspection(id);
+  if (!cur) return;
+  const next = { ...cur, ...patch, updatedAt: new Date().toISOString() };
+  getDb()
+    .prepare(
+      `UPDATE jurisdictional_inspections SET status = ?, scheduled_at = ?,
+         completed_at = ?, result_recorded_at = ?, result = ?,
+         government_inspector_name = ?, reviewed_by_user_id = ?,
+         supporting_document_id = ?, notes = ?, inspection_reference = ?,
+         inspection_type = ?, jurisdiction = ?, issuing_authority = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      next.status, next.scheduledAt, next.completedAt, next.resultRecordedAt,
+      next.result, next.governmentInspectorName, next.reviewedByUserId,
+      next.supportingDocumentId, next.notes, next.inspectionReference,
+      next.inspectionType, next.jurisdiction, next.issuingAuthority,
+      next.updatedAt, id
+    );
 }

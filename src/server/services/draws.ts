@@ -965,6 +965,30 @@ export function computeRecommendation(drawRequestId: string): DrawRecommendation
     }
   }
 
+  // ---- jurisdictional inspection gate (line-scoped, deterministic) ----
+  // A milestone whose REQUIRED inspection has not passed never rejects
+  // the whole draw — only its own line amount is surfaced for exception
+  // handling through the existing partial-support workflow.
+  for (const l of lines) {
+    if (!l.milestoneId) continue;
+    const req = repo.getInspectionRequirement(l.milestoneId);
+    if (!req || req.requirement !== "REQUIRED") continue;
+    if (!req.mustPassBeforeDrawReview && !req.mustPassBeforeGovernance) continue;
+    const inspections = repo
+      .listInspectionsForMilestone(l.milestoneId)
+      .filter((i) => i.status !== "CANCELLED");
+    const latest = inspections.length ? inspections[inspections.length - 1] : null;
+    if (latest?.status !== "PASSED") {
+      const ms = repo.getMilestone(l.milestoneId);
+      reasons.push({
+        kind: "EXCEPTION",
+        detail: `REQUIRED JURISDICTIONAL INSPECTION NOT PASSED: line "${l.description}" (${money(l.currentRequested)}) references M${ms?.seq} — ${req.inspectionType ?? "inspection"} is ${latest ? latest.status.replace(/_/g, " ") : "NOT SCHEDULED"}`,
+        amount: l.currentRequested,
+        lineItemId: l.id,
+      });
+    }
+  }
+
   // ---- grounded progress cross-check (informational) ----
   const links = repo.listDrawEvidenceLinks(draw.id);
   for (const l of lines) {
