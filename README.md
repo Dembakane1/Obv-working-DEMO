@@ -158,8 +158,16 @@ and retains prior versions as SUPERSEDED (still downloadable). Never
 included: secrets, invitation tokens, provider credentials, chat
 transcripts (communication metadata counts are an explicit opt-in),
 evidence media (hashes + protected references instead).
-`scripts/auditpackage-test.js` (30 checkpoints) covers the 20 required
-cases; see `docs/AUDIT_PACKAGE.md`.
+Hardened (v17.1): manifest pins the
+ledger head and states the consistency model (creation-time cutoff, no
+historical-state overclaim); per-file inventory records kind + record
+counts; integrity findings are classified WARNING (availability) vs
+CRITICAL (trust chain) vs FATAL (aborts with FAILED — including
+mandatory financial reconciliation); raw evidence media is a
+role-restricted opt-in (funder rep / compliance only) with sanitized
+names, per-copy re-hashing and ORIGINAL/derivative provenance.
+`scripts/auditpackage-test.js` (43 checkpoints) covers the 20 required
+cases plus the hardening pass; see `docs/AUDIT_PACKAGE.md`.
 
 ---
 

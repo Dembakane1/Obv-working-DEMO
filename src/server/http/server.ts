@@ -2529,6 +2529,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         asOf: p.asOf ? String(p.asOf) : null,
         includeReports: p.includeReports === undefined ? true : truthy(p.includeReports),
         includeCommMetadata: truthy(p.includeCommMetadata),
+        includeEvidenceMedia: truthy(p.includeEvidenceMedia),
         renderCoverHtml: renderAuditCover,
         renderCoverPdf: async (html) => {
           if (!pdfRendererAvailable()) return null;
@@ -3511,6 +3512,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           .flatMap((p) => repo.listAuditPackagesForProject(p.id))
           .sort((a, b) => b.requestedAt.localeCompare(a.requestedAt)),
         canGenerateAudit: ["FUNDER_REP", "PROJECT_MANAGER", "COMPLIANCE_REVIEWER"].includes(user!.role),
+        canIncludeMedia: ["FUNDER_REP", "COMPLIANCE_REVIEWER"].includes(user!.role),
         apReady: url.searchParams.get("apReady"),
         apError: url.searchParams.get("apError"),
       })

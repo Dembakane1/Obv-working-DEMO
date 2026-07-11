@@ -168,11 +168,30 @@ async function download(key, id) {
       manifest.kind === "OBV_AUDIT_PACKAGE" &&
         manifest.schemaVersion === 1 &&
         manifest.packageId === pkg.id &&
+        manifest.project.id === "proj-r47" &&
+        manifest.organization.id === "org-cdfc" &&
         manifest.asOfTimestamp === pkg.asOfTimestamp &&
+        manifest.generatedAt &&
         manifest.configurationVersion === pkg.configurationVersion &&
         Array.isArray(manifest.fileInventory) &&
         manifest.generatedBy.id === "user-funder",
-      "2b. manifest carries id, project, generator, as-of, config version and inventory"
+      "2b. manifest carries ids, project, organization, generator, as-of, config version and inventory"
+    );
+    const ledgerHeadRow = q1("SELECT seq, current_hash FROM ledger_entries ORDER BY seq DESC LIMIT 1");
+    assert(
+      manifest.ledgerHead &&
+        manifest.ledgerHead.seq === ledgerHeadRow.seq &&
+        manifest.ledgerHead.hash === ledgerHeadRow.current_hash &&
+        manifest.consistencyModel === "CREATION_TIME_CUTOFF",
+      "2c. manifest pins the ledger head reference and states the consistency model"
+    );
+    const evInv = manifest.fileInventory.find((f) => f.path === "03_evidence/evidence-register.csv");
+    assert(
+      manifest.fileInventory.every(
+        (f) => typeof f.path === "string" && typeof f.bytes === "number" &&
+          /^[0-9a-f]{64}$/.test(f.sha256) && typeof f.kind === "string" && "records" in f
+      ) && evInv.kind === "csv-register" && typeof evInv.records === "number",
+      "2d. every inventory entry records path, size, sha256, kind and record count where applicable"
     );
 
     // ---------- 3. correct project only ----------
@@ -261,9 +280,12 @@ async function download(key, id) {
     assert(
       manifest.integrity.ledger.valid === true &&
         manifest.integrity.overall === "CLEAN" &&
+        manifest.integrity.criticalFindings === 0 &&
+        manifest.integrity.findings.length === 0 &&
         pkg.ledgerIntegrityState === "INTACT" &&
-        pkg.integrityState === "CLEAN",
-      "10. Evidence Ledger chain validates; package integrity is CLEAN"
+        pkg.integrityState === "CLEAN" &&
+        pkg.integrityCritical === 0,
+      "10. fully clean package: CLEAN, zero findings, zero critical"
     );
 
     // ---------- 11. manifest file hashes validate ----------
@@ -398,6 +420,125 @@ async function download(key, id) {
     });
     assert(future.status === 400, "   a future as-of timestamp is refused");
 
+    // ---------- as-of: records inserted after the cutoff never leak ----------
+    const cutoff = new Date().toISOString();
+    await new Promise((r) => setTimeout(r, 20));
+    const lateTs = new Date().toISOString();
+    exec(
+      `INSERT INTO exceptions (id, organization_id, project_id, source_type, source_id,
+         source_key, category, severity, status, title, description, opened_at,
+         created_by, created_at, updated_at)
+       VALUES ('exc-late', 'org-cdfc', 'proj-r47', 'FIELD_ISSUE', 'late-src', 'late-key',
+         'OTHER', 'LOW', 'OPEN', 'Inserted after cutoff', '', ?, 'user-funder', ?, ?)`,
+      lateTs, lateTs, lateTs
+    );
+    const cutoffGen = await api("funder", "POST", "/api/projects/proj-r47/audit-packages", { asOf: cutoff });
+    const cutoffPkg = (await cutoffGen.json()).auditPackage;
+    const cutoffZip = readZip(Buffer.from(await (await download("funder", cutoffPkg.id)).arrayBuffer()));
+    const cutoffExc = cutoffZip["06_exceptions/exception-register.csv"].toString("utf8");
+    const cutoffManifest = JSON.parse(cutoffZip["manifest.json"].toString("utf8"));
+    assert(
+      q1("SELECT COUNT(*) c FROM exceptions WHERE id='exc-late'").c === 1 &&
+        !cutoffExc.includes("exc-late") &&
+        !cutoffExc.includes("Inserted after cutoff") &&
+        cutoffManifest.recordCounts["06_exceptions/exception-register.csv"] ===
+          q1("SELECT COUNT(*) c FROM exceptions WHERE project_id='proj-r47' AND opened_at <= ?", cutoff).c,
+      "   a record inserted after the cutoff is excluded from registers AND counts"
+    );
+    const liveGen = await api("funder", "POST", "/api/projects/proj-r47/audit-packages", {});
+    const livePkg = (await liveGen.json()).auditPackage;
+    const liveZip = readZip(Buffer.from(await (await download("funder", livePkg.id)).arrayBuffer()));
+    assert(
+      liveZip["06_exceptions/exception-register.csv"].toString("utf8").includes("exc-late"),
+      "   the same record appears in a package cut after its creation (no over-exclusion)"
+    );
+
+    // ---------- evidence media policy ----------
+    const pmMedia = await api("pm", "POST", "/api/projects/proj-r47/audit-packages", {
+      includeEvidenceMedia: true,
+    });
+    assert(
+      pmMedia.status === 403 &&
+        q1("SELECT COUNT(*) c FROM audit_packages WHERE requested_by='user-pm'").c === 0,
+      "   unauthorized media inclusion attempt is refused (403) — PM cannot export raw media"
+    );
+    assert(
+      !Object.keys(liveZip).some((f) => f.startsWith("03_evidence/media/")) &&
+        !liveZip["03_evidence/media-manifest.csv"],
+      "   default packages contain no raw media files"
+    );
+    const mediaGen = await api("compliance", "POST", "/api/projects/proj-r47/audit-packages", {
+      includeEvidenceMedia: true,
+    });
+    assert(mediaGen.status === 201, "   compliance reviewer may explicitly include evidence media");
+    const mediaPkg = (await mediaGen.json()).auditPackage;
+    const mediaZip = readZip(Buffer.from(await (await download("compliance", mediaPkg.id)).arrayBuffer()));
+    const mediaManifest = mediaZip["03_evidence/media-manifest.csv"].toString("utf8");
+    const mediaRows = csvRows(mediaManifest);
+    const mediaFiles = Object.keys(mediaZip).filter((f) => f.startsWith("03_evidence/media/"));
+    assert(
+      mediaRows.length === q1(
+        `SELECT COUNT(*) c FROM evidence_items e JOIN milestones m ON m.id=e.milestone_id
+         WHERE m.project_id='proj-r47'`
+      ).c && mediaFiles.length > 0,
+      "   media manifest covers every evidence item; media files are packaged"
+    );
+    for (const f of mediaFiles) {
+      const base = f.slice("03_evidence/media/".length);
+      if (!/^[A-Za-z0-9._-]+(__([A-Za-z0-9._-]+))?$/.test(base.replace("__", "_"))) {
+        fail(`unsanitized media filename: ${f}`);
+      }
+      const packagedHash = createHash("sha256").update(mediaZip[f]).digest("hex");
+      if (!mediaManifest.includes(packagedHash)) fail(`packaged media hash not recorded for ${f}`);
+    }
+    assert(
+      mediaRows.every((r) => /,(ORIGINAL|DEMO_FALLBACK_STANDIN|DERIVATIVE),/.test(r)) &&
+        mediaManifest.includes("recordedEvidenceHash") &&
+        mediaManifest.includes("mimeType"),
+      "   each packaged copy is re-hashed, MIME-typed and marked ORIGINAL vs derivative"
+    );
+    const mediaManifestJson = JSON.parse(mediaZip["manifest.json"].toString("utf8"));
+    assert(
+      mediaManifestJson.options.includeEvidenceMedia === true &&
+        mediaManifestJson.options.includeCommTranscripts === false &&
+        !Object.keys(mediaZip).some((f) => /whatsapp|comm-media|attachment/i.test(f)),
+      "   media opt-in never pulls in communication media or transcripts"
+    );
+
+    // ---------- nonfatal availability warning (READY_WITH_WARNINGS) ----------
+    exec(
+      `INSERT INTO reports (id, project_id, report_type, filename, generated_at,
+         generated_by, integrity_status, ledger_entries)
+       VALUES ('rep-ghost', 'proj-r47', 'VERIFICATION_FUND_RELEASE', 'ghost.pdf',
+         '2026-06-01T00:00:00.000Z', 'user-funder', 'INTACT', 2)`
+    );
+    const warnGen = await api("funder", "POST", "/api/projects/proj-r47/audit-packages", {});
+    const warnPkg = (await warnGen.json()).auditPackage;
+    const warnZip = readZip(Buffer.from(await (await download("funder", warnPkg.id)).arrayBuffer()));
+    const warnManifest = JSON.parse(warnZip["manifest.json"].toString("utf8"));
+    assert(
+      warnPkg.status === "READY" &&
+        warnPkg.integrityState === "WARNINGS" &&
+        warnPkg.integrityCritical === 0 &&
+        warnManifest.integrity.criticalFindings === 0 &&
+        warnManifest.integrity.findings.some(
+          (f) => f.severity === "WARNING" && f.category === "REPORT_ARTIFACT" && f.message.includes("rep-ghost")
+        ),
+      "   missing historical report artifact → READY with a nonfatal WARNING finding, zero critical"
+    );
+    assert(
+      warnZip["11_reports/report-index.csv"].toString("utf8").includes("rep-ghost") &&
+        warnZip["11_reports/report-index.csv"].toString("utf8").includes("NOT_ON_DISK"),
+      "   the register reference remains while the artifact is honestly marked unavailable"
+    );
+    const warnPage = await (
+      await fetch(BASE + "/reports", { headers: { cookie: jars.funder } })
+    ).text();
+    assert(
+      warnPage.includes("READY — INTEGRITY WARNING") && !warnPage.includes("CRITICAL INTEGRITY"),
+      "   register chip shows READY — INTEGRITY WARNING (not critical, not clean)"
+    );
+
     // ---------- 20. integrity failure is honestly represented ----------
     exec("UPDATE ledger_entries SET payload_hash='deadbeef' WHERE seq=1");
     const tamperGen = await api("funder", "POST", "/api/projects/proj-r47/audit-packages", {});
@@ -405,8 +546,9 @@ async function download(key, id) {
     assert(
       tamperPkg.status === "READY" &&
         tamperPkg.integrityState === "WARNINGS" &&
+        tamperPkg.integrityCritical > 0 &&
         tamperPkg.ledgerIntegrityState === "TAMPERED_AT:1",
-      "20a. tampered ledger → package carries WARNINGS + TAMPERED_AT state, never silently clean"
+      "20a. tampered ledger → READY with CRITICAL finding + TAMPERED_AT state, never silently clean"
     );
     const tamperZip = readZip(Buffer.from(await (await download("funder", tamperPkg.id)).arrayBuffer()));
     const tamperManifest = JSON.parse(tamperZip["manifest.json"].toString("utf8"));
@@ -416,15 +558,18 @@ async function download(key, id) {
     assert(
       tamperManifest.integrity.overall === "WARNINGS" &&
         tamperManifest.integrity.ledger.valid === false &&
-        tamperManifest.integrity.warnings.some((w) => w.includes("chain broken")),
-      "20b. manifest states the integrity failure explicitly"
+        tamperManifest.integrity.criticalFindings > 0 &&
+        tamperManifest.integrity.findings.some(
+          (f) => f.severity === "CRITICAL" && f.category === "LEDGER_CHAIN" && f.message.includes("chain broken")
+        ),
+      "20b. manifest classifies the ledger failure as a CRITICAL finding"
     );
     const reportsPage = await (
       await fetch(BASE + "/reports", { headers: { cookie: jars.funder } })
     ).text();
     assert(
-      reportsPage.includes("READY — INTEGRITY WARNING"),
-      "20c. the register shows READY — INTEGRITY WARNING, not a clean state"
+      reportsPage.includes("READY — CRITICAL INTEGRITY WARNING"),
+      "20c. the register shows READY — CRITICAL INTEGRITY WARNING, not a clean state"
     );
     void coverName;
 

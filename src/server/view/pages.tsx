@@ -1600,11 +1600,15 @@ export function renderReports(input: {
   pdfError?: boolean;
   auditPackages: AuditPackage[];
   canGenerateAudit: boolean;
+  canIncludeMedia: boolean;
   apReady?: string | null;
   apError?: string | null;
 }): string {
   const projectById = new Map(input.projects.map((p) => [p.id, p]));
   const apStatusChip = (pkg: AuditPackage) => {
+    if (pkg.status === "READY" && pkg.integrityCritical > 0) {
+      return <span className="status bad"><span className="g">✕</span>READY — CRITICAL INTEGRITY WARNING</span>;
+    }
     if (pkg.status === "READY" && pkg.integrityState === "WARNINGS") {
       return <span className="status warn"><span className="g">!</span>READY — INTEGRITY WARNING</span>;
     }
@@ -1687,6 +1691,12 @@ export function renderReports(input: {
                     <input type="checkbox" name="includeCommMetadata" value="true" />
                     Comm metadata summary
                   </label>
+                  {input.canIncludeMedia ? (
+                    <label style="display:flex;align-items:center;gap:5px" title="Raw evidence media copies, re-hashed against the recorded evidence hash. Funder rep / compliance reviewer only.">
+                      <input type="checkbox" name="includeEvidenceMedia" value="true" />
+                      Evidence media
+                    </label>
+                  ) : null}
                   <button className="btn sm" type="submit" data-busy-label="Generating…">Generate Audit Package</button>
                 </span>
               </form>
@@ -1736,6 +1746,8 @@ export function renderReports(input: {
                       <td style="font-size:11.5px">
                         {pkg.integrityState === "NOT_EVALUATED" ? "—" : pkg.integrityState === "CLEAN" ? (
                           <span className="status ok"><span className="g">✓</span>Clean</span>
+                        ) : pkg.integrityCritical > 0 ? (
+                          <span className="status bad"><span className="g">✕</span>{pkg.integrityCritical} critical</span>
                         ) : (
                           <span className="status warn"><span className="g">!</span>Warnings</span>
                         )}

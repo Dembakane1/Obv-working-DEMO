@@ -3080,12 +3080,14 @@ function toAuditPackage(r: Row): AuditPackage {
     configurationVersion: r.configuration_version as number,
     ledgerIntegrityState: r.ledger_integrity_state as string,
     integrityState: r.integrity_state as AuditPackage["integrityState"],
+    integrityCritical: (r.integrity_critical as number) ?? 0,
     manifestHash: (r.manifest_hash as string) ?? null,
     storageObjectKey: (r.storage_object_key as string) ?? null,
     completedAt: (r.completed_at as string) ?? null,
     failureCategory: (r.failure_category as string) ?? null,
     includeReports: Boolean(r.include_reports),
     includeCommMetadata: Boolean(r.include_comm_metadata),
+    includeEvidenceMedia: Boolean(r.include_evidence_media),
     fileCount: r.file_count as number,
     sizeBytes: r.size_bytes as number,
   };
@@ -3096,17 +3098,17 @@ export function insertAuditPackage(p: AuditPackage): void {
     .prepare(
       `INSERT INTO audit_packages (id, organization_id, project_id, package_version,
          requested_by, requested_at, status, as_of_timestamp, configuration_version,
-         ledger_integrity_state, integrity_state, manifest_hash, storage_object_key,
-         completed_at, failure_category, include_reports, include_comm_metadata,
-         file_count, size_bytes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         ledger_integrity_state, integrity_state, integrity_critical, manifest_hash,
+         storage_object_key, completed_at, failure_category, include_reports,
+         include_comm_metadata, include_evidence_media, file_count, size_bytes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       p.id, p.organizationId, p.projectId, p.packageVersion,
       p.requestedBy, p.requestedAt, p.status, p.asOfTimestamp, p.configurationVersion,
-      p.ledgerIntegrityState, p.integrityState, p.manifestHash, p.storageObjectKey,
-      p.completedAt, p.failureCategory, p.includeReports ? 1 : 0,
-      p.includeCommMetadata ? 1 : 0, p.fileCount, p.sizeBytes
+      p.ledgerIntegrityState, p.integrityState, p.integrityCritical, p.manifestHash,
+      p.storageObjectKey, p.completedAt, p.failureCategory, p.includeReports ? 1 : 0,
+      p.includeCommMetadata ? 1 : 0, p.includeEvidenceMedia ? 1 : 0, p.fileCount, p.sizeBytes
     );
 }
 
@@ -3133,7 +3135,7 @@ export function updateAuditPackage(
   patch: Partial<
     Pick<
       AuditPackage,
-      | "status" | "ledgerIntegrityState" | "integrityState" | "manifestHash"
+      | "status" | "ledgerIntegrityState" | "integrityState" | "integrityCritical" | "manifestHash"
       | "storageObjectKey" | "completedAt" | "failureCategory" | "fileCount" | "sizeBytes"
     >
   >
@@ -3143,14 +3145,16 @@ export function updateAuditPackage(
   getDb()
     .prepare(
       `UPDATE audit_packages SET status = ?, ledger_integrity_state = ?,
-         integrity_state = ?, manifest_hash = ?, storage_object_key = ?,
-         completed_at = ?, failure_category = ?, file_count = ?, size_bytes = ?
+         integrity_state = ?, integrity_critical = ?, manifest_hash = ?,
+         storage_object_key = ?, completed_at = ?, failure_category = ?,
+         file_count = ?, size_bytes = ?
        WHERE id = ?`
     )
     .run(
       patch.status ?? cur.status,
       patch.ledgerIntegrityState ?? cur.ledgerIntegrityState,
       patch.integrityState ?? cur.integrityState,
+      patch.integrityCritical ?? cur.integrityCritical,
       patch.manifestHash !== undefined ? patch.manifestHash : cur.manifestHash,
       patch.storageObjectKey !== undefined ? patch.storageObjectKey : cur.storageObjectKey,
       patch.completedAt !== undefined ? patch.completedAt : cur.completedAt,

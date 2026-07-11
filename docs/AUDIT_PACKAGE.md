@@ -60,16 +60,27 @@ sha256}]`, and `manifestHash` — sha256 over the manifest serialized with
 `manifestHash: null`, so any verifier can recompute it. No secrets, no
 tokens, no environment values.
 
-## As-of consistency
+## As-of consistency model — CREATION_TIME_CUTOFF
 
-`asOfTimestamp` defaults to generation time; an authorized user may pass
-a historical timestamp (future timestamps are refused). Every register
-with record timestamps (evidence, verifications, ledger, approvals and
-decisions, draws, exceptions, issues, clarifications, change orders,
-financial events, configuration audit, snapshots, reports) excludes
-records after the audit point. Current-state registers (milestones,
-budget lines, retainage position) reflect state at generation and the
-manifest says so in `notes`.
+One authoritative `asOfTimestamp` is captured at generation start
+(defaults to now; an authorized user may pass a historical timestamp;
+future timestamps are refused). Every register with record timestamps
+(evidence, verifications, ledger, approvals and decisions, draws,
+exceptions, issues, clarifications, change orders, financial events,
+configuration audit, snapshots, reports) excludes records created after
+that cutoff — record counts in the manifest reflect the same exclusion.
+
+The model is stated explicitly in the manifest
+(`consistencyModel: "CREATION_TIME_CUTOFF"`) and deliberately NOT
+overclaimed: this is creation-time cutoff consistency. Mutable
+current-state registers (milestone status, budget lines, retainage
+position) reflect state at generation time; the system does NOT
+reconstruct full historical state as of an arbitrary past timestamp.
+Historical configuration is available through the hashed configuration
+snapshots included in `01_configuration/`. Tests insert records after a
+captured cutoff and prove they appear in neither the registers nor the
+counts of a package cut at that timestamp — while appearing normally in
+a later package.
 
 ## Evidence register
 
@@ -78,10 +89,25 @@ by/at, capture-metadata state (`DEVICE_CAPTURE` / `DEMO_FALLBACK`), GPS
 state (coords or `NO_FIX`), verification verdict + confidence +
 provenance (`LIVE_AI` / `MOCK_*`) + policy version, ledger sequence,
 evidence content hash, approval request + status, fund state, and a
-protected application reference (`/evidence/:id`). Evidence media is NOT
+protected application reference (`/evidence/:id`). By default evidence media is NOT
 copied into the package — the register carries content hashes and
-references; media inclusion is reserved as a future explicit,
-authorized option.
+protected references.
+
+### Evidence media inclusion (explicit, role-restricted opt-in)
+
+`includeEvidenceMedia: true` may be set ONLY by a FUNDER_REP or
+COMPLIANCE_REVIEWER (any other role → 403; the attempt creates no
+package row). When authorized, PROJECT EVIDENCE objects only are copied
+to `03_evidence/media/<evidenceId>__<sanitized-filename>` with a
+`media-manifest.csv` recording: evidence id, packaged path, MIME type,
+the recorded evidence hash, the sha256 of the packaged copy, whether the
+hashes match, provenance (`ORIGINAL` when the packaged bytes equal the
+recorded evidence hash; `DEMO_FALLBACK_STANDIN`/`DERIVATIVE` otherwise)
+and size. Filenames are sanitized to `[A-Za-z0-9._-]`. A missing object
+is a nonfatal WARNING finding and an honest `NOT_AVAILABLE` row. Never
+included: expiring signed URLs, provider credentials, WhatsApp or any
+communication media/attachments — linkage to a project never qualifies
+communication media for export.
 
 ## Integrity validation (before READY)
 
@@ -96,11 +122,37 @@ authorized option.
    locally accessible storage (worm/uploads/demo paths).
 6. **Manifest file hashes** — sha256 per file, embedded in the manifest.
 
-Any finding → the package still completes but carries
-`integrityState: WARNINGS`, the manifest lists every warning, the cover
-summary shows **READY WITH INTEGRITY WARNING**, and the register chip
-reads `READY — INTEGRITY WARNING`. Failures are never hidden and never
-silently "clean".
+### Finding classification
+
+Every finding carries a severity and category, exposed consistently in
+the manifest (`integrity.findings`), the package row
+(`integrityCritical`), the Reports register chip, and the cover summary:
+
+- **WARNING (availability)** — optional evidence media unavailable;
+  historical report artifact unavailable while its register reference
+  remains; evidence object missing on local storage (the recorded hash
+  and ledger reference stay authoritative). Chip:
+  `READY — INTEGRITY WARNING`.
+- **CRITICAL (trust chain)** — Evidence Ledger chain failure,
+  configuration snapshot hash mismatch, duplicate governed release,
+  approval-record anomaly. Chip:
+  `READY — CRITICAL INTEGRITY WARNING`; cover title
+  **READY WITH CRITICAL INTEGRITY WARNING**.
+- **FATAL (generation aborts, status FAILED)** — tenant isolation
+  refusal (no row is even created for cross-tenant callers), package
+  construction/manifest failure (`GENERATION_ERROR`), and mandatory
+  financial reconciliation failure (`FINANCIAL_RECONCILIATION`): the
+  released totals recorded by the VirtualAccountService must equal the
+  tranche amounts of milestones in RELEASED state, checked on live
+  state before anything is assembled.
+
+A package with any finding is never labelled clean; the state model maps
+READY_WITH_WARNINGS to `status: READY` + `integrityState: WARNINGS`
+(with `integrityCritical` distinguishing severity). Manifest/file hash
+mismatches are a verifier-side check: the manifest embeds sha256 for
+every file plus the recomputable manifest hash and the ledger head
+reference (`ledgerHead: {seq, hash}`) so package-level integrity can be
+independently confirmed offline.
 
 ## Access control & audit
 
@@ -147,12 +199,16 @@ version — a pointer, never an audit conclusion.
 
 ## Tests
 
-`scripts/auditpackage-test.js` — 30 checkpoints covering the 20 required
-cases on an isolated server (:3186), including hash recomputation of
-every file and the manifest, secret/token/transcript leakage scans with
-planted secrets, cross-tenant + role blocks, immutability across
-regeneration, retention of superseded versions, as-of exclusion, and
-honest representation of a tampered ledger.
+`scripts/auditpackage-test.js` — 43 checkpoints covering the 20 required
+cases plus the hardening pass on an isolated server (:3186): hash
+recomputation of every file and the manifest, ledger-head pinning,
+inventory kind/record metadata, secret/token/transcript leakage scans
+with planted secrets, cross-tenant + role blocks, immutability across
+regeneration, retention of superseded versions, as-of exclusion
+including records inserted after a captured cutoff, unauthorized media
+inclusion refusal, authorized media export with per-copy re-hashing and
+provenance, a nonfatal availability warning (missing report artifact),
+and CRITICAL classification of a tampered ledger.
 
 ## Audit demo flow
 

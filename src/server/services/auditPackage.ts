@@ -33,7 +33,12 @@ import type {
 } from "../../shared/types";
 
 export class AuditPackageError extends Error {
-  constructor(message: string, public statusCode = 400) {
+  constructor(
+    message: string,
+    public statusCode = 400,
+    /** Recorded on the FAILED package row when generation aborts. */
+    public failureCategory: string | null = null
+  ) {
     super(message);
   }
 }
@@ -162,8 +167,27 @@ export function buildZip(files: PackageFile[], timestampIso: string): Buffer {
 
 // ===================================================== integrity checks
 
+/** WARNING = availability finding (an optional artifact is missing while
+ *  its register reference remains). CRITICAL = trust-chain finding (ledger
+ *  chain failure, snapshot hash mismatch, duplicate governed release,
+ *  approval-record anomaly). Fatal conditions (tenant isolation, package
+ *  construction, mandatory financial reconciliation) never produce a
+ *  finding — they abort generation with status FAILED. */
+export type IntegrityFindingSeverity = "WARNING" | "CRITICAL";
+
+export interface IntegrityFinding {
+  severity: IntegrityFindingSeverity;
+  category:
+    | "LEDGER_CHAIN" | "SNAPSHOT_HASH" | "DUPLICATE_RELEASE"
+    | "APPROVAL_RECORDS" | "EVIDENCE_OBJECT" | "REPORT_ARTIFACT" | "EVIDENCE_MEDIA";
+  message: string;
+}
+
 export interface IntegrityValidation {
   ledger: { state: string; valid: boolean; entries: number };
+  /** Ledger head reference at generation — lets a verifier confirm the
+   *  package was cut against a specific chain position. */
+  ledgerHead: { seq: number; hash: string } | null;
   configSnapshots: { total: number; validHashes: number; invalidVersions: number[] };
   duplicateReleases: {
     milestoneViolations: string[];
@@ -172,8 +196,29 @@ export interface IntegrityValidation {
   };
   approvals: { checked: number; violations: string[] };
   evidenceObjects: { checked: number; missing: string[]; notCheckable: number };
+  findings: IntegrityFinding[];
+  /** Derived from findings — refreshed via summarizeFindings(). */
   warnings: string[];
+  criticalCount: number;
   overall: "CLEAN" | "WARNINGS";
+}
+
+/** Recompute the derived summary fields after findings change (register
+ *  building can add availability findings after the base validation). */
+export function summarizeFindings(v: IntegrityValidation): void {
+  v.warnings = v.findings.map((f) => `[${f.severity}] ${f.message}`);
+  v.criticalCount = v.findings.filter((f) => f.severity === "CRITICAL").length;
+  v.overall = v.findings.length === 0 ? "CLEAN" : "WARNINGS";
+}
+
+const MEDIA_MIME: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp",
+  svg: "image/svg+xml", gif: "image/gif", mp4: "video/mp4", pdf: "application/pdf",
+};
+
+function mimeForFilename(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return MEDIA_MIME[ext] ?? "application/octet-stream";
 }
 
 /** Resolve a served evidence path to a file on disk, where accessible. */
@@ -187,19 +232,22 @@ function evidenceDiskPath(photoPath: string): string | null {
 }
 
 export async function validateProjectIntegrity(projectId: string): Promise<IntegrityValidation> {
-  const warnings: string[] = [];
+  const findings: IntegrityFinding[] = [];
+  const finding = (severity: IntegrityFindingSeverity, category: IntegrityFinding["category"], message: string) =>
+    findings.push({ severity, category, message });
 
   // 1. Evidence Ledger hash chain (global, append-only).
   const chain = await wormEvidenceStore.verifyChain();
+  const head = repo.lastLedgerEntry();
   const ledgerState = chain.valid ? "INTACT" : `TAMPERED_AT:${chain.brokenAt}`;
-  if (!chain.valid) warnings.push(`Evidence Ledger chain broken at entry ${chain.brokenAt}`);
+  if (!chain.valid) finding("CRITICAL", "LEDGER_CHAIN", `Evidence Ledger chain broken at entry ${chain.brokenAt}`);
 
   // 2. Configuration snapshot hashes (recomputed, never trusted).
   const snapshots = repo.listConfigSnapshots(projectId);
   const invalidVersions = snapshots
     .filter((s) => createHash("sha256").update(s.data).digest("hex") !== s.hash)
     .map((s) => s.version);
-  for (const v of invalidVersions) warnings.push(`Configuration snapshot v${v} hash mismatch`);
+  for (const v of invalidVersions) finding("CRITICAL", "SNAPSHOT_HASH", `Configuration snapshot v${v} hash mismatch`);
 
   // 3. Duplicate release checks — exactly-once transitions.
   const milestones = repo.listMilestones(projectId);
@@ -221,9 +269,9 @@ export async function validateProjectIntegrity(projectId: string): Promise<Integ
   const retainageViolations = [...retainageByRelease.entries()]
     .filter(([, n]) => n > 1)
     .map(([id]) => id);
-  for (const v of milestoneViolations) warnings.push(`Duplicate tranche release recorded for ${v}`);
-  for (const v of drawViolations) warnings.push(`Duplicate draw release recorded for ${v}`);
-  for (const v of retainageViolations) warnings.push(`Duplicate retainage release recorded for request ${v}`);
+  for (const v of milestoneViolations) finding("CRITICAL", "DUPLICATE_RELEASE", `Duplicate tranche release recorded for ${v}`);
+  for (const v of drawViolations) finding("CRITICAL", "DUPLICATE_RELEASE", `Duplicate draw release recorded for ${v}`);
+  for (const v of retainageViolations) finding("CRITICAL", "DUPLICATE_RELEASE", `Duplicate retainage release recorded for request ${v}`);
 
   // 4. Approval record consistency: one decision per role per request;
   //    APPROVED requests carry an APPROVED record from every required role.
@@ -245,7 +293,7 @@ export async function validateProjectIntegrity(projectId: string): Promise<Integ
       }
     }
   }
-  warnings.push(...approvalViolations.map((v) => `Approval integrity: ${v}`));
+  for (const v of approvalViolations) finding("CRITICAL", "APPROVAL_RECORDS", `Approval integrity: ${v}`);
 
   // 5. Evidence object existence, where the storage is locally accessible.
   const evidence = milestones.flatMap((m) => repo.listEvidenceForMilestone(m.id));
@@ -259,10 +307,14 @@ export async function validateProjectIntegrity(projectId: string): Promise<Integ
       missing.push(ev.id);
     }
   }
-  for (const id of missing) warnings.push(`Evidence object missing on storage: ${id}`);
+  // Availability finding, not a trust-chain failure: the recorded hash
+  // and ledger reference remain authoritative even when the local copy
+  // of the object is unavailable.
+  for (const id of missing) finding("WARNING", "EVIDENCE_OBJECT", `Evidence object missing on storage: ${id}`);
 
-  return {
+  const result: IntegrityValidation = {
     ledger: { state: ledgerState, valid: chain.valid, entries: chain.entries },
+    ledgerHead: head ? { seq: head.seq, hash: head.currentHash } : null,
     configSnapshots: {
       total: snapshots.length,
       validHashes: snapshots.length - invalidVersions.length,
@@ -271,9 +323,13 @@ export async function validateProjectIntegrity(projectId: string): Promise<Integ
     duplicateReleases: { milestoneViolations, drawViolations, retainageViolations },
     approvals: { checked: requests.length, violations: approvalViolations },
     evidenceObjects: { checked: evidence.length - notCheckable, missing, notCheckable },
-    warnings,
-    overall: warnings.length === 0 ? "CLEAN" : "WARNINGS",
+    findings,
+    warnings: [],
+    criticalCount: 0,
+    overall: "CLEAN",
   };
+  summarizeFindings(result);
+  return result;
 }
 
 // ======================================================== register build
@@ -346,6 +402,9 @@ export interface GenerateOptions {
   asOf?: string | null;
   includeReports?: boolean;
   includeCommMetadata?: boolean;
+  /** Raw evidence media copies — explicit opt-in restricted to
+   *  FUNDER_REP / COMPLIANCE_REVIEWER. */
+  includeEvidenceMedia?: boolean;
   /** Optional cover-PDF renderer (Chromium lives at the HTTP layer).
    *  Returns null when PDF rendering is unavailable — the package then
    *  carries the printable HTML cover, honestly labelled in the manifest. */
@@ -378,7 +437,8 @@ export interface AuditCoverData {
   retainageRemaining: number;
   ledgerIntegrity: string;
   integrityState: "CLEAN" | "WARNINGS";
-  integrityWarnings: string[];
+  integrityFindings: IntegrityFinding[];
+  criticalFindings: number;
   sections: string[];
 }
 
@@ -396,7 +456,7 @@ const atOrBefore = (ts: string | null | undefined, asOf: string) => Boolean(ts &
 function buildRegisters(
   project: Project,
   asOf: string,
-  opts: { includeReports: boolean; includeCommMetadata: boolean },
+  opts: { includeReports: boolean; includeCommMetadata: boolean; includeEvidenceMedia: boolean },
   integrity: IntegrityValidation
 ): BuiltRegisters {
   const files: PackageFile[] = [];
@@ -942,53 +1002,6 @@ function buildRegisters(
     );
   }
 
-  // ---- 10_integrity
-  add(
-    "10_integrity/ledger-integrity-report.json",
-    JSON.stringify(
-      {
-        checkedAt: new Date().toISOString(),
-        method: "Recomputed hash chain from genesis over all ledger entries",
-        result: integrity.ledger,
-        projectEntries: projectLedger.length,
-      },
-      null,
-      2
-    ),
-    "10_integrity"
-  );
-  add(
-    "10_integrity/configuration-hash-validation.json",
-    JSON.stringify(
-      {
-        checkedAt: new Date().toISOString(),
-        method: "sha256 recomputed over each stored snapshot document",
-        result: integrity.configSnapshots,
-      },
-      null,
-      2
-    ),
-    "10_integrity"
-  );
-  add(
-    "10_integrity/object-hash-validation.json",
-    JSON.stringify(
-      {
-        checkedAt: new Date().toISOString(),
-        method:
-          "Evidence object existence on locally accessible storage; duplicate-release and approval-record consistency checks",
-        evidenceObjects: integrity.evidenceObjects,
-        duplicateReleases: integrity.duplicateReleases,
-        approvals: integrity.approvals,
-        overall: integrity.overall,
-        warnings: integrity.warnings,
-      },
-      null,
-      2
-    ),
-    "10_integrity"
-  );
-
   // ---- 11_reports
   const projectReports = repo
     .listReports()
@@ -1002,6 +1015,13 @@ function buildRegisters(
         add(name, fs.readFileSync(p), "11_reports");
         reportFileRefs.push(name);
       } else {
+        // Availability warning: the register reference remains; the
+        // historical artifact itself is no longer on storage.
+        integrity.findings.push({
+          severity: "WARNING",
+          category: "REPORT_ARTIFACT",
+          message: `Historical report artifact unavailable while register reference remains: ${r.id} (${r.filename})`,
+        });
         reportFileRefs.push("NOT_ON_DISK");
       }
     }
@@ -1051,6 +1071,111 @@ function buildRegisters(
     notes.push("Communication metadata summary included by explicit request (counts only).");
   }
 
+  // ---- 03_evidence/media (explicit, role-authorized opt-in ONLY) ----
+  // Copies PROJECT EVIDENCE objects only — never communication media or
+  // attachments, never signed URLs, never provider paths. Each copy is
+  // re-hashed so the packaged bytes are independently verifiable against
+  // the recorded evidence hash.
+  if (opts.includeEvidenceMedia) {
+    const mediaRows: unknown[][] = [];
+    for (const ev of evidence) {
+      const diskPath = evidenceDiskPath(ev.photoPath);
+      const safeBase = path
+        .basename(ev.photoPath)
+        .replace(/[^A-Za-z0-9._-]/g, "_")
+        .slice(0, 80);
+      if (diskPath && fs.existsSync(diskPath)) {
+        const bytes = fs.readFileSync(diskPath);
+        const packagedHash = createHash("sha256").update(bytes).digest("hex");
+        const name = `03_evidence/media/${ev.id}__${safeBase}`;
+        add(name, bytes, "03_evidence");
+        mediaRows.push([
+          ev.id, name, mimeForFilename(safeBase), ev.hash, packagedHash,
+          packagedHash === ev.hash ? "yes" : "no",
+          packagedHash === ev.hash
+            ? "ORIGINAL"
+            : ev.isDemoFallback
+              ? "DEMO_FALLBACK_STANDIN"
+              : "DERIVATIVE",
+          bytes.length,
+        ]);
+      } else {
+        integrity.findings.push({
+          severity: "WARNING",
+          category: "EVIDENCE_MEDIA",
+          message: `Optional evidence media unavailable on storage: ${ev.id}`,
+        });
+        mediaRows.push([ev.id, "NOT_AVAILABLE", "", ev.hash, "", "", "", ""]);
+      }
+    }
+    add(
+      "03_evidence/media-manifest.csv",
+      csv(
+        ["evidenceId", "packagedPath", "mimeType", "recordedEvidenceHash", "packagedCopyHash", "hashesMatch", "provenance", "bytes"],
+        mediaRows
+      ),
+      "03_evidence",
+      mediaRows.length
+    );
+    notes.push(
+      "Evidence media copies included by explicit authorized request. Each packaged copy is re-hashed; " +
+        "provenance ORIGINAL means the packaged bytes match the recorded evidence hash. " +
+        "No signed URLs, no provider credentials, no communication attachments."
+    );
+  }
+
+  // ---- 10_integrity (written LAST so availability findings recorded
+  // while building the registers above are included) ----
+  summarizeFindings(integrity);
+  add(
+    "10_integrity/ledger-integrity-report.json",
+    JSON.stringify(
+      {
+        checkedAt: new Date().toISOString(),
+        method: "Recomputed hash chain from genesis over all ledger entries",
+        result: integrity.ledger,
+        ledgerHead: integrity.ledgerHead,
+        projectEntries: projectLedger.length,
+      },
+      null,
+      2
+    ),
+    "10_integrity"
+  );
+  add(
+    "10_integrity/configuration-hash-validation.json",
+    JSON.stringify(
+      {
+        checkedAt: new Date().toISOString(),
+        method: "sha256 recomputed over each stored snapshot document",
+        result: integrity.configSnapshots,
+      },
+      null,
+      2
+    ),
+    "10_integrity"
+  );
+  add(
+    "10_integrity/object-hash-validation.json",
+    JSON.stringify(
+      {
+        checkedAt: new Date().toISOString(),
+        method:
+          "Evidence object existence on locally accessible storage; duplicate-release and approval-record consistency checks",
+        evidenceObjects: integrity.evidenceObjects,
+        duplicateReleases: integrity.duplicateReleases,
+        approvals: integrity.approvals,
+        findings: integrity.findings,
+        criticalFindings: integrity.criticalCount,
+        overall: integrity.overall,
+        warnings: integrity.warnings,
+      },
+      null,
+      2
+    ),
+    "10_integrity"
+  );
+
   return { files, counts, sections, notes };
 }
 
@@ -1076,6 +1201,15 @@ export async function generateAuditPackage(
   }
   const includeReports = opts.includeReports !== false;
   const includeCommMetadata = opts.includeCommMetadata === true;
+  const includeEvidenceMedia = opts.includeEvidenceMedia === true;
+  // Raw evidence media is a stronger disclosure than registers+hashes:
+  // it requires an explicitly authorized lender-side role.
+  if (includeEvidenceMedia && !["FUNDER_REP", "COMPLIANCE_REVIEWER"].includes(user.role)) {
+    throw new AuditPackageError(
+      "Including raw evidence media requires a funder representative or compliance reviewer",
+      403
+    );
+  }
   const configurationVersion = project.pilot?.configVersion ?? 1;
 
   const pkg: AuditPackage = {
@@ -1096,6 +1230,8 @@ export async function generateAuditPackage(
     failureCategory: null,
     includeReports,
     includeCommMetadata,
+    includeEvidenceMedia,
+    integrityCritical: 0,
     fileCount: 0,
     sizeBytes: 0,
   };
@@ -1103,6 +1239,28 @@ export async function generateAuditPackage(
   repo.updateAuditPackage(pkg.id, { status: "GENERATING" });
 
   try {
+    // 0. Mandatory financial reconciliation — FATAL on mismatch, never a
+    //    mere warning: the released totals recorded by the
+    //    VirtualAccountService must equal the tranche amounts of
+    //    milestones in RELEASED state. Checked on live state (not as-of
+    //    filtered) because it guards the register sources themselves. A
+    //    mismatch aborts generation with an auditable FAILED package row.
+    const reconMilestones = repo.listMilestones(project.id);
+    const releasedEventTotal = repo
+      .listAccountEventsForProject(project.id)
+      .filter((e) => e.type === "RELEASED")
+      .reduce((sum, e) => sum + e.amount, 0);
+    const releasedStateTotal = reconMilestones
+      .filter((m) => m.accountStatus === "RELEASED")
+      .reduce((sum, m) => sum + m.trancheAmount, 0);
+    if (releasedEventTotal !== releasedStateTotal) {
+      throw new AuditPackageError(
+        `Financial register reconciliation failed: released events total ${releasedEventTotal} but milestone release state totals ${releasedStateTotal}`,
+        500,
+        "FINANCIAL_RECONCILIATION"
+      );
+    }
+
     // 1. Integrity validation FIRST — the outcome shapes the package.
     const integrity = await validateProjectIntegrity(project.id);
 
@@ -1110,9 +1268,12 @@ export async function generateAuditPackage(
     const { files, counts, sections, notes } = buildRegisters(
       project,
       asOf,
-      { includeReports, includeCommMetadata },
+      { includeReports, includeCommMetadata, includeEvidenceMedia },
       integrity
     );
+    // Register building can add availability findings (missing report
+    // artifacts, unavailable optional media) — refresh the summary.
+    summarizeFindings(integrity);
 
     // 3. Human-readable cover summary (entry point for an auditor).
     const org = repo.getOrganization(project.organizationId);
@@ -1156,7 +1317,8 @@ export async function generateAuditPackage(
       retainageRemaining: retSummary.remaining,
       ledgerIntegrity: integrity.ledger.state,
       integrityState: integrity.overall,
-      integrityWarnings: integrity.warnings,
+      integrityFindings: integrity.findings,
+      criticalFindings: integrity.criticalCount,
       sections,
     };
     const coverHtml = opts.renderCoverHtml(cover);
@@ -1176,10 +1338,22 @@ export async function generateAuditPackage(
     // 4. Manifest with a full hashed file inventory. The manifest hash is
     //    computed over the manifest with manifestHash set to null, then
     //    embedded — recomputable by any verifier.
+    const fileKind = (name: string): string => {
+      if (name.endsWith(".csv")) return "csv-register";
+      if (name.endsWith(".json")) return "json";
+      if (name.endsWith(".pdf")) return "pdf";
+      if (name.endsWith(".html")) return "html";
+      return "binary";
+    };
     const inventory = files.map((f) => ({
       path: f.name,
       bytes: f.data.length,
       sha256: createHash("sha256").update(f.data).digest("hex"),
+      kind: fileKind(f.name),
+      /** Data rows for CSV registers / primary records for JSON registers;
+       *  null where a record count does not apply (cover, binaries). */
+      records: counts[f.name] ?? null,
+      schemaVersion: AUDIT_PACKAGE_SCHEMA_VERSION,
     }));
     const manifestBase = {
       kind: "OBV_AUDIT_PACKAGE",
@@ -1192,16 +1366,29 @@ export async function generateAuditPackage(
       generatedBy: { id: user.id, name: user.name, role: user.role },
       asOfTimestamp: asOf,
       configurationVersion,
+      /** Consistency model — stated, not overclaimed: registers with
+       *  record timestamps exclude records created after asOfTimestamp
+       *  (creation-time cutoff). Mutable current-state registers
+       *  (milestones, budget lines, retainage position) reflect state at
+       *  generation time; full historical state reconstruction is NOT
+       *  performed. */
+      consistencyModel: "CREATION_TIME_CUTOFF",
+      /** Ledger head reference at generation — pins the package to a
+       *  specific chain position for later verification. */
+      ledgerHead: integrity.ledgerHead,
       options: {
         includeReports,
         includeCommMetadata,
-        includeEvidenceMedia: false,
+        includeEvidenceMedia,
         includeCommTranscripts: false,
       },
       includedSections: sections,
       recordCounts: counts,
       integrity: {
         overall: integrity.overall,
+        criticalFindings: integrity.criticalCount,
+        warningFindings: integrity.findings.length - integrity.criticalCount,
+        findings: integrity.findings,
         ledger: integrity.ledger,
         configurationSnapshots: integrity.configSnapshots,
         duplicateReleases: integrity.duplicateReleases,
@@ -1237,6 +1424,7 @@ export async function generateAuditPackage(
       status: "READY",
       ledgerIntegrityState: integrity.ledger.state,
       integrityState: integrity.overall,
+      integrityCritical: integrity.criticalCount,
       manifestHash,
       storageObjectKey: `audit-packages/${pkg.id}/${filename}`,
       completedAt: new Date().toISOString(),
@@ -1251,13 +1439,16 @@ export async function generateAuditPackage(
       entityId: pkg.id,
       reason: null,
       beforeSummary: pkg.packageVersion > 1 ? `Supersedes v${pkg.packageVersion - 1}` : null,
-      afterSummary: `v${pkg.packageVersion} · ${files.length} files · integrity ${integrity.overall} · ledger ${integrity.ledger.state}`,
+      afterSummary: `v${pkg.packageVersion} · ${files.length} files · integrity ${integrity.overall}${integrity.criticalCount ? ` (${integrity.criticalCount} critical)` : ""} · ledger ${integrity.ledger.state}${includeEvidenceMedia ? " · evidence media included" : ""}`,
     });
     return repo.getAuditPackage(pkg.id)!;
   } catch (err) {
     repo.updateAuditPackage(pkg.id, {
       status: "FAILED",
-      failureCategory: err instanceof AuditPackageError ? "VALIDATION" : "GENERATION_ERROR",
+      failureCategory:
+        err instanceof AuditPackageError
+          ? err.failureCategory ?? "VALIDATION"
+          : "GENERATION_ERROR",
       completedAt: new Date().toISOString(),
     });
     audit({

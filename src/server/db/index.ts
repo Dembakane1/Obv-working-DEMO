@@ -821,12 +821,14 @@ CREATE TABLE IF NOT EXISTS audit_packages (
   ledger_integrity_state TEXT NOT NULL DEFAULT 'NOT_EVALUATED',
   integrity_state TEXT NOT NULL DEFAULT 'NOT_EVALUATED' CHECK (integrity_state IN
     ('CLEAN','WARNINGS','NOT_EVALUATED')),
+  integrity_critical INTEGER NOT NULL DEFAULT 0,
   manifest_hash TEXT,
   storage_object_key TEXT,
   completed_at TEXT,
   failure_category TEXT,
   include_reports INTEGER NOT NULL DEFAULT 1,
   include_comm_metadata INTEGER NOT NULL DEFAULT 0,
+  include_evidence_media INTEGER NOT NULL DEFAULT 0,
   file_count INTEGER NOT NULL DEFAULT 0,
   size_bytes INTEGER NOT NULL DEFAULT 0,
   UNIQUE (project_id, package_version)
@@ -871,6 +873,9 @@ export function getDb(): DatabaseSync {
     // table (origin/edit/delete audit + attachments).
     for (const ddl of [
       "ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'OBV_LOCAL'",
+      // ---- audit package hardening (additive) ----
+      "ALTER TABLE audit_packages ADD COLUMN integrity_critical INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE audit_packages ADD COLUMN include_evidence_media INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE messages ADD COLUMN edited_at TEXT",
       "ALTER TABLE messages ADD COLUMN original_body TEXT",
       "ALTER TABLE messages ADD COLUMN external_deleted INTEGER NOT NULL DEFAULT 0",

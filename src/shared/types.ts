@@ -1399,6 +1399,10 @@ export interface AuditPackage {
   ledgerIntegrityState: string;
   /** Overall integrity outcome across all validations. */
   integrityState: AuditPackageIntegrityState;
+  /** Count of CRITICAL-severity integrity findings (ledger chain failure,
+   *  snapshot hash mismatch, duplicate governed release, approval-record
+   *  anomaly). 0 when findings are availability warnings only. */
+  integrityCritical: number;
   /** sha256 over the canonical manifest (without this field). */
   manifestHash: string | null;
   /** Storage key of the ZIP relative to the data root. */
@@ -1408,6 +1412,8 @@ export interface AuditPackage {
   /** Options snapshot (no secrets): what the requester included. */
   includeReports: boolean;
   includeCommMetadata: boolean;
+  /** Raw evidence media copies — explicit, role-restricted opt-in. */
+  includeEvidenceMedia: boolean;
   fileCount: number;
   sizeBytes: number;
 }

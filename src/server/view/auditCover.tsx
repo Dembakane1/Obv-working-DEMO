@@ -40,6 +40,12 @@ const CSS = `
 
 export function renderAuditCover(d: AuditCoverData): string {
   const clean = d.integrityState === "CLEAN";
+  const critical = d.criticalFindings > 0;
+  const flagTitle = clean
+    ? "INTEGRITY: CLEAN"
+    : critical
+      ? "READY WITH CRITICAL INTEGRITY WARNING"
+      : "READY WITH INTEGRITY WARNING";
   return renderDocument(
     <html lang="en">
       <head>
@@ -64,15 +70,17 @@ export function renderAuditCover(d: AuditCoverData): string {
         </table>
 
         <div className={`flag ${clean ? "" : "warn"}`}>
-          <b>{clean ? "INTEGRITY: CLEAN" : "READY WITH INTEGRITY WARNING"}</b>
+          <b>{flagTitle}</b>
           {" — "}Evidence Ledger {d.ledgerIntegrity === "INTACT" ? "chain intact" : d.ledgerIntegrity}.
           {clean
             ? " All configuration snapshot hashes, release transitions, approval records and accessible evidence objects validate."
-            : ""}
+            : ` ${d.criticalFindings} critical / ${d.integrityFindings.length - d.criticalFindings} availability finding(s):`}
           {!clean ? (
             <ul>
-              {d.integrityWarnings.map((w) => (
-                <li>{w}</li>
+              {d.integrityFindings.map((f) => (
+                <li>
+                  <b>[{f.severity}]</b> {f.message}
+                </li>
               ))}
             </ul>
           ) : null}
