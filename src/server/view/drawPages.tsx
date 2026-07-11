@@ -1202,6 +1202,22 @@ function renderGovernanceTab(d: DrawDetailData): VNode {
           </form>
         </div>
       </div>
+
+      <div className="panel panel-pad" style="margin-top:12px">
+        <h3 style="margin:0 0 8px;font-size:13px">Lender Draw Verification Package</h3>
+        <p className="sub" style="margin:0 0 10px;font-size:12px">
+          One standardized ZIP: lender PDF (decision summary, budget lines, evidence,
+          reviewers, permits, invoices &amp; lien waivers, exceptions, approvals, retainage)
+          plus structured CSV/JSON registers with a hashed manifest. Requested, supported,
+          approved, released and retained amounts stay distinct.
+        </p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <a className="btn ghost sm" href={`/draw/${draw.id}/verification-package/preview`} target="_blank">Preview document</a>
+          <form method="POST" action={`/api/draws/${draw.id}/verification-package`}>
+            <button className="btn sm" type="submit" data-busy-label="Generating…">Generate Verification Package (ZIP)</button>
+          </form>
+        </div>
+      </div>
     </>
   );
 }

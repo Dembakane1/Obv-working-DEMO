@@ -875,6 +875,25 @@ export interface DrawDocument {
   reviewedByUserId: string | null;
   reviewedAt: string | null;
   reviewNote: string | null;
+  // ---- structured metadata (all optional; shown as NOT AVAILABLE when
+  // absent — never invented). Additive for the lender draw package. ----
+  /** Vendor / contractor named on an invoice or waiver. */
+  vendor?: string | null;
+  invoiceNumber?: string | null;
+  /** Invoice / covered amount in whole currency units. */
+  amount?: number | null;
+  /** Lien waivers: CONDITIONAL | UNCONDITIONAL. */
+  waiverKind?: string | null;
+  /** Lien waivers: PARTIAL | FINAL. */
+  waiverScope?: string | null;
+  /** Period or milestone the waiver/invoice covers. */
+  coveredThrough?: string | null;
+  /** Permits / certificates / inspections: issuing authority. */
+  issuingAuthority?: string | null;
+  /** Permit / inspection identifier. */
+  referenceNumber?: string | null;
+  inspectionDate?: string | null;
+  inspectionResult?: string | null;
 }
 
 /** Reference from a draw (or a specific line) to an existing governed

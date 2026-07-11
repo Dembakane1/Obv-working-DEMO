@@ -1823,7 +1823,12 @@ export function renderReports(input: {
                     <tr>
                       <td>
                         <span style="display:inline-flex;align-items:center;gap:7px;font-weight:550">
-                          {icons.file(13)} Verification &amp; Fund Release
+                          {icons.file(13)}{" "}
+                          {r.reportType === "DRAW_VERIFICATION_PACKAGE"
+                            ? "Draw Verification Package"
+                            : r.reportType === "DRAW_REVIEW_SUMMARY"
+                              ? "Draw Review Summary"
+                              : "Verification & Fund Release"}
                         </span>
                         <span className="mono" style="display:block;font-size:10px;color:var(--ink-4)">{r.filename}</span>
                       </td>

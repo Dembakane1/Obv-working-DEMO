@@ -816,6 +816,8 @@ function seedDemoDraw(): void {
     uploadedByUserId: "user-pm", receivedAt: t("7T09:06:00.000Z"),
     reviewedByUserId: "user-compliance", reviewedAt: t("8T10:10:00.000Z"),
     reviewNote: "Amounts agree with the schedule of values.",
+    vendor: "Central Region Roads Authority (civil works)",
+    invoiceNumber: "CRRA-2026-014", amount: 600_000,
   });
   repo.insertDrawEvidenceLink({
     id: "dlink-1", drawRequestId: "draw-1", lineItemId: "dline-1",

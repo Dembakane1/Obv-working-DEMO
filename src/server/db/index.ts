@@ -876,6 +876,17 @@ export function getDb(): DatabaseSync {
       // ---- audit package hardening (additive) ----
       "ALTER TABLE audit_packages ADD COLUMN integrity_critical INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE audit_packages ADD COLUMN include_evidence_media INTEGER NOT NULL DEFAULT 0",
+      // ---- lender draw verification package (additive doc metadata) ----
+      "ALTER TABLE draw_documents ADD COLUMN vendor TEXT",
+      "ALTER TABLE draw_documents ADD COLUMN invoice_number TEXT",
+      "ALTER TABLE draw_documents ADD COLUMN amount INTEGER",
+      "ALTER TABLE draw_documents ADD COLUMN waiver_kind TEXT",
+      "ALTER TABLE draw_documents ADD COLUMN waiver_scope TEXT",
+      "ALTER TABLE draw_documents ADD COLUMN covered_through TEXT",
+      "ALTER TABLE draw_documents ADD COLUMN issuing_authority TEXT",
+      "ALTER TABLE draw_documents ADD COLUMN reference_number TEXT",
+      "ALTER TABLE draw_documents ADD COLUMN inspection_date TEXT",
+      "ALTER TABLE draw_documents ADD COLUMN inspection_result TEXT",
       "ALTER TABLE messages ADD COLUMN edited_at TEXT",
       "ALTER TABLE messages ADD COLUMN original_body TEXT",
       "ALTER TABLE messages ADD COLUMN external_deleted INTEGER NOT NULL DEFAULT 0",

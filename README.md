@@ -128,6 +128,40 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Lender Draw Verification Package (v18)
+
+One standardized ZIP per draw answering the lender's questions directly:
+what work and budget were approved, how much is requested now, the
+cumulative requested/approved/released position, what physical evidence
+supports the draw, who reviewed or inspected it, whether permits and
+government inspections are current, whether invoices and lien waivers
+are complete, what discrepancies remain, who approved it, and what is
+supported, retained, held or released. **Requested, supported, approved,
+released and retained amounts are independent, labelled figures — never
+merged.**
+
+Contents: a lender PDF (sections A–N: decision summary, cumulative
+financials, budget-line detail, line reviews, budget-vs-progress,
+timestamped evidence, reviewer attestations, permits/inspections,
+invoices/lien waivers, discrepancies, approval history, retainage,
+integrity, methodology) plus structured CSV/JSON registers with a hashed
+manifest. Truthful states throughout: NOT AVAILABLE (never invented),
+RECEIVED — PENDING REVIEW (upload is never acceptance), MISSING —
+REQUIRED lien waivers flagged prominently, NO FORMAL INSPECTION RECORD,
+NOT REQUIRED under current configuration. Reviewer capacities are
+distinct (submitter ≠ inspector ≠ reviewer ≠ approver) and come from
+formal records only — chat can never appear as review or approval.
+
+Generated from the draw's Governance tab
+(`POST /api/draws/:id/verification-package`), stored in the report
+registry, and embedded per draw into every Project Audit Package under
+`04_draws/DRAW-nnn/` with every file hashed in the audit manifest.
+Access mirrors the audit package (institutional roles + tenant, 404
+across tenants). `scripts/drawpackage-test.js` (27 checkpoints) covers
+the 21 required cases; see `docs/DRAW_VERIFICATION_PACKAGE.md`.
+
+---
+
 ## Project Audit Package (v17)
 
 One-click, auditor/funder/regulator-ready export answering: what was the

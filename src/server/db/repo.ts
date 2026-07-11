@@ -2232,6 +2232,16 @@ function toDrawDocument(r: Row): DrawDocument {
     reviewedByUserId: (r.reviewed_by_user_id as string) ?? null,
     reviewedAt: (r.reviewed_at as string) ?? null,
     reviewNote: (r.review_note as string) ?? null,
+    vendor: (r.vendor as string) ?? null,
+    invoiceNumber: (r.invoice_number as string) ?? null,
+    amount: (r.amount as number) ?? null,
+    waiverKind: (r.waiver_kind as string) ?? null,
+    waiverScope: (r.waiver_scope as string) ?? null,
+    coveredThrough: (r.covered_through as string) ?? null,
+    issuingAuthority: (r.issuing_authority as string) ?? null,
+    referenceNumber: (r.reference_number as string) ?? null,
+    inspectionDate: (r.inspection_date as string) ?? null,
+    inspectionResult: (r.inspection_result as string) ?? null,
   };
 }
 
@@ -2240,13 +2250,19 @@ export function insertDrawDocument(d: DrawDocument): void {
     .prepare(
       `INSERT INTO draw_documents (id, draw_request_id, requirement_id,
          line_item_id, doc_type, title, file_path, note, status, expires_at,
-         uploaded_by_user_id, received_at, reviewed_by_user_id, reviewed_at, review_note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         uploaded_by_user_id, received_at, reviewed_by_user_id, reviewed_at, review_note,
+         vendor, invoice_number, amount, waiver_kind, waiver_scope, covered_through,
+         issuing_authority, reference_number, inspection_date, inspection_result)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       d.id, d.drawRequestId, d.requirementId, d.lineItemId, d.docType,
       d.title, d.filePath, d.note, d.status, d.expiresAt, d.uploadedByUserId,
-      d.receivedAt, d.reviewedByUserId, d.reviewedAt, d.reviewNote
+      d.receivedAt, d.reviewedByUserId, d.reviewedAt, d.reviewNote,
+      d.vendor ?? null, d.invoiceNumber ?? null, d.amount ?? null,
+      d.waiverKind ?? null, d.waiverScope ?? null, d.coveredThrough ?? null,
+      d.issuingAuthority ?? null, d.referenceNumber ?? null,
+      d.inspectionDate ?? null, d.inspectionResult ?? null
     );
 }
 

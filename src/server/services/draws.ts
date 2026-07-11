@@ -465,6 +465,18 @@ export function recordDocument(
     title: string;
     note?: string | null;
     expiresAt?: string | null;
+    // Structured metadata for the lender draw package (all optional —
+    // absent values render as NOT AVAILABLE, never invented).
+    vendor?: string | null;
+    invoiceNumber?: string | null;
+    amount?: number | null;
+    waiverKind?: string | null;
+    waiverScope?: string | null;
+    coveredThrough?: string | null;
+    issuingAuthority?: string | null;
+    referenceNumber?: string | null;
+    inspectionDate?: string | null;
+    inspectionResult?: string | null;
   }
 ): DrawDocument {
   const draw = getDrawOr404(drawId);
@@ -496,6 +508,19 @@ export function recordDocument(
     title,
     filePath: null,
     note: input.note?.trim() || null,
+    vendor: input.vendor?.trim() || null,
+    invoiceNumber: input.invoiceNumber?.trim() || null,
+    amount:
+      input.amount !== undefined && input.amount !== null && String(input.amount) !== ""
+        ? Math.round(Number(input.amount))
+        : null,
+    waiverKind: input.waiverKind?.trim() || null,
+    waiverScope: input.waiverScope?.trim() || null,
+    coveredThrough: input.coveredThrough?.trim() || null,
+    issuingAuthority: input.issuingAuthority?.trim() || null,
+    referenceNumber: input.referenceNumber?.trim() || null,
+    inspectionDate: input.inspectionDate?.trim() || null,
+    inspectionResult: input.inspectionResult?.trim() || null,
     status: "RECEIVED",
     expiresAt: input.expiresAt || null,
     uploadedByUserId: user.id,

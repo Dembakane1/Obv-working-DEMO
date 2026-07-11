@@ -94,6 +94,8 @@ import { ChangeOrderError } from "../services/changeOrders";
 import * as retainage from "../services/retainage";
 import { RetainageError } from "../services/retainage";
 import * as auditPackages from "../services/auditPackage";
+import * as drawPackage from "../services/drawPackage";
+import { renderDrawVerificationDoc } from "../view/drawVerificationDoc";
 import { AuditPackageError } from "../services/auditPackage";
 import { renderAuditCover } from "../view/auditCover";
 import { CoDetailData, renderCoDetail, renderCoNew, renderCoRegister } from "../view/coPages";
@@ -688,6 +690,82 @@ async function generateDrawReport(
     }
   } finally {
     pendingReportHtml.delete(report.id);
+  }
+}
+
+/** Generate and store the Lender Draw Verification Package (ZIP with the
+ *  lender PDF + structured CSV/JSON registers + hashed manifest). Stored
+ *  in the report registry; generation is role- and tenant-gated by the
+ *  drawPackage service and audited via the report record itself. */
+async function generateDrawVerificationPackage(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  user: User,
+  drawId: string
+): Promise<void> {
+  const data = await drawPackage.assembleDrawPackageData(user, drawId); // throws 404/403
+  const registers = drawPackage.buildDrawPackageFiles(data);
+  const html = renderDrawVerificationDoc(data);
+  let pdf: Buffer | null = null;
+  if (pdfRendererAvailable()) {
+    const key = `draw-pkg-${randomUUID()}`;
+    const outPath = path.join(REPORTS_DIR, `${key}.pdf`);
+    pendingReportHtml.set(key, html);
+    try {
+      fs.mkdirSync(REPORTS_DIR, { recursive: true });
+      const config = Buffer.from(
+        JSON.stringify({
+          url: `http://127.0.0.1:${PORT}/report-cache/${key}?token=${previewToken}`,
+          outPath,
+          projectName: `Draw #${data.draw.drawNumber} — ${data.project.name}`,
+          generatedAt: data.generatedAt.replace("T", " ").replace(/\.\d+Z$/, " UTC"),
+        })
+      ).toString("base64");
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          process.execPath,
+          [RENDER_SCRIPT, config],
+          { env: { ...process.env, NODE_PATH: PLAYWRIGHT_NODE_PATH }, timeout: 90_000 },
+          (err, _stdout, stderr) => (err ? reject(new Error(stderr || err.message)) : resolve())
+        );
+      });
+      pdf = fs.existsSync(outPath) ? fs.readFileSync(outPath) : null;
+    } catch (err) {
+      console.error("[draw-package] PDF render failed:", (err as Error).message);
+      pdf = null; // honest fallback: printable HTML ships in the ZIP
+    } finally {
+      pendingReportHtml.delete(key);
+      try {
+        fs.unlinkSync(path.join(REPORTS_DIR, `${key}.pdf`));
+      } catch {
+        /* not created */
+      }
+    }
+  }
+  const { zip } = drawPackage.buildStandaloneDrawZip(data, registers, pdf, html);
+  const report: Report = {
+    id: repo.newId(),
+    projectId: data.project.id,
+    reportType: "DRAW_VERIFICATION_PACKAGE",
+    filename: `OBV-Draw-${data.draw.drawNumber}-Verification-Package-${data.generatedAt.slice(0, 10)}.zip`,
+    generatedAt: data.generatedAt,
+    generatedBy: user.id,
+    integrityStatus: data.ledger.valid ? "INTACT" : `TAMPERED_AT:${data.ledger.brokenAt}`,
+    ledgerEntries: data.ledger.entries,
+  };
+  const outDir = path.join(REPORTS_DIR, report.id);
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, report.filename), zip, { flag: "wx" });
+  repo.insertReport(report);
+  await teamsNotifier.notify(
+    "DRAW_REPORT_GENERATED",
+    `Lender Draw Verification Package generated for Draw #${data.draw.drawNumber} by ${user.name} (ledger: ${report.integrityStatus}).`,
+    { projectId: data.project.id }
+  );
+  if (isFormPost(req)) {
+    redirect(res, `/reports/file/${report.id}?dl=1`);
+  } else {
+    sendJson(res, { report }, 201);
   }
 }
 
@@ -2252,6 +2330,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         title: String(p.title ?? ""),
         note: p.note ? String(p.note) : null,
         expiresAt: p.expiresAt ? String(p.expiresAt) : null,
+        vendor: p.vendor ? String(p.vendor) : null,
+        invoiceNumber: p.invoiceNumber ? String(p.invoiceNumber) : null,
+        amount: p.amount !== undefined && p.amount !== "" ? Number(p.amount) : null,
+        waiverKind: p.waiverKind ? String(p.waiverKind) : null,
+        waiverScope: p.waiverScope ? String(p.waiverScope) : null,
+        coveredThrough: p.coveredThrough ? String(p.coveredThrough) : null,
+        issuingAuthority: p.issuingAuthority ? String(p.issuingAuthority) : null,
+        referenceNumber: p.referenceNumber ? String(p.referenceNumber) : null,
+        inspectionDate: p.inspectionDate ? String(p.inspectionDate) : null,
+        inspectionResult: p.inspectionResult ? String(p.inspectionResult) : null,
       });
       finishDrawPost(drawId, "documents", { document: doc }, 201);
       return;
@@ -2294,6 +2382,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (action === "report") {
       await generateDrawReport(req, res, user, drawId);
+      return;
+    }
+    if (action === "verification-package") {
+      await generateDrawVerificationPackage(req, res, user, drawId);
       return;
     }
     sendJson(res, { error: `Unknown draw action: ${action}` }, 404);
@@ -2494,9 +2586,23 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sendHtml(res, renderError(navFor(user, "reports"), "Report not found", "This report is no longer available (demo data may have been reset). Generate a new one from the Reports page."), 404);
       return;
     }
-    const disposition = url.searchParams.get("dl") === "1" ? "attachment" : "inline";
+    // Lender Draw Verification Packages carry the audit-package policy:
+    // institutional roles + tenant access only (404 across tenants).
+    if (report.reportType === "DRAW_VERIFICATION_PACKAGE") {
+      const project = repo.getProject(report.projectId);
+      const allowed =
+        project &&
+        ["FUNDER_REP", "PROJECT_MANAGER", "COMPLIANCE_REVIEWER"].includes(user.role) &&
+        budget.canAccessProjectFinance(user, project);
+      if (!allowed) {
+        sendHtml(res, renderError(navFor(user, "reports"), "Report not found", "This report is no longer available (demo data may have been reset). Generate a new one from the Reports page."), 404);
+        return;
+      }
+    }
+    const isZip = report.filename.endsWith(".zip");
+    const disposition = isZip || url.searchParams.get("dl") === "1" ? "attachment" : "inline";
     res.writeHead(200, {
-      "Content-Type": "application/pdf",
+      "Content-Type": isZip ? "application/zip" : "application/pdf",
       "Content-Disposition": `${disposition}; filename="${report.filename}"`,
       "Content-Length": fs.statSync(filePath).size,
       "Cache-Control": "no-cache",
@@ -2531,6 +2637,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         includeCommMetadata: truthy(p.includeCommMetadata),
         includeEvidenceMedia: truthy(p.includeEvidenceMedia),
         renderCoverHtml: renderAuditCover,
+        renderDrawDoc: renderDrawVerificationDoc,
         renderCoverPdf: async (html) => {
           if (!pdfRendererAvailable()) return null;
           const key = `audit-cover-${randomUUID()}`;
@@ -3429,6 +3536,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     sendHtml(res, renderDrawReport(await assembleDrawReportData(draw, user!)));
+    return;
+  }
+
+  // Lender Draw Verification Package — printable document preview
+  // (assembleDrawPackageData enforces role + tenant access: 404/403).
+  const drawPkgPreviewMatch = /^\/draw\/([^/]+)\/verification-package\/preview$/.exec(pathname);
+  if (method === "GET" && drawPkgPreviewMatch) {
+    const data = await drawPackage.assembleDrawPackageData(user!, drawPkgPreviewMatch[1]);
+    sendHtml(res, renderDrawVerificationDoc(data));
     return;
   }
 

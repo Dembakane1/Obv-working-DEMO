@@ -28,6 +28,7 @@ import { wormEvidenceStore } from "./WormEvidenceStore";
 import { assessFinancialProgress, assessPhysicalProgress, canAccessProjectFinance } from "./budgetProgress";
 import { retainageSummary } from "./retainage";
 import { audit } from "./pilot/onboarding";
+import * as drawPackage from "./drawPackage";
 import type {
   ApprovalRequest, AuditPackage, Project, User,
 } from "../../shared/types";
@@ -65,13 +66,13 @@ function assertProjectAccess(user: User, projectId: string): Project {
 
 // =============================================================== CSV
 
-function csvCell(v: unknown): string {
+export function csvCell(v: unknown): string {
   if (v === null || v === undefined) return "";
   const s = String(v);
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function csv(header: string[], rows: unknown[][]): string {
+export function csv(header: string[], rows: unknown[][]): string {
   return [header, ...rows].map((r) => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
 
@@ -412,6 +413,10 @@ export interface GenerateOptions {
   /** Cover HTML renderer (view layer, injected to keep this service
    *  free of JSX imports). */
   renderCoverHtml: (data: AuditCoverData) => string;
+  /** Lender Draw Verification document renderer (view layer, injected).
+   *  When present, each draw gets its verification sub-package under
+   *  04_draws/DRAW-nnn/ in the audit package. */
+  renderDrawDoc?: (data: drawPackage.DrawPackageData) => string;
 }
 
 export interface AuditCoverData {
@@ -1274,6 +1279,44 @@ export async function generateAuditPackage(
     // Register building can add availability findings (missing report
     // artifacts, unavailable optional media) — refresh the summary.
     summarizeFindings(integrity);
+
+    // 2b. Lender Draw Verification sub-packages — one per draw, under
+    //     04_draws/DRAW-nnn/, assembled from the same authoritative
+    //     sources (registers + lender document). Failures are honest
+    //     availability warnings, never silent omissions.
+    if (opts.renderDrawDoc) {
+      const packageDraws = repo
+        .listDrawRequestsForProject(project.id)
+        .filter((dr) => dr.createdAt <= asOf && dr.status !== "CANCELLED");
+      for (const dr of packageDraws) {
+        try {
+          const subData = await drawPackage.assembleDrawPackageData(user, dr.id);
+          const regs = drawPackage.buildDrawPackageFiles(subData);
+          const dir = `04_draws/DRAW-${String(dr.drawNumber).padStart(3, "0")}`;
+          const docHtml = opts.renderDrawDoc(subData);
+          const docPdf = opts.renderCoverPdf ? await opts.renderCoverPdf(docHtml) : null;
+          if (docPdf) {
+            files.push({ name: `${dir}/draw-verification-package.pdf`, data: docPdf });
+          } else {
+            files.push({
+              name: `${dir}/draw-verification-package.html`,
+              data: Buffer.from(docHtml, "utf8"),
+            });
+          }
+          for (const f of regs.files) {
+            files.push({ name: `${dir}/${f.name}`, data: f.data });
+            if (regs.counts[f.name] !== undefined) counts[`${dir}/${f.name}`] = regs.counts[f.name];
+          }
+        } catch (err) {
+          integrity.findings.push({
+            severity: "WARNING",
+            category: "REPORT_ARTIFACT",
+            message: `Draw verification sub-package could not be assembled for Draw #${dr.drawNumber}: ${(err as Error).message}`,
+          });
+        }
+      }
+      summarizeFindings(integrity);
+    }
 
     // 3. Human-readable cover summary (entry point for an auditor).
     const org = repo.getOrganization(project.organizationId);
