@@ -1318,6 +1318,7 @@ export function renderApprovals(input: {
   const atStake = pending.reduce((s, i) => s + i.milestone.trancheAmount, 0);
   return renderDocument(
     <AppShell title="Pending approvals" nav={input.nav}>
+      <div className="page-wrap">
       <PageHeader
         title="Approvals"
         sub="Release governance — every required role must approve verified evidence before a tranche becomes release-eligible."
@@ -1619,6 +1620,7 @@ export function renderApprovals(input: {
           </div>
         </>
       ) : null}
+      </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );
@@ -2243,6 +2245,7 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
 
   return renderDocument(
     <AppShell title="OBV Intelligence" nav={input.nav} context="Operational intelligence">
+      <div className="intel-wrap">
       <PageHeader
         title="OBV Intelligence"
         sub="Verification, governance and field-risk intelligence computed deterministically from recorded OBV data. Every figure traces to stored records — no generative scoring, no predictions."
@@ -2563,6 +2566,7 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
         field-issue, clarification and virtual-account records. The only AI-assisted input is
         the visual assessment inside verification, labeled under assessment provenance above.
       </p>
+      </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );

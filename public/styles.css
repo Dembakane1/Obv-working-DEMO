@@ -2523,13 +2523,16 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
 .int-calm b { display: block; font-size: 12px; letter-spacing: .08em; color: #1f5a33; }
 .int-calm .s { display: block; font-size: 12.5px; color: #47604e; margin-top: 2px; }
 
+/* Bounded, centered page container so ultra-wide monitors get even margins
+   instead of sprawling panels and dead zones. */
+.page-wrap, .intel-wrap { width: 100%; max-width: 1420px; margin: 0 auto; min-width: 0; }
 .intel-main { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; margin: 0 0 16px; align-items: start; }
 .intel-main .panel { margin: 0; }
 .intel-duo { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px; margin: 0 0 16px; }
 .intel-duo .panel { margin: 0; min-width: 0; }
 /* One aligned three-column analytics row (verification / governance /
    field risk) — uniform 16px gutters with the rest of the page. */
-.intel-tri { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0 0 16px; }
+.intel-tri { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0 0 16px; align-items: start; }
 .intel-tri .panel { margin: 0; min-width: 0; }
 .int-table-panel { margin: 0 0 16px; }
 
@@ -2549,7 +2552,9 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
 .int-health.ok { background: #1f7a3f; color: #fff; }
 .int-counts { display: inline-flex; gap: 6px; }
 
-.sig-list { display: flex; flex-direction: column; }
+/* Bounded height keeps the signals column from dwarfing the recommendations
+   column and leaving a huge dead zone beside it; long lists scroll in place. */
+.sig-list { display: flex; flex-direction: column; max-height: 640px; overflow-y: auto; }
 .sig-row {
   display: flex; align-items: flex-start; gap: 12px; padding: 11px 0;
   border-bottom: 1px solid var(--line);
