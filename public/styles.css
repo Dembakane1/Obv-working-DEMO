@@ -644,6 +644,8 @@ h2.section .hint { font-weight: 500; font-size: 11.5px; color: var(--ink-3); }
 /* ========================== approval decision room ========================== */
 
 /* ===== Approvals reconstruction: pending card + resolved register ===== */
+.ap-head-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.ap-head-actions .btn { white-space: nowrap; flex-shrink: 0; }
 .ap-card { border-left: 3px solid var(--warn-line, #ecd9ae); margin-bottom: 16px; overflow: hidden; }
 .ap-head {
   display: flex; gap: 14px; align-items: flex-start; padding: 16px 18px 14px;

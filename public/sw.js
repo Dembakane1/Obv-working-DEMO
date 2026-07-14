@@ -1,7 +1,7 @@
 /* OBV Field Capture service worker.
    Network-first with cache fallback: pages and data stay fresh while the
    app shell keeps working offline (captures queue in IndexedDB). */
-const CACHE = "obv-field-v2"; // bumped: purges stale pre-redesign caches on activate
+const CACHE = "obv-field-v3"; // bumped: stylesheet URLs now carry a ?v= content hash
 const SHELL = [
   "/field",
   "/styles.css",
@@ -46,7 +46,11 @@ self.addEventListener("fetch", (event) => {
       })
       .catch((err) => {
         if (isFieldShell) {
-          return caches.match(req).then((hit) => hit || caches.match("/field"));
+          // ignoreSearch: the precached shell stores /styles.css without the
+          // ?v= content hash the live pages request it with.
+          return caches
+            .match(req, { ignoreSearch: true })
+            .then((hit) => hit || caches.match("/field"));
         }
         throw err;
       })

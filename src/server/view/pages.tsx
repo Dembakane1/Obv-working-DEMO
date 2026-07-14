@@ -34,6 +34,7 @@ import {
   money,
   roleLabel,
   shortHash,
+  STYLESHEET_HREF,
 } from "./components";
 import type {
   ApprovalRecord,
@@ -241,7 +242,7 @@ export function renderUserSwitcher(users: User[], orgs: Map<string, Organization
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Sign in — OBV</title>
-        <link rel="stylesheet" href="/styles.css" />
+        <link rel="stylesheet" href={STYLESHEET_HREF} />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
         <meta name="theme-color" content="#0d1626" />
@@ -1321,9 +1322,18 @@ export function renderApprovals(input: {
         title="Approvals"
         sub="Release governance — every required role must approve verified evidence before a tranche becomes release-eligible."
       >
-        <div style="text-align:right">
-          <div className="t-display num" style="font-size:21px">{money(atStake)}</div>
-          <div className="t-meta">{pending.length} request{pending.length === 1 ? "" : "s"} · held pending governance</div>
+        <div className="ap-head-actions">
+          <div style="text-align:right">
+            <div className="t-display num" style="font-size:21px">{money(atStake)}</div>
+            <div className="t-meta">{pending.length} request{pending.length === 1 ? "" : "s"} · held pending governance</div>
+          </div>
+          <a
+            className="btn secondary sm"
+            href="/approvals/export.csv"
+            title="Download the approval register (read-only CSV)"
+          >
+            {icons.download(14)} Export approvals
+          </a>
         </div>
       </PageHeader>
 
@@ -2613,7 +2623,7 @@ export function renderFieldShell(user: User): string {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <title>OBV Field Capture</title>
-        <link rel="stylesheet" href="/styles.css" />
+        <link rel="stylesheet" href={STYLESHEET_HREF} />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
         <link rel="apple-touch-icon" href="/icons/icon-192.png" />
@@ -2663,7 +2673,7 @@ export function renderError(nav: NavContext | null, title: string, message: stri
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
           <title>{title} — OBV</title>
-          <link rel="stylesheet" href="/styles.css" />
+          <link rel="stylesheet" href={STYLESHEET_HREF} />
         </head>
         <body>
           <div className="auth-wrap">

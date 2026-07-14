@@ -1,4 +1,7 @@
 /** Shared UI components — OBV design system v3 (institutional). */
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { h, Fragment, VNode, Child } from "./jsx";
 import { brandMark, icons } from "./icons";
 import type {
@@ -18,6 +21,21 @@ import type {
 } from "../../shared/types";
 
 // ------------------------------------------------------------ helpers
+
+// Content-derived stylesheet version so every deploy that changes styles.css
+// forces browsers/CDNs past any cached copy. Computed once at startup; the
+// static server routes on pathname, so the query string never affects lookup.
+export const STYLESHEET_HREF: string = (() => {
+  try {
+    const hash = createHash("sha256")
+      .update(readFileSync(join(process.cwd(), "public", "styles.css")))
+      .digest("hex")
+      .slice(0, 12);
+    return `/styles.css?v=${hash}`;
+  } catch {
+    return "/styles.css";
+  }
+})();
 
 export function money(amount: number): string {
   return "$" + amount.toLocaleString("en-US");
@@ -203,7 +221,7 @@ export function AppShell(props: {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{props.title} — OBV</title>
-        <link rel="stylesheet" href="/styles.css" />
+        <link rel="stylesheet" href={STYLESHEET_HREF} />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
         <meta name="theme-color" content="#0d1626" />

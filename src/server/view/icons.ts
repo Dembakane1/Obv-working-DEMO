@@ -65,6 +65,8 @@ export const icons = {
   user: (size = 16) => icon('<circle cx="12" cy="8.2" r="3.8"/><path d="M4.5 20.3c.8-3.7 3.9-5.6 7.5-5.6s6.7 1.9 7.5 5.6"/>', size),
   dollar: (size = 16) =>
     icon('<path d="M12 3.5v17"/><path d="M16.5 6.5h-6.7a2.8 2.8 0 0 0 0 5.6h4.4a2.8 2.8 0 0 1 0 5.6H6.5"/>', size),
+  download: (size = 16) =>
+    icon('<path d="M12 3.5v12"/><path d="M7 11l5 5 5-5"/><path d="M4.5 20.5h15"/>', size),
 };
 
 /** Status glyphs rendered as text (grayscale-safe, no icon dependency). */

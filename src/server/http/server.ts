@@ -3751,6 +3751,57 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // Read-only approval register export. Reuses the exact same queue the
+  // Approvals page renders from — no governance or financial state is touched.
+  if (method === "GET" && pathname === "/approvals/export.csv") {
+    const usersMap = usersById();
+    const body = auditPackages.csv(
+      [
+        "approval_request_id",
+        "project",
+        "milestone",
+        "tranche_amount",
+        "status",
+        "approvals_recorded",
+        "approvals_required",
+        "required_roles",
+        "awaiting_roles",
+        "recorded_decisions",
+        "created_at",
+        "released_at",
+      ],
+      approvalQueue(user!).map((item) => {
+        const recorded = item.records.filter((r) => r.decision === "APPROVED").length;
+        const awaiting = item.approval.requiredRoles.filter(
+          (role) => !item.records.some((r) => r.role === role)
+        );
+        return [
+          item.approval.id,
+          item.project.name,
+          `M${item.milestone.seq} · ${item.milestone.title}`,
+          item.milestone.trancheAmount,
+          item.approval.status,
+          recorded,
+          item.approval.requiredRoles.length,
+          item.approval.requiredRoles.join("; "),
+          awaiting.join("; "),
+          item.records
+            .map((r) => `${usersMap.get(r.userId)?.name ?? r.userId} (${r.role}): ${r.decision} @ ${r.createdAt}`)
+            .join(" | "),
+          item.approval.createdAt,
+          item.releasedAt ?? "",
+        ];
+      })
+    );
+    res.writeHead(200, {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": 'attachment; filename="obv-approvals-register.csv"',
+      "Cache-Control": "no-cache",
+    });
+    res.end(body);
+    return;
+  }
+
   if (method === "GET" && pathname === "/ledger") {
     const chain = await wormEvidenceStore.verifyChain();
     const milestones = repo.listProjects().flatMap((p) => repo.listMilestones(p.id));

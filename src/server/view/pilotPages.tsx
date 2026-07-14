@@ -14,6 +14,7 @@ import {
   PageHeader,
   fmtDate,
   money,
+  STYLESHEET_HREF,
 } from "./components";
 import { brandMark, icons } from "./icons";
 import type {
@@ -1061,7 +1062,7 @@ export function renderInviteAccept(input: {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Activate access — OBV</title>
-        <link rel="stylesheet" href="/styles.css" />
+        <link rel="stylesheet" href={STYLESHEET_HREF} />
         <link rel="icon" href="/icons/icon-192.png" />
         <meta name="theme-color" content="#0d1626" />
       </head>
