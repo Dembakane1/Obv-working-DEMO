@@ -179,6 +179,7 @@ const NAV_ITEMS_PILOT: NavItem[] = [
 ];
 
 const NAV_ITEMS_UTILITY: NavItem[] = [
+  { key: "control", href: "/control", label: "Control Intelligence", icon: icons.shield },
   { key: "insights", href: "/insights", label: "OBV Intelligence", icon: icons.insights },
   { key: "budget", href: "/budget", label: "Budget & Progress", icon: icons.ledger },
 ];

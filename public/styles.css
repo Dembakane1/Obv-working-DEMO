@@ -2677,3 +2677,98 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
   .sig-side { width: auto; }
   .sig-act { align-self: flex-start; margin-left: 74px; }
 }
+
+/* ==================== OBV Control Intelligence (read-only) ==================== */
+.ci-chip {
+  display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px;
+  font-size: 10px; font-weight: 750; letter-spacing: .06em; white-space: nowrap;
+  background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line-2);
+}
+.ci-chip.ok { background: #f0f7f1; color: #1f7a3f; border-color: #bfd8c4; }
+.ci-chip.warn { background: #fdf6e8; color: #8a5a10; border-color: #ecd9ae; }
+.ci-chip.bad { background: #fdf1ef; color: #a03030; border-color: #ecc6c0; }
+.ci-chip.bad.soft { background: #fdf4ee; color: #9a4a1a; border-color: #eccdb4; }
+.ci-chip.info { background: #eef2fb; color: #33508a; border-color: #c4d0ec; }
+
+.ci-strip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 10px; margin: 0 0 16px;
+}
+.ci-cell {
+  display: flex; flex-direction: column; gap: 2px; padding: 11px 13px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+  text-decoration: none; color: inherit;
+}
+.ci-cell:hover { border-color: #b9c2d4; text-decoration: none; }
+.ci-cell .ci-v { font-size: 17px; font-weight: 750; font-variant-numeric: tabular-nums; color: var(--ink); line-height: 1.15; }
+.ci-cell .ci-l { font-size: 10px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); line-height: 1.35; }
+.ci-flag { font-size: 9px; font-weight: 750; letter-spacing: .06em; color: #33508a; }
+
+.ci-health { padding: 12px 16px; border-top: 1px solid var(--line); }
+.ci-health:first-of-type { border-top: 0; }
+.ci-health-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ci-proj { font-weight: 700; font-size: 13.5px; color: var(--ink); }
+.ci-meta { font-size: 10.5px; color: var(--muted); margin-left: auto; }
+.ci-primary { font-size: 12.5px; color: #3c4658; margin: 8px 0 0; line-height: 1.5; }
+.ci-primary.ok-text { color: #1f7a3f; }
+.ci-reasons { margin-top: 8px; }
+.ci-reasons summary { font-size: 11.5px; color: var(--action); cursor: pointer; }
+
+.ci-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ci-table th {
+  text-align: left; font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); font-weight: 700; padding: 8px 10px; border-bottom: 1px solid var(--line-2);
+  white-space: nowrap;
+}
+.ci-table th a { color: var(--muted); }
+.ci-table th a.ci-sort-on { color: var(--action); text-decoration: underline; }
+.ci-table td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; line-height: 1.45; }
+.ci-table td.num, .ci-table .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ci-table .mono { font-family: var(--mono, ui-monospace, monospace); font-size: 11px; }
+.ci-sub { display: block; font-size: 11.5px; color: #3c4658; font-weight: 400; margin-top: 2px; }
+.ci-src { display: block; font-size: 10px; color: var(--muted); font-family: var(--mono, ui-monospace, monospace); margin-top: 3px; }
+.ci-overdue { color: #a03030; font-weight: 700; }
+.ci-unknown { color: #33508a; font-weight: 700; }
+.ci-legacy { display: block; font-size: 10.5px; color: #8a5a10; margin-top: 3px; }
+
+.ci-note { font-size: 11px; color: var(--muted); margin: 10px 16px; line-height: 1.5; }
+.ci-statement { font-size: 12px; color: #3c4658; }
+.ci-empty { font-size: 12px; color: var(--muted); padding: 14px 16px; margin: 0; }
+.ci-h { display: block; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; margin: 12px 16px 6px; }
+
+.ci-filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.ci-filter { display: flex; flex-direction: column; gap: 3px; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.ci-filter select { font-size: 12px; padding: 5px 8px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); color: var(--ink-2); }
+
+.ci-exp { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 12px 16px; }
+.ci-exp-cell { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fbfbf9; min-width: 0; }
+.ci-exp-cell .v { font-size: 14px; font-weight: 750; color: var(--ink); }
+.ci-exp-cell .l { font-size: 9.5px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); line-height: 1.35; }
+.ci-exp-cats { padding: 0 0 10px; }
+.ci-cat-row { display: flex; gap: 12px; align-items: baseline; padding: 5px 16px; font-size: 12px; }
+.ci-cat-row .m { flex: 1; color: var(--ink-2); }
+.ci-cat-row .s { font-size: 10.5px; color: var(--muted); }
+
+.ci-cap { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; padding: 12px 16px; }
+.ci-cap-cell { display: flex; align-items: baseline; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; color: inherit; min-width: 0; }
+.ci-cap-cell:hover { border-color: #b9c2d4; text-decoration: none; }
+.ci-cap-cell .v { font-size: 16px; font-weight: 750; color: var(--ink); }
+.ci-cap-cell .l { font-size: 10.5px; color: var(--ink-3); line-height: 1.35; }
+
+.ci-duo { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 16px; margin: 0 0 16px; align-items: start; }
+.ci-duo .panel { margin: 0; }
+.ci-method { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; padding-bottom: 12px; }
+.ci-rules { margin: 0 16px 10px; padding-left: 18px; font-size: 12px; color: #3c4658; line-height: 1.55; }
+.ci-rules li { margin-bottom: 6px; }
+.ci-defs { margin: 0 16px 10px; padding-left: 18px; font-size: 11.5px; color: #3c4658; line-height: 1.55; }
+.ci-defs li { margin-bottom: 4px; }
+
+@media (max-width: 1100px) {
+  .ci-duo, .ci-method { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 700px) {
+  .ci-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ci-meta { margin-left: 0; width: 100%; }
+  .ci-filters { gap: 8px; }
+  .ci-table { font-size: 11px; }
+}

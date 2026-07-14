@@ -151,6 +151,8 @@ import {
   renderReports,
   renderUserSwitcher,
 } from "../view/pages";
+import * as controlIntelligence from "../services/controlIntelligence";
+import { renderControlIntelligence, renderControlProject } from "../view/controlPages";
 import type { NavContext } from "../view/components";
 import { assembleReportData, reportFilename } from "../report/data";
 import { renderFunderReport } from "../view/report";
@@ -3267,6 +3269,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     "/approvals", "/ledger", "/reports", "/compliance", "/insights", "/more", "/field",
     "/map", "/communications", "/issues", "/issue/", "/evidence-drafts",
     "/setup", "/pilot", "/draws", "/draw/", "/budget", "/exceptions", "/exception/", "/change-orders", "/change-order/",
+    "/control",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -3908,6 +3911,84 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       renderIntelligence({
         nav: navFor(user!, "insights"),
         data: computeIntelligence({ chainValid: chain.valid }),
+      })
+    );
+    return;
+  }
+
+  // ---- OBV Control Intelligence (read-only aggregation; navigation only) ----
+  const controlFiltersFrom = (): controlIntelligence.ActionFilters => ({
+    role: url.searchParams.get("role") ?? undefined,
+    priority: url.searchParams.get("priority") ?? undefined,
+    projectId: url.searchParams.get("project") ?? undefined,
+    type: url.searchParams.get("type") ?? undefined,
+    blocking: url.searchParams.get("blocking") ?? undefined,
+    overdue: url.searchParams.get("overdue") ?? undefined,
+  });
+
+  if (method === "GET" && pathname === "/control") {
+    await exceptions.evaluateExceptions();
+    const chain = await wormEvidenceStore.verifyChain();
+    const data = controlIntelligence.computeControlIntelligence({ user: user!, chainValid: chain.valid });
+    const filters = controlFiltersFrom();
+    const sort = url.searchParams.get("sort") ?? "attention";
+    sendHtml(
+      res,
+      renderControlIntelligence({
+        nav: navFor(user!, "control"),
+        data,
+        filteredActions: controlIntelligence.filterActions(data.actions, filters),
+        filters,
+        sort,
+        sortedAttention: controlIntelligence.sortAttention(data.attention, sort),
+      })
+    );
+    return;
+  }
+
+  const controlProjMatch = /^\/control\/project\/([^/]+)$/.exec(pathname);
+  if (method === "GET" && controlProjMatch) {
+    const project = repo.getProject(controlProjMatch[1]);
+    if (!project) {
+      sendHtml(res, renderError(navFor(user!, "control"), "Project not found", "No project exists at this address."), 404);
+      return;
+    }
+    await exceptions.evaluateExceptions();
+    const chain = await wormEvidenceStore.verifyChain();
+    const data = controlIntelligence.computeControlIntelligence({
+      user: user!,
+      chainValid: chain.valid,
+      projectId: project.id,
+    });
+    const filters = controlFiltersFrom();
+    sendHtml(
+      res,
+      renderControlProject({
+        nav: navFor(user!, "control"),
+        data,
+        filteredActions: controlIntelligence.filterActions(data.actions, filters),
+        filters,
+        projectName: project.name,
+        projectId: project.id,
+      })
+    );
+    return;
+  }
+
+  // Read-only JSON view of the same aggregation (drives the control tests).
+  if (method === "GET" && pathname === "/api/control/portfolio") {
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    await exceptions.evaluateExceptions();
+    const chain = await wormEvidenceStore.verifyChain();
+    sendJson(
+      res,
+      controlIntelligence.computeControlIntelligence({
+        user,
+        chainValid: chain.valid,
+        projectId: url.searchParams.get("project"),
       })
     );
     return;
