@@ -1303,6 +1303,8 @@ export interface ApprovalQueueItem {
   bundle: EvidenceBundle | null;
   canDecide: boolean;
   alreadyDecided: boolean;
+  /** RELEASED virtual-account event timestamp (presentation only). */
+  releasedAt: string | null;
 }
 
 export function renderApprovals(input: {
@@ -1316,7 +1318,7 @@ export function renderApprovals(input: {
   return renderDocument(
     <AppShell title="Pending approvals" nav={input.nav}>
       <PageHeader
-        title="Pending approvals"
+        title="Approvals"
         sub="Release governance — every required role must approve verified evidence before a tranche becomes release-eligible."
       >
         <div style="text-align:right">
@@ -1400,100 +1402,62 @@ export function renderApprovals(input: {
           }
 
           return (
-            <div className="panel" style="margin-bottom:16px">
-              <div className="panel-head">
-                <h3>
-                  {item.project.name} — M{item.milestone.seq}: {item.milestone.title}
-                </h3>
-                <span className="right">
-                  <span className="chip warn">HELD — {money(item.milestone.trancheAmount)}</span>
-                  {b?.verification ? <VerdictChip verdict={b.verification.verdict} /> : null}
-                </span>
-              </div>
-
-              {/* Dominant money-control statement — the financial consequence
-                  is understood before any button is reachable. */}
-              <div className="money-strip">
-                <span className="amt">
-                  <span className="v">{money(item.milestone.trancheAmount)}</span>
-                  <span className="s">● HELD — RELEASE REQUIRES GOVERNANCE</span>
-                </span>
-                <span className="await">
-                  Submitted {fmtDate(item.approval.createdAt).slice(0, 16)}
-                  {missing.length > 0 ? (
-                    <>
-                      <br />
-                      Awaiting: <b>{missing.map(roleLabel).join(", ")}</b>
-                    </>
-                  ) : null}
-                </span>
-                <span className="gp">
-                  <span className="v" style="display:block">{approved} OF {item.approval.requiredRoles.length}</span>
-                  <span className="l" style="display:block">Approvals recorded</span>
-                </span>
-              </div>
-
-              <div className="approval-review">
-                <div className="col-decide">
-                  <div className="blk-progress">
-                    <div className="t-meta" style="margin-bottom:7px">Governance</div>
-                    <ApprovalProgress approval={item.approval} records={item.records} users={input.users} hideSummary={true} />
+            <div className="panel ap-card">
+              {/* ---- header: identity + held amount + n-of-m ---- */}
+              <div className="ap-head">
+                <span className="ap-badge" aria-hidden="true">{icons.clock(16)}</span>
+                <div className="ap-id">
+                  <span className="ap-eyebrow">Pending approval</span>
+                  <h3 className="ap-title">
+                    {item.project.name} · M{item.milestone.seq} · {item.milestone.title}
+                  </h3>
+                  <div className="ap-amount-row">
+                    <span className="ap-amount">
+                      <span className="l">Held amount</span>
+                      <span className="v num">{money(item.milestone.trancheAmount)}</span>
+                    </span>
+                    <span className="chip warn">HELD — {money(item.milestone.trancheAmount)} · release requires governance</span>
+                    {b?.verification ? <VerdictChip verdict={b.verification.verdict} /> : null}
                   </div>
-                  <div className="blk-actions">
-                    {item.canDecide ? (
-                      <>
-                        <div className="decision-actions">
-                          <form className="f-approve" method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
-                            <input type="hidden" name="decision" value="APPROVED" />
-                            <button className="btn approve" type="submit">
-                              Approve release eligibility
-                            </button>
-                          </form>
-                          <form className="f-reject" method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
-                            <input type="hidden" name="decision" value="REJECTED" />
-                            <button className="btn danger" type="submit" style="width:100%">Return for review</button>
-                          </form>
-                        </div>
-                        <div className="decision-note-wrap">
-                          <p className="decision-note">
-                            Approving records your sign-off. The {money(item.milestone.trancheAmount)} tranche
-                            releases only when all required roles have approved.
-                          </p>
-                        </div>
-                      </>
-                    ) : item.alreadyDecided ? (
-                      <div className="banner info" style="margin:0">Your decision is recorded. Awaiting the remaining role(s).</div>
-                    ) : (
-                      <div className="banner info" style="margin:0">
-                        Sign in as one of the required roles to decide. Your current role is not part of this approval.
-                      </div>
-                    )}
+                </div>
+                <div className="ap-progress">
+                  <span className="np"><b>{approved} OF {item.approval.requiredRoles.length}</b> approvals recorded</span>
+                  {missing.length > 0 ? (
+                    <span className="await">Awaiting: <b>{missing.map(roleLabel).join(", ")}</b></span>
+                  ) : null}
+                  <span className="sub">Submitted {fmtDate(item.approval.createdAt).slice(0, 16)}</span>
+                </div>
+              </div>
+
+              {/* ---- the three numbered decision columns ---- */}
+              <div className="approval-review ap-cols">
+                <div className="ap-col">
+                  <div className="ap-col-h"><span className="n">1.</span> Governance (required approvals)</div>
+                  <ApprovalProgress approval={item.approval} records={item.records} users={input.users} hideSummary={true} />
+                  <div className="ap-note">
+                    {icons.alert(13)} All required roles must approve to make this milestone release-eligible.
                   </div>
                 </div>
 
-                <div className="col-photo">
+                <div className="ap-col">
+                  <div className="ap-col-h"><span className="n">2.</span> Evidence basis</div>
                   {b ? (
                     <>
-                      <div className="blk-photo">
-                        <div className="approval-photo">
-                          <img src={b.evidence.photoPath} alt="Field evidence photo" />
-                        </div>
-                        <div className="evidence-cap">
-                          Field evidence — M{item.milestone.seq} · {item.milestone.title}
-                          <span className="mono">{fmtDate(b.evidence.capturedAt).slice(0, 16)}</span>
-                        </div>
-                        <div style="margin-top:7px">
-                          <EvidenceStatusChips verification={b.verification} isDemoFallback={b.evidence.isDemoFallback} />
-                        </div>
+                      <div className="approval-photo">
+                        <img src={b.evidence.photoPath} alt="Field evidence photo" />
                       </div>
-                      <div className="blk-meta">
-                        <div className="photo-meta">
-                          <div className="row"><span className="k">Captured by</span><span className="v">{b.submittedBy?.name ?? "—"}</span></div>
-                          <div className="row"><span className="k">Captured</span><span className="v mono">{fmtDate(b.evidence.capturedAt)}</span></div>
-                          <div className="row"><span className="k">GPS</span><span className="v mono">{fmtGps(b.evidence.latitude, b.evidence.longitude)}</span></div>
-                          <div className="row"><span className="k">Device</span><span className="v">{b.evidence.deviceMetadata.platform} · {b.evidence.deviceMetadata.screen}</span></div>
-                          <div className="row"><span className="k">Capture mode</span><span className="v">{b.evidence.isDemoFallback ? "Demo fallback" : "Live capture"}</span></div>
-                        </div>
+                      <div className="evidence-cap">
+                        Field evidence — M{item.milestone.seq} · {item.milestone.title}
+                      </div>
+                      <div style="margin:6px 0 8px">
+                        <EvidenceStatusChips verification={b.verification} isDemoFallback={b.evidence.isDemoFallback} />
+                      </div>
+                      <div className="photo-meta">
+                        <div className="row"><span className="k">Captured by</span><span className="v">{b.submittedBy?.name ?? "—"}</span></div>
+                        <div className="row"><span className="k">Captured on</span><span className="v mono">{fmtDate(b.evidence.capturedAt)}</span></div>
+                        <div className="row"><span className="k">GPS location</span><span className="v mono">{fmtGps(b.evidence.latitude, b.evidence.longitude)}</span></div>
+                        <div className="row"><span className="k">Device</span><span className="v">{b.evidence.deviceMetadata.platform} · {b.evidence.deviceMetadata.screen}</span></div>
+                        <div className="row"><span className="k">Capture mode</span><span className="v">{b.evidence.isDemoFallback ? "Demo fallback" : "Live capture"}</span></div>
                       </div>
                     </>
                   ) : (
@@ -1501,32 +1465,80 @@ export function renderApprovals(input: {
                   )}
                 </div>
 
-                <div className="col-facts">
-                  {b ? (
+                <div className="ap-col">
+                  <div className="ap-col-h"><span className="n">3.</span> Verification summary</div>
+                  <div className="ap-req">
+                    <span className="k">Requirement</span>
+                    <span className="v">{item.milestone.requirement}</span>
+                  </div>
+                  {b?.verification ? (
                     <>
-                      <div className="blk-checks">
-                        <div className="ev-sec">Requirement</div>
-                        <p style="margin:0;font-size:13px;color:var(--ink-2)">{item.milestone.requirement}</p>
-                        {b.verification ? (
-                          <>
-                            <div className="ev-sec">Verification checks</div>
-                            <EvidenceChecks verification={b.verification} />
-                            <div className="ev-sec">AI verification result</div>
-                            <EvidenceAiResult verification={b.verification} />
-                          </>
-                        ) : null}
+                      <div className="ap-sub-h">Deterministic verification checks</div>
+                      <EvidenceChecks verification={b.verification} />
+                      <div className="ap-conf">
+                        <span className="k">Overall confidence</span>
+                        <span className="bar"><span className="fl" style={`width:${Math.round(b.verification.confidence * 100)}%`}></span></span>
+                        <span className="v num">{b.verification.confidence.toFixed(2)}</span>
                       </div>
-                      <div className="blk-proof">
-                        <div className="ev-sec">Proof integrity</div>
-                        <EvidenceHashes evidence={b.evidence} ledgerEntry={b.ledgerEntry} />
+                      <div className="ap-proof-sub">
+                        Visual assessment: {b.verification.source === "LIVE_AI" ? "live AI model" : "deterministic demo mock"} ({b.verification.source}) · location &amp; metadata checks: deterministic
                       </div>
                     </>
+                  ) : null}
+                  {b ? (
+                    <div className="ap-proof">
+                      <span className="k">Proof integrity (SHA-256)</span>
+                      <span className="v mono" title={b.evidence.hash}>
+                        {b.evidence.hash.slice(0, 10)}…{b.evidence.hash.slice(-24)}
+                      </span>
+                      <button
+                        className="ap-copy"
+                        type="button"
+                        title="Copy full evidence hash"
+                        data-hash={b.evidence.hash}
+                        onclick="navigator.clipboard&&navigator.clipboard.writeText(this.dataset.hash)"
+                      >
+                        {icons.file(12)}
+                      </button>
+                      {b.ledgerEntry ? (
+                        <span className="sub" style="display:block;margin-top:3px">Evidence Ledger entry #{b.ledgerEntry.seq} · chain-linked</span>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
               </div>
 
-              <div className="audit-trail">
-                <div className="lbl">Approval audit trail</div>
+              {/* ---- decision footer (the only actions on the card) ---- */}
+              <div className="ap-footer">
+                {item.canDecide ? (
+                  <>
+                    <p className="decision-note">
+                      Approving records your sign-off. The {money(item.milestone.trancheAmount)} tranche
+                      releases only when all required roles have approved.
+                    </p>
+                    <div className="decision-actions">
+                      <form className="f-approve" method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
+                        <input type="hidden" name="decision" value="APPROVED" />
+                        <button className="btn approve" type="submit">{icons.check(14)} Approve release eligibility</button>
+                      </form>
+                      <form className="f-reject" method="POST" action={`/api/approvals/${item.approval.id}/decision`} style="margin:0">
+                        <input type="hidden" name="decision" value="REJECTED" />
+                        <button className="btn secondary" type="submit">{icons.refresh(14)} Return for review</button>
+                      </form>
+                    </div>
+                  </>
+                ) : item.alreadyDecided ? (
+                  <div className="banner info" style="margin:0;flex:1">Your decision is recorded. Awaiting the remaining role(s).</div>
+                ) : (
+                  <div className="banner info" style="margin:0;flex:1">
+                    Sign in as one of the required roles to decide. Your current role is not part of this approval.
+                  </div>
+                )}
+              </div>
+
+              {/* ---- full governance record, collapsed by default ---- */}
+              <details className="ap-audit">
+                <summary>Approval audit trail</summary>
                 <table className="audit-table" style="margin-top:8px">
                   <thead>
                     <tr>
@@ -1557,7 +1569,7 @@ export function renderApprovals(input: {
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </details>
             </div>
           );
         })
@@ -1565,27 +1577,35 @@ export function renderApprovals(input: {
 
       {resolved.length > 0 ? (
         <>
-          <h2 className="section">Resolved</h2>
-          <div className="panel">
-            <ul className="activity">
-              {resolved.map((item) => (
-                <li>
-                  <span className={`ico ${item.approval.status === "APPROVED" ? "ok" : "bad"}`}>
-                    {item.approval.status === "APPROVED" ? icons.check() : icons.x()}
+          <h2 className="section" style="display:inline-flex;align-items:center;gap:8px">
+            <span className="res-h-ic">{icons.check(14)}</span>Resolved approvals
+          </h2>
+          <div className="res-list">
+            {resolved.map((item) => {
+              const ok = item.approval.status === "APPROVED";
+              return (
+                <div className={`panel res-row ${ok ? "ok" : "bad"}`}>
+                  <span className={`res-ic ${ok ? "ok" : "bad"}`}>{ok ? icons.check(14) : icons.x(14)}</span>
+                  <span className="res-id">
+                    <b>M{item.milestone.seq} · {item.milestone.title}</b>
+                    <span className="sub">{item.project.name}</span>
                   </span>
-                  <span className="body">
-                    <span className="msg">
-                      <b>{item.approval.status === "APPROVED" ? "Approved & released" : "Rejected"}</b> — {item.project.name},
-                      M{item.milestone.seq}: {item.milestone.title}
-                    </span>
-                    <span className="meta">
-                      <span className="when">{fmtDate(item.approval.createdAt)}</span>
-                      <span className="num" style="font-weight:650;color:var(--ink-2)">{money(item.milestone.trancheAmount)}</span>
-                    </span>
+                  <span className="res-cell">
+                    <span className="l">Amount released</span>
+                    <span className="v num">{ok && item.releasedAt ? money(item.milestone.trancheAmount) : "—"}</span>
                   </span>
-                </li>
-              ))}
-            </ul>
+                  <span className="res-cell">
+                    <span className="l">Status</span>
+                    <span className={`chip ${ok ? "ok" : "bad"}`}>{ok ? "APPROVED & RELEASED" : "REJECTED — RETURNED"}</span>
+                  </span>
+                  <span className="res-cell">
+                    <span className="l">{ok ? "Released on" : "Decided on"}</span>
+                    <span className="v mono">{fmtDate(item.releasedAt ?? item.approval.createdAt).slice(0, 16)}</span>
+                  </span>
+                  <a className="btn ghost sm res-view" href={`/milestone/${item.milestone.id}`}>View approval ↗</a>
+                </div>
+              );
+            })}
           </div>
         </>
       ) : null}
@@ -2198,10 +2218,16 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
     label: string,
     href: string,
     tone: "neutral" | "warn" | "bad",
+    icon: VNode,
+    subActive: string,
   ): VNode => (
     <a className={`int-stat ${n > 0 && tone !== "neutral" ? tone : ""}`} href={href}>
-      <span className="is-n">{n}</span>
-      <span className="is-l">{label}</span>
+      <span className="is-ic">{icon}</span>
+      <span className="is-body">
+        <span className="is-n">{n}</span>
+        <span className="is-l">{label}</span>
+        <span className="is-s">{n > 0 ? subActive : "No items at this time"}</span>
+      </span>
     </a>
   );
 
@@ -2216,16 +2242,15 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
         </span>
       </PageHeader>
 
-      {/* ---- Section 1 · intelligence summary ---- */}
-      <div className="sec-label">Intelligence summary</div>
+      {/* ---- Section 1 · intelligence summary (uniform card row) ---- */}
       <div className="intel-sum">
-        {sumCard(s.activeProjects, "Active projects", "/projects", "neutral")}
-        {sumCard(s.projectsNeedingAttention, "Needing attention", "#attention", "warn")}
-        {sumCard(s.highSeverityIssues, "High-severity issues", "/issues", "bad")}
-        {sumCard(s.evidenceNeedsReview, "Evidence needs review", "/compliance", "warn")}
-        {sumCard(s.pendingApprovals, "Pending approvals", "/approvals", "warn")}
-        {sumCard(s.openClarifications, "Open clarifications", "/compliance", "warn")}
-        {sumCard(s.integrityAlerts, "Integrity alerts", "/ledger", "bad")}
+        {sumCard(s.activeProjects, "Active projects", "/projects", "neutral", icons.projects(), "Monitored portfolio")}
+        {sumCard(s.projectsNeedingAttention, "Needing attention", "#attention", "warn", icons.alert(15), "Require review")}
+        {sumCard(s.highSeverityIssues, "High-severity issues", "/issues", "bad", icons.shield(), "Immediate action")}
+        {sumCard(s.evidenceNeedsReview, "Evidence needs review", "/compliance", "warn", icons.camera(), "Awaiting decision")}
+        {sumCard(s.pendingApprovals, "Pending approvals", "/approvals", "warn", icons.clock(15), "Awaiting roles")}
+        {sumCard(s.openClarifications, "Open clarifications", "/compliance", "warn", icons.chat(15), "Never auto-accepts")}
+        {sumCard(s.integrityAlerts, "Integrity alerts", "/ledger", "bad", icons.ledger(), "Chain findings")}
       </div>
 
       {calm ? (
@@ -2308,8 +2333,7 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
       </div>
 
       {/* ---- Section 3 + 4 · verification & governance intelligence ---- */}
-      <div className="sec-label">Verification intelligence</div>
-      <div className="intel-duo">
+      <div className="intel-tri">
         <div className="panel int-verif">
           <div className="panel-head"><h3>Verification outcomes</h3><span className="right"><a href="/compliance">Evidence review →</a></span></div>
           <div className="iv-stats">
@@ -2411,11 +2435,8 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
             </a>
           ) : null}
         </div>
-      </div>
 
-      {/* ---- Section 5 · field risk ---- */}
-      <div className="sec-label">Field risk &amp; issue intelligence</div>
-      <div className="intel-duo">
+        {/* ---- field risk (third analytics column) ---- */}
         <div className="panel int-field">
           <div className="panel-head"><h3>Field issues &amp; clarifications</h3><span className="right"><a href="/issues">Issue register →</a></span></div>
           <div className="iv-stats">
@@ -2432,9 +2453,8 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
           ) : (
             <span className="iv-empty">No unresolved field issues.</span>
           )}
-        </div>
-        <div className="panel int-cats">
-          <div className="panel-head"><h3>Open issues by category</h3></div>
+          <div style="margin-top:12px">
+          <span className="iv-h">Open issues by category</span>
           {f.byCategory.length === 0 ? (
             <span className="iv-empty">No open issues to categorize.</span>
           ) : (
@@ -2454,12 +2474,13 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
               ))}
             </div>
           ) : null}
+          </div>
         </div>
       </div>
 
       {/* ---- Section 6 + 8 · project attention table ---- */}
-      <div className="sec-label" id="attention">Project attention</div>
-      <div className="panel int-table-panel">
+      <div className="panel int-table-panel" id="attention">
+        <div className="panel-head"><h3>Project attention</h3></div>
         <div className="desktop-only table-scroll">
           <table className="pf-table int-table">
             <thead>

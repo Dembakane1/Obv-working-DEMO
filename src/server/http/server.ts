@@ -394,6 +394,12 @@ function approvalQueue(user: User): ApprovalQueueItem[] {
   const items: ApprovalQueueItem[] = [];
   const projects = new Map(repo.listProjects().map((p) => [p.id, p]));
   for (const project of projects.values()) {
+    const releasedByMilestone = new Map(
+      repo
+        .listAccountEventsForProject(project.id)
+        .filter((e) => e.type === "RELEASED")
+        .map((e) => [e.milestoneId, e.createdAt])
+    );
     for (const approval of repo.listApprovalRequestsForProject(project.id)) {
       const milestone = repo.getMilestone(approval.milestoneId!)!;
       const records = repo.listApprovalRecordsForRequest(approval.id);
@@ -412,6 +418,7 @@ function approvalQueue(user: User): ApprovalQueueItem[] {
           approval.requiredRoles.includes(user.role) &&
           !roleTaken,
         alreadyDecided: roleTaken,
+        releasedAt: releasedByMilestone.get(milestone.id) ?? null,
       });
     }
   }
