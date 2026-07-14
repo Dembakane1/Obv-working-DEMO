@@ -151,6 +151,7 @@ import {
   renderReports,
   renderUserSwitcher,
 } from "../view/pages";
+import { renderHome, type HomeSnapshot } from "../view/homePage";
 import type { NavContext } from "../view/components";
 import { assembleReportData, reportFilename } from "../report/data";
 import { renderFunderReport } from "../view/report";
@@ -2596,7 +2597,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (method === "GET" && previewMatch) {
     const user = currentUser(req);
     if (!user) {
-      redirect(res, "/");
+      redirect(res, "/demo");
       return;
     }
     const data = await assembleReportData(previewMatch[1], user);
@@ -2613,7 +2614,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (method === "GET" && fileMatch) {
     const user = currentUser(req);
     if (!user) {
-      redirect(res, "/");
+      redirect(res, "/demo");
       return;
     }
     const report = repo.getReport(fileMatch[1]);
@@ -2759,7 +2760,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (method === "GET" && apDownloadMatch) {
     const user = currentUser(req);
     if (!user) {
-      redirect(res, "/");
+      redirect(res, "/demo");
       return;
     }
     const { pkg, filePath, filename } = auditPackages.resolvePackageDownload(user, apDownloadMatch[1]);
@@ -3253,12 +3254,101 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   // ---- pages ----
+  // Public enterprise homepage. Marketing surface only — the product frame
+  // reads real seeded values (read-only); role selection lives at /demo.
   if (method === "GET" && pathname === "/") {
+    sendHtml(res, renderHome(homeSnapshot()));
+    return;
+  }
+
+  function homeSnapshot(): HomeSnapshot | null {
+    try {
+      const project = repo.listProjects().find((p) => p.status === "ACTIVE");
+      if (!project) return null;
+      const fin = budget.assessFinancialProgress(project.id);
+      const phys = budget.assessPhysicalProgress(project.id);
+      const OPEN_DRAWS = new Set([
+        "SUBMITTED", "UNDER_REVIEW", "CLARIFICATION_REQUIRED", "READY_FOR_GOVERNANCE", "PARTIALLY_APPROVED",
+      ]);
+      const openDraws = repo.listDrawRequestsForProject(project.id).filter((d) => OPEN_DRAWS.has(d.status));
+      let supportable = 0;
+      let anyReviewed = false;
+      for (const d of openDraws) {
+        for (const l of repo.listDrawLines(d.id)) {
+          if (l.supportedAmount !== null) {
+            supportable += l.supportedAmount;
+            anyReviewed = true;
+          } else if (l.status === "SUPPORTED") {
+            supportable += l.currentRequested;
+            anyReviewed = true;
+          }
+        }
+      }
+      const openExc = repo.listExceptionsForProject(project.id).filter(exceptions.isOpen);
+      const blockedAmount = openDraws
+        .filter(
+          (d) =>
+            draws.missingRequiredDocuments(d.id).length > 0 ||
+            openExc.some((e) => e.drawRequestId === d.id && ["HIGH", "CRITICAL"].includes(e.severity))
+        )
+        .reduce((s, d) => s + d.requestedAmount, 0);
+      const milestones = repo.listMilestones(project.id).filter((m) => !m.archived);
+      const pendingInspections = milestones.filter((m) =>
+        ["REQUIRED_UNSCHEDULED", "SCHEDULED", "COMPLETED_PENDING_RESULT"].includes(
+          completionGates.inspectionGateState(m.id)
+        )
+      ).length;
+      const held = repo
+        .listAccountEventsForProject(project.id)
+        .reduce((s, e) => s + (e.type === "HELD" ? e.amount : -e.amount), 0);
+      const sevRank: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+      return {
+        projectName: project.name,
+        verifiedPhysicalPct: phys.verifiedPct,
+        claimedFinancialPct: fin.claimedPct,
+        drawRequested: openDraws.reduce((s, d) => s + d.requestedAmount, 0),
+        drawSupportable: anyReviewed ? supportable : null,
+        blockedAmount,
+        pendingInspections,
+        highCriticalExceptions: openExc.filter((e) => ["HIGH", "CRITICAL"].includes(e.severity)).length,
+        fundsHeld: Math.max(0, held),
+        retainageWithheld: retainage.retainageSummary(project.id).withheldToDate,
+        evidenceAwaitingReview: milestones.filter((m) => {
+          const s = completionGates.evidenceReviewStatus(m.id).status;
+          return s === "NEEDS_REVIEW" || s === "UNDER_REVIEW";
+        }).length,
+        recentExceptions: [...openExc]
+          .sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9))
+          .slice(0, 3)
+          .map((e) => ({ severity: e.severity, title: e.title })),
+        milestones: milestones.map((m) => ({
+          label: `M${m.seq}`,
+          state: m.accountStatus === "RELEASED" ? "RELEASED" : "HELD",
+        })),
+      };
+    } catch {
+      return null; // the public page must render even if demo data is absent
+    }
+  }
+
+  // Seeded demonstration role selector (moved from the root route).
+  if (method === "GET" && pathname === "/demo") {
     const users = repo.listUsers();
     const orgs = new Map(
       users.map((u) => [u.organizationId, repo.getOrganization(u.organizationId)!])
     );
     sendHtml(res, renderUserSwitcher(users, orgs));
+    return;
+  }
+
+  // Convenience section routes — permanent homepage anchors, and the app
+  // entry which defers to the existing session gate.
+  if (method === "GET" && pathname === "/app") {
+    redirect(res, "/overview", 302);
+    return;
+  }
+  if (method === "GET" && (pathname === "/platform" || pathname === "/security")) {
+    redirect(res, `/#${pathname.slice(1)}`, 302);
     return;
   }
 
@@ -3271,7 +3361,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
   if (method === "GET" && isPage && !user) {
-    redirect(res, "/");
+    redirect(res, "/demo");
     return;
   }
 

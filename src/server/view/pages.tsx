@@ -235,13 +235,25 @@ function ProjectAsset(props: { data: ProjectCardData }): VNode {
 
 // --------------------------------------------------------------- auth
 
+const ROLE_DESCRIPTIONS: Record<User["role"], string> = {
+  FUNDER_REP:
+    "Review verified evidence, approve release eligibility, monitor draws, exposure and portfolio health.",
+  COMPLIANCE_REVIEWER:
+    "Review flagged evidence, record decisions, track exceptions, clarifications and audit integrity.",
+  PROJECT_MANAGER:
+    "Manage draws and change orders, respond to blockers, and coordinate inspections and field work.",
+  FIELD:
+    "Capture timestamped, GPS-tagged evidence in the mobile field application and respond to clarifications.",
+};
+
 export function renderUserSwitcher(users: User[], orgs: Map<string, Organization>): string {
+  const ordered = [...users].sort((a, b) => roleLabel(a.role).localeCompare(roleLabel(b.role)));
   return renderDocument(
     <html lang="en">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Sign in — OBV</title>
+        <title>Enter the demonstration — OBV</title>
         <link rel="stylesheet" href={STYLESHEET_HREF} />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
@@ -249,35 +261,42 @@ export function renderUserSwitcher(users: User[], orgs: Map<string, Organization
       </head>
       <body>
         <div className="auth-wrap">
-          <div className="auth-box">
+          <div className="auth-box demo-box">
             <div className="auth-brand">
-              <span className="mark">{brandMark(22)}</span>
-              <span>
-                <span className="name" style="display:block">OpenBuild Verify</span>
-                <span className="tagline" style="display:block">The truth layer for physical projects</span>
-              </span>
+              <a href="/" className="demo-home" aria-label="Back to the OpenBuild Verify homepage">
+                <span className="mark">{brandMark(22)}</span>
+                <span>
+                  <span className="name" style="display:block">OpenBuild Verify</span>
+                  <span className="tagline" style="display:block">Evidence, governance and control for construction capital</span>
+                </span>
+              </a>
+              <span className="demo-env" title="Seeded demonstration data — no real projects or funds">Demo Environment</span>
             </div>
-            <p className="sub" style="max-width:600px;margin-top:10px">
-              Demo environment — select a seeded role to explore its view of the platform.
-              No credentials required; production authentication replaces this screen.
+            <h1 className="demo-h">Select a demonstration role</h1>
+            <p className="sub" style="max-width:620px">
+              Explore the same governed project from the perspective of a funder, compliance
+              reviewer, project manager, or field engineer. No credentials required.
             </p>
             <div className="roles">
-              {users.map((u) => (
+              {ordered.map((u) => (
                 <form method="POST" action="/api/session">
                   <input type="hidden" name="userId" value={u.id} />
                   <button className="role-card" type="submit" style="width:100%">
                     <span className="role">{roleLabel(u.role)}</span>
                     <span className="name" style="display:block">{u.name}</span>
-                    <span className="title" style="display:block">{u.title}</span>
                     <span className="org" style="display:block">{orgs.get(u.organizationId)?.name ?? ""}</span>
+                    <span className="desc" style="display:block">{ROLE_DESCRIPTIONS[u.role]}</span>
+                    <span className="enter">Enter Demo →</span>
                   </button>
                 </form>
               ))}
             </div>
             <p className="footer-note">
               Office roles open the portfolio overview · the field engineer opens the mobile
-              capture application.
+              capture application. Production access uses authenticated organization accounts —
+              this seeded selector exists only in the demonstration environment.
             </p>
+            <a className="demo-return" href="/">← Return to OBV Overview</a>
           </div>
         </div>
       </body>
@@ -2612,7 +2631,7 @@ export function renderMore(input: { nav: NavContext }): string {
           <span style="font-weight:600;display:block;font-size:13px">{user.name}</span>
           <span className="sub" style="display:block;font-size:11.5px">{roleLabel(user.role)}{input.nav.orgName ? ` · ${input.nav.orgName}` : ""}</span>
         </span>
-        <a className="btn secondary sm" href="/">Switch user</a>
+        <a className="btn secondary sm" href="/demo">Switch user</a>
       </div>
     </AppShell>
   );
@@ -2646,7 +2665,7 @@ export function renderFieldShell(user: User): string {
             <span className="role-tag">
               {user.name}
               <br />
-              {user.title} · <a href="/" style="color:#96b0f5">switch</a>
+              {user.title} · <a href="/demo" style="color:#96b0f5">switch</a>
             </span>
           </div>
           <div id="app" data-user-id={user.id} data-user-name={user.name}>
@@ -2684,7 +2703,7 @@ export function renderError(nav: NavContext | null, title: string, message: stri
             <div className="auth-box" style="text-align:center;max-width:420px">
               <h1 className="t-title">{title}</h1>
               <p className="sub">{message}</p>
-              <a className="btn" href="/" style="margin-top:10px">Go to sign-in</a>
+              <a className="btn" href="/demo" style="margin-top:10px">Go to demo sign-in</a>
             </div>
           </div>
         </body>

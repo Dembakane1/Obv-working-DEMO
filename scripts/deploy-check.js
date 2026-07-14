@@ -113,10 +113,16 @@ function check(name, ok, detail = "") {
     root = await get("/");
   }
   const rootHtml = await root.text();
-  check("role picker page renders", root.status === 200 && rootHtml.includes("OpenBuild Verify"));
-  check("role picker lists seeded users", rootHtml.includes("Margaret Osei"));
+  check(
+    "public homepage renders at /",
+    root.status === 200 && rootHtml.includes("Verify physical progress before capital moves.")
+  );
+  const demo = await get("/demo");
+  const demoHtml = await demo.text();
+  check("role picker page renders at /demo", demo.status === 200 && demoHtml.includes("Select a demonstration role"));
+  check("role picker lists seeded users", demoHtml.includes("Margaret Osei"));
 
-  // 3. Session gating: pages redirect to picker without a session.
+  // 3. Session gating: pages redirect to the demo picker without a session.
   const gated = await get("/overview");
   check("/overview requires a demo session", [302, 303].includes(gated.status));
 

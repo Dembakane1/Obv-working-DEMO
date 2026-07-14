@@ -276,7 +276,7 @@ export function AppShell(props: {
                     <span className="r">{roleLabel(user.role)}</span>
                   </span>
                 </span>
-                <a className="switch" href="/" title="Switch demo user">Switch</a>
+                <a className="switch" href="/demo" title="Switch demo user">Switch</a>
               </span>
             </div>
 
@@ -288,7 +288,7 @@ export function AppShell(props: {
               </span>
               <span className="u">
                 <span className="env-tag" style="font-size:8.5px;padding:1px 5px">Demo</span>{" "}
-                <a href="/">switch</a>
+                <a href="/demo">switch</a>
               </span>
             </div>
 

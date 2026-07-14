@@ -36,7 +36,7 @@ async function waitForText(page, text, timeoutMs = 15000) {
 
 async function signIn(ctx, name, urlPattern) {
   const page = await ctx.newPage();
-  await page.goto(BASE + "/");
+  await page.goto(BASE + "/demo"); // the seeded role selector lives at /demo; / is the public homepage
   await page.getByText(name).click();
   await page.waitForURL(urlPattern);
   return page;
