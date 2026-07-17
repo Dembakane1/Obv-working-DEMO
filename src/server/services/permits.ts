@@ -89,18 +89,36 @@ export function getPermitFor(user: User, permitId: string): { permit: Permit; pr
   return { permit, project };
 }
 
-/** Parse-and-validate a date input. Real ISO parsing (never lexical
- *  comparison); throws a 400 PermitError for invalid values. */
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+/** ISO 8601 timestamp with an EXPLICIT timezone (Z or ±HH:MM). Timestamps
+ *  without a timezone are rejected: V8 parses them as host-local time,
+ *  which would make stored control dates depend on server locale. */
+const ISO_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** True only when Y-M-D is a real calendar date (rejects 2026-02-30 rather
+ *  than letting Date.parse normalise it to March 2). */
+function validCalendarDate(y: number, m: number, d: number): boolean {
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/** Parse-and-validate a date input. Accepts exactly two shapes: YYYY-MM-DD,
+ *  or an ISO 8601 timestamp with an explicit timezone. Locale formats
+ *  (07/08/2026), timezone-less timestamps, and impossible calendar dates
+ *  (2026-02-30) are rejected with a 400 PermitError — the shape check runs
+ *  BEFORE Date.parse, which would otherwise accept all three. */
 export function parseIsoDate(value: string | null | undefined, field: string): string | null {
   const v = (value ?? "").trim();
   if (!v) return null;
-  if (!Number.isFinite(Date.parse(v))) {
-    throw new PermitError(`${field} must be a valid ISO date or timestamp (got "${v}")`);
+  const m = DATE_ONLY.exec(v) ?? ISO_TIMESTAMP.exec(v);
+  if (!m || !validCalendarDate(+m[1], +m[2], +m[3]) || !Number.isFinite(Date.parse(v))) {
+    throw new PermitError(
+      `${field} must be YYYY-MM-DD or an ISO 8601 timestamp with an explicit timezone (got "${v}")`
+    );
   }
   return v;
 }
-
-const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Epoch millisecond at which a stored expiry value stops being valid.
  *  EXPIRATION BOUNDARY (documented + tested): a date-only expiresAt
@@ -238,7 +256,7 @@ export function createPermit(
     closedAt: null,
     scopeDescription: input.scopeDescription?.trim() || null,
     applicableCodeEdition: input.applicableCodeEdition?.trim() || null,
-    codeEffectiveDate: input.codeEffectiveDate?.trim() || null,
+    codeEffectiveDate: parseIsoDate(input.codeEffectiveDate, "codeEffectiveDate"),
     codeBasis: input.codeBasis?.trim() || null,
     codeDeterminedBy: recordsCode ? user.id : null,
     codeDeterminedAt: recordsCode ? now : null,
@@ -389,7 +407,7 @@ export function recordCodeBasis(
     : "NOT RECORDED";
   repo.updatePermit(permitId, {
     applicableCodeEdition: edition,
-    codeEffectiveDate: input.codeEffectiveDate?.trim() || null,
+    codeEffectiveDate: parseIsoDate(input.codeEffectiveDate, "codeEffectiveDate"),
     codeBasis: basis,
     codeDeterminedBy: user.id,
     codeDeterminedAt: now,

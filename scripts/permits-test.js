@@ -676,6 +676,25 @@ function readZip(buf) {
       "timestamp expiry one hour ago → EXPIRED at that exact instant"
     );
 
+    // ============ HARDENING · strict date shapes (YYYY-MM-DD or explicit-timezone ISO) ============
+    const mkDate = (num, expires) =>
+      api("funder", "POST", "/api/projects/proj-r47/permits", {
+        permitNumber: num, permitType: "X", status: "ISSUED", issuedAt: "2026-01-01", expiresAt: expires,
+      });
+    assert((await mkDate("DV-DATEONLY", "2027-01-10")).status === 201, "valid date-only value (YYYY-MM-DD) is accepted");
+    assert((await mkDate("DV-UTC", "2027-01-10T09:00:00Z")).status === 201, "valid ISO timestamp with UTC (Z) timezone is accepted");
+    assert((await mkDate("DV-OFFSET", "2027-01-10T09:00:00+02:00")).status === 201, "valid ISO timestamp with an explicit offset timezone is accepted");
+    assert((await mkDate("DV-IMPOSSIBLE", "2026-02-30")).status === 400, "impossible calendar date 2026-02-30 is rejected, not normalised by Date.parse");
+    assert((await mkDate("DV-LOCALE", "07/08/2026")).status === 400, "locale-formatted date 07/08/2026 is rejected");
+    assert((await mkDate("DV-NOTZ", "2026-07-08T09:00:00")).status === 400, "ISO timestamp without an explicit timezone is rejected");
+    const dvPermit = (await j("funder", "POST", "/api/projects/proj-r47/permits", {
+      permitNumber: "DV-CODEBASIS", permitType: "X",
+    }, 201)).permit;
+    const badCb = await api("funder", "POST", `/api/permits/${dvPermit.id}/code-basis`, {
+      applicableCodeEdition: "2024 IBC", codeBasis: "Adopted national edition", codeEffectiveDate: "2026-02-30",
+    });
+    assert(badCb.status === 400, "invalid codeEffectiveDate goes through the same strict validation and is rejected");
+
     // ============ HARDENING · artifact security ============
     const html = Buffer.from("<html><script>alert(1)</script></html>");
     const badType = await api("compliance", "POST", "/api/official-sources", {
