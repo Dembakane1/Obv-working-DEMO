@@ -55,6 +55,10 @@ import type {
   Report,
   AuditPackage,
   MilestoneGates,
+  JurisdictionalInspection,
+  OfficialSourceRecord,
+  Permit,
+  PermitMilestoneLink,
   User,
   Verification,
   VirtualAccountEvent,
@@ -973,6 +977,17 @@ export function renderMilestoneDetail(input: {
   gates: MilestoneGates;
   canReportCompletion: boolean;
   canDetermineInspection: boolean;
+  canRecordPermits: boolean;
+  linkedPermits: Array<{
+    link: PermitMilestoneLink;
+    permit: Permit;
+    effectiveStatus: string;
+    sources: OfficialSourceRecord[];
+  }>;
+  projectPermits: Permit[];
+  inspectionHistory: JurisdictionalInspection[];
+  officialSourceCounts: Map<string, number>;
+  permitMethodology: string;
 }): string {
   const { project, row } = input;
   const { milestone, approval, approvalRecords } = row;
@@ -1028,9 +1043,9 @@ export function renderMilestoneDetail(input: {
           </span>
         );
         const gateRow = (title: string, state: unknown, sub: unknown) => (
-          <div style="display:grid;grid-template-columns:190px 1fr;gap:10px;padding:9px 0;border-top:1px solid var(--line);align-items:baseline">
+          <div className="gate-row" style="display:grid;grid-template-columns:190px minmax(0,1fr);gap:10px;padding:9px 0;border-top:1px solid var(--line);align-items:baseline">
             <span style="font:600 10.5px/1.3 var(--sans,inherit);letter-spacing:.7px;color:var(--ink-3);text-transform:uppercase">{title}</span>
-            <span style="font-size:12.5px">
+            <span style="font-size:12.5px;min-width:0;overflow-wrap:anywhere">
               {state}
               {sub ? <span className="sub" style="display:block;font-size:11px;margin-top:2px">{sub}</span> : null}
             </span>
@@ -1044,7 +1059,7 @@ export function renderMilestoneDetail(input: {
         const reqTone = g.requirementValue === "REQUIRED" ? "warn" : g.requirementValue === "NOT_REQUIRED" ? "ok" : "neutral";
         const inspTone =
           g.inspectionGate === "PASSED" || g.inspectionGate === "NOT_APPLICABLE" ? "ok"
-            : g.inspectionGate === "FAILED" || g.inspectionGate === "EXPIRED" ? "bad"
+            : ["FAILED", "EXPIRED", "CORRECTIONS_REQUIRED"].includes(g.inspectionGate) ? "bad"
               : "warn";
         const eligTone =
           g.eligibility.result === "RELEASED" || g.eligibility.result === "READY_FOR_GOVERNANCE" ? "ok"
@@ -1075,7 +1090,7 @@ export function renderMilestoneDetail(input: {
               "3 · Jurisdictional inspection requirement",
               chip(reqTone as never, g.requirementValue === "UNKNOWN" ? "UNKNOWN — NOT DETERMINED" : g.requirementValue.replace(/_/g, " ")),
               g.requirement
-                ? `${g.requirement.inspectionType ?? ""}${g.requirement.jurisdiction ? ` · ${g.requirement.jurisdiction}` : ""} — basis: ${g.requirement.requirementBasis} (determined by ${userNameOf(g.requirement.determinedBy)}, config v${g.requirement.configurationVersion})`
+                ? `${g.requirement.inspectionType ?? ""}${g.requirement.jurisdiction ? ` · ${g.requirement.jurisdiction}` : ""} — basis: ${g.requirement.requirementBasis} (determined by ${userNameOf(g.requirement.determinedBy)}, config v${g.requirement.configurationVersion})${g.requirement.permitRequired ? ` · permit required${g.requirement.requiredPermitType ? ` (${g.requirement.requiredPermitType})` : ""}` : ""}${g.requirement.officialSourceRequired ? " · official source required before PASSED" : ""}${g.requirement.codeBasisRequired ? " · code basis required before governance" : ""}${g.requirement.permitMustBeActiveBeforeGovernance ? " · permit must be active before governance" : ""}`
                 : "No attributable determination on record. UNKNOWN never behaves as NOT REQUIRED."
             )}
             {gateRow(
@@ -1142,14 +1157,23 @@ export function renderMilestoneDetail(input: {
                   <button className="btn secondary sm" type="submit">Schedule inspection</button>
                 </form>
               ) : null}
-              {input.canDetermineInspection && g.inspection && !["PASSED", "FAILED", "CANCELLED"].includes(g.inspection.status) ? (
+              {input.nav.user?.role !== "FIELD" && g.inspection && ["FAILED", "CORRECTIONS_REQUIRED"].includes(g.inspection.status) && !g.inspection.supersededByInspectionId ? (
+                <form method="POST" action={`/api/inspections/${g.inspection.id}/reinspection`} style="display:flex;gap:6px;align-items:flex-end;margin:0;flex-wrap:wrap">
+                  <input type="datetime-local" name="scheduledAtLocal" className="insp-sched" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px" />
+                  <button className="btn secondary sm" type="submit">Create reinspection (prior result preserved)</button>
+                </form>
+              ) : null}
+              {input.canDetermineInspection && g.inspection && !["PASSED", "FAILED", "CORRECTIONS_REQUIRED", "CANCELLED"].includes(g.inspection.status) ? (
                 <form method="POST" action={`/api/inspections/${g.inspection.id}/result`} style="display:flex;gap:6px;align-items:flex-end;margin:0;flex-wrap:wrap">
                   <select name="result" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px">
                     <option value="PASSED">PASSED</option>
                     <option value="FAILED">FAILED</option>
+                    <option value="CORRECTIONS_REQUIRED">CORRECTIONS REQUIRED</option>
                   </select>
                   <input name="governmentInspectorName" placeholder="Government inspector (name)" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px" />
                   <input name="inspectionReference" placeholder="Reference #" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;max-width:120px" />
+                  <input name="correctionNoticeReference" placeholder="Correction notice #" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;max-width:170px" />
+                  <input name="correctionSummary" placeholder="Correction summary (if corrections)" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;min-width:180px" />
                   <button className="btn sm" type="submit">Record reviewed result</button>
                 </form>
               ) : null}
@@ -1169,6 +1193,126 @@ export function renderMilestoneDetail(input: {
           </div>
         );
       })()}
+
+      {/* ---- Permit & Code Basis (Part 9A) ---- */}
+      <div className="panel" style="margin-top:12px">
+        <div className="panel-head">
+          <h3>Permit &amp; code basis</h3>
+          <span className="right"><a href={`/project/${project.id}/permits`}>Permit register →</a></span>
+        </div>
+        {input.linkedPermits.length === 0 ? (
+          <p className="ci-empty" style="padding:12px 16px;margin:0;font-size:12px;color:var(--muted)">
+            No permit is linked to this milestone.
+            {input.gates.requirement?.permitRequired
+              ? " A permit is REQUIRED by configuration — link or record one."
+              : " Where no permit regime applies, the inspection requirement records NOT_REQUIRED with an attributable basis."}
+          </p>
+        ) : (
+          <div className="table-scroll">
+            <table className="intg-table">
+              <thead>
+                <tr><th>Permit</th><th>Type</th><th>Authority</th><th>Status</th><th>Issued / expires</th><th>Applicable code basis</th><th>Official record</th></tr>
+              </thead>
+              <tbody>
+                {input.linkedPermits.map(({ permit, effectiveStatus }) => (
+                  <tr>
+                    <td style="font-weight:650">{permit.permitNumber}
+                      <span className="sub" style="display:block;font-size:10.5px">config v{permit.configurationVersion}{permit.legacyReference ? ` · legacy ref: ${permit.legacyReference}` : ""}</span>
+                    </td>
+                    <td>{permit.permitType}</td>
+                    <td>{permit.issuingAuthority ?? "—"}{permit.jurisdiction ? ` · ${permit.jurisdiction}` : ""}</td>
+                    <td>
+                      <span className={`sync-tag ${effectiveStatus === "ACTIVE" || effectiveStatus === "ISSUED" ? "ok" : ["EXPIRED", "REVOKED", "SUSPENDED"].includes(effectiveStatus) ? "bad" : "warn"}`} style="margin-left:0">{effectiveStatus}</span>
+                      {effectiveStatus !== permit.status ? <span className="sub" style="display:block;font-size:10px">recorded: {permit.status}</span> : null}
+                    </td>
+                    <td className="mono" style="font-size:11px">{permit.issuedAt?.slice(0, 10) ?? "—"} / {permit.expiresAt?.slice(0, 10) ?? "—"}</td>
+                    <td style="font-size:12px">
+                      {permit.applicableCodeEdition
+                        ? <>{permit.applicableCodeEdition}{permit.codeEffectiveDate ? ` (effective ${permit.codeEffectiveDate.slice(0, 10)})` : ""}<span className="sub" style="display:block;font-size:10.5px">Applicable code basis recorded for this permit: {permit.codeBasis}</span></>
+                        : "NOT RECORDED"}
+                    </td>
+                    <td style="font-size:11.5px">{permit.officialRecordNumber ?? permit.officialRecordUrl ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {input.inspectionHistory.some((i) => i.permitId && !i.permitRefId) ? (
+          <p className="sub" style="padding:0 16px 10px;margin:0;font-size:11px;color:#8a5a10">
+            Legacy permit reference preserved from earlier inspection records — no Permit record was invented for it.
+          </p>
+        ) : null}
+        {input.canRecordPermits && input.projectPermits.length > input.linkedPermits.length ? (
+          <form method="POST" action="" className="pm-linkform" style="display:flex;gap:6px;padding:10px 16px;border-top:1px solid var(--line);flex-wrap:wrap;align-items:flex-end"
+            onsubmit={`this.action='/api/permits/'+this.permitId.value+'/links';`}>
+            <input type="hidden" name="milestoneId" value={milestone.id} />
+            <select name="permitId" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px">
+              {input.projectPermits
+                .filter((pp) => !input.linkedPermits.some((lp) => lp.permit.id === pp.id))
+                .map((pp) => <option value={pp.id}>{pp.permitNumber} ({pp.permitType})</option>)}
+            </select>
+            <input name="scopeNote" placeholder="Scope note (optional)" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;min-width:160px" />
+            <button className="btn secondary sm" type="submit">Link permit to this milestone</button>
+          </form>
+        ) : null}
+        <p className="sub" style="padding:8px 16px 12px;margin:0;font-size:10.5px;color:var(--muted)">{input.permitMethodology}</p>
+      </div>
+
+      {/* ---- Inspection history (Part 9C): chronological, chain-aware ---- */}
+      {input.inspectionHistory.length > 0 ? (
+        <div className="panel" style="margin-top:12px">
+          <div className="panel-head">
+            <h3>Inspection history</h3>
+            <span className="right">Original results are preserved — reinspections never rewrite them</span>
+          </div>
+          {input.inspectionHistory.map((insp, idx) => (
+            <div style={`padding:10px 16px;${idx > 0 ? "border-top:1px solid var(--line);" : ""}`}>
+              <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
+                <b style="font-size:12.5px">{insp.inspectionType ?? "Jurisdictional inspection"}</b>
+                {insp.reinspectionOfInspectionId ? (
+                  <span className="sync-tag" style="margin-left:0">REINSPECTION of {insp.reinspectionOfInspectionId.slice(0, 8)}…</span>
+                ) : null}
+                <span className={`sync-tag ${insp.status === "PASSED" ? "ok" : ["FAILED", "CORRECTIONS_REQUIRED"].includes(insp.status) ? "bad" : insp.status === "CANCELLED" ? "neutral" : "warn"}`} style="margin-left:0">{insp.status.replace(/_/g, " ")}</span>
+                {insp.supersededByInspectionId ? (
+                  <span className="sub" style="font-size:10.5px">superseded by reinspection {insp.supersededByInspectionId.slice(0, 8)}… (this record is historical)</span>
+                ) : null}
+              </div>
+              <span className="sub" style="display:block;font-size:11px;margin-top:3px">
+                {insp.scheduledAt ? `Scheduled ${fmtDate(insp.scheduledAt).slice(0, 16)}` : "Unscheduled"}
+                {insp.resultRecordedAt ? ` · result recorded ${fmtDate(insp.resultRecordedAt).slice(0, 16)} by ${input.users.get(insp.reviewedByUserId ?? "")?.name ?? "—"}` : ""}
+                {insp.governmentInspectorName ? ` · government inspector: ${insp.governmentInspectorName}` : ""}
+                {insp.inspectionReference ? ` · ref ${insp.inspectionReference}` : ""}
+                {(input.officialSourceCounts.get(insp.id) ?? 0) > 0 ? ` · ${input.officialSourceCounts.get(insp.id)} official source record(s)` : ""}
+              </span>
+              {insp.correctionSummary ? (
+                <span className="sub" style="display:block;font-size:11px;margin-top:2px;color:#8a5a10">
+                  Corrections: {insp.correctionSummary}
+                  {insp.correctionNoticeReference ? ` · notice ${insp.correctionNoticeReference}` : ""}
+                  {insp.correctionDueAt ? ` · due ${insp.correctionDueAt.slice(0, 10)}` : ""}
+                  {insp.correctionClearedAt ? ` · reinspection created ${fmtDate(insp.correctionClearedAt).slice(0, 16)}` : ""}
+                  {" — an uploaded correction notice does not itself clear corrections"}
+                </span>
+              ) : null}
+            </div>
+          ))}
+          {input.canDetermineInspection && input.gates.inspection ? (
+            <form method="POST" action="/api/official-sources" style="display:flex;gap:6px;padding:10px 16px;border-top:1px solid var(--line);flex-wrap:wrap;align-items:flex-end">
+              <input type="hidden" name="projectId" value={project.id} />
+              <input type="hidden" name="inspectionId" value={input.gates.inspection.id} />
+              <select name="sourceType" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px">
+                {["MANUAL_OFFICIAL_REFERENCE", "OFFICIAL_PORTAL_LOOKUP", "OFFICIAL_DOCUMENT", "INSPECTION_REPORT", "EMAIL_FROM_AUTHORITY"].map((t) => (
+                  <option value={t}>{t.replace(/_/g, " ")}</option>
+                ))}
+              </select>
+              <input name="officialSystemName" placeholder="Official system" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;max-width:150px" />
+              <input name="officialRecordNumber" placeholder="Official record #" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;max-width:150px" />
+              <input name="officialStatusText" placeholder="Official status text (verbatim)" style="font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;min-width:180px" />
+              <button className="btn ghost sm" type="submit">Record official source (never a result)</button>
+            </form>
+          ) : null}
+        </div>
+      ) : null}
 
       {input.drafts.length > 0 ? (
         <div className="panel" style="margin-top:12px">

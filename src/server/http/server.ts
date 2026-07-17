@@ -97,6 +97,9 @@ import * as auditPackages from "../services/auditPackage";
 import * as drawPackage from "../services/drawPackage";
 import * as completionGates from "../services/completionGates";
 import { GateError } from "../services/completionGates";
+import * as permits from "../services/permits";
+import { PermitError } from "../services/permits";
+import { renderPermitRegister } from "../view/permitPages";
 import { renderDrawVerificationDoc } from "../view/drawVerificationDoc";
 import { AuditPackageError } from "../services/auditPackage";
 import { renderAuditCover } from "../view/auditCover";
@@ -2842,6 +2845,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         p.mustPassBeforeGovernance === undefined ? true : gateTruthy(p.mustPassBeforeGovernance),
       finalCompletionOnly: gateTruthy(p.finalCompletionOnly),
       resultDocumentRequired: gateTruthy(p.resultDocumentRequired),
+      permitRequired: p.permitRequired === undefined ? undefined : gateTruthy(p.permitRequired),
+      requiredPermitType: p.requiredPermitType ? String(p.requiredPermitType) : null,
+      officialSourceRequired: p.officialSourceRequired === undefined ? undefined : gateTruthy(p.officialSourceRequired),
+      codeBasisRequired: p.codeBasisRequired === undefined ? undefined : gateTruthy(p.codeBasisRequired),
+      permitMustBeActiveBeforeDrawReview:
+        p.permitMustBeActiveBeforeDrawReview === undefined ? undefined : gateTruthy(p.permitMustBeActiveBeforeDrawReview),
+      permitMustBeActiveBeforeGovernance:
+        p.permitMustBeActiveBeforeGovernance === undefined ? undefined : gateTruthy(p.permitMustBeActiveBeforeGovernance),
     });
     if (isFormPost(req)) {
       redirect(res, `/milestone/${requirementMatch[1]}`);
@@ -2860,6 +2871,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     const p = await gateParams();
     const inspection = completionGates.createInspection(user2, inspCreateMatch[1], {
+      permitRefId: p.permitRefId ? String(p.permitRefId) : null,
       scheduledAt: p.scheduledAt ? String(p.scheduledAt) : null,
       inspectionType: p.inspectionType ? String(p.inspectionType) : null,
       jurisdiction: p.jurisdiction ? String(p.jurisdiction) : null,
@@ -2876,7 +2888,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
-  const inspActionMatch = /^\/api\/inspections\/([^/]+)\/(schedule|complete|result|cancel)$/.exec(pathname);
+  const inspActionMatch = /^\/api\/inspections\/([^/]+)\/(schedule|complete|result|cancel|reinspection|correct)$/.exec(pathname);
   if (method === "POST" && inspActionMatch) {
     const user2 = currentUser(req);
     if (!user2) {
@@ -2896,7 +2908,22 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         governmentInspectorName: p.governmentInspectorName ? String(p.governmentInspectorName) : null,
         inspectionReference: p.inspectionReference ? String(p.inspectionReference) : null,
         supportingDocumentId: p.supportingDocumentId ? String(p.supportingDocumentId) : null,
+        correctionNoticeReference: p.correctionNoticeReference ? String(p.correctionNoticeReference) : null,
+        correctionSummary: p.correctionSummary ? String(p.correctionSummary) : null,
+        correctionDueAt: p.correctionDueAt ? String(p.correctionDueAt) : null,
         notes: p.notes ? String(p.notes) : null,
+      });
+    } else if (act === "reinspection") {
+      inspection = completionGates.createReinspection(user2, inspId, {
+        scheduledAt: p.scheduledAt ? String(p.scheduledAt) : null,
+        notes: p.notes ? String(p.notes) : null,
+      });
+    } else if (act === "correct") {
+      inspection = completionGates.correctInspectionRecord(user2, inspId, {
+        reason: String(p.reason ?? ""),
+        governmentInspectorName: p.governmentInspectorName !== undefined ? (p.governmentInspectorName ? String(p.governmentInspectorName) : null) : undefined,
+        inspectionReference: p.inspectionReference !== undefined ? (p.inspectionReference ? String(p.inspectionReference) : null) : undefined,
+        notes: p.notes !== undefined ? (p.notes ? String(p.notes) : null) : undefined,
       });
     } else {
       inspection = completionGates.cancelInspection(user2, inspId, p.reason ? String(p.reason) : null);
@@ -2905,6 +2932,152 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       redirect(res, `/milestone/${inspection.milestoneId}`);
     } else {
       sendJson(res, { inspection, gates: completionGates.milestoneGates(inspection.milestoneId) });
+    }
+    return;
+  }
+
+  // ---- permit register / code basis / official sources (Part 1-5) ----
+  const projPermitsMatch = /^\/api\/projects\/([^/]+)\/permits$/.exec(pathname);
+  if (projPermitsMatch) {
+    const user2 = currentUser(req);
+    if (!user2) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    if (method === "GET") {
+      sendJson(res, {
+        register: permits.permitRegister(user2, projPermitsMatch[1], {
+          status: url.searchParams.get("status") ?? undefined,
+          permitType: url.searchParams.get("type") ?? undefined,
+          authority: url.searchParams.get("authority") ?? undefined,
+          milestoneId: url.searchParams.get("milestone") ?? undefined,
+          expiration: url.searchParams.get("expiration") ?? undefined,
+        }),
+        methodology: permits.METHODOLOGY_NOTE,
+      });
+      return;
+    }
+    if (method === "POST") {
+      const p = await gateParams();
+      const permit = permits.createPermit(user2, projPermitsMatch[1], {
+        permitNumber: String(p.permitNumber ?? ""),
+        permitType: String(p.permitType ?? ""),
+        issuingAuthority: p.issuingAuthority ? String(p.issuingAuthority) : null,
+        jurisdiction: p.jurisdiction ? String(p.jurisdiction) : null,
+        status: p.status ? String(p.status) : null,
+        issuedAt: p.issuedAt ? String(p.issuedAt) : null,
+        effectiveAt: p.effectiveAt ? String(p.effectiveAt) : null,
+        expiresAt: p.expiresAt ? String(p.expiresAt) : null,
+        scopeDescription: p.scopeDescription ? String(p.scopeDescription) : null,
+        applicableCodeEdition: p.applicableCodeEdition ? String(p.applicableCodeEdition) : null,
+        codeEffectiveDate: p.codeEffectiveDate ? String(p.codeEffectiveDate) : null,
+        codeBasis: p.codeBasis ? String(p.codeBasis) : null,
+        officialRecordUrl: p.officialRecordUrl ? String(p.officialRecordUrl) : null,
+        officialRecordNumber: p.officialRecordNumber ? String(p.officialRecordNumber) : null,
+        notes: p.notes ? String(p.notes) : null,
+        legacyReference: p.legacyReference ? String(p.legacyReference) : null,
+        legacyImport: p.legacyImport === true || p.legacyImport === "true" || p.legacyImport === "on",
+      });
+      if (isFormPost(req)) {
+        redirect(res, `/project/${projPermitsMatch[1]}/permits`);
+      } else {
+        sendJson(res, { permit }, 201);
+      }
+      return;
+    }
+  }
+
+  const permitActionMatch = /^\/api\/permits\/([^/]+)(?:\/(code-basis|links))?$/.exec(pathname);
+  if (permitActionMatch && (method === "GET" || method === "POST")) {
+    const user2 = currentUser(req);
+    if (!user2) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const [, permitId, sub] = permitActionMatch;
+    if (method === "GET" && !sub) {
+      const { permit } = permits.getPermitFor(user2, permitId);
+      sendJson(res, {
+        permit,
+        effectiveStatus: permits.effectiveStatus(permit),
+        links: repo.listPermitLinksForPermit(permitId),
+        officialSources: repo.listOfficialSourcesForPermit(permitId),
+      });
+      return;
+    }
+    if (method === "POST") {
+      const p = await gateParams();
+      if (sub === "code-basis") {
+        const permit = permits.recordCodeBasis(user2, permitId, {
+          applicableCodeEdition: String(p.applicableCodeEdition ?? ""),
+          codeEffectiveDate: p.codeEffectiveDate ? String(p.codeEffectiveDate) : null,
+          codeBasis: String(p.codeBasis ?? ""),
+          reason: p.reason ? String(p.reason) : null,
+        });
+        if (isFormPost(req)) redirect(res, `/project/${permit.projectId}/permits`);
+        else sendJson(res, { permit });
+        return;
+      }
+      if (sub === "links") {
+        const link = permits.linkMilestone(
+          user2, permitId, String(p.milestoneId ?? ""), p.scopeNote ? String(p.scopeNote) : null
+        );
+        if (isFormPost(req)) {
+          redirect(res, `/milestone/${link.milestoneId}`);
+        } else {
+          sendJson(res, { link }, 201);
+        }
+        return;
+      }
+      const permit = permits.updatePermit(user2, permitId, {
+        permitNumber: p.permitNumber !== undefined ? String(p.permitNumber) : undefined,
+        permitType: p.permitType !== undefined ? String(p.permitType) : undefined,
+        issuingAuthority: p.issuingAuthority !== undefined ? (p.issuingAuthority ? String(p.issuingAuthority) : null) : undefined,
+        jurisdiction: p.jurisdiction !== undefined ? (p.jurisdiction ? String(p.jurisdiction) : null) : undefined,
+        status: p.status !== undefined ? String(p.status) : undefined,
+        issuedAt: p.issuedAt !== undefined ? (p.issuedAt ? String(p.issuedAt) : null) : undefined,
+        effectiveAt: p.effectiveAt !== undefined ? (p.effectiveAt ? String(p.effectiveAt) : null) : undefined,
+        expiresAt: p.expiresAt !== undefined ? (p.expiresAt ? String(p.expiresAt) : null) : undefined,
+        closedAt: p.closedAt !== undefined ? (p.closedAt ? String(p.closedAt) : null) : undefined,
+        scopeDescription: p.scopeDescription !== undefined ? (p.scopeDescription ? String(p.scopeDescription) : null) : undefined,
+        officialRecordUrl: p.officialRecordUrl !== undefined ? (p.officialRecordUrl ? String(p.officialRecordUrl) : null) : undefined,
+        officialRecordNumber: p.officialRecordNumber !== undefined ? (p.officialRecordNumber ? String(p.officialRecordNumber) : null) : undefined,
+        notes: p.notes !== undefined ? (p.notes ? String(p.notes) : null) : undefined,
+        reason: p.reason ? String(p.reason) : null,
+      });
+      if (isFormPost(req)) redirect(res, `/project/${permit.projectId}/permits`);
+      else sendJson(res, { permit });
+      return;
+    }
+  }
+
+  if (method === "POST" && pathname === "/api/official-sources") {
+    const user2 = currentUser(req);
+    if (!user2) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const p = await gateParams();
+    const record = permits.recordOfficialSource(user2, {
+      projectId: String(p.projectId ?? ""),
+      milestoneId: p.milestoneId ? String(p.milestoneId) : null,
+      permitId: p.permitId ? String(p.permitId) : null,
+      inspectionId: p.inspectionId ? String(p.inspectionId) : null,
+      sourceType: String(p.sourceType ?? ""),
+      officialSystemName: p.officialSystemName ? String(p.officialSystemName) : null,
+      officialRecordNumber: p.officialRecordNumber ? String(p.officialRecordNumber) : null,
+      officialRecordUrl: p.officialRecordUrl ? String(p.officialRecordUrl) : null,
+      lookupPerformedAt: p.lookupPerformedAt ? String(p.lookupPerformedAt) : null,
+      capturedAt: p.capturedAt ? String(p.capturedAt) : null,
+      officialStatusText: p.officialStatusText ? String(p.officialStatusText) : null,
+      artifactDataUrl: p.artifactDataUrl ? String(p.artifactDataUrl) : null,
+      artifactFilename: p.artifactFilename ? String(p.artifactFilename) : null,
+      notes: p.notes ? String(p.notes) : null,
+    });
+    if (isFormPost(req)) {
+      redirect(res, record.milestoneId ? `/milestone/${record.milestoneId}` : `/project/${record.projectId}/permits`);
+    } else {
+      sendJson(res, { record }, 201);
     }
     return;
   }
@@ -3584,6 +3757,21 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         gates: completionGates.milestoneGates(milestone.id),
         canReportCompletion: ["PROJECT_MANAGER", "FIELD"].includes(user!.role),
         canDetermineInspection: ["FUNDER_REP", "COMPLIANCE_REVIEWER"].includes(user!.role),
+        canRecordPermits: ["FUNDER_REP", "COMPLIANCE_REVIEWER", "PROJECT_MANAGER"].includes(user!.role),
+        linkedPermits: repo.listPermitLinksForMilestone(milestone.id).flatMap((link) => {
+          const permit = repo.getPermit(link.permitId);
+          return permit
+            ? [{ link, permit, effectiveStatus: permits.effectiveStatus(permit), sources: repo.listOfficialSourcesForPermit(permit.id) }]
+            : [];
+        }),
+        projectPermits: repo.listPermitsForProject(project.id),
+        inspectionHistory: repo.listInspectionsForMilestone(milestone.id),
+        officialSourceCounts: new Map(
+          repo
+            .listInspectionsForMilestone(milestone.id)
+            .map((i) => [i.id, repo.listOfficialSourcesForInspection(i.id).length])
+        ),
+        permitMethodology: permits.METHODOLOGY_NOTE,
       })
     );
     return;
@@ -3826,6 +4014,44 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       ? tabParam
       : "overview";
     sendHtml(res, renderDrawDetail(assembleDrawDetail(user!, draw, tab)));
+    return;
+  }
+
+  const permitRegisterMatch = /^\/project\/([^/]+)\/permits$/.exec(pathname);
+  if (method === "GET" && permitRegisterMatch) {
+    const project = repo.getProject(permitRegisterMatch[1]);
+    if (!project || !budget.canAccessProjectFinance(user!, project)) {
+      sendHtml(res, renderError(navFor(user!, "projects"), "Project not found", "No project exists at this address."), 404);
+      return;
+    }
+    const filters = {
+      status: url.searchParams.get("status") ?? undefined,
+      type: url.searchParams.get("type") ?? undefined,
+      authority: url.searchParams.get("authority") ?? undefined,
+      milestone: url.searchParams.get("milestone") ?? undefined,
+      expiration: url.searchParams.get("expiration") ?? undefined,
+    };
+    const all = permits.permitRegister(user!, project.id, {});
+    sendHtml(
+      res,
+      renderPermitRegister({
+        nav: navFor(user!, "projects"),
+        project,
+        rows: permits.permitRegister(user!, project.id, {
+          status: filters.status,
+          permitType: filters.type,
+          authority: filters.authority,
+          milestoneId: filters.milestone,
+          expiration: filters.expiration,
+        }),
+        milestones: repo.listMilestones(project.id).filter((m) => !m.archived),
+        filters,
+        canRecord: ["FUNDER_REP", "COMPLIANCE_REVIEWER", "PROJECT_MANAGER"].includes(user!.role),
+        canDetermine: ["FUNDER_REP", "COMPLIANCE_REVIEWER"].includes(user!.role),
+        types: [...new Set(all.map((r) => r.permit.permitType))].sort(),
+        authorities: [...new Set(all.map((r) => r.permit.issuingAuthority).filter((x): x is string => Boolean(x)))].sort(),
+      })
+    );
     return;
   }
 
@@ -4363,7 +4589,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";

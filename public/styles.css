@@ -2897,3 +2897,8 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
   .hp-trust { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .hp-footer nav { margin-left: 0; }
 }
+
+/* Completion-gate rows collapse to a single column on narrow screens. */
+@media (max-width: 560px) {
+  .gate-row { grid-template-columns: minmax(0, 1fr) !important; gap: 3px !important; }
+}

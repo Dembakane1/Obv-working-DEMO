@@ -683,6 +683,7 @@ import type {
   RetainagePolicy, RetainageReleaseRequest, RetainageCondition, RetainageEvent,
   AuditPackage,
   InspectionRequirement, JurisdictionalInspection,
+  Permit, PermitMilestoneLink, OfficialSourceRecord,
 } from "../../shared/types";
 
 function toReport(r: Row): Report {
@@ -3252,6 +3253,12 @@ function toInspectionRequirement(r: Row): InspectionRequirement {
     mustPassBeforeGovernance: Boolean(r.must_pass_before_governance),
     finalCompletionOnly: Boolean(r.final_completion_only),
     resultDocumentRequired: Boolean(r.result_document_required),
+    permitRequired: Boolean(r.permit_required),
+    requiredPermitType: (r.required_permit_type as string) ?? null,
+    officialSourceRequired: Boolean(r.official_source_required),
+    codeBasisRequired: Boolean(r.code_basis_required),
+    permitMustBeActiveBeforeDrawReview: Boolean(r.permit_must_be_active_before_draw_review),
+    permitMustBeActiveBeforeGovernance: Boolean(r.permit_must_be_active_before_governance),
     configurationVersion: r.configuration_version as number,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
@@ -3264,9 +3271,11 @@ export function upsertInspectionRequirement(req: InspectionRequirement): void {
       `INSERT INTO inspection_requirements (id, project_id, milestone_id, requirement,
          requirement_basis, determined_by, determined_at, jurisdiction, inspection_type,
          issuing_authority, must_pass_before_draw_review, must_pass_before_governance,
-         final_completion_only, result_document_required, configuration_version,
-         created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         final_completion_only, result_document_required, permit_required,
+         required_permit_type, official_source_required, code_basis_required,
+         permit_must_be_active_before_draw_review, permit_must_be_active_before_governance,
+         configuration_version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(milestone_id) DO UPDATE SET
          requirement = excluded.requirement,
          requirement_basis = excluded.requirement_basis,
@@ -3279,6 +3288,12 @@ export function upsertInspectionRequirement(req: InspectionRequirement): void {
          must_pass_before_governance = excluded.must_pass_before_governance,
          final_completion_only = excluded.final_completion_only,
          result_document_required = excluded.result_document_required,
+         permit_required = excluded.permit_required,
+         required_permit_type = excluded.required_permit_type,
+         official_source_required = excluded.official_source_required,
+         code_basis_required = excluded.code_basis_required,
+         permit_must_be_active_before_draw_review = excluded.permit_must_be_active_before_draw_review,
+         permit_must_be_active_before_governance = excluded.permit_must_be_active_before_governance,
          configuration_version = excluded.configuration_version,
          updated_at = excluded.updated_at`
     )
@@ -3287,7 +3302,10 @@ export function upsertInspectionRequirement(req: InspectionRequirement): void {
       req.determinedBy, req.determinedAt, req.jurisdiction, req.inspectionType,
       req.issuingAuthority, req.mustPassBeforeDrawReview ? 1 : 0,
       req.mustPassBeforeGovernance ? 1 : 0, req.finalCompletionOnly ? 1 : 0,
-      req.resultDocumentRequired ? 1 : 0, req.configurationVersion,
+      req.resultDocumentRequired ? 1 : 0, req.permitRequired ? 1 : 0,
+      req.requiredPermitType, req.officialSourceRequired ? 1 : 0,
+      req.codeBasisRequired ? 1 : 0, req.permitMustBeActiveBeforeDrawReview ? 1 : 0,
+      req.permitMustBeActiveBeforeGovernance ? 1 : 0, req.configurationVersion,
       req.createdAt, req.updatedAt
     );
 }
@@ -3312,6 +3330,7 @@ function toInspection(r: Row): JurisdictionalInspection {
     projectId: r.project_id as string,
     milestoneId: r.milestone_id as string,
     permitId: (r.permit_id as string) ?? null,
+    permitRefId: (r.permit_ref_id as string) ?? null,
     inspectionType: (r.inspection_type as string) ?? null,
     jurisdiction: (r.jurisdiction as string) ?? null,
     issuingAuthority: (r.issuing_authority as string) ?? null,
@@ -3325,6 +3344,12 @@ function toInspection(r: Row): JurisdictionalInspection {
     governmentInspectorName: (r.government_inspector_name as string) ?? null,
     reviewedByUserId: (r.reviewed_by_user_id as string) ?? null,
     supportingDocumentId: (r.supporting_document_id as string) ?? null,
+    reinspectionOfInspectionId: (r.reinspection_of_inspection_id as string) ?? null,
+    supersededByInspectionId: (r.superseded_by_inspection_id as string) ?? null,
+    correctionNoticeReference: (r.correction_notice_reference as string) ?? null,
+    correctionSummary: (r.correction_summary as string) ?? null,
+    correctionDueAt: (r.correction_due_at as string) ?? null,
+    correctionClearedAt: (r.correction_cleared_at as string) ?? null,
     notes: (r.notes as string) ?? null,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
@@ -3335,18 +3360,22 @@ export function insertInspection(i: JurisdictionalInspection): void {
   getDb()
     .prepare(
       `INSERT INTO jurisdictional_inspections (id, organization_id, project_id,
-         milestone_id, permit_id, inspection_type, jurisdiction, issuing_authority,
-         inspection_reference, required, status, scheduled_at, completed_at,
-         result_recorded_at, result, government_inspector_name, reviewed_by_user_id,
-         supporting_document_id, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         milestone_id, permit_id, permit_ref_id, inspection_type, jurisdiction,
+         issuing_authority, inspection_reference, required, status, scheduled_at,
+         completed_at, result_recorded_at, result, government_inspector_name,
+         reviewed_by_user_id, supporting_document_id, reinspection_of_inspection_id,
+         superseded_by_inspection_id, correction_notice_reference, correction_summary,
+         correction_due_at, correction_cleared_at, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
-      i.id, i.organizationId, i.projectId, i.milestoneId, i.permitId,
+      i.id, i.organizationId, i.projectId, i.milestoneId, i.permitId, i.permitRefId,
       i.inspectionType, i.jurisdiction, i.issuingAuthority, i.inspectionReference,
       i.required ? 1 : 0, i.status, i.scheduledAt, i.completedAt,
       i.resultRecordedAt, i.result, i.governmentInspectorName, i.reviewedByUserId,
-      i.supportingDocumentId, i.notes, i.createdAt, i.updatedAt
+      i.supportingDocumentId, i.reinspectionOfInspectionId, i.supersededByInspectionId,
+      i.correctionNoticeReference, i.correctionSummary, i.correctionDueAt,
+      i.correctionClearedAt, i.notes, i.createdAt, i.updatedAt
     );
 }
 
@@ -3377,6 +3406,8 @@ export function updateInspection(
       | "status" | "scheduledAt" | "completedAt" | "resultRecordedAt" | "result"
       | "governmentInspectorName" | "reviewedByUserId" | "supportingDocumentId"
       | "notes" | "inspectionReference" | "inspectionType" | "jurisdiction" | "issuingAuthority"
+      | "permitRefId" | "reinspectionOfInspectionId" | "supersededByInspectionId"
+      | "correctionNoticeReference" | "correctionSummary" | "correctionDueAt" | "correctionClearedAt"
     >
   >
 ): void {
@@ -3389,7 +3420,11 @@ export function updateInspection(
          completed_at = ?, result_recorded_at = ?, result = ?,
          government_inspector_name = ?, reviewed_by_user_id = ?,
          supporting_document_id = ?, notes = ?, inspection_reference = ?,
-         inspection_type = ?, jurisdiction = ?, issuing_authority = ?, updated_at = ?
+         inspection_type = ?, jurisdiction = ?, issuing_authority = ?,
+         permit_ref_id = ?, reinspection_of_inspection_id = ?,
+         superseded_by_inspection_id = ?, correction_notice_reference = ?,
+         correction_summary = ?, correction_due_at = ?, correction_cleared_at = ?,
+         updated_at = ?
        WHERE id = ?`
     )
     .run(
@@ -3397,6 +3432,210 @@ export function updateInspection(
       next.result, next.governmentInspectorName, next.reviewedByUserId,
       next.supportingDocumentId, next.notes, next.inspectionReference,
       next.inspectionType, next.jurisdiction, next.issuingAuthority,
+      next.permitRefId, next.reinspectionOfInspectionId,
+      next.supersededByInspectionId, next.correctionNoticeReference,
+      next.correctionSummary, next.correctionDueAt, next.correctionClearedAt,
       next.updatedAt, id
     );
+}
+
+
+// =========================================================== permits
+
+function toPermit(r: Row): Permit {
+  return {
+    id: r.id as string,
+    organizationId: r.organization_id as string,
+    projectId: r.project_id as string,
+    permitNumber: r.permit_number as string,
+    permitType: r.permit_type as string,
+    issuingAuthority: (r.issuing_authority as string) ?? null,
+    jurisdiction: (r.jurisdiction as string) ?? null,
+    status: r.status as Permit["status"],
+    issuedAt: (r.issued_at as string) ?? null,
+    effectiveAt: (r.effective_at as string) ?? null,
+    expiresAt: (r.expires_at as string) ?? null,
+    closedAt: (r.closed_at as string) ?? null,
+    scopeDescription: (r.scope_description as string) ?? null,
+    applicableCodeEdition: (r.applicable_code_edition as string) ?? null,
+    codeEffectiveDate: (r.code_effective_date as string) ?? null,
+    codeBasis: (r.code_basis as string) ?? null,
+    codeDeterminedBy: (r.code_determined_by as string) ?? null,
+    codeDeterminedAt: (r.code_determined_at as string) ?? null,
+    officialRecordUrl: (r.official_record_url as string) ?? null,
+    officialRecordNumber: (r.official_record_number as string) ?? null,
+    notes: (r.notes as string) ?? null,
+    legacyReference: (r.legacy_reference as string) ?? null,
+    configurationVersion: r.configuration_version as number,
+    createdByUserId: r.created_by_user_id as string,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function insertPermit(p: Permit): void {
+  getDb()
+    .prepare(
+      `INSERT INTO permits (id, organization_id, project_id, permit_number, permit_type,
+         issuing_authority, jurisdiction, status, issued_at, effective_at, expires_at,
+         closed_at, scope_description, applicable_code_edition, code_effective_date,
+         code_basis, code_determined_by, code_determined_at, official_record_url,
+         official_record_number, notes, legacy_reference, configuration_version,
+         created_by_user_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      p.id, p.organizationId, p.projectId, p.permitNumber, p.permitType,
+      p.issuingAuthority, p.jurisdiction, p.status, p.issuedAt, p.effectiveAt,
+      p.expiresAt, p.closedAt, p.scopeDescription, p.applicableCodeEdition,
+      p.codeEffectiveDate, p.codeBasis, p.codeDeterminedBy, p.codeDeterminedAt,
+      p.officialRecordUrl, p.officialRecordNumber, p.notes, p.legacyReference,
+      p.configurationVersion, p.createdByUserId, p.createdAt, p.updatedAt
+    );
+}
+
+export function updatePermit(id: string, patch: Partial<Omit<Permit, "id" | "organizationId" | "projectId" | "createdByUserId" | "createdAt">>): void {
+  const cur = getPermit(id);
+  if (!cur) return;
+  const next = { ...cur, ...patch, updatedAt: new Date().toISOString() };
+  getDb()
+    .prepare(
+      `UPDATE permits SET permit_number = ?, permit_type = ?, issuing_authority = ?,
+         jurisdiction = ?, status = ?, issued_at = ?, effective_at = ?, expires_at = ?,
+         closed_at = ?, scope_description = ?, applicable_code_edition = ?,
+         code_effective_date = ?, code_basis = ?, code_determined_by = ?,
+         code_determined_at = ?, official_record_url = ?, official_record_number = ?,
+         notes = ?, legacy_reference = ?, configuration_version = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      next.permitNumber, next.permitType, next.issuingAuthority, next.jurisdiction,
+      next.status, next.issuedAt, next.effectiveAt, next.expiresAt, next.closedAt,
+      next.scopeDescription, next.applicableCodeEdition, next.codeEffectiveDate,
+      next.codeBasis, next.codeDeterminedBy, next.codeDeterminedAt,
+      next.officialRecordUrl, next.officialRecordNumber, next.notes,
+      next.legacyReference, next.configurationVersion, next.updatedAt, id
+    );
+}
+
+export function getPermit(id: string): Permit | null {
+  const r = getDb().prepare("SELECT * FROM permits WHERE id = ?").get(id) as Row | undefined;
+  return r ? toPermit(r) : null;
+}
+
+export function listPermitsForProject(projectId: string): Permit[] {
+  return (getDb()
+    .prepare("SELECT * FROM permits WHERE project_id = ? ORDER BY created_at")
+    .all(projectId) as Row[]).map(toPermit);
+}
+
+function toPermitLink(r: Row): PermitMilestoneLink {
+  return {
+    id: r.id as string,
+    permitId: r.permit_id as string,
+    milestoneId: r.milestone_id as string,
+    scopeNote: (r.scope_note as string) ?? null,
+    createdByUserId: r.created_by_user_id as string,
+    createdAt: r.created_at as string,
+  };
+}
+
+export function insertPermitLink(l: PermitMilestoneLink): void {
+  getDb()
+    .prepare(
+      `INSERT INTO permit_milestone_links (id, permit_id, milestone_id, scope_note,
+         created_by_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(l.id, l.permitId, l.milestoneId, l.scopeNote, l.createdByUserId, l.createdAt);
+}
+
+export function deletePermitLink(id: string): void {
+  getDb().prepare("DELETE FROM permit_milestone_links WHERE id = ?").run(id);
+}
+
+export function listPermitLinksForMilestone(milestoneId: string): PermitMilestoneLink[] {
+  return (getDb()
+    .prepare("SELECT * FROM permit_milestone_links WHERE milestone_id = ? ORDER BY created_at")
+    .all(milestoneId) as Row[]).map(toPermitLink);
+}
+
+export function listPermitLinksForPermit(permitId: string): PermitMilestoneLink[] {
+  return (getDb()
+    .prepare("SELECT * FROM permit_milestone_links WHERE permit_id = ? ORDER BY created_at")
+    .all(permitId) as Row[]).map(toPermitLink);
+}
+
+export function listPermitLinksForProject(projectId: string): PermitMilestoneLink[] {
+  return (getDb()
+    .prepare(
+      `SELECT pml.* FROM permit_milestone_links pml
+         JOIN permits p ON p.id = pml.permit_id
+       WHERE p.project_id = ? ORDER BY pml.created_at`
+    )
+    .all(projectId) as Row[]).map(toPermitLink);
+}
+
+// ================================================ official source records
+
+function toOfficialSource(r: Row): OfficialSourceRecord {
+  return {
+    id: r.id as string,
+    organizationId: r.organization_id as string,
+    projectId: r.project_id as string,
+    milestoneId: (r.milestone_id as string) ?? null,
+    permitId: (r.permit_id as string) ?? null,
+    inspectionId: (r.inspection_id as string) ?? null,
+    sourceType: r.source_type as OfficialSourceRecord["sourceType"],
+    officialSystemName: (r.official_system_name as string) ?? null,
+    officialRecordNumber: (r.official_record_number as string) ?? null,
+    officialRecordUrl: (r.official_record_url as string) ?? null,
+    lookupPerformedAt: (r.lookup_performed_at as string) ?? null,
+    lookupPerformedByUserId: r.lookup_performed_by_user_id as string,
+    capturedAt: (r.captured_at as string) ?? null,
+    officialStatusText: (r.official_status_text as string) ?? null,
+    sourceDocumentPath: (r.source_document_path as string) ?? null,
+    sourceArtifactHash: (r.source_artifact_hash as string) ?? null,
+    notes: (r.notes as string) ?? null,
+    createdAt: r.created_at as string,
+  };
+}
+
+export function insertOfficialSource(o: OfficialSourceRecord): void {
+  getDb()
+    .prepare(
+      `INSERT INTO official_source_records (id, organization_id, project_id, milestone_id,
+         permit_id, inspection_id, source_type, official_system_name, official_record_number,
+         official_record_url, lookup_performed_at, lookup_performed_by_user_id, captured_at,
+         official_status_text, source_document_path, source_artifact_hash, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      o.id, o.organizationId, o.projectId, o.milestoneId, o.permitId, o.inspectionId,
+      o.sourceType, o.officialSystemName, o.officialRecordNumber, o.officialRecordUrl,
+      o.lookupPerformedAt, o.lookupPerformedByUserId, o.capturedAt, o.officialStatusText,
+      o.sourceDocumentPath, o.sourceArtifactHash, o.notes, o.createdAt
+    );
+}
+
+export function getOfficialSource(id: string): OfficialSourceRecord | null {
+  const r = getDb().prepare("SELECT * FROM official_source_records WHERE id = ?").get(id) as Row | undefined;
+  return r ? toOfficialSource(r) : null;
+}
+
+export function listOfficialSourcesForInspection(inspectionId: string): OfficialSourceRecord[] {
+  return (getDb()
+    .prepare("SELECT * FROM official_source_records WHERE inspection_id = ? ORDER BY created_at")
+    .all(inspectionId) as Row[]).map(toOfficialSource);
+}
+
+export function listOfficialSourcesForPermit(permitId: string): OfficialSourceRecord[] {
+  return (getDb()
+    .prepare("SELECT * FROM official_source_records WHERE permit_id = ? ORDER BY created_at")
+    .all(permitId) as Row[]).map(toOfficialSource);
+}
+
+export function listOfficialSourcesForProject(projectId: string): OfficialSourceRecord[] {
+  return (getDb()
+    .prepare("SELECT * FROM official_source_records WHERE project_id = ? ORDER BY created_at")
+    .all(projectId) as Row[]).map(toOfficialSource);
 }

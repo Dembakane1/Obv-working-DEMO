@@ -279,6 +279,13 @@ export const RULES: Array<{ key: string; severity: string; rule: string }> = [
   { key: "inspection-doc-missing", severity: "MEDIUM", rule: "Inspection recorded PASSED without the configured result document reference" },
   { key: "inspection-expired", severity: "MEDIUM", rule: "Jurisdictional inspection or its permit is EXPIRED" },
   { key: "draw-inspection-blocked", severity: "MEDIUM", rule: "Open draw line references a milestone whose required jurisdictional inspection has not passed" },
+  { key: "corrections-required", severity: "MEDIUM", rule: "Jurisdictional inspection recorded CORRECTIONS REQUIRED and no reinspection has been created" },
+  { key: "reinspection-unscheduled", severity: "MEDIUM", rule: "A reinspection exists after a failed/corrections-required result but has not been scheduled" },
+  { key: "reinspection-failed", severity: "HIGH", rule: "The reinspection was recorded FAILED" },
+  { key: "permit-expired", severity: "MEDIUM", rule: "A permit linked to an active milestone is expired (recorded status or past its expiration date)" },
+  { key: "permit-revoked", severity: "HIGH", rule: "A permit linked to an active milestone is revoked or suspended" },
+  { key: "code-basis-missing", severity: "MEDIUM", rule: "Code basis is required by configuration but not recorded on any linked permit" },
+  { key: "official-source-missing", severity: "MEDIUM", rule: "A PASSED inspection is missing its configured mandatory official source record" },
 ];
 
 const ISSUE_CATEGORY: Record<FieldIssue["category"], ObvException["category"]> = {
@@ -502,7 +509,7 @@ async function activeConditions(): Promise<RuleCondition[]> {
       const req = repo.getInspectionRequirement(m.id);
       const inspections = repo
         .listInspectionsForMilestone(m.id)
-        .filter((i) => i.status !== "CANCELLED");
+        .filter((i) => i.status !== "CANCELLED" && i.supersededByInspectionId === null);
       const latest = inspections.length ? inspections[inspections.length - 1] : null;
       const reported = (m.contractorCompletionStatus ?? "NOT_REPORTED") === "REPORTED_COMPLETE";
 
@@ -581,23 +588,135 @@ async function activeConditions(): Promise<RuleCondition[]> {
             },
           });
         }
-        // Draws billing against an inspection-blocked milestone.
-        if (!passed && (req.mustPassBeforeGovernance || req.mustPassBeforeDrawReview)) {
-          for (const d of repo.listDrawRequestsForProject(project.id)) {
-            if (!ACTIVE_DRAW_STATES.has(d.status)) continue;
-            for (const l of repo.listDrawLines(d.id)) {
-              if (l.milestoneId !== m.id) continue;
-              out.push({
-                seed: {
-                  projectId: project.id, milestoneId: m.id, drawRequestId: d.id,
-                  sourceType: "DRAW_LINE_ITEM", sourceId: l.id,
-                  sourceKey: `draw-inspection-blocked:${l.id}`,
-                  category: "APPROVAL", severity: "MEDIUM",
-                  title: `Draw line blocked by required inspection — M${m.seq}`,
-                  description: `Draw #${d.drawNumber} line "${l.description}" references M${m.seq}, whose required ${req.inspectionType ?? "jurisdictional"} inspection has not passed.`,
-                },
-              });
-            }
+        if (latest?.status === "CORRECTIONS_REQUIRED") {
+          out.push({
+            seed: {
+              projectId: project.id, milestoneId: m.id,
+              sourceType: "INSPECTION", sourceId: latest.id,
+              sourceKey: `corrections-required:${latest.id}`,
+              category: "QUALITY", severity: "MEDIUM",
+              title: `Inspection corrections required — M${m.seq}`,
+              description: `The ${latest.inspectionType ?? "jurisdictional"} inspection recorded CORRECTIONS REQUIRED${latest.correctionNoticeReference ? ` (notice ${latest.correctionNoticeReference})` : ""}. An uploaded correction notice does not itself clear corrections — a reinspection with a reviewed result is required.`,
+            },
+          });
+        }
+        if (latest?.reinspectionOfInspectionId && latest.status === "REQUIRED_UNSCHEDULED") {
+          out.push({
+            seed: {
+              projectId: project.id, milestoneId: m.id,
+              sourceType: "INSPECTION", sourceId: latest.id,
+              sourceKey: `reinspection-unscheduled:${latest.id}`,
+              category: "SCHEDULE", severity: "MEDIUM",
+              title: `Reinspection not scheduled — M${m.seq}`,
+              description: "A reinspection follows the prior failed/corrections-required result but has not been scheduled.",
+            },
+          });
+        }
+        if (latest?.reinspectionOfInspectionId && latest.status === "FAILED") {
+          out.push({
+            seed: {
+              projectId: project.id, milestoneId: m.id,
+              sourceType: "INSPECTION", sourceId: latest.id,
+              sourceKey: `reinspection-failed:${latest.id}`,
+              category: "QUALITY", severity: "HIGH",
+              title: `Reinspection FAILED — M${m.seq}`,
+              description: "The reinspection was recorded FAILED. The original result remains preserved; a further reinspection with a passing reviewed result is required.",
+            },
+          });
+        }
+        if (
+          latest?.status === "PASSED" &&
+          req.officialSourceRequired &&
+          repo.listOfficialSourcesForInspection(latest.id).length === 0
+        ) {
+          out.push({
+            seed: {
+              projectId: project.id, milestoneId: m.id,
+              sourceType: "INSPECTION", sourceId: latest.id,
+              sourceKey: `official-source-missing:${latest.id}`,
+              category: "DOCUMENT", severity: "MEDIUM",
+              title: `Mandatory official source record missing — M${m.seq}`,
+              description: "The inspection is recorded PASSED but the configured official source record has not been captured.",
+            },
+          });
+        }
+        if (req.codeBasisRequired) {
+          const linked = repo
+            .listPermitLinksForMilestone(m.id)
+            .map((l) => repo.getPermit(l.permitId))
+            .filter((x): x is NonNullable<typeof x> => x !== null);
+          if (!linked.some((x) => x.applicableCodeEdition && x.codeBasis)) {
+            out.push({
+              seed: {
+                projectId: project.id, milestoneId: m.id,
+                sourceType: "INSPECTION_REQUIREMENT", sourceId: req.id,
+                sourceKey: `code-basis-missing:${m.id}`,
+                category: "DOCUMENT", severity: "MEDIUM",
+                title: `Applicable code basis not recorded — M${m.seq}`,
+                description: "Configuration requires a recorded code basis for this milestone's permit(s), but none is recorded. OBV records the reviewed governing basis — it does not independently determine legal compliance.",
+              },
+            });
+          }
+        }
+      }
+      // ---- linked permit control conditions (only permits linked to
+      // THIS milestone are relevant; unrelated permits never fire) ----
+      if (m.accountStatus !== "RELEASED") {
+        const nowIso = new Date(now).toISOString();
+        for (const link of repo.listPermitLinksForMilestone(m.id)) {
+          const permit = repo.getPermit(link.permitId);
+          if (!permit) continue;
+          const effective =
+            (permit.status === "ISSUED" || permit.status === "ACTIVE") &&
+            permit.expiresAt !== null && permit.expiresAt < nowIso
+              ? "EXPIRED"
+              : permit.status;
+          if (effective === "EXPIRED") {
+            out.push({
+              seed: {
+                projectId: project.id, milestoneId: m.id,
+                sourceType: "PERMIT", sourceId: permit.id,
+                sourceKey: `permit-expired:${permit.id}:${m.id}`,
+                category: "DOCUMENT", severity: "MEDIUM",
+                title: `Linked permit expired — ${permit.permitNumber}`,
+                description: `Permit ${permit.permitNumber} (${permit.permitType}) linked to M${m.seq} is expired. The stored permit status remains authoritative and is never rewritten by this exception.`,
+              },
+            });
+          } else if (effective === "REVOKED" || effective === "SUSPENDED") {
+            out.push({
+              seed: {
+                projectId: project.id, milestoneId: m.id,
+                sourceType: "PERMIT", sourceId: permit.id,
+                sourceKey: `permit-revoked:${permit.id}:${m.id}`,
+                category: "DOCUMENT", severity: "HIGH",
+                title: `Linked permit ${effective.toLowerCase()} — ${permit.permitNumber}`,
+                description: `Permit ${permit.permitNumber} (${permit.permitType}) linked to M${m.seq} is ${effective}.`,
+              },
+            });
+          }
+        }
+      }
+      // Draws billing against an inspection-blocked milestone (unchanged
+      // semantics — the guard mirrors the original REQUIRED-block scope).
+      if (
+        req?.requirement === "REQUIRED" &&
+        latest?.status !== "PASSED" &&
+        (req.mustPassBeforeGovernance || req.mustPassBeforeDrawReview)
+      ) {
+        for (const d of repo.listDrawRequestsForProject(project.id)) {
+          if (!ACTIVE_DRAW_STATES.has(d.status)) continue;
+          for (const l of repo.listDrawLines(d.id)) {
+            if (l.milestoneId !== m.id) continue;
+            out.push({
+              seed: {
+                projectId: project.id, milestoneId: m.id, drawRequestId: d.id,
+                sourceType: "DRAW_LINE_ITEM", sourceId: l.id,
+                sourceKey: `draw-inspection-blocked:${l.id}`,
+                category: "APPROVAL", severity: "MEDIUM",
+                title: `Draw line blocked by required inspection — M${m.seq}`,
+                description: `Draw #${d.drawNumber} line "${l.description}" references M${m.seq}, whose required ${req.inspectionType ?? "jurisdictional"} inspection has not passed.`,
+              },
+            });
           }
         }
       }
@@ -866,6 +985,22 @@ export function sourceContext(e: ObvException): {
         label: "Inspection requirement configuration",
         href: e.milestoneId ? `/milestone/${e.milestoneId}` : `/project/${e.projectId}`,
         latitude: null, longitude: null,
+      };
+    case "PERMIT": {
+      const permit = repo.getPermit(e.sourceId);
+      return {
+        label: `Permit ${permit?.permitNumber ?? e.sourceId}`,
+        href: `/project/${e.projectId}/permits`,
+        latitude: null,
+        longitude: null,
+      };
+    }
+    case "OFFICIAL_SOURCE":
+      return {
+        label: "Official source record",
+        href: e.milestoneId ? `/milestone/${e.milestoneId}` : `/project/${e.projectId}`,
+        latitude: null,
+        longitude: null,
       };
     case "MANUAL":
       return { label: "Manually raised", href: `/project/${e.projectId}`, latitude: null, longitude: null };

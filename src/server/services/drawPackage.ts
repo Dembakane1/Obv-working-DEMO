@@ -247,6 +247,16 @@ export interface DrawPackageData {
   approvalRecords: ApprovalRecord[];
   /** Six completion gates per milestone referenced by this draw's lines. */
   milestoneGates: Array<{ milestoneLabel: string; gates: import("../../shared/types").MilestoneGates }>;
+  /** Permits linked to the draw's milestones + their inspection chains and
+   *  official sources (line-scoped; unrelated project permits excluded). */
+  permitContext: Array<{
+    milestoneLabel: string;
+    milestoneId: string;
+    permit: import("../../shared/types").Permit;
+    effectiveStatus: string;
+  }>;
+  inspectionHistory: import("../../shared/types").JurisdictionalInspection[];
+  officialSources: import("../../shared/types").OfficialSourceRecord[];
   recommendation: ReturnType<typeof draws.computeRecommendation>;
   accountEvents: DrawAccountEvent[];
   retainageEvents: RetainageEvent[];
@@ -747,6 +757,25 @@ export async function assembleDrawPackageData(user: User, drawId: string): Promi
     discrepancies,
     approval,
     approvalRecords,
+    permitContext: [...lineMilestoneIds].flatMap((id) => {
+      const m = repo.getMilestone(id);
+      const label = m ? `M${m.seq} · ${m.title}` : id;
+      const nowIso = new Date().toISOString();
+      return repo.listPermitLinksForMilestone(id).flatMap((link) => {
+        const permit = repo.getPermit(link.permitId);
+        if (!permit) return [];
+        const eff =
+          (permit.status === "ISSUED" || permit.status === "ACTIVE") &&
+          permit.expiresAt !== null && permit.expiresAt < nowIso
+            ? "EXPIRED"
+            : permit.status;
+        return [{ milestoneLabel: label, milestoneId: id, permit, effectiveStatus: eff }];
+      });
+    }),
+    inspectionHistory: [...lineMilestoneIds].flatMap((id) => repo.listInspectionsForMilestone(id)),
+    officialSources: [...lineMilestoneIds].flatMap((id) =>
+      repo.listInspectionsForMilestone(id).flatMap((i) => repo.listOfficialSourcesForInspection(i.id))
+    ),
     milestoneGates: [...lineMilestoneIds].map((id) => {
       const m = milestones.get(id);
       return {
@@ -1079,6 +1108,58 @@ export function buildDrawPackageFiles(d: DrawPackageData): {
       ])
     ),
     d.milestoneGates.length
+  );
+
+  add(
+    "permits.csv",
+    csv(
+      ["milestone", "permitNumber", "permitType", "issuingAuthority", "jurisdiction", "recordedStatus", "effectiveControlStatus", "issuedAt", "expiresAt", "applicableCodeEdition", "codeEffectiveDate", "codeBasis", "officialRecordNumber", "legacyReference"],
+      d.permitContext.map((x) => [
+        x.milestoneLabel, x.permit.permitNumber, x.permit.permitType,
+        x.permit.issuingAuthority ?? NOT_AVAILABLE, x.permit.jurisdiction ?? NOT_AVAILABLE,
+        x.permit.status, x.effectiveStatus, x.permit.issuedAt ?? NOT_AVAILABLE,
+        x.permit.expiresAt ?? NOT_AVAILABLE, x.permit.applicableCodeEdition ?? "NOT RECORDED",
+        x.permit.codeEffectiveDate ?? "", x.permit.codeBasis ?? "NOT RECORDED",
+        x.permit.officialRecordNumber ?? "", x.permit.legacyReference ?? "",
+      ])
+    ),
+    d.permitContext.length
+  );
+  add(
+    "permit-milestone-links.csv",
+    csv(
+      ["permitNumber", "milestone", "effectiveControlStatus"],
+      d.permitContext.map((x) => [x.permit.permitNumber, x.milestoneLabel, x.effectiveStatus])
+    ),
+    d.permitContext.length
+  );
+  add(
+    "inspection-history.csv",
+    csv(
+      ["inspectionId", "milestoneId", "type", "status", "result", "scheduledAt", "resultRecordedAt", "governmentInspector", "reviewedBy", "reference", "reinspectionOf", "supersededBy", "correctionNotice", "correctionSummary"],
+      d.inspectionHistory.map((i) => [
+        i.id, i.milestoneId, i.inspectionType ?? "", i.status, i.result ?? NOT_AVAILABLE,
+        i.scheduledAt ?? NOT_AVAILABLE, i.resultRecordedAt ?? NOT_AVAILABLE,
+        i.governmentInspectorName ?? NOT_AVAILABLE,
+        i.reviewedByUserId ? d.users.get(i.reviewedByUserId)?.name ?? i.reviewedByUserId : NOT_AVAILABLE,
+        i.inspectionReference ?? "", i.reinspectionOfInspectionId ?? "", i.supersededByInspectionId ?? "",
+        i.correctionNoticeReference ?? "", i.correctionSummary ?? "",
+      ])
+    ),
+    d.inspectionHistory.length
+  );
+  add(
+    "official-source-records.csv",
+    csv(
+      ["sourceType", "officialSystemName", "officialRecordNumber", "officialStatusText", "lookupPerformedAt", "lookupPerformedBy", "capturedAt", "inspectionId", "artifactHash"],
+      d.officialSources.map((o) => [
+        o.sourceType, o.officialSystemName ?? "", o.officialRecordNumber ?? "",
+        o.officialStatusText ?? "", o.lookupPerformedAt ?? "",
+        d.users.get(o.lookupPerformedByUserId)?.name ?? o.lookupPerformedByUserId,
+        o.capturedAt ?? "", o.inspectionId ?? "", o.sourceArtifactHash ?? "",
+      ])
+    ),
+    d.officialSources.length
   );
 
   add(

@@ -147,6 +147,12 @@ export function determineInspectionRequirement(
     mustPassBeforeGovernance?: boolean;
     finalCompletionOnly?: boolean;
     resultDocumentRequired?: boolean;
+    permitRequired?: boolean;
+    requiredPermitType?: string | null;
+    officialSourceRequired?: boolean;
+    codeBasisRequired?: boolean;
+    permitMustBeActiveBeforeDrawReview?: boolean;
+    permitMustBeActiveBeforeGovernance?: boolean;
   }
 ): InspectionRequirement {
   const { milestone, project } = assertAccess(user, milestoneId);
@@ -182,6 +188,16 @@ export function determineInspectionRequirement(
     mustPassBeforeGovernance: input.mustPassBeforeGovernance ?? true,
     finalCompletionOnly: input.finalCompletionOnly ?? false,
     resultDocumentRequired: input.resultDocumentRequired ?? false,
+    // Conservative defaults: new permit/code-basis/official-source gates
+    // are off unless explicitly configured; legacy behavior is unchanged.
+    permitRequired: input.permitRequired ?? existing?.permitRequired ?? false,
+    requiredPermitType: input.requiredPermitType?.trim() || existing?.requiredPermitType || null,
+    officialSourceRequired: input.officialSourceRequired ?? existing?.officialSourceRequired ?? false,
+    codeBasisRequired: input.codeBasisRequired ?? existing?.codeBasisRequired ?? false,
+    permitMustBeActiveBeforeDrawReview:
+      input.permitMustBeActiveBeforeDrawReview ?? existing?.permitMustBeActiveBeforeDrawReview ?? false,
+    permitMustBeActiveBeforeGovernance:
+      input.permitMustBeActiveBeforeGovernance ?? existing?.permitMustBeActiveBeforeGovernance ?? false,
     configurationVersion: project.pilot?.configVersion ?? 1,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -211,11 +227,16 @@ export function determineInspectionRequirement(
 
 // ============================= gates 4–5: inspection schedule + result
 
+/** Head of the inspection chain: latest record that is neither cancelled
+ *  nor superseded by a reinspection. Prior FAILED / CORRECTIONS_REQUIRED
+ *  records stay immutable in history — the chain only moves forward. */
 function activeInspection(milestoneId: string): JurisdictionalInspection | null {
   const all = repo.listInspectionsForMilestone(milestoneId);
-  const active = all.filter((i) => i.status !== "CANCELLED");
+  const active = all.filter((i) => i.status !== "CANCELLED" && i.supersededByInspectionId === null);
   return active.length ? active[active.length - 1] : null;
 }
+
+export { activeInspection as activeInspectionForMilestone };
 
 export function createInspection(
   user: User,
@@ -227,12 +248,23 @@ export function createInspection(
     issuingAuthority?: string | null;
     inspectionReference?: string | null;
     permitId?: string | null;
+    permitRefId?: string | null;
     notes?: string | null;
   }
 ): JurisdictionalInspection {
   const { project } = assertAccess(user, milestoneId);
   if (user.role === "FIELD") {
     throw new GateError("Scheduling inspections requires a project manager or lender-side reviewer", 403);
+  }
+  // First-class permit link: must belong to the same project. Defaults for
+  // jurisdiction/authority may be taken from the permit for convenience,
+  // but the stored inspection values stay historically stable afterwards.
+  let permitRef = null as ReturnType<typeof repo.getPermit>;
+  if (input.permitRefId?.trim()) {
+    permitRef = repo.getPermit(input.permitRefId.trim());
+    if (!permitRef || permitRef.projectId !== project.id) {
+      throw new GateError("Permit not found", 404);
+    }
   }
   const req = repo.getInspectionRequirement(milestoneId);
   const now = new Date().toISOString();
@@ -242,9 +274,10 @@ export function createInspection(
     projectId: project.id,
     milestoneId,
     permitId: input.permitId?.trim() || null,
+    permitRefId: permitRef?.id ?? null,
     inspectionType: input.inspectionType?.trim() || req?.inspectionType || null,
-    jurisdiction: input.jurisdiction?.trim() || req?.jurisdiction || null,
-    issuingAuthority: input.issuingAuthority?.trim() || req?.issuingAuthority || null,
+    jurisdiction: input.jurisdiction?.trim() || permitRef?.jurisdiction || req?.jurisdiction || null,
+    issuingAuthority: input.issuingAuthority?.trim() || permitRef?.issuingAuthority || req?.issuingAuthority || null,
     inspectionReference: input.inspectionReference?.trim() || null,
     required: (req?.requirement ?? "UNKNOWN") === "REQUIRED",
     status: input.scheduledAt ? "SCHEDULED" : "REQUIRED_UNSCHEDULED",
@@ -255,6 +288,12 @@ export function createInspection(
     governmentInspectorName: null,
     reviewedByUserId: null,
     supportingDocumentId: null,
+    reinspectionOfInspectionId: null,
+    supersededByInspectionId: null,
+    correctionNoticeReference: null,
+    correctionSummary: null,
+    correctionDueAt: null,
+    correctionClearedAt: null,
     notes: input.notes?.trim() || null,
     createdAt: now,
     updatedAt: now,
@@ -323,10 +362,13 @@ export function recordInspectionResult(
   user: User,
   id: string,
   input: {
-    result: "PASSED" | "FAILED";
+    result: "PASSED" | "FAILED" | "CORRECTIONS_REQUIRED";
     governmentInspectorName?: string | null;
     inspectionReference?: string | null;
     supportingDocumentId?: string | null;
+    correctionNoticeReference?: string | null;
+    correctionSummary?: string | null;
+    correctionDueAt?: string | null;
     notes?: string | null;
   }
 ): JurisdictionalInspection {
@@ -334,17 +376,44 @@ export function recordInspectionResult(
   if (!DETERMINATION_ROLES.has(user.role)) {
     throw new GateError("Recording an inspection result requires a funder representative or compliance reviewer", 403);
   }
-  if (!["PASSED", "FAILED"].includes(input.result)) {
-    throw new GateError("result must be PASSED or FAILED");
+  if (!["PASSED", "FAILED", "CORRECTIONS_REQUIRED"].includes(input.result)) {
+    throw new GateError("result must be PASSED, FAILED or CORRECTIONS_REQUIRED");
   }
   if (["CANCELLED"].includes(inspection.status)) {
     throw new GateError("Inspection is CANCELLED — record a new inspection instead", 409);
+  }
+  // Historical results are immutable: a recorded result is never silently
+  // overwritten, and a superseded record belongs to history.
+  if (inspection.result !== null) {
+    throw new GateError(
+      `This inspection already has a recorded result (${inspection.result}) — record a reinspection instead of overwriting history`,
+      409
+    );
+  }
+  if (inspection.supersededByInspectionId) {
+    throw new GateError("This inspection was superseded by a reinspection — its record is historical", 409);
   }
   const req = repo.getInspectionRequirement(inspection.milestoneId);
   if (input.result === "PASSED" && req?.resultDocumentRequired && !input.supportingDocumentId?.trim()) {
     throw new GateError(
       "This milestone's configuration requires a result document reference to record a PASSED inspection"
     );
+  }
+  // Official-source requirement is distinct from the result-document
+  // requirement: a PASSED result needs an existing OfficialSourceRecord
+  // for this inspection when configured. A URL or upload alone never
+  // becomes PASSED — this is the reviewed recording act.
+  if (
+    input.result === "PASSED" &&
+    req?.officialSourceRequired &&
+    repo.listOfficialSourcesForInspection(id).length === 0
+  ) {
+    throw new GateError(
+      "This milestone's configuration requires an official source record before a PASSED result can be recorded"
+    );
+  }
+  if (input.result === "CORRECTIONS_REQUIRED" && !(input.correctionSummary ?? "").trim()) {
+    throw new GateError("correctionSummary is required when recording CORRECTIONS_REQUIRED");
   }
   const now = new Date().toISOString();
   repo.updateInspection(id, {
@@ -356,6 +425,9 @@ export function recordInspectionResult(
     inspectionReference: input.inspectionReference?.trim() || inspection.inspectionReference,
     reviewedByUserId: user.id,
     supportingDocumentId: input.supportingDocumentId?.trim() || null,
+    correctionNoticeReference: input.correctionNoticeReference?.trim() || null,
+    correctionSummary: input.correctionSummary?.trim() || null,
+    correctionDueAt: input.correctionDueAt?.trim() || null,
     notes: input.notes?.trim() || inspection.notes,
   });
   audit({
@@ -383,6 +455,125 @@ export function cancelInspection(user: User, id: string, reason?: string | null)
   return repo.getInspection(id)!;
 }
 
+/**
+ * Create a reinspection following a FAILED or CORRECTIONS_REQUIRED
+ * inspection. The prior record is preserved verbatim — its result is
+ * immutable; only the forward link (supersededByInspectionId) is set,
+ * as an audited administrative chain link. One failed inspection may be
+ * followed by one or more reinspections over time (each following the
+ * then-current head); circular or cross-milestone chains are rejected.
+ */
+export function createReinspection(
+  user: User,
+  priorInspectionId: string,
+  input: { scheduledAt?: string | null; notes?: string | null } = {}
+): JurisdictionalInspection {
+  const prior = getInspectionFor(user, priorInspectionId);
+  if (user.role === "FIELD") {
+    throw new GateError("Scheduling reinspections requires a project manager or lender-side reviewer", 403);
+  }
+  if (!["FAILED", "CORRECTIONS_REQUIRED"].includes(prior.status)) {
+    throw new GateError(
+      `A reinspection follows a FAILED or CORRECTIONS_REQUIRED inspection — this record is ${prior.status}`,
+      409
+    );
+  }
+  if (prior.supersededByInspectionId) {
+    throw new GateError("This inspection already has a reinspection — follow the active chain head", 409);
+  }
+  const { project } = assertAccess(user, prior.milestoneId);
+  const now = new Date().toISOString();
+  const reinspection: JurisdictionalInspection = {
+    id: repo.newId(),
+    organizationId: project.organizationId,
+    projectId: project.id,
+    milestoneId: prior.milestoneId,
+    permitId: prior.permitId,
+    permitRefId: prior.permitRefId,
+    inspectionType: prior.inspectionType,
+    jurisdiction: prior.jurisdiction,
+    issuingAuthority: prior.issuingAuthority,
+    inspectionReference: null,
+    required: prior.required,
+    status: input.scheduledAt ? "SCHEDULED" : "REQUIRED_UNSCHEDULED",
+    scheduledAt: input.scheduledAt ?? null,
+    completedAt: null,
+    resultRecordedAt: null,
+    result: null,
+    governmentInspectorName: null,
+    reviewedByUserId: null,
+    supportingDocumentId: null,
+    reinspectionOfInspectionId: prior.id,
+    supersededByInspectionId: null,
+    correctionNoticeReference: null,
+    correctionSummary: null,
+    correctionDueAt: null,
+    correctionClearedAt: null,
+    notes: input.notes?.trim() || null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  repo.insertInspection(reinspection);
+  // Forward chain link on the prior record — an audited administrative
+  // link, never a rewrite of the recorded result.
+  repo.updateInspection(prior.id, {
+    supersededByInspectionId: reinspection.id,
+    correctionClearedAt: prior.status === "CORRECTIONS_REQUIRED" ? now : prior.correctionClearedAt,
+  });
+  audit({
+    projectId: project.id, actorUserId: user.id, action: "REINSPECTION_CREATED",
+    entityType: "INSPECTION", entityId: reinspection.id, reason: input.notes?.trim() || null,
+    beforeSummary: `${prior.id} ${prior.status}`,
+    afterSummary: `reinspection of ${prior.id}${input.scheduledAt ? ` scheduled ${input.scheduledAt}` : " (unscheduled)"} — prior result preserved`,
+  });
+  return reinspection;
+}
+
+/**
+ * Narrow administrative correction of an inspection record's metadata
+ * (inspector name, reference, notes). NEVER the result, never the chain,
+ * never financial state. Requires an authorized role and a reason;
+ * preserves before/after in the audit trail.
+ */
+export function correctInspectionRecord(
+  user: User,
+  id: string,
+  input: {
+    reason: string;
+    governmentInspectorName?: string | null;
+    inspectionReference?: string | null;
+    notes?: string | null;
+  }
+): JurisdictionalInspection {
+  const inspection = getInspectionFor(user, id);
+  if (!DETERMINATION_ROLES.has(user.role)) {
+    throw new GateError("Administrative corrections require a funder representative or compliance reviewer", 403);
+  }
+  const reason = (input.reason ?? "").trim();
+  if (!reason) throw new GateError("A reason is required for an administrative correction");
+  const before = `inspector=${inspection.governmentInspectorName ?? "—"} ref=${inspection.inspectionReference ?? "—"}`;
+  repo.updateInspection(id, {
+    governmentInspectorName:
+      input.governmentInspectorName !== undefined
+        ? input.governmentInspectorName?.trim() || null
+        : inspection.governmentInspectorName,
+    inspectionReference:
+      input.inspectionReference !== undefined
+        ? input.inspectionReference?.trim() || null
+        : inspection.inspectionReference,
+    notes: input.notes !== undefined ? input.notes?.trim() || null : inspection.notes,
+  });
+  const after = repo.getInspection(id)!;
+  audit({
+    projectId: inspection.projectId, actorUserId: user.id,
+    action: "INSPECTION_ADMIN_CORRECTION", entityType: "INSPECTION", entityId: id,
+    reason,
+    beforeSummary: before,
+    afterSummary: `inspector=${after.governmentInspectorName ?? "—"} ref=${after.inspectionReference ?? "—"} (result untouched: ${after.result ?? "none"})`,
+  });
+  return after;
+}
+
 // ============================== derived milestone-level inspection gate
 
 export function inspectionGateState(milestoneId: string): InspectionGateState {
@@ -391,6 +582,7 @@ export function inspectionGateState(milestoneId: string): InspectionGateState {
   if (value === "NOT_REQUIRED") return "NOT_APPLICABLE";
   const inspection = activeInspection(milestoneId);
   if (!inspection) return "REQUIRED_UNSCHEDULED";
+  const isReinspection = inspection.reinspectionOfInspectionId !== null;
   switch (inspection.status) {
     case "SCHEDULED":
       return "SCHEDULED";
@@ -400,10 +592,14 @@ export function inspectionGateState(milestoneId: string): InspectionGateState {
       return "PASSED";
     case "FAILED":
       return "FAILED";
+    case "CORRECTIONS_REQUIRED":
+      return "CORRECTIONS_REQUIRED";
     case "EXPIRED":
       return "EXPIRED";
     default:
-      return "REQUIRED_UNSCHEDULED";
+      // An unscheduled reinspection means the milestone is explicitly
+      // awaiting reinspection after a failed/corrections-required result.
+      return isReinspection ? "AWAITING_REINSPECTION" : "REQUIRED_UNSCHEDULED";
   }
 }
 
@@ -474,6 +670,75 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
   const gate = inspectionGateState(milestoneId);
   const governanceGated = inspectionGates(milestone, req, "GOVERNANCE");
   const drawReviewGated = inspectionGates(milestone, req, "DRAW_REVIEW");
+
+  // ---- permit and code-basis readiness (only permits LINKED to this
+  // milestone are relevant — an unrelated project permit never blocks).
+  // Conservative: gates apply only where the requirement configuration
+  // turned them on, so legacy behavior is bit-for-bit unchanged. ----
+  const permitGovGated = req?.permitRequired && (req.permitMustBeActiveBeforeGovernance || req.permitMustBeActiveBeforeDrawReview);
+  const linkedPermits = repo
+    .listPermitLinksForMilestone(milestoneId)
+    .map((l) => repo.getPermit(l.permitId))
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    .filter((x) => !req?.requiredPermitType || x.permitType === req.requiredPermitType);
+  if (req?.permitRequired) {
+    const blocking = Boolean(req.permitMustBeActiveBeforeGovernance);
+    if (linkedPermits.length === 0) {
+      add(
+        "REQUIRED_PERMIT_MISSING",
+        `A ${req.requiredPermitType ? `${req.requiredPermitType} ` : ""}permit is required for this milestone but no permit record is linked.`,
+        blocking
+      );
+    } else {
+      const nowIso = new Date().toISOString();
+      for (const permit of linkedPermits) {
+        const effective =
+          (permit.status === "ISSUED" || permit.status === "ACTIVE") &&
+          permit.expiresAt !== null &&
+          permit.expiresAt < nowIso
+            ? "EXPIRED"
+            : permit.status;
+        if (effective === "EXPIRED") {
+          add("PERMIT_EXPIRED", `Linked permit ${permit.permitNumber} is expired.`, blocking);
+        } else if (effective === "REVOKED") {
+          add("PERMIT_REVOKED", `Linked permit ${permit.permitNumber} has been revoked.`, blocking);
+        } else if (effective === "SUSPENDED") {
+          add("PERMIT_SUSPENDED", `Linked permit ${permit.permitNumber} is suspended.`, blocking);
+        } else if (effective !== "ISSUED" && effective !== "ACTIVE") {
+          // UNKNOWN / DRAFT / APPLIED / CLOSED never behave as ACTIVE.
+          add(
+            "PERMIT_NOT_ACTIVE",
+            `Linked permit ${permit.permitNumber} is ${effective} — not an active permit.`,
+            blocking
+          );
+        }
+      }
+    }
+  }
+  if (req?.codeBasisRequired) {
+    const withBasis = linkedPermits.filter((x) => x.applicableCodeEdition && x.codeBasis);
+    if (linkedPermits.length === 0 || withBasis.length === 0) {
+      add(
+        "CODE_BASIS_MISSING",
+        "The applicable code basis has not been recorded for this milestone's linked permit(s). OBV records the reviewed governing basis — it does not independently determine legal compliance.",
+        true
+      );
+    }
+  }
+  if (
+    req?.officialSourceRequired &&
+    gate === "PASSED"
+  ) {
+    const head = activeInspection(milestoneId);
+    if (head && repo.listOfficialSourcesForInspection(head.id).length === 0) {
+      add(
+        "OFFICIAL_SOURCE_MISSING",
+        "A PASSED result is recorded but the configured official source record is missing.",
+        true
+      );
+    }
+  }
+
   if (gate === "REQUIREMENT_UNKNOWN") {
     add(
       "INSPECTION_REQUIREMENT_UNKNOWN",
@@ -485,10 +750,25 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
       add("INSPECTION_NOT_SCHEDULED", `Required ${req.inspectionType ?? "jurisdictional"} inspection has not been scheduled.`, governanceGated);
       add("JURISDICTIONAL_INSPECTION_NOT_PASSED", "Required jurisdictional inspection has not passed.", governanceGated);
     } else if (gate === "SCHEDULED" || gate === "COMPLETED_PENDING_RESULT") {
+      const head = activeInspection(milestoneId);
+      if (head?.reinspectionOfInspectionId) {
+        add("REINSPECTION_PENDING", "The reinspection has no recorded result yet.", governanceGated);
+      }
       add("INSPECTION_PENDING", `Required ${req.inspectionType ?? "jurisdictional"} inspection has no recorded result yet.`, governanceGated);
       add("JURISDICTIONAL_INSPECTION_NOT_PASSED", "Required jurisdictional inspection has not passed.", governanceGated);
     } else if (gate === "FAILED") {
-      add("INSPECTION_FAILED", `Required ${req.inspectionType ?? "jurisdictional"} inspection FAILED — reinspection required.`, true);
+      const head = activeInspection(milestoneId);
+      if (head?.reinspectionOfInspectionId) {
+        add("REINSPECTION_FAILED", `The reinspection FAILED — the milestone remains blocked until a passing reviewed result is recorded.`, true);
+      } else {
+        add("INSPECTION_FAILED", `Required ${req.inspectionType ?? "jurisdictional"} inspection FAILED — reinspection required.`, true);
+        add("REINSPECTION_REQUIRED", "A reinspection must be scheduled and pass before this gate clears.", true);
+      }
+    } else if (gate === "CORRECTIONS_REQUIRED") {
+      add("INSPECTION_CORRECTIONS_REQUIRED", "The jurisdictional inspection recorded CORRECTIONS REQUIRED — corrections and a reinspection are needed. An uploaded correction notice does not itself clear corrections.", true);
+      add("REINSPECTION_REQUIRED", "A reinspection must be scheduled and pass before this gate clears.", true);
+    } else if (gate === "AWAITING_REINSPECTION") {
+      add("REINSPECTION_NOT_SCHEDULED", "The reinspection following the prior result has not been scheduled.", true);
     } else if (gate === "EXPIRED") {
       add("INSPECTION_EXPIRED", "The inspection or its permit has expired.", true);
     } else if (gate === "PASSED") {
@@ -541,6 +821,7 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
     evidence.status === "VERIFIED" &&
     (gate === "NOT_APPLICABLE" || gate === "PASSED" || !governanceGated) &&
     gate !== "REQUIREMENT_UNKNOWN" &&
+    !(permitGovGated && reasons.some((r) => r.code.startsWith("PERMIT") || r.code === "REQUIRED_PERMIT_MISSING")) &&
     !reasons.some((r) => r.code === "CHANGE_ORDER_NOT_APPROVED")
   ) {
     result = "READY_FOR_GOVERNANCE";

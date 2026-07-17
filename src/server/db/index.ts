@@ -867,6 +867,7 @@ CREATE TABLE IF NOT EXISTS jurisdictional_inspections (
   project_id TEXT NOT NULL REFERENCES projects(id),
   milestone_id TEXT NOT NULL REFERENCES milestones(id),
   permit_id TEXT,
+  permit_ref_id TEXT REFERENCES permits(id),
   inspection_type TEXT,
   jurisdiction TEXT,
   issuing_authority TEXT,
@@ -874,17 +875,95 @@ CREATE TABLE IF NOT EXISTS jurisdictional_inspections (
   required INTEGER NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'REQUIRED_UNSCHEDULED' CHECK (status IN
     ('REQUIRED_UNSCHEDULED','SCHEDULED','COMPLETED_PENDING_RESULT',
-     'PASSED','FAILED','CANCELLED','EXPIRED')),
+     'PASSED','FAILED','CORRECTIONS_REQUIRED','CANCELLED','EXPIRED')),
   scheduled_at TEXT,
   completed_at TEXT,
   result_recorded_at TEXT,
-  result TEXT CHECK (result IN ('PASSED','FAILED')),
+  result TEXT CHECK (result IN ('PASSED','FAILED','CORRECTIONS_REQUIRED')),
   government_inspector_name TEXT,
   reviewed_by_user_id TEXT REFERENCES users(id),
   supporting_document_id TEXT,
+  reinspection_of_inspection_id TEXT REFERENCES jurisdictional_inspections(id),
+  superseded_by_inspection_id TEXT REFERENCES jurisdictional_inspections(id),
+  correction_notice_reference TEXT,
+  correction_summary TEXT,
+  correction_due_at TEXT,
+  correction_cleared_at TEXT,
   notes TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+-- First-class permit register. UNKNOWN status is never treated as ACTIVE.
+-- Permit numbers are unique within a project (the tenancy scope of every
+-- other project-child record in this model).
+CREATE TABLE IF NOT EXISTS permits (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  permit_number TEXT NOT NULL,
+  permit_type TEXT NOT NULL,
+  issuing_authority TEXT,
+  jurisdiction TEXT,
+  status TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (status IN
+    ('DRAFT','APPLIED','ISSUED','ACTIVE','SUSPENDED','EXPIRED','CLOSED','REVOKED','UNKNOWN')),
+  issued_at TEXT,
+  effective_at TEXT,
+  expires_at TEXT,
+  closed_at TEXT,
+  scope_description TEXT,
+  applicable_code_edition TEXT,
+  code_effective_date TEXT,
+  code_basis TEXT,
+  code_determined_by TEXT REFERENCES users(id),
+  code_determined_at TEXT,
+  official_record_url TEXT,
+  official_record_number TEXT,
+  notes TEXT,
+  legacy_reference TEXT,
+  configuration_version INTEGER NOT NULL DEFAULT 1,
+  created_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (project_id, permit_number)
+);
+
+-- Normalized permit <-> milestone relationship (never comma-separated ids;
+-- never a duplicate active link).
+CREATE TABLE IF NOT EXISTS permit_milestone_links (
+  id TEXT PRIMARY KEY,
+  permit_id TEXT NOT NULL REFERENCES permits(id),
+  milestone_id TEXT NOT NULL REFERENCES milestones(id),
+  scope_note TEXT,
+  created_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  UNIQUE (permit_id, milestone_id)
+);
+
+-- Official-source provenance. Supports reviewed results; never creates
+-- them. The official system's status text is preserved verbatim,
+-- separate from OBV's normalized statuses.
+CREATE TABLE IF NOT EXISTS official_source_records (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  milestone_id TEXT REFERENCES milestones(id),
+  permit_id TEXT REFERENCES permits(id),
+  inspection_id TEXT REFERENCES jurisdictional_inspections(id),
+  source_type TEXT NOT NULL CHECK (source_type IN
+    ('OFFICIAL_PORTAL_LOOKUP','OFFICIAL_DOCUMENT','INSPECTION_REPORT',
+     'EMAIL_FROM_AUTHORITY','MANUAL_OFFICIAL_REFERENCE','API_LOOKUP','OTHER')),
+  official_system_name TEXT,
+  official_record_number TEXT,
+  official_record_url TEXT,
+  lookup_performed_at TEXT,
+  lookup_performed_by_user_id TEXT NOT NULL REFERENCES users(id),
+  captured_at TEXT,
+  official_status_text TEXT,
+  source_document_path TEXT,
+  source_artifact_hash TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL
 );
 `;
 
@@ -993,6 +1072,14 @@ export function getDb(): DatabaseSync {
       // Which configuration version a verification was evaluated under
       // (historic evidence keeps its policy reference — Part 19).
       "ALTER TABLE verifications ADD COLUMN policy_version INTEGER",
+      // ---- permit / code-basis / official-source gating (additive;
+      // conservative defaults preserve exact legacy behavior) ----
+      "ALTER TABLE inspection_requirements ADD COLUMN permit_required INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE inspection_requirements ADD COLUMN required_permit_type TEXT",
+      "ALTER TABLE inspection_requirements ADD COLUMN official_source_required INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE inspection_requirements ADD COLUMN code_basis_required INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE inspection_requirements ADD COLUMN permit_must_be_active_before_draw_review INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE inspection_requirements ADD COLUMN permit_must_be_active_before_governance INTEGER NOT NULL DEFAULT 0",
     ]) {
       try {
         db.exec(ddl);
@@ -1021,6 +1108,7 @@ export function getDb(): DatabaseSync {
     migrateApprovalRequestsForDraws(db);
     migrateApprovalRequestsForChangeOrders(db);
     migrateThreadsForDraws(db);
+    migrateInspectionsForReinspection(db);
     // Database-level inbound dedupe: one Message per external message id
     // per thread (notification replays hit this even if app checks race).
     db.exec(
@@ -1062,6 +1150,69 @@ function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
  * conversation_threads reference approval_requests(id), which is
  * preserved exactly.
  */
+/**
+ * Rebuild jurisdictional_inspections for pre-reinspection databases:
+ * extends the status/result CHECK constraints (CORRECTIONS_REQUIRED) and
+ * adds the permit-register FK plus corrections/reinspection chain columns.
+ * All existing rows are copied verbatim — historical results untouched.
+ * Fresh databases already match the SCHEMA above and are skipped.
+ */
+function migrateInspectionsForReinspection(db: DatabaseSync): void {
+  if (hasColumn(db, "jurisdictional_inspections", "reinspection_of_inspection_id")) return;
+  db.exec("PRAGMA foreign_keys = OFF;");
+  db.exec("BEGIN;");
+  db.exec(`CREATE TABLE jurisdictional_inspections_new (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    milestone_id TEXT NOT NULL REFERENCES milestones(id),
+    permit_id TEXT,
+    permit_ref_id TEXT REFERENCES permits(id),
+    inspection_type TEXT,
+    jurisdiction TEXT,
+    issuing_authority TEXT,
+    inspection_reference TEXT,
+    required INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'REQUIRED_UNSCHEDULED' CHECK (status IN
+      ('REQUIRED_UNSCHEDULED','SCHEDULED','COMPLETED_PENDING_RESULT',
+       'PASSED','FAILED','CORRECTIONS_REQUIRED','CANCELLED','EXPIRED')),
+    scheduled_at TEXT,
+    completed_at TEXT,
+    result_recorded_at TEXT,
+    result TEXT CHECK (result IN ('PASSED','FAILED','CORRECTIONS_REQUIRED')),
+    government_inspector_name TEXT,
+    reviewed_by_user_id TEXT REFERENCES users(id),
+    supporting_document_id TEXT,
+    reinspection_of_inspection_id TEXT REFERENCES jurisdictional_inspections(id),
+    superseded_by_inspection_id TEXT REFERENCES jurisdictional_inspections(id),
+    correction_notice_reference TEXT,
+    correction_summary TEXT,
+    correction_due_at TEXT,
+    correction_cleared_at TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );`);
+  db.exec(`INSERT INTO jurisdictional_inspections_new
+    (id, organization_id, project_id, milestone_id, permit_id, permit_ref_id,
+     inspection_type, jurisdiction, issuing_authority, inspection_reference,
+     required, status, scheduled_at, completed_at, result_recorded_at, result,
+     government_inspector_name, reviewed_by_user_id, supporting_document_id,
+     reinspection_of_inspection_id, superseded_by_inspection_id,
+     correction_notice_reference, correction_summary, correction_due_at,
+     correction_cleared_at, notes, created_at, updated_at)
+    SELECT id, organization_id, project_id, milestone_id, permit_id, NULL,
+     inspection_type, jurisdiction, issuing_authority, inspection_reference,
+     required, status, scheduled_at, completed_at, result_recorded_at, result,
+     government_inspector_name, reviewed_by_user_id, supporting_document_id,
+     NULL, NULL, NULL, NULL, NULL, NULL, notes, created_at, updated_at
+    FROM jurisdictional_inspections;`);
+  db.exec("DROP TABLE jurisdictional_inspections;");
+  db.exec("ALTER TABLE jurisdictional_inspections_new RENAME TO jurisdictional_inspections;");
+  db.exec("COMMIT;");
+  db.exec("PRAGMA foreign_keys = ON;");
+}
+
 function migrateApprovalRequestsForDraws(db: DatabaseSync): void {
   if (hasColumn(db, "approval_requests", "draw_request_id")) return;
   db.exec("PRAGMA foreign_keys = OFF;");

@@ -1165,6 +1165,8 @@ export type ExceptionSourceType =
   | "INTEGRATION"
   | "INSPECTION"
   | "INSPECTION_REQUIREMENT"
+  | "PERMIT"
+  | "OFFICIAL_SOURCE"
   | "MANUAL";
 
 export type ExceptionCategory =
@@ -1485,9 +1487,102 @@ export interface InspectionRequirement {
   mustPassBeforeGovernance: boolean;
   finalCompletionOnly: boolean;
   resultDocumentRequired: boolean;
+  /** Permit / code-basis / official-source control configuration.
+   *  Conservative defaults (false) preserve legacy behavior; UNKNOWN
+   *  never behaves as NOT_REQUIRED anywhere in this model. */
+  permitRequired: boolean;
+  requiredPermitType: string | null;
+  officialSourceRequired: boolean;
+  codeBasisRequired: boolean;
+  permitMustBeActiveBeforeDrawReview: boolean;
+  permitMustBeActiveBeforeGovernance: boolean;
   configurationVersion: number;
   createdAt: string;
   updatedAt: string;
+}
+
+// ======================================================= permit register
+
+/** First-class permit record. UNKNOWN is never treated as ACTIVE. */
+export type PermitStatus =
+  | "DRAFT" | "APPLIED" | "ISSUED" | "ACTIVE" | "SUSPENDED"
+  | "EXPIRED" | "CLOSED" | "REVOKED" | "UNKNOWN";
+
+export interface Permit {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  permitNumber: string;
+  permitType: string;
+  issuingAuthority: string | null;
+  jurisdiction: string | null;
+  status: PermitStatus;
+  issuedAt: string | null;
+  effectiveAt: string | null;
+  expiresAt: string | null;
+  closedAt: string | null;
+  scopeDescription: string | null;
+  /** Structured code basis — the reviewed governing basis supplied by an
+   *  authorized user or official source. OBV records it; it never
+   *  independently determines legal compliance. */
+  applicableCodeEdition: string | null;
+  codeEffectiveDate: string | null;
+  codeBasis: string | null;
+  codeDeterminedBy: string | null; // user id (attributable)
+  codeDeterminedAt: string | null;
+  officialRecordUrl: string | null;
+  officialRecordNumber: string | null;
+  notes: string | null;
+  /** Preserved free-text reference from legacy inspection records that
+   *  could not be safely migrated. Never an invented Permit. */
+  legacyReference: string | null;
+  configurationVersion: number;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Normalized permit ↔ milestone relationship (no comma-separated ids). */
+export interface PermitMilestoneLink {
+  id: string;
+  permitId: string;
+  milestoneId: string;
+  scopeNote: string | null;
+  createdByUserId: string;
+  createdAt: string;
+}
+
+// ================================================ official source records
+
+export type OfficialSourceType =
+  | "OFFICIAL_PORTAL_LOOKUP" | "OFFICIAL_DOCUMENT" | "INSPECTION_REPORT"
+  | "EMAIL_FROM_AUTHORITY" | "MANUAL_OFFICIAL_REFERENCE" | "API_LOOKUP" | "OTHER";
+
+/** Provenance for official permit/inspection information. Supports a
+ *  reviewed result; NEVER creates one automatically. A URL alone is a
+ *  reference, not verified evidence. */
+export interface OfficialSourceRecord {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  milestoneId: string | null;
+  permitId: string | null;
+  inspectionId: string | null;
+  sourceType: OfficialSourceType;
+  officialSystemName: string | null;
+  officialRecordNumber: string | null;
+  officialRecordUrl: string | null;
+  /** When the lookup was performed vs when the artifact was captured. */
+  lookupPerformedAt: string | null;
+  lookupPerformedByUserId: string;
+  capturedAt: string | null;
+  /** The official system's own status text, preserved verbatim and kept
+   *  separate from OBV's normalized statuses. */
+  officialStatusText: string | null;
+  sourceDocumentPath: string | null;
+  sourceArtifactHash: string | null;
+  notes: string | null;
+  createdAt: string;
 }
 
 /** Gates 4–5 — the inspection record lifecycle. An uploaded document can
@@ -1495,14 +1590,18 @@ export interface InspectionRequirement {
  *  by an attributable internal reviewer is required. */
 export type JurisdictionalInspectionStatus =
   | "REQUIRED_UNSCHEDULED" | "SCHEDULED" | "COMPLETED_PENDING_RESULT"
-  | "PASSED" | "FAILED" | "CANCELLED" | "EXPIRED";
+  | "PASSED" | "FAILED" | "CORRECTIONS_REQUIRED" | "CANCELLED" | "EXPIRED";
 
 export interface JurisdictionalInspection {
   id: string;
   organizationId: string;
   projectId: string;
   milestoneId: string;
+  /** Legacy free-text permit reference (pre-register records). Preserved
+   *  as-is; the first-class relationship is permitRefId. */
   permitId: string | null;
+  /** Foreign key to the first-class Permit register. */
+  permitRefId: string | null;
   inspectionType: string | null;
   jurisdiction: string | null;
   issuingAuthority: string | null;
@@ -1512,13 +1611,21 @@ export interface JurisdictionalInspection {
   scheduledAt: string | null;
   completedAt: string | null;
   resultRecordedAt: string | null;
-  result: "PASSED" | "FAILED" | null;
+  result: "PASSED" | "FAILED" | "CORRECTIONS_REQUIRED" | null;
   /** External government inspector — recorded as text, NEVER an OBV user
    *  unless they actually hold an authenticated OBV identity. */
   governmentInspectorName: string | null;
   /** Attributable internal reviewer who recorded the external result. */
   reviewedByUserId: string | null;
   supportingDocumentId: string | null;
+  /** Corrections / reinspection chain. The original result is immutable:
+   *  a later reinspection NEVER rewrites it. */
+  reinspectionOfInspectionId: string | null;
+  supersededByInspectionId: string | null;
+  correctionNoticeReference: string | null;
+  correctionSummary: string | null;
+  correctionDueAt: string | null;
+  correctionClearedAt: string | null;
   notes: string | null;
   createdAt: string;
   updatedAt: string;
@@ -1528,7 +1635,8 @@ export interface JurisdictionalInspection {
  *  latest active inspection record. */
 export type InspectionGateState =
   | "REQUIREMENT_UNKNOWN" | "NOT_APPLICABLE" | "REQUIRED_UNSCHEDULED"
-  | "SCHEDULED" | "COMPLETED_PENDING_RESULT" | "PASSED" | "FAILED" | "EXPIRED";
+  | "SCHEDULED" | "COMPLETED_PENDING_RESULT" | "PASSED" | "FAILED" | "EXPIRED"
+  | "CORRECTIONS_REQUIRED" | "AWAITING_REINSPECTION";
 
 /** Gate 6 — DERIVED governance state. Deterministic; never a synonym for
  *  physical completion and never able to release funds itself. */

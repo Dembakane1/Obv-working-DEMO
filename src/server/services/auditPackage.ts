@@ -23,6 +23,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import * as repo from "../db/repo";
+import * as permitService from "./permits";
 import { AUDIT_PACKAGES_DIR, DATA_DIR, REPORTS_DIR, UPLOADS_DIR } from "../db/index";
 import { wormEvidenceStore } from "./WormEvidenceStore";
 import { assessFinancialProgress, assessPhysicalProgress, canAccessProjectFinance } from "./budgetProgress";
@@ -181,7 +182,8 @@ export interface IntegrityFinding {
   severity: IntegrityFindingSeverity;
   category:
     | "LEDGER_CHAIN" | "SNAPSHOT_HASH" | "DUPLICATE_RELEASE"
-    | "APPROVAL_RECORDS" | "EVIDENCE_OBJECT" | "REPORT_ARTIFACT" | "EVIDENCE_MEDIA";
+    | "APPROVAL_RECORDS" | "EVIDENCE_OBJECT" | "REPORT_ARTIFACT" | "EVIDENCE_MEDIA"
+    | "PERMIT_REGISTER";
   message: string;
 }
 
@@ -243,6 +245,13 @@ export async function validateProjectIntegrity(projectId: string): Promise<Integ
   const head = repo.lastLedgerEntry();
   const ledgerState = chain.valid ? "INTACT" : `TAMPERED_AT:${chain.brokenAt}`;
   if (!chain.valid) finding("CRITICAL", "LEDGER_CHAIN", `Evidence Ledger chain broken at entry ${chain.brokenAt}`);
+
+  // 1b. Permit / inspection-chain / official-source structural integrity:
+  // broken internal references, impossible reinspection chains, missing
+  // mandatory source records, conflicting final results, artifact drift.
+  for (const pf of permitService.validatePermitIntegrity(projectId)) {
+    finding(pf.severity, "PERMIT_REGISTER", `${pf.code}: ${pf.detail}`);
+  }
 
   // 2. Configuration snapshot hashes (recomputed, never trusted).
   const snapshots = repo.listConfigSnapshots(projectId);
@@ -583,6 +592,128 @@ function buildRegisters(
     ),
     "02_milestones",
     milestones.length
+  );
+
+  // ---- permit register, code basis, links, inspection chains, official
+  // sources (Parts 11-12). Missing data stays NOT RECORDED — no invented
+  // permits, editions, or sources; released milestones stay historical. ----
+  const permitList = repo.listPermitsForProject(project.id);
+  add(
+    "02_milestones/permit-milestone-links.csv",
+    csv(
+      ["permitNumber", "permitType", "milestone", "scopeNote", "createdBy", "createdAt"],
+      repo.listPermitLinksForProject(project.id).map((l) => {
+        const permit = repo.getPermit(l.permitId);
+        const m = repo.getMilestone(l.milestoneId);
+        return [
+          permit?.permitNumber ?? l.permitId,
+          permit?.permitType ?? "",
+          m ? `M${m.seq} · ${m.title}` : l.milestoneId,
+          l.scopeNote ?? "",
+          userName(l.createdByUserId),
+          l.createdAt,
+        ];
+      })
+    ),
+    "03_permits",
+    repo.listPermitLinksForProject(project.id).length
+  );
+  add(
+    "03_permits/permits.csv",
+    csv(
+      ["permitNumber", "permitType", "issuingAuthority", "jurisdiction", "recordedStatus", "issuedAt", "effectiveAt", "expiresAt", "closedAt", "officialRecordNumber", "officialRecordUrl", "legacyReference", "configurationVersion", "createdBy", "createdAt"],
+      permitList.map((x) => [
+        x.permitNumber, x.permitType, x.issuingAuthority ?? "NOT RECORDED", x.jurisdiction ?? "NOT RECORDED",
+        x.status, x.issuedAt ?? "", x.effectiveAt ?? "", x.expiresAt ?? "", x.closedAt ?? "",
+        x.officialRecordNumber ?? "", x.officialRecordUrl ?? "", x.legacyReference ?? "",
+        x.configurationVersion, userName(x.createdByUserId), x.createdAt,
+      ])
+    ),
+    "03_permits",
+    permitList.length
+  );
+  add(
+    "03_permits/code-basis-register.csv",
+    csv(
+      ["permitNumber", "applicableCodeEdition", "codeEffectiveDate", "codeBasis", "determinedBy", "determinedAt", "configurationVersion"],
+      permitList.map((x) => [
+        x.permitNumber,
+        x.applicableCodeEdition ?? "NOT RECORDED",
+        x.codeEffectiveDate ?? "",
+        x.codeBasis ?? "NOT RECORDED",
+        x.codeDeterminedBy ? userName(x.codeDeterminedBy) : "",
+        x.codeDeterminedAt ?? "",
+        x.configurationVersion,
+      ])
+    ),
+    "03_permits",
+    permitList.length
+  );
+  const officialSources = repo.listOfficialSourcesForProject(project.id);
+  add(
+    "03_permits/official-source-records.csv",
+    csv(
+      ["sourceType", "officialSystemName", "officialRecordNumber", "officialRecordUrl", "officialStatusText", "lookupPerformedAt", "lookupPerformedBy", "capturedAt", "permitNumber", "inspectionId", "artifactHash"],
+      officialSources.map((o) => [
+        o.sourceType, o.officialSystemName ?? "", o.officialRecordNumber ?? "", o.officialRecordUrl ?? "",
+        o.officialStatusText ?? "", o.lookupPerformedAt ?? "", userName(o.lookupPerformedByUserId),
+        o.capturedAt ?? "", o.permitId ? repo.getPermit(o.permitId)?.permitNumber ?? o.permitId : "",
+        o.inspectionId ?? "", o.sourceArtifactHash ?? "",
+      ])
+    ),
+    "03_permits",
+    officialSources.length
+  );
+  const inspectionChain = repo.listInspectionsForProject(project.id);
+  add(
+    "05_inspections/inspection-history.csv",
+    csv(
+      ["inspectionId", "milestone", "type", "status", "result", "scheduledAt", "completedAt", "resultRecordedAt", "governmentInspector", "reviewedBy", "reference", "permitNumber", "legacyPermitRef", "reinspectionOf", "supersededBy"],
+      inspectionChain.map((i) => {
+        const m = repo.getMilestone(i.milestoneId);
+        return [
+          i.id, m ? `M${m.seq}` : i.milestoneId, i.inspectionType ?? "", i.status, i.result ?? "",
+          i.scheduledAt ?? "", i.completedAt ?? "", i.resultRecordedAt ?? "",
+          i.governmentInspectorName ?? "", i.reviewedByUserId ? userName(i.reviewedByUserId) : "",
+          i.inspectionReference ?? "",
+          i.permitRefId ? repo.getPermit(i.permitRefId)?.permitNumber ?? i.permitRefId : "",
+          i.permitId ?? "", i.reinspectionOfInspectionId ?? "", i.supersededByInspectionId ?? "",
+        ];
+      })
+    ),
+    "05_inspections",
+    inspectionChain.length
+  );
+  add(
+    "05_inspections/reinspection-links.csv",
+    csv(
+      ["reinspectionId", "followsInspectionId", "priorResultPreserved", "createdAt"],
+      inspectionChain
+        .filter((i) => i.reinspectionOfInspectionId)
+        .map((i) => {
+          const prior = repo.getInspection(i.reinspectionOfInspectionId!);
+          return [i.id, i.reinspectionOfInspectionId!, prior?.result ?? "", i.createdAt];
+        })
+    ),
+    "05_inspections",
+    inspectionChain.filter((i) => i.reinspectionOfInspectionId).length
+  );
+  add(
+    "05_inspections/correction-notices.csv",
+    csv(
+      ["inspectionId", "milestone", "correctionNoticeReference", "correctionSummary", "correctionDueAt", "reinspectionCreatedAt"],
+      inspectionChain
+        .filter((i) => i.correctionSummary || i.correctionNoticeReference)
+        .map((i) => {
+          const m = repo.getMilestone(i.milestoneId);
+          return [
+            i.id, m ? `M${m.seq}` : i.milestoneId, i.correctionNoticeReference ?? "",
+            i.correctionSummary ?? "", i.correctionDueAt ?? "", i.correctionClearedAt ?? "",
+          ];
+        })
+    ),
+    "05_inspections",
+    inspectionChain.filter((i) => i.correctionSummary || i.correctionNoticeReference).length
   );
   const reqRows = milestones.flatMap((m) =>
     repo.listRequirementsForMilestone(m.id).map((r) => [
