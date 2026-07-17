@@ -22,6 +22,7 @@
  * never silently overturned by the sweep.
  */
 import * as repo from "../db/repo";
+import { effectiveStatus as permitEffectiveStatus, completeSourcesForInspection } from "./permits";
 import { wormEvidenceStore } from "./WormEvidenceStore";
 import { audit } from "./pilot/onboarding";
 import { canAccessProjectFinance, assessFinancialProgress, varianceThresholds } from "./budgetProgress";
@@ -627,7 +628,7 @@ async function activeConditions(): Promise<RuleCondition[]> {
         if (
           latest?.status === "PASSED" &&
           req.officialSourceRequired &&
-          repo.listOfficialSourcesForInspection(latest.id).length === 0
+          completeSourcesForInspection(latest.id).length === 0
         ) {
           out.push({
             seed: {
@@ -662,15 +663,10 @@ async function activeConditions(): Promise<RuleCondition[]> {
       // ---- linked permit control conditions (only permits linked to
       // THIS milestone are relevant; unrelated permits never fire) ----
       if (m.accountStatus !== "RELEASED") {
-        const nowIso = new Date(now).toISOString();
         for (const link of repo.listPermitLinksForMilestone(m.id)) {
           const permit = repo.getPermit(link.permitId);
           if (!permit) continue;
-          const effective =
-            (permit.status === "ISSUED" || permit.status === "ACTIVE") &&
-            permit.expiresAt !== null && permit.expiresAt < nowIso
-              ? "EXPIRED"
-              : permit.status;
+          const effective = permitEffectiveStatus(permit);
           if (effective === "EXPIRED") {
             out.push({
               seed: {

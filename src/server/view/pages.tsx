@@ -1290,7 +1290,7 @@ export function renderMilestoneDetail(input: {
                   Corrections: {insp.correctionSummary}
                   {insp.correctionNoticeReference ? ` · notice ${insp.correctionNoticeReference}` : ""}
                   {insp.correctionDueAt ? ` · due ${insp.correctionDueAt.slice(0, 10)}` : ""}
-                  {insp.correctionClearedAt ? ` · reinspection created ${fmtDate(insp.correctionClearedAt).slice(0, 16)}` : ""}
+                  {insp.correctionClearedAt ? ` · corrections cleared by passed reinspection ${fmtDate(insp.correctionClearedAt).slice(0, 16)}` : ""}
                   {" — an uploaded correction notice does not itself clear corrections"}
                 </span>
               ) : null}

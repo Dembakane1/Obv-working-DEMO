@@ -26,6 +26,7 @@ import type {
 } from "../../shared/types";
 import { slaState, ageDays } from "./exceptions";
 import * as completionGates from "./completionGates";
+import { effectiveStatus as permitEffectiveStatus } from "./permits";
 
 export const DRAW_PACKAGE_SCHEMA_VERSION = 1;
 export const NOT_AVAILABLE = "NOT AVAILABLE";
@@ -760,16 +761,10 @@ export async function assembleDrawPackageData(user: User, drawId: string): Promi
     permitContext: [...lineMilestoneIds].flatMap((id) => {
       const m = repo.getMilestone(id);
       const label = m ? `M${m.seq} · ${m.title}` : id;
-      const nowIso = new Date().toISOString();
       return repo.listPermitLinksForMilestone(id).flatMap((link) => {
         const permit = repo.getPermit(link.permitId);
         if (!permit) return [];
-        const eff =
-          (permit.status === "ISSUED" || permit.status === "ACTIVE") &&
-          permit.expiresAt !== null && permit.expiresAt < nowIso
-            ? "EXPIRED"
-            : permit.status;
-        return [{ milestoneLabel: label, milestoneId: id, permit, effectiveStatus: eff }];
+        return [{ milestoneLabel: label, milestoneId: id, permit, effectiveStatus: permitEffectiveStatus(permit) }];
       });
     }),
     inspectionHistory: [...lineMilestoneIds].flatMap((id) => repo.listInspectionsForMilestone(id)),

@@ -3639,3 +3639,33 @@ export function listOfficialSourcesForProject(projectId: string): OfficialSource
     .prepare("SELECT * FROM official_source_records WHERE project_id = ? ORDER BY created_at")
     .all(projectId) as Row[]).map(toOfficialSource);
 }
+
+
+/**
+ * Transactional reinspection creation: insert the new record and set the
+ * prior's forward link in one transaction. The partial unique index on
+ * reinspection_of_inspection_id guarantees a prior inspection can have at
+ * most one direct child — concurrent duplicate attempts produce exactly
+ * one success and one UNIQUE-constraint conflict, and a failed link
+ * update rolls back the insert (no orphans, no parallel chain heads).
+ */
+export function createReinspectionTx(reinspection: JurisdictionalInspection, priorId: string): void {
+  const d = getDb();
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    insertInspection(reinspection);
+    const res = d
+      .prepare(
+        `UPDATE jurisdictional_inspections SET superseded_by_inspection_id = ?, updated_at = ?
+           WHERE id = ? AND superseded_by_inspection_id IS NULL`
+      )
+      .run(reinspection.id, new Date().toISOString(), priorId);
+    if (Number(res.changes) !== 1) {
+      throw new Error("UNIQUE constraint: prior inspection already superseded");
+    }
+    d.exec("COMMIT;");
+  } catch (e) {
+    d.exec("ROLLBACK;");
+    throw e;
+  }
+}

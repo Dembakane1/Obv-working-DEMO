@@ -1654,6 +1654,12 @@ export interface MilestoneDrawEligibility {
   milestoneId: string;
   result: MilestoneDrawEligibilityResult;
   reasons: GateReason[];
+  /** Stage-specific permit/code-basis gate results. A draw-review-only
+   *  rule is never silently treated as a governance-only rule. */
+  permitBlocksDrawReview: boolean;
+  permitBlocksGovernance: boolean;
+  codeBasisBlocksDrawReview: boolean;
+  codeBasisBlocksGovernance: boolean;
   computedAt: string;
 }
 

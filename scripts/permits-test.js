@@ -365,16 +365,20 @@ function readZip(buf) {
     );
 
     // ================= PART E · official-source artifact hashing =================
+    const pngBytes = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from("OFFICIAL RESULT CERTIFICATE"),
+    ]);
     const artifact = (await j("compliance", "POST", "/api/official-sources", {
       projectId: "proj-r47", inspectionId: re.id, sourceType: "OFFICIAL_DOCUMENT",
-      officialStatusText: "Final certificate", artifactFilename: "certificate.txt",
-      artifactDataUrl: "data:text/plain;base64," + Buffer.from("OFFICIAL RESULT: PASSED\n").toString("base64"),
+      officialStatusText: "Final certificate", artifactFilename: "certificate.png",
+      artifactDataUrl: "data:image/png;base64," + pngBytes.toString("base64"),
     }, 201)).record;
     const { createHash } = require("node:crypto");
-    const expectHash = createHash("sha256").update("OFFICIAL RESULT: PASSED\n").digest("hex");
+    const expectHash = createHash("sha256").update(pngBytes).digest("hex");
     assert(
-      artifact.sourceArtifactHash === expectHash && artifact.sourceDocumentPath,
-      "captured source artifact bytes are stored with a computed sha256 administrative hash"
+      artifact.sourceArtifactHash === expectHash && artifact.sourceDocumentPath.endsWith(".png"),
+      "captured source artifact bytes are stored with a computed sha256 administrative hash and sniffed extension"
     );
 
     // ================= PART F · exceptions =================
@@ -490,6 +494,215 @@ function readZip(buf) {
       flat.includes("MANDATORY_OFFICIAL_SOURCE_MISSING") && flat.includes("SOURCE_ARTIFACT_HASH_MISMATCH"),
       "audit integrity reports CRITICAL findings for missing mandatory source and tampered artifact bytes"
     );
+
+    // ============ HARDENING · stage-specific permit gating truth table ============
+    // Real verified milestone: field submits demo evidence for ms-3.
+    const fctx = await (await api("field", "GET", "/api/field-context")).json();
+    const demoId = fctx.projects[0].milestones.find((m) => m.id === "ms-3").demoPhotos[0].id;
+    await j("field", "POST", "/api/evidence", {
+      milestoneId: "ms-3", demoPhotoId: demoId, latitude: -11.85, longitude: 33.6,
+      capturedAt: new Date().toISOString(),
+      deviceMetadata: { userAgent: "t", platform: "test", screen: "1x1", language: "en" },
+      isDemoFallback: true,
+    }, 201);
+    // Clear the seeded HIGH field issue bound to ms-3 (its exception would
+    // otherwise be an unrelated hard blocker in this matrix).
+    await fetch(BASE + "/api/issues/issue-1/status", {
+      method: "POST",
+      headers: { cookie: jars.pm, "content-type": "application/json" },
+      body: JSON.stringify({ status: "RESOLVED", resolutionSummary: "Cleared for stage-matrix test" }),
+    });
+    await j("funder", "POST", "/api/exceptions/evaluate", {});
+    await j("funder", "POST", `/api/permits/${p3.id}/links`, { milestoneId: "ms-3" }, 201); // p3 is EXPIRED
+    const setStage = (dr, gov) =>
+      j("funder", "POST", "/api/milestones/ms-3/inspection-requirement", {
+        requirement: "REQUIRED", requirementBasis: "Stage matrix test", inspectionType: "structural",
+        mustPassBeforeGovernance: false, mustPassBeforeDrawReview: false,
+        permitRequired: true, permitMustBeActiveBeforeDrawReview: dr, permitMustBeActiveBeforeGovernance: gov,
+      });
+    await setStage(true, false);
+    let e3 = (await gates("ms-3")).eligibility;
+    assert(
+      e3.permitBlocksDrawReview === true && e3.permitBlocksGovernance === false &&
+        e3.result === "NOT_ELIGIBLE" &&
+        e3.reasons.some((r) => r.code === "PERMIT_EXPIRED" && !r.blocking && r.detail.includes("Blocks: draw review.")),
+      "draw-review-only permit gate: prevents ELIGIBLE_FOR_DRAW_REVIEW without becoming a governance blocker"
+    );
+    await setStage(false, true);
+    e3 = (await gates("ms-3")).eligibility;
+    assert(
+      e3.permitBlocksDrawReview === false && e3.permitBlocksGovernance === true &&
+        e3.result === "BLOCKED" &&
+        e3.reasons.some((r) => r.code === "PERMIT_EXPIRED" && r.blocking && r.detail.includes("Blocks: governance.")),
+      "governance-only permit gate: hard blocker labeled with its stage"
+    );
+    await setStage(true, true);
+    e3 = (await gates("ms-3")).eligibility;
+    assert(
+      e3.permitBlocksDrawReview === true && e3.permitBlocksGovernance === true && e3.result === "BLOCKED" &&
+        e3.reasons.some((r) => r.detail.includes("Blocks: draw review and governance.")),
+      "both-stage permit gate: blocks both stages explicitly"
+    );
+    await setStage(false, false);
+    e3 = (await gates("ms-3")).eligibility;
+    assert(
+      e3.permitBlocksDrawReview === false && e3.permitBlocksGovernance === false &&
+        e3.result === "ELIGIBLE_FOR_DRAW_REVIEW" &&
+        e3.reasons.some((r) => r.code === "PERMIT_EXPIRED" && !r.blocking && r.detail.includes("non-gating")),
+      "no stage flags: the permit issue is recorded as a non-gating condition and eligibility is restored"
+    );
+
+    // ============ HARDENING · recorded results are historically terminal ============
+    exec("INSERT INTO milestones (id, project_id, seq, title, requirement, tranche_amount, status, account_status) VALUES ('ms-x-2', 'proj-x', 2, 'X2', 'x', 1000, 'NOT_STARTED', 'HELD')");
+    await j("funder", "POST", "/api/milestones/ms-x-2/inspection-requirement", {
+      requirement: "REQUIRED", requirementBasis: "Terminal test", inspectionType: "test",
+    });
+    const A = (await j("funder", "POST", "/api/milestones/ms-x-2/inspections", { inspectionType: "test" }, 201)).inspection;
+    await j("funder", "POST", `/api/inspections/${A.id}/complete`, {});
+    await j("funder", "POST", `/api/inspections/${A.id}/result`, {
+      result: "CORRECTIONS_REQUIRED", correctionSummary: "Corrections for terminal test",
+    });
+    const attempts = [
+      await api("funder", "POST", `/api/inspections/${A.id}/schedule`, { scheduledAt: "2026-09-01T09:00:00Z" }),
+      await api("funder", "POST", `/api/inspections/${A.id}/cancel`, { reason: "should fail" }),
+      await api("funder", "POST", `/api/inspections/${A.id}/complete`, {}),
+      await api("funder", "POST", `/api/inspections/${A.id}/result`, { result: "PASSED" }),
+    ];
+    const aRow = q1("SELECT status, result, correction_cleared_at cca FROM jurisdictional_inspections WHERE id = ?", A.id);
+    assert(
+      attempts.every((r) => r.status === 409) &&
+        aRow.status === "CORRECTIONS_REQUIRED" && aRow.result === "CORRECTIONS_REQUIRED",
+      "CORRECTIONS_REQUIRED records cannot be rescheduled, cancelled, completed or re-resulted — status and result unchanged"
+    );
+
+    // ============ HARDENING · correctionClearedAt lifecycle ============
+    const B = (await j("funder", "POST", `/api/inspections/${A.id}/reinspection`, {})).inspection;
+    const cca = () => q1("SELECT correction_cleared_at c FROM jurisdictional_inspections WHERE id = ?", A.id).c;
+    assert(cca() === null, "reinspection created → correctionClearedAt remains null");
+    await j("funder", "POST", `/api/inspections/${B.id}/schedule`, { scheduledAt: "2026-09-02T09:00:00Z" });
+    assert(cca() === null, "reinspection scheduled → correctionClearedAt remains null");
+    await j("funder", "POST", `/api/inspections/${B.id}/complete`, {});
+    await j("funder", "POST", `/api/inspections/${B.id}/result`, { result: "FAILED", governmentInspectorName: "I" });
+    assert(cca() === null, "reinspection FAILED → correctionClearedAt remains null");
+    const C = (await j("funder", "POST", `/api/inspections/${B.id}/reinspection`, {})).inspection;
+    await j("funder", "POST", `/api/inspections/${C.id}/schedule`, { scheduledAt: "2026-09-03T09:00:00Z" });
+    await j("funder", "POST", `/api/inspections/${C.id}/complete`, {});
+    await j("funder", "POST", `/api/inspections/${C.id}/result`, { result: "PASSED", governmentInspectorName: "I" });
+    const aAfter = q1("SELECT result, correction_cleared_at cca FROM jurisdictional_inspections WHERE id = ?", A.id);
+    assert(
+      aAfter.cca !== null && aAfter.result === "CORRECTIONS_REQUIRED",
+      "passed reinspection populates correctionClearedAt while the original corrections result stays unchanged"
+    );
+
+    // ============ HARDENING · official-source relational consistency ============
+    const mismatchMs = await api("compliance", "POST", "/api/official-sources", {
+      projectId: "proj-x", inspectionId: C.id, milestoneId: "ms-x-1",
+      sourceType: "MANUAL_OFFICIAL_REFERENCE", officialRecordNumber: "X-1",
+    });
+    assert(mismatchMs.status === 422, "milestoneId conflicting with the inspection's milestone is rejected (422)");
+    const otherPermit = (await j("funder", "POST", "/api/projects/proj-r47/permits", {
+      permitNumber: "OTHER-77", permitType: "OTHER",
+    }, 201)).permit;
+    const mismatchPermit = await api("compliance", "POST", "/api/official-sources", {
+      projectId: "proj-r47", inspectionId: re.id, permitId: otherPermit.id,
+      sourceType: "MANUAL_OFFICIAL_REFERENCE", officialRecordNumber: "X-2",
+    });
+    assert(mismatchPermit.status === 422, "permitId conflicting with the inspection's first-class permit is rejected (422)");
+    const unlinked = await api("compliance", "POST", "/api/official-sources", {
+      projectId: "proj-r47", milestoneId: "ms-5", permitId: otherPermit.id,
+      sourceType: "MANUAL_OFFICIAL_REFERENCE", officialRecordNumber: "X-3",
+    });
+    assert(unlinked.status === 422, "permitId not linked to the referenced milestone is rejected (422)");
+
+    // ============ HARDENING · substantive provenance required ============
+    const empty = await api("compliance", "POST", "/api/official-sources", {
+      projectId: "proj-x", inspectionId: C.id, sourceType: "OFFICIAL_PORTAL_LOOKUP",
+    });
+    assert(empty.status === 422, "a source with only sourceType and an association is rejected — no provenance basis");
+    const badUrl = await api("compliance", "POST", "/api/official-sources", {
+      projectId: "proj-x", inspectionId: C.id, sourceType: "OFFICIAL_PORTAL_LOOKUP",
+      officialSystemName: "Portal", officialRecordUrl: "javascript:alert(1)",
+    });
+    assert(badUrl.status === 422, "a malformed/unsafe record URL makes the source INVALID and rejected");
+
+    // ============ HARDENING · PM operational vs formal status ============
+    const pmDraft = await api("pm", "POST", "/api/projects/proj-r47/permits", {
+      permitNumber: "PM-OP-1", permitType: "ROADWORKS", status: "DRAFT",
+    });
+    assert(pmDraft.status === 201, "project manager records an operational DRAFT permit");
+    const pmDraftId = q1("SELECT id FROM permits WHERE permit_number = 'PM-OP-1'").id;
+    const pmFormal = await api("pm", "POST", "/api/projects/proj-r47/permits", {
+      permitNumber: "PM-OP-2", permitType: "ROADWORKS", status: "ACTIVE",
+    });
+    assert(pmFormal.status === 403, "project manager cannot create a permit with formal ACTIVE status");
+    const pmApplied = await api("pm", "POST", `/api/permits/${pmDraftId}`, { status: "APPLIED", reason: "Submitted to authority" });
+    assert(pmApplied.status === 200, "project manager may move an operational record DRAFT → APPLIED");
+    const pmIssue = await api("pm", "POST", `/api/permits/${pmDraftId}`, { status: "ISSUED", reason: "trying" });
+    assert(pmIssue.status === 403, "project manager cannot set formal ISSUED status — lender-side determination only");
+    const funderIssue = await api("funder", "POST", `/api/permits/${pmDraftId}`, { status: "ISSUED", reason: "Authority confirmation reviewed" });
+    assert(funderIssue.status === 200, "funder representative records the reviewed formal status determination");
+
+    // ============ HARDENING · concurrent reinspection creation ============
+    const E = (await j("funder", "POST", "/api/milestones/ms-x-2/inspections", { inspectionType: "test" }, 201)).inspection;
+    await j("funder", "POST", `/api/inspections/${E.id}/complete`, {});
+    await j("funder", "POST", `/api/inspections/${E.id}/result`, { result: "FAILED", governmentInspectorName: "I" });
+    const [c1, c2] = await Promise.all([
+      api("funder", "POST", `/api/inspections/${E.id}/reinspection`, {}),
+      api("funder", "POST", `/api/inspections/${E.id}/reinspection`, {}),
+    ]);
+    const statuses = [c1.status, c2.status].sort();
+    const children = q1("SELECT COUNT(*) c FROM jurisdictional_inspections WHERE reinspection_of_inspection_id = ?", E.id).c;
+    assert(
+      statuses[0] === 200 && statuses[1] === 409 && children === 1,
+      "concurrent duplicate reinspection attempts: one success, one controlled conflict, exactly one child"
+    );
+
+    // ============ HARDENING · date validation and expiration boundary ============
+    const day = (offset) => new Date(Date.now() + offset * 86400000).toISOString().slice(0, 10);
+    const invalidDate = await api("funder", "POST", "/api/projects/proj-r47/permits", {
+      permitNumber: "BAD-DATE", permitType: "X", expiresAt: "not-a-date",
+    });
+    assert(invalidDate.status === 400, "invalid ISO dates are rejected (real parsing, not lexical comparison)");
+    const mk = async (num, expires) =>
+      (await j("funder", "POST", "/api/projects/proj-r47/permits", {
+        permitNumber: num, permitType: "X", status: "ISSUED", issuedAt: "2026-01-01", expiresAt: expires,
+      }, 201)).permit.id;
+    const effOf = async (id) => (await j("funder", "GET", `/api/permits/${id}`)).effectiveStatus;
+    assert((await effOf(await mk("EXP-PAST", day(-2)))) === "EXPIRED", "date-only expiry before today → EXPIRED");
+    assert((await effOf(await mk("EXP-TODAY", day(0)))) === "ISSUED", "date-only expiry TODAY → still valid through the end of the date (UTC boundary documented)");
+    assert((await effOf(await mk("EXP-FUTURE", day(2)))) === "ISSUED", "date-only expiry in the future → valid");
+    assert(
+      (await effOf(await mk("EXP-TS", new Date(Date.now() - 3600e3).toISOString()))) === "EXPIRED",
+      "timestamp expiry one hour ago → EXPIRED at that exact instant"
+    );
+
+    // ============ HARDENING · artifact security ============
+    const html = Buffer.from("<html><script>alert(1)</script></html>");
+    const badType = await api("compliance", "POST", "/api/official-sources", {
+      projectId: "proj-x", inspectionId: C.id, sourceType: "OFFICIAL_DOCUMENT",
+      officialStatusText: "sneaky", artifactFilename: "cert.pdf",
+      artifactDataUrl: "data:application/pdf;base64," + html.toString("base64"),
+    });
+    assert(
+      badType.status === 400,
+      "HTML/script content is rejected by magic-byte sniffing even with a pdf filename and MIME claim"
+    );
+    const freshArt = (await j("compliance", "POST", "/api/official-sources", {
+      projectId: "proj-x", inspectionId: C.id, sourceType: "OFFICIAL_DOCUMENT",
+      officialStatusText: "Reinspection certificate", artifactFilename: "reinspection.png",
+      artifactDataUrl: "data:image/png;base64," + pngBytes.toString("base64"),
+    }, 201)).record;
+    const artDl = await api("funder", "GET", `/official-sources/${freshArt.id}/artifact`);
+    assert(
+      artDl.status === 200 &&
+        (artDl.headers.get("content-disposition") ?? "").startsWith("attachment") &&
+        artDl.headers.get("x-content-type-options") === "nosniff" &&
+        artDl.headers.get("content-type") === "image/png",
+      "artifact downloads are authenticated attachments with nosniff and the sniffed content type"
+    );
+    const dlAnon = await fetch(`${BASE}/official-sources/${freshArt.id}/artifact`);
+    const dlForeign = await api("outsider", "GET", `/official-sources/${freshArt.id}/artifact`);
+    assert(dlAnon.status === 404 && dlForeign.status === 404, "artifact downloads are denied (404) without an authorized session");
 
     // ================= PART I · read-only financial boundary =================
     const svc = fs.readFileSync("dist/server/services/permits.js", "utf8");

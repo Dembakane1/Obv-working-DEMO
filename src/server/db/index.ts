@@ -1109,6 +1109,13 @@ export function getDb(): DatabaseSync {
     migrateApprovalRequestsForChangeOrders(db);
     migrateThreadsForDraws(db);
     migrateInspectionsForReinspection(db);
+    // One direct reinspection child per prior inspection — the database
+    // guarantees no parallel chain heads even under concurrent creation.
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_reinspection_single_child
+         ON jurisdictional_inspections(reinspection_of_inspection_id)
+         WHERE reinspection_of_inspection_id IS NOT NULL`
+    );
     // Database-level inbound dedupe: one Message per external message id
     // per thread (notification replays hit this even if app checks race).
     db.exec(

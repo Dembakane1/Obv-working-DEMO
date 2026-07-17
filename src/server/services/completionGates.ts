@@ -21,6 +21,7 @@
 import * as repo from "../db/repo";
 import { audit, snapshotProject } from "./pilot/onboarding";
 import { canAccessProjectFinance } from "./budgetProgress";
+import { effectiveStatus as permitEffectiveStatus, completeSourcesForInspection } from "./permits";
 import type {
   ContractorCompletionStatus, EvidenceReviewStatus, GateReason,
   InspectionGateState, InspectionRequirement, InspectionRequirementValue,
@@ -322,8 +323,14 @@ function getInspectionFor(user: User, inspectionId: string): JurisdictionalInspe
 export function scheduleInspection(user: User, id: string, scheduledAt: string): JurisdictionalInspection {
   const inspection = getInspectionFor(user, id);
   if (user.role === "FIELD") throw new GateError("Not authorized to schedule inspections", 403);
-  if (["PASSED", "FAILED", "CANCELLED"].includes(inspection.status)) {
-    throw new GateError(`Inspection is ${inspection.status} — scheduling is closed`, 409);
+  if (inspection.result !== null) {
+    throw new GateError(
+      `Inspection already has a recorded result (${inspection.result}) — the record is historically terminal; create a reinspection instead`,
+      409
+    );
+  }
+  if (inspection.status === "CANCELLED" || inspection.supersededByInspectionId) {
+    throw new GateError(`Inspection is ${inspection.status === "CANCELLED" ? "CANCELLED" : "superseded"} — scheduling is closed`, 409);
   }
   if (!scheduledAt || !Number.isFinite(Date.parse(scheduledAt))) {
     throw new GateError("scheduledAt must be a valid timestamp");
@@ -340,6 +347,12 @@ export function scheduleInspection(user: User, id: string, scheduledAt: string):
 export function markInspectionCompleted(user: User, id: string, completedAt?: string | null): JurisdictionalInspection {
   const inspection = getInspectionFor(user, id);
   if (user.role === "FIELD") throw new GateError("Not authorized to update inspections", 403);
+  if (inspection.result !== null) {
+    throw new GateError(
+      `Inspection already has a recorded result (${inspection.result}) — the record is historically terminal`,
+      409
+    );
+  }
   if (!["SCHEDULED", "REQUIRED_UNSCHEDULED"].includes(inspection.status)) {
     throw new GateError(`Inspection is ${inspection.status} — cannot mark completed`, 409);
   }
@@ -406,10 +419,10 @@ export function recordInspectionResult(
   if (
     input.result === "PASSED" &&
     req?.officialSourceRequired &&
-    repo.listOfficialSourcesForInspection(id).length === 0
+    completeSourcesForInspection(id).length === 0
   ) {
     throw new GateError(
-      "This milestone's configuration requires an official source record before a PASSED result can be recorded"
+      "This milestone's configuration requires a COMPLETE official source record (meaningful provenance basis) before a PASSED result can be recorded"
     );
   }
   if (input.result === "CORRECTIONS_REQUIRED" && !(input.correctionSummary ?? "").trim()) {
@@ -430,6 +443,33 @@ export function recordInspectionResult(
     correctionDueAt: input.correctionDueAt?.trim() || null,
     notes: input.notes?.trim() || inspection.notes,
   });
+  // A PASSED reinspection is the event that clears the prior record's
+  // corrections state (correctionClearedAt) — an audited derivation,
+  // never a rewrite of the prior's recorded result.
+  if (input.result === "PASSED" && inspection.reinspectionOfInspectionId) {
+    // Walk the whole chain backwards: a PASSED reinspection clears the
+    // corrections state of every CORRECTIONS_REQUIRED ancestor (a failed
+    // intermediate reinspection cleared nothing). Bounded walk — the
+    // partial unique index makes chains linear and acyclic.
+    let ancestorId: string | null = inspection.reinspectionOfInspectionId;
+    const walked = new Set<string>();
+    while (ancestorId && !walked.has(ancestorId)) {
+      walked.add(ancestorId);
+      const ancestor = repo.getInspection(ancestorId);
+      if (!ancestor) break;
+      if (ancestor.status === "CORRECTIONS_REQUIRED" && ancestor.correctionClearedAt === null) {
+        repo.updateInspection(ancestor.id, { correctionClearedAt: now });
+        audit({
+          projectId: inspection.projectId, actorUserId: user.id,
+          action: "CORRECTIONS_CLEARED", entityType: "INSPECTION", entityId: ancestor.id,
+          reason: null,
+          beforeSummary: "correctionClearedAt=null",
+          afterSummary: `cleared by PASSED reinspection ${id} (recorded result ${ancestor.result} preserved)`,
+        });
+      }
+      ancestorId = ancestor.reinspectionOfInspectionId;
+    }
+  }
   audit({
     projectId: inspection.projectId, actorUserId: user.id,
     action: "INSPECTION_RESULT_RECORDED", entityType: "INSPECTION", entityId: id,
@@ -443,8 +483,11 @@ export function recordInspectionResult(
 export function cancelInspection(user: User, id: string, reason?: string | null): JurisdictionalInspection {
   const inspection = getInspectionFor(user, id);
   if (user.role === "FIELD") throw new GateError("Not authorized to cancel inspections", 403);
-  if (["PASSED", "FAILED"].includes(inspection.status)) {
-    throw new GateError(`Inspection already has a recorded result (${inspection.status})`, 409);
+  if (inspection.result !== null) {
+    throw new GateError(
+      `Inspection already has a recorded result (${inspection.result}) — recorded results are historically terminal and cannot be cancelled`,
+      409
+    );
   }
   repo.updateInspection(id, { status: "CANCELLED", notes: reason?.trim() || inspection.notes });
   audit({
@@ -513,13 +556,19 @@ export function createReinspection(
     createdAt: now,
     updatedAt: now,
   };
-  repo.insertInspection(reinspection);
-  // Forward chain link on the prior record — an audited administrative
-  // link, never a rewrite of the recorded result.
-  repo.updateInspection(prior.id, {
-    supersededByInspectionId: reinspection.id,
-    correctionClearedAt: prior.status === "CORRECTIONS_REQUIRED" ? now : prior.correctionClearedAt,
-  });
+  // Transactional: insert the reinspection and set the prior's forward
+  // link atomically (one direct child per prior enforced by a partial
+  // unique index — concurrent duplicates get one success, one conflict).
+  // correctionClearedAt stays null until a linked reinspection actually
+  // records PASSED — creating or scheduling a reinspection clears nothing.
+  try {
+    repo.createReinspectionTx(reinspection, prior.id);
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) {
+      throw new GateError("This inspection already has a reinspection — follow the active chain head", 409);
+    }
+    throw e;
+  }
   audit({
     projectId: project.id, actorUserId: user.id, action: "REINSPECTION_CREATED",
     entityType: "INSPECTION", entityId: reinspection.id, reason: input.notes?.trim() || null,
@@ -637,6 +686,10 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
           blocking: false,
         },
       ],
+      permitBlocksDrawReview: false,
+      permitBlocksGovernance: false,
+      codeBasisBlocksDrawReview: false,
+      codeBasisBlocksGovernance: false,
       computedAt,
     };
   }
@@ -675,65 +728,81 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
   // milestone are relevant — an unrelated project permit never blocks).
   // Conservative: gates apply only where the requirement configuration
   // turned them on, so legacy behavior is bit-for-bit unchanged. ----
-  const permitGovGated = req?.permitRequired && (req.permitMustBeActiveBeforeGovernance || req.permitMustBeActiveBeforeDrawReview);
   const linkedPermits = repo
     .listPermitLinksForMilestone(milestoneId)
     .map((l) => repo.getPermit(l.permitId))
     .filter((x): x is NonNullable<typeof x> => x !== null)
     .filter((x) => !req?.requiredPermitType || x.permitType === req.requiredPermitType);
+  // Permit issues are collected once; each configured stage then gates
+  // explicitly. A draw-review-only rule blocks ELIGIBLE_FOR_DRAW_REVIEW;
+  // a governance rule is a hard blocker. Neither flag set → the issue is
+  // recorded as a non-gating condition. Legacy defaults (all flags off)
+  // are bit-for-bit unchanged.
+  const permitIssues: Array<{ code: string; detail: string }> = [];
   if (req?.permitRequired) {
-    const blocking = Boolean(req.permitMustBeActiveBeforeGovernance);
     if (linkedPermits.length === 0) {
-      add(
-        "REQUIRED_PERMIT_MISSING",
-        `A ${req.requiredPermitType ? `${req.requiredPermitType} ` : ""}permit is required for this milestone but no permit record is linked.`,
-        blocking
-      );
+      permitIssues.push({
+        code: "REQUIRED_PERMIT_MISSING",
+        detail: `A ${req.requiredPermitType ? `${req.requiredPermitType} ` : ""}permit is required for this milestone but no permit record is linked.`,
+      });
     } else {
-      const nowIso = new Date().toISOString();
       for (const permit of linkedPermits) {
-        const effective =
-          (permit.status === "ISSUED" || permit.status === "ACTIVE") &&
-          permit.expiresAt !== null &&
-          permit.expiresAt < nowIso
-            ? "EXPIRED"
-            : permit.status;
+        const effective = permitEffectiveStatus(permit);
         if (effective === "EXPIRED") {
-          add("PERMIT_EXPIRED", `Linked permit ${permit.permitNumber} is expired.`, blocking);
+          permitIssues.push({ code: "PERMIT_EXPIRED", detail: `Linked permit ${permit.permitNumber} is expired.` });
         } else if (effective === "REVOKED") {
-          add("PERMIT_REVOKED", `Linked permit ${permit.permitNumber} has been revoked.`, blocking);
+          permitIssues.push({ code: "PERMIT_REVOKED", detail: `Linked permit ${permit.permitNumber} has been revoked.` });
         } else if (effective === "SUSPENDED") {
-          add("PERMIT_SUSPENDED", `Linked permit ${permit.permitNumber} is suspended.`, blocking);
+          permitIssues.push({ code: "PERMIT_SUSPENDED", detail: `Linked permit ${permit.permitNumber} is suspended.` });
         } else if (effective !== "ISSUED" && effective !== "ACTIVE") {
           // UNKNOWN / DRAFT / APPLIED / CLOSED never behave as ACTIVE.
-          add(
-            "PERMIT_NOT_ACTIVE",
-            `Linked permit ${permit.permitNumber} is ${effective} — not an active permit.`,
-            blocking
-          );
+          permitIssues.push({
+            code: "PERMIT_NOT_ACTIVE",
+            detail: `Linked permit ${permit.permitNumber} is ${effective} — not an active permit.`,
+          });
         }
       }
     }
   }
-  if (req?.codeBasisRequired) {
-    const withBasis = linkedPermits.filter((x) => x.applicableCodeEdition && x.codeBasis);
-    if (linkedPermits.length === 0 || withBasis.length === 0) {
-      add(
-        "CODE_BASIS_MISSING",
-        "The applicable code basis has not been recorded for this milestone's linked permit(s). OBV records the reviewed governing basis — it does not independently determine legal compliance.",
-        true
-      );
-    }
+  const permitBlocksDrawReview = permitIssues.length > 0 && Boolean(req?.permitMustBeActiveBeforeDrawReview);
+  const permitBlocksGovernance = permitIssues.length > 0 && Boolean(req?.permitMustBeActiveBeforeGovernance);
+  const permitStage =
+    permitBlocksDrawReview && permitBlocksGovernance
+      ? " Blocks: draw review and governance."
+      : permitBlocksGovernance
+        ? " Blocks: governance."
+        : permitBlocksDrawReview
+          ? " Blocks: draw review."
+          : " Recorded as a non-gating permit condition.";
+  for (const issue of permitIssues) {
+    add(issue.code, issue.detail + permitStage, permitBlocksGovernance);
+  }
+
+  // Code basis gates governance where configured (codeBasisRequired is a
+  // before-governance control; no draw-review flag exists for it in this
+  // build, so codeBasisBlocksDrawReview is always false — documented).
+  const codeBasisProblem = Boolean(
+    req?.codeBasisRequired &&
+      (linkedPermits.length === 0 || !linkedPermits.some((x) => x.applicableCodeEdition && x.codeBasis))
+  );
+  const codeBasisBlocksDrawReview = false;
+  const codeBasisBlocksGovernance = codeBasisProblem;
+  if (codeBasisProblem) {
+    add(
+      "CODE_BASIS_MISSING",
+      "The applicable code basis has not been recorded for this milestone's linked permit(s). OBV records the reviewed governing basis — it does not independently determine legal compliance. Blocks: governance.",
+      true
+    );
   }
   if (
     req?.officialSourceRequired &&
     gate === "PASSED"
   ) {
     const head = activeInspection(milestoneId);
-    if (head && repo.listOfficialSourcesForInspection(head.id).length === 0) {
+    if (head && completeSourcesForInspection(head.id).length === 0) {
       add(
         "OFFICIAL_SOURCE_MISSING",
-        "A PASSED result is recorded but the configured official source record is missing.",
+        "A PASSED result is recorded but no COMPLETE official source record supports it.",
         true
       );
     }
@@ -821,7 +890,8 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
     evidence.status === "VERIFIED" &&
     (gate === "NOT_APPLICABLE" || gate === "PASSED" || !governanceGated) &&
     gate !== "REQUIREMENT_UNKNOWN" &&
-    !(permitGovGated && reasons.some((r) => r.code.startsWith("PERMIT") || r.code === "REQUIRED_PERMIT_MISSING")) &&
+    !permitBlocksGovernance &&
+    !codeBasisBlocksGovernance &&
     !reasons.some((r) => r.code === "CHANGE_ORDER_NOT_APPROVED")
   ) {
     result = "READY_FOR_GOVERNANCE";
@@ -835,13 +905,24 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
   } else if (
     evidence.status === "VERIFIED" &&
     gate !== "REQUIREMENT_UNKNOWN" &&
-    (gate === "NOT_APPLICABLE" || gate === "PASSED" || !drawReviewGated)
+    (gate === "NOT_APPLICABLE" || gate === "PASSED" || !drawReviewGated) &&
+    !permitBlocksDrawReview &&
+    !codeBasisBlocksDrawReview
   ) {
     result = "ELIGIBLE_FOR_DRAW_REVIEW";
   } else {
     result = "NOT_ELIGIBLE";
   }
-  return { milestoneId, result, reasons, computedAt };
+  return {
+    milestoneId,
+    result,
+    reasons,
+    permitBlocksDrawReview,
+    permitBlocksGovernance,
+    codeBasisBlocksDrawReview,
+    codeBasisBlocksGovernance,
+    computedAt,
+  };
 }
 
 // ============================================ the six-gate assembly

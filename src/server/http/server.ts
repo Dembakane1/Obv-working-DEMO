@@ -13,7 +13,7 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { getDb, REPORTS_DIR, WORM_DIR } from "../db/index";
+import { getDb, REPORTS_DIR, WORM_DIR, UPLOADS_DIR } from "../db/index";
 import * as repo from "../db/repo";
 import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
@@ -3049,6 +3049,35 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       else sendJson(res, { permit });
       return;
     }
+  }
+
+  // Authenticated official-source artifact download. Never inline: the
+  // browser must not render or sniff artifact content.
+  const srcArtifactMatch = /^\/official-sources\/([^/]+)\/artifact$/.exec(pathname);
+  if (method === "GET" && srcArtifactMatch) {
+    const user2 = currentUser(req);
+    const record = user2 ? repo.getOfficialSource(srcArtifactMatch[1]) : null;
+    const project = record ? repo.getProject(record.projectId) : null;
+    if (!user2 || !record || !project || !budget.canAccessProjectFinance(user2, project) || !record.sourceDocumentPath) {
+      sendJson(res, { error: "Not found" }, 404);
+      return;
+    }
+    const filePath = path.join(UPLOADS_DIR, record.sourceDocumentPath);
+    if (!filePath.startsWith(UPLOADS_DIR) || !fs.existsSync(filePath)) {
+      sendJson(res, { error: "Not found" }, 404);
+      return;
+    }
+    const bytes = fs.readFileSync(filePath);
+    const sniffed = permits.sniffArtifactType(bytes);
+    res.writeHead(200, {
+      "Content-Type": sniffed?.mime ?? "application/octet-stream",
+      "Content-Disposition": `attachment; filename="${path.basename(record.sourceDocumentPath)}"`,
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "no-store",
+      "Content-Length": bytes.length,
+    });
+    res.end(bytes);
+    return;
   }
 
   if (method === "POST" && pathname === "/api/official-sources") {
