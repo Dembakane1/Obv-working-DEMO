@@ -2186,9 +2186,12 @@ table.holdings .h-sub { margin-top: 3px; line-height: 1.45; }
 .checks .mark.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok-line); }
 .checks .mark.bad { background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad-line); }
 
-/* ---- evidence panel: image-dominant ---- */
-.evidence-panel { grid-template-columns: 400px 1fr; }
-.evidence-panel .photo img { min-height: 280px; }
+/* ---- evidence panel: image-dominant (desktop only — the base rule's
+   820px collapse to one column must win on mobile) ---- */
+@media (min-width: 821px) {
+  .evidence-panel { grid-template-columns: 400px 1fr; }
+  .evidence-panel .photo img { min-height: 280px; }
+}
 
 /* ---- map: dark intelligence shell (presentation only) ---- */
 .map-wrap {
@@ -3435,4 +3438,12 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
 .bvp-open { display: inline-block; margin-top: 8px; font-size: 12.5px; font-weight: 600; }
 @media (max-width: 640px) {
   .bvp-proj-head .bvp-figs { margin-left: 0; width: 100%; }
+}
+
+/* ---- mobile touch targets (44px minimum for primary controls) ---- */
+@media (max-width: 640px) {
+  .btn { min-height: 44px; }
+  .btn.sm { min-height: 40px; }
+  .filter-bar select, .filter-bar .search, .filter-grid .f-lab select { min-height: 44px; }
+  input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 }
