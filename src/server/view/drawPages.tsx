@@ -19,6 +19,7 @@ import {
   roleLabel,
   Metric,
   EmptyStateV2,
+  Methodology,
 } from "./components";
 import type {
   ApprovalRecord,
@@ -250,7 +251,8 @@ export function renderDrawNew(input: {
         sub="Step 1 of the draw workflow: identify the project, draw number, period and requested amount. Line items, documents and evidence are added on the draft workspace before submission."
         crumb={{ href: "/draws", label: "Draw Requests" }}
       />
-      <div className="panel panel-pad" style="max-width:640px">
+      <div className="work-grid">
+      <div className="panel panel-pad">
         <form method="POST" action="/api/draws" className="fo-form">
           <label>Project
             <select name="projectId" required>
@@ -286,6 +288,17 @@ export function renderDrawNew(input: {
             line items that reconcile exactly to the requested amount.
           </p>
         </form>
+      </div>
+      <div>
+        <Methodology title="What happens next">
+          <p>
+            The draft opens a workspace where budget-line items, required documents and
+            field-evidence support are attached. Submission starts the lender review;
+            a review recommendation advises, and only the formal approval workflow can
+            make funds release-eligible.
+          </p>
+        </Methodology>
+      </div>
       </div>
     </AppShell>
   );
@@ -1010,7 +1023,7 @@ function renderReviewTab(d: DrawDetailData, reviewOpen: boolean): VNode {
           {kpi("Exception", rec.exceptionAmount > 0 ? money(rec.exceptionAmount) : "—", rec.exceptionAmount > 0 ? "warn" : undefined)}
           {kpi("Retainage", rec.retainageAmount > 0 ? money(rec.retainageAmount) : "—")}
         </div>
-        <h4 style="margin:6px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)">Reasons</h4>
+        <h4 style="margin:6px 0 4px;font-size:12px;color:var(--ink-3)">Reasons</h4>
         {rec.reasons.length === 0 ? (
           <p className="sub" style="margin:0">No findings.</p>
         ) : (

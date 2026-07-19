@@ -7,7 +7,7 @@
  */
 import { h, Fragment, VNode, renderDocument } from "./jsx";
 import { icons } from "./icons";
-import { AppShell, NavContext, PageHeader, fmtDate, money, roleLabel, Metric, EmptyStateV2, enumLabel } from "./components";
+import { AppShell, NavContext, PageHeader, fmtDate, money, roleLabel, Metric, EmptyStateV2, enumLabel, Methodology } from "./components";
 import type {
   ApprovalRecord,
   ApprovalRequest,
@@ -141,7 +141,8 @@ export function renderCoNew(input: {
         sub="A draft change order documents a proposed change. Nothing changes until it is submitted, reviewed, and formally approved by the required roles."
         crumb={{ href: "/change-orders", label: "Change Orders" }}
       />
-      <div className="panel panel-pad" style="max-width:680px">
+      <div className="work-grid">
+      <div className="panel panel-pad">
         <form method="POST" action="/api/change-orders" className="fo-form">
           <label>Project
             <select name="projectId" required>
@@ -186,6 +187,17 @@ export function renderCoNew(input: {
             <a className="btn ghost" href="/change-orders">Cancel</a>
           </div>
         </form>
+      </div>
+      <div>
+        <Methodology title="What happens next">
+          <p>
+            The draft documents the proposed change, affected milestones and budget lines,
+            and supporting documents. Review may approve a different amount than requested —
+            partial approval is explicit — and nothing modifies the approved budget until
+            formal approval applies it transactionally with an audited snapshot.
+          </p>
+        </Methodology>
+      </div>
       </div>
     </AppShell>
   );
@@ -269,7 +281,7 @@ export function renderCoDetail(d: CoDetailData): string {
           </dl>
           {preview.affectedMilestones.length > 0 ? (
             <>
-              <h4 style="margin:10px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)">Affected milestones</h4>
+              <h4 style="margin:10px 0 4px;font-size:12px;color:var(--ink-3)">Affected milestones</h4>
               <ul style="margin:0;padding:0;list-style:none;font-size:12px">
                 {preview.affectedMilestones.map((m) => (
                   <li style="padding:3px 0;border-bottom:1px solid var(--line)">
@@ -282,7 +294,7 @@ export function renderCoDetail(d: CoDetailData): string {
           ) : null}
           {preview.affectedBudgetLines.length > 0 ? (
             <>
-              <h4 style="margin:10px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)">Affected budget lines</h4>
+              <h4 style="margin:10px 0 4px;font-size:12px;color:var(--ink-3)">Affected budget lines</h4>
               <ul style="margin:0;padding:0;list-style:none;font-size:12px">
                 {preview.affectedBudgetLines.map((l) => (
                   <li style="padding:3px 0;border-bottom:1px solid var(--line)">

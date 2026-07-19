@@ -33,7 +33,7 @@ export function renderPermitRegister(input: {
   const { project, filters } = input;
   const base = `/project/${project.id}/permits`;
   const sel = (name: string, current: string | undefined, options: Array<[string, string]>): VNode => (
-    <label style="display:flex;flex-direction:column;gap:3px;font:700 10px/1 var(--sans,inherit);letter-spacing:.05em;text-transform:uppercase;color:var(--muted)">
+    <label style="display:flex;flex-direction:column;gap:3px;font:550 12px/1.2 var(--sans,inherit);color:var(--muted)">
       {name}
       <select name={name.toLowerCase()} style="font-size:12px;padding:5px 8px;border:1px solid var(--line-2);border-radius:6px">
         <option value="">All</option>

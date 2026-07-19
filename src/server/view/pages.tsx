@@ -3572,6 +3572,10 @@ export function renderCommunications(input: {
           />
         ) : null}
       </div>
+      <p className="footer-note">
+        Communications coordinate work. They do not establish verified evidence, formal
+        approval, inspection results, or financial release.
+      </p>
       <script src="/js/poll.js" defer></script>
       <script src="/js/comms.js" defer></script>
     </AppShell>
