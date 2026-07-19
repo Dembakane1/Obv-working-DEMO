@@ -1,69 +1,80 @@
 /* =====================================================================
-   OBV design system v3 — institutional infrastructure-finance software.
-   Warm neutral canvas · midnight navy chrome · controlled deep blue
-   actions · hairline borders · 8px grid · typography-led hierarchy.
-   No gradients, no glass, minimal shadow.
+   OBV design system v4 — enterprise construction-finance control platform.
+   Cool neutral canvas · graphite-navy chrome · restrained blue action ·
+   hairline borders · 4/8px spacing grid · typography-led hierarchy ·
+   sentence-case labels · tabular numerals for financial data.
+   No gradients, no glass, minimal shadow, no decorative uppercase.
    ===================================================================== */
 
 :root {
-  /* canvas & surfaces (warm neutrals) */
-  --canvas: #f5f4f0;
+  /* canvas & surfaces (cool neutrals) */
+  --canvas: #f4f5f8;
   --surface: #ffffff;
-  --surface-2: #faf9f6;      /* raised header strips */
-  --surface-3: #efede8;
-  --inset: #f1efea;          /* sunken groups */
-  --line: #e3e0d8;
-  --line-2: #cfccc2;
+  --surface-2: #f9fafc;      /* raised header strips */
+  --surface-3: #eef0f4;
+  --inset: #f2f3f6;          /* sunken groups */
+  --line: #e4e7ec;
+  --line-2: #cdd3dc;
 
   /* ink */
-  --ink: #191d26;
-  --ink-2: #3c4350;
-  --ink-3: #6a7280;
-  --ink-4: #979ea9;
+  --ink: #17202e;
+  --ink-2: #3a4454;
+  --ink-3: #64707f;
+  --ink-4: #949ca9;
 
   /* chrome */
-  --navy: #0d1626;
-  --navy-2: #15223a;
+  --navy: #0e1420;
+  --navy-2: #172134;
   --navy-line: rgba(148, 163, 184, 0.16);
-  --navy-text: #a7b4c6;
+  --navy-text: #a5b1c4;
 
   /* action (used sparingly) */
-  --action: #1e4bd2;
-  --action-hover: #163a9f;
-  --action-soft: #eceff9;
+  --action: #2050d8;
+  --action-hover: #1740ab;
+  --action-soft: #ebf0fc;
 
-  /* controlled red badge + approve green (reference direction) */
-  --badge: #e5484d;
+  /* controlled red badge + approve green */
+  --badge: #d94046;
   --approve: #1f7a3f;
   --approve-hover: #17612f;
 
-  /* semantics (muted, institutional) */
-  --ok: #196138;
-  --ok-bg: #eef5ee;
-  --ok-line: #c3dcc7;
-  --warn: #955104;
-  --warn-bg: #faf3e5;
-  --warn-line: #e8d5ac;
+  /* semantics (muted, institutional; AA on their backgrounds) */
+  --ok: #16603a;
+  --ok-bg: #ecf6f0;
+  --ok-line: #bfdecb;
+  --warn: #8f5205;
+  --warn-bg: #fbf3e3;
+  --warn-line: #ead3a8;
   --bad: #a92c21;
-  --bad-bg: #faefec;
-  --bad-line: #ecc8c0;
-  --slate: #55606e;
-  --slate-bg: #f0f0ec;
-  --slate-line: #d9d7cf;
+  --bad-bg: #fbeeec;
+  --bad-line: #ecc7bf;
+  --slate: #525e6e;
+  --slate-bg: #eff1f4;
+  --slate-line: #d7dce3;
+  --info: #1f4fd0;
+  --info-bg: #edf1fc;
+  --info-line: #c4d2f2;
+
+  /* spacing scale */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-7: 32px;
 
   --r: 10px;         /* panels */
   --r-s: 6px;        /* controls, status */
-  --shadow: 0 1px 2px rgba(20, 24, 32, 0.05);
+  --shadow: 0 1px 2px rgba(23, 32, 46, 0.05);
+  --shadow-2: 0 4px 16px rgba(23, 32, 46, 0.09);
 
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --sans: "Inter", "Inter var", -apple-system, "SF Pro Text", "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
 
-  --sidebar-w: 236px;
-  --topbar-h: 50px;
+  --sidebar-w: 240px;
+  --topbar-h: 52px;
+  --bottomnav-h: 62px;
+  --content-max: 1240px;
 }
 
-* { box-sizing: border-box; }
+*, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 
 body {
@@ -75,6 +86,8 @@ body {
   background: var(--canvas);
   font-feature-settings: "cv05", "ss01";
 }
+
+img, video, canvas, svg { max-width: 100%; }
 
 a { color: var(--action); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -88,19 +101,30 @@ code, .mono { font-family: var(--mono); font-size: 0.92em; }
 
 button { font-family: var(--sans); }
 
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* ============================== type scale ============================== */
 
 .t-display {          /* major financial figures, project names */
-  font-size: 24px; font-weight: 650; letter-spacing: -0.025em; line-height: 1.15;
+  font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.15;
   font-variant-numeric: tabular-nums;
 }
-.t-title { font-size: 19px; font-weight: 650; letter-spacing: -0.02em; }
-.t-section { font-size: 13px; font-weight: 650; letter-spacing: -0.005em; }
-.t-meta {
-  font-size: 10.5px; font-weight: 600; letter-spacing: 0.07em;
+.t-title { font-size: 19px; font-weight: 650; letter-spacing: -0.015em; }
+.t-section { font-size: 14px; font-weight: 650; }
+/* Metadata label — sentence case, readable size. Reserve .t-tag for the
+   rare ≤2-word uppercase tag; never use uppercase for ordinary labels. */
+.t-meta { font-size: 12px; font-weight: 550; color: var(--ink-3); letter-spacing: 0; text-transform: none; }
+.t-tag {
+  font-size: 10.5px; font-weight: 650; letter-spacing: 0.05em;
   text-transform: uppercase; color: var(--ink-3);
 }
-.t-quiet { font-size: 12px; color: var(--ink-3); }
+.t-quiet { font-size: 12.5px; color: var(--ink-3); }
 .num { font-variant-numeric: tabular-nums; }
 
 /* =============================== app shell =============================== */
@@ -116,7 +140,7 @@ button { font-family: var(--sans); }
 }
 .sidebar-brand {
   display: flex; align-items: center; gap: 10px;
-  padding: 18px 18px 16px;
+  padding: 18px 18px 14px;
 }
 .sidebar-brand .mark {
   width: 30px; height: 30px; border-radius: 7px;
@@ -134,7 +158,7 @@ button { font-family: var(--sans); }
   display: block; margin-top: 1px;
 }
 
-.sidebar-nav { padding: 6px 10px; flex: 1; overflow-y: auto; }
+.sidebar-nav { padding: 4px 10px 10px; flex: 1; overflow-y: auto; scrollbar-width: thin; }
 .nav-item {
   position: relative;
   display: flex; align-items: center; gap: 10px;
@@ -147,7 +171,7 @@ button { font-family: var(--sans); }
   transition: background 140ms ease, color 140ms ease;
 }
 .nav-item:hover { background: rgba(148, 163, 184, 0.08); color: #e6ebf2; text-decoration: none; }
-.nav-item.active { background: #f3f2ee; color: var(--navy); font-weight: 650; }
+.nav-item.active { background: rgba(240, 243, 248, 0.97); color: var(--navy); font-weight: 650; }
 .nav-item.active:hover { background: #ffffff; color: var(--navy); }
 .nav-item svg { flex-shrink: 0; opacity: 0.72; }
 .nav-item.active svg { opacity: 1; }
@@ -162,9 +186,9 @@ button { font-family: var(--sans); }
   font-variant-numeric: tabular-nums;
 }
 .nav-group {
-  margin: 14px 10px 4px; padding: 0;
-  font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
-  color: #526080;
+  margin: 16px 10px 5px; padding: 0;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: #5d6c8a;
 }
 
 .sidebar-org {
@@ -246,7 +270,7 @@ button { font-family: var(--sans); }
 }
 .topbar .switch:hover { color: var(--ink); text-decoration: none; border-color: var(--ink-4); }
 
-.content { max-width: 1128px; margin: 0 auto; padding: 24px 24px 64px; }
+.content { max-width: var(--content-max); margin: 0 auto; padding: 24px 28px 72px; }
 
 /* mobile chrome */
 .mobile-top {
