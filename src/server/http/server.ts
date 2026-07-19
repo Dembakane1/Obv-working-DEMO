@@ -3643,7 +3643,20 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (method === "GET" && pathname === "/projects") {
     sendHtml(
       res,
-      renderProjects({ nav: navFor(user!, "projects"), projects: await allProjectCards() })
+      renderProjects({
+        nav: navFor(user!, "projects"),
+        projects: await allProjectCards(),
+        filters: {
+          q: url.searchParams.get("q") ?? "",
+          state: url.searchParams.get("state") ?? "",
+        },
+        openIssuesByProject: new Map(
+          repo.listProjects().map((p) => [
+            p.id,
+            repo.listFieldIssues().filter((i) => i.projectId === p.id && !["RESOLVED", "CLOSED"].includes(i.status)).length,
+          ])
+        ),
+      })
     );
     return;
   }
@@ -4161,6 +4174,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const lastCheck = repo
       .listNotifications(100)
       .find((n) => n.type === "INTEGRITY_CHECK");
+    // Read-only presentation context: the verification each entry ledgered.
+    const verificationByEntry = new Map(
+      ledger.map((e) => [e.id, repo.getVerificationForEvidence(e.evidenceItemId)])
+    );
     sendHtml(
       res,
       renderLedger({
@@ -4171,11 +4188,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         milestoneById: new Map(milestones.map((m) => [m.id, m])),
         projectById: new Map(repo.listProjects().map((p) => [p.id, p])),
         actorByEntry,
+        verificationByEntry,
+        projectFilter: url.searchParams.get("project") ?? "",
         lastCheckAt: lastCheck?.createdAt ?? null,
         checkedBanner: url.searchParams.get("checked")
           ? chain.valid
-            ? `Integrity check complete: ${chain.entries} entries recomputed — CHAIN INTACT.`
-            : `Integrity check complete: TAMPERING DETECTED AT ENTRY ${chain.brokenAt}.`
+            ? `Integrity check complete: ${chain.entries} entries recomputed — chain intact.`
+            : `Integrity check complete: tampering detected at entry ${chain.brokenAt}.`
           : null,
       })
     );
@@ -4306,6 +4325,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (method === "GET" && pathname === "/issues") {
+    // Presentation-only filters: the register narrows what is shown; the
+    // underlying records and their truth are untouched.
     sendHtml(
       res,
       renderIssues({
@@ -4316,6 +4337,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           milestone: issue.milestoneId ? repo.getMilestone(issue.milestoneId) : null,
           assignee: issue.assignedToUserId ? repo.getUser(issue.assignedToUserId) : null,
         })),
+        filters: {
+          severity: url.searchParams.get("severity") ?? "",
+          status: url.searchParams.get("status") ?? "",
+          category: url.searchParams.get("category") ?? "",
+          overdue: url.searchParams.get("overdue") ?? "",
+        },
         canManage: canManageFieldOps(user!),
       })
     );

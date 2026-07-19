@@ -491,7 +491,7 @@ export function Pipeline(props: {
           {i > 0 ? <span className={`link ${stages[i - 1].state === "done" ? "done" : ""}`}></span> : null}
           <span className={`stage ${stage.state}`}>
             <span className="node">{stage.state === "done" ? "✓" : stage.state === "blocked" ? "!" : i + 1}</span>
-            <span className="lbl">{stage.label.toUpperCase()}</span>
+            <span className="lbl">{stage.label}</span>
           </span>
         </>
       ))}
@@ -546,7 +546,7 @@ export function MilestoneCard(props: { data: MilestoneCardData; cta?: VNode }): 
         <span className="m-money">
           <span className="v num">{money(milestone.trancheAmount)}</span>
           <span className={`s ${milestone.accountStatus === "RELEASED" ? "released" : "held"}`}>
-            {milestone.accountStatus}
+            {milestone.accountStatus === "RELEASED" ? "Released" : "Held"}
           </span>
         </span>
       </div>
@@ -797,28 +797,28 @@ export function ProofRail(props: {
   const total = verification ? verification.checks.length : 0;
   return (
     <div className="proof-rail">
-      <span className="step">PHOTO</span>
+      <span className="step">Photo</span>
       <span className="arrow">→</span>
       {verification ? (
         <>
           <span className={`step ${passed === total ? "ok" : "warn"}`}>
-            {passed}/{total} CHECKS PASSED
+            {passed}/{total} checks passed
           </span>
           <span className="arrow">→</span>
-          <span className="step">{verification.confidence.toFixed(2)} CONFIDENCE</span>
+          <span className="step">{verification.confidence.toFixed(2)} confidence</span>
           <span className="arrow">→</span>
           <span className={`step ${verification.verdict === "VERIFIED" ? "ok" : "warn"}`}>
-            {verification.verdict.replace(/_/g, " ")}
+            {verification.verdict === "VERIFIED" ? "Verified" : verification.verdict === "NEEDS_REVIEW" ? "Needs review" : "Rejected"}
           </span>
         </>
       ) : (
-        <span className="step">AWAITING VERIFICATION</span>
+        <span className="step">Awaiting verification</span>
       )}
       {ledgerEntry ? (
         <>
           <span className="arrow">→</span>
           <span className="step mono" title={ledgerEntry.currentHash}>
-            LEDGER #{ledgerEntry.seq} · {shortHash(ledgerEntry.currentHash, 10)}
+            Ledger #{ledgerEntry.seq} · {shortHash(ledgerEntry.currentHash, 10)}
           </span>
         </>
       ) : null}
@@ -827,10 +827,10 @@ export function ProofRail(props: {
           <span className="arrow">→</span>
           <span className={`step ${props.approval.status === "APPROVED" ? "ok" : "warn"}`}>
             {props.approval.status === "APPROVED"
-              ? "HUMAN APPROVED"
+              ? "Human approved"
               : props.approval.status === "REJECTED"
-                ? "APPROVAL REJECTED"
-                : "HUMAN APPROVAL REQUIRED"}
+                ? "Approval rejected"
+                : "Human approval required"}
           </span>
         </>
       ) : null}
@@ -838,7 +838,7 @@ export function ProofRail(props: {
         <>
           <span className="arrow">→</span>
           <span className={`step ${props.accountStatus === "RELEASED" ? "ok" : "warn"}`}>
-            FUNDS {props.accountStatus}
+            Funds {props.accountStatus === "RELEASED" ? "released" : "held"}
           </span>
         </>
       ) : null}

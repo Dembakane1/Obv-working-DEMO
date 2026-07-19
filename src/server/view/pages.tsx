@@ -35,6 +35,18 @@ import {
   roleLabel,
   shortHash,
   STYLESHEET_HREF,
+  ActionQueue,
+  AmountBreakdown,
+  AttentionBanner,
+  EmptyStateV2,
+  Methodology,
+  Metric,
+  MetricStrip,
+  Provenance,
+  SectionHead,
+  TechnicalHash,
+  Timeline,
+  enumLabel,
 } from "./components";
 import type {
   ApprovalRecord,
@@ -176,11 +188,12 @@ function projectRisk(d: ProjectCardData): { tone: string; label: string } {
 }
 
 /** Dense portfolio asset row. */
-function ProjectAsset(props: { data: ProjectCardData }): VNode {
+function ProjectAsset(props: { data: ProjectCardData; openIssues?: number }): VNode {
   const d = props.data;
   const pct = projectProgressPct(d);
   const next = nextMilestone(d);
   const risk = projectRisk(d);
+  const openIssues = props.openIssues ?? 0;
   return (
     <div className="panel asset">
       <div className="a-head">
@@ -188,6 +201,9 @@ function ProjectAsset(props: { data: ProjectCardData }): VNode {
         <span className="flags">
           {d.pendingApprovals > 0 ? (
             <span className="status warn"><span className="g">●</span>{d.pendingApprovals} approval{d.pendingApprovals > 1 ? "s" : ""} pending</span>
+          ) : null}
+          {openIssues > 0 ? (
+            <span className="status warn"><span className="g">!</span>{openIssues} open issue{openIssues > 1 ? "s" : ""}</span>
           ) : null}
           <span className={`status ${risk.tone}`}><span className="g">●</span>{risk.label}</span>
         </span>
@@ -228,6 +244,10 @@ function ProjectAsset(props: { data: ProjectCardData }): VNode {
       <div className="a-foot">
         <span>
           {d.milestones.filter((m) => m.milestone.status === "RELEASED").length} of {d.milestones.length} milestones released
+          {next ? (() => {
+            const na = milestoneNextAction(next);
+            return na ? <span className="a-next"> · Next: <b>{na}</b></span> : null;
+          })() : null}
         </span>
         <span className="cta">
           <a className="btn sm" href={`/project/${d.project.id}`}>View project {icons.arrowRight(13)}</a>
@@ -601,13 +621,69 @@ export function renderOverview(input: {
 
 // ------------------------------------------------------------ projects
 
-export function renderProjects(input: { nav: NavContext; projects: ProjectCardData[] }): string {
+export function renderProjects(input: {
+  nav: NavContext;
+  projects: ProjectCardData[];
+  filters?: { q: string; state: string };
+  openIssuesByProject?: Map<string, number>;
+}): string {
+  const f = input.filters ?? { q: "", state: "" };
+  const totalBudget = input.projects.reduce((s, p) => s + p.summary.totalBudget, 0);
+  const held = input.projects.reduce((s, p) => s + p.summary.held, 0);
+  const released = input.projects.reduce((s, p) => s + p.summary.released, 0);
+  const attention = input.projects.filter((p) => projectRisk(p).tone !== "ok" || p.pendingApprovals > 0);
+  const rows = input.projects.filter((p) => {
+    if (f.q) {
+      const hay = `${p.project.name} ${p.project.location} ${p.project.projectType}`.toLowerCase();
+      if (!hay.includes(f.q.toLowerCase())) return false;
+    }
+    if (f.state === "attention" && projectRisk(p).tone === "ok" && p.pendingApprovals === 0) return false;
+    if (f.state === "approvals" && p.pendingApprovals === 0) return false;
+    return true;
+  });
+  const filtered = Boolean(f.q || f.state);
   return renderDocument(
     <AppShell title="Projects" nav={input.nav}>
-      <PageHeader title="Projects" sub="All projects under milestone-based financial governance." />
-      {input.projects.map((p) => (
-        <ProjectAsset data={p} />
-      ))}
+      <PageHeader
+        title="Projects"
+        sub="All projects under milestone-based financial governance."
+        asOf={`${input.projects.length} project${input.projects.length === 1 ? "" : "s"} · ${money(totalBudget)} under control`}
+      />
+      <div className="metric-strip">
+        <Metric d={{ value: String(input.projects.length), label: "Active projects", sub: "Under milestone governance" }} />
+        <Metric d={{ value: money(held), label: "Funds held", sub: "Released only through governed approval" }} />
+        <Metric d={{ value: money(released), label: "Released to date", tone: "ok", sub: totalBudget > 0 ? `${Math.round((released / totalBudget) * 100)}% of controlled amount` : "—" }} />
+        <Metric d={{ value: String(attention.length), label: "Needing attention", tone: attention.length > 0 ? "warn" : undefined, edge: attention.length > 0 ? "warn" : undefined, sub: attention.length > 0 ? "Flagged evidence or pending approvals" : "Nothing flagged", dim: attention.length === 0, href: "/projects?state=attention" }} />
+      </div>
+      <form className="filter-bar" method="GET" action="/projects">
+        <label className="search">
+          <input type="search" name="q" value={f.q} placeholder="Search by name, location or type" aria-label="Search projects" />
+        </label>
+        <select name="state" aria-label="Filter by state">
+          <option value="">All projects</option>
+          <option value="attention" selected={f.state === "attention"}>Needing attention</option>
+          <option value="approvals" selected={f.state === "approvals"}>With pending approvals</option>
+        </select>
+        <button className="btn secondary sm" type="submit">Apply</button>
+        <span className="f-count">{rows.length} of {input.projects.length} shown{filtered ? <> · <a href="/projects">clear</a></> : null}</span>
+      </form>
+      {rows.length === 0 ? (
+        <div className="register">
+          <EmptyStateV2
+            icon={icons.projects()}
+            title={filtered ? "No projects match" : "No projects yet"}
+            what={
+              filtered
+                ? "Projects exist but none match the current search or state filter."
+                : "Projects appear here once configured through pilot setup with milestones, evidence requirements and approval policies."
+            }
+            condition={filtered ? undefined : "unconfigured"}
+            action={filtered ? <a className="btn secondary sm" href="/projects">Clear filters</a> : <a className="btn secondary sm" href="/setup">Open pilot setup</a>}
+          />
+        </div>
+      ) : (
+        rows.map((p) => <ProjectAsset data={p} openIssues={input.openIssuesByProject?.get(p.project.id) ?? 0} />)
+      )}
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );
@@ -632,11 +708,11 @@ function projectLifecycleStage(d: ProjectCardData): LifecycleStage {
 
 function LifecycleStrip(props: { stage: LifecycleStage; anyReleased: boolean }): VNode {
   const stages: Array<{ key: LifecycleStage; label: string }> = [
-    { key: "SETUP", label: "PROJECT SETUP" },
-    { key: "EVIDENCE", label: "FIELD EVIDENCE" },
-    { key: "VERIFICATION", label: "VERIFICATION" },
-    { key: "GOVERNANCE", label: "GOVERNANCE" },
-    { key: "RELEASE", label: "RELEASE" },
+    { key: "SETUP", label: "Project setup" },
+    { key: "EVIDENCE", label: "Field evidence" },
+    { key: "VERIFICATION", label: "Verification" },
+    { key: "GOVERNANCE", label: "Governance" },
+    { key: "RELEASE", label: "Release" },
   ];
   const order = stages.map((s) => s.key);
   const idx = order.indexOf(props.stage);
@@ -1911,32 +1987,167 @@ export function renderLedger(input: {
   milestoneById: Map<string, Milestone>;
   projectById: Map<string, Project>;
   actorByEntry: Map<string, string>;
+  verificationByEntry?: Map<string, Verification | null>;
+  projectFilter?: string;
   checkedBanner?: string | null;
   lastCheckAt?: string | null;
 }): string {
+  const head = input.ledger.length > 0 ? input.ledger[input.ledger.length - 1] : null;
+  const projectOf = (e: LedgerEntry): Project | undefined => {
+    const m = input.milestoneById.get(e.milestoneId);
+    return m ? input.projectById.get(m.projectId) : undefined;
+  };
+  const filter = input.projectFilter ?? "";
+  const rows = filter ? input.ledger.filter((e) => projectOf(e)?.id === filter) : input.ledger;
+  const projects = [...new Map(input.ledger.map((e) => {
+    const p = projectOf(e);
+    return [p?.id ?? "", p] as [string, Project | undefined];
+  })).values()].filter((p): p is Project => Boolean(p));
+
+  const entrySuspect = (e: LedgerEntry): boolean =>
+    !input.chainValid && input.brokenAt !== undefined && e.seq >= input.brokenAt;
+
   return renderDocument(
     <AppShell title="Evidence ledger" nav={input.nav}>
       <PageHeader
         title="Evidence ledger"
         sub="Append-only, hash-chained register of every verified evidence item. Tamper-evident by construction."
-      />
+        asOf={
+          input.lastCheckAt
+            ? `Last integrity check ${fmtDate(input.lastCheckAt).slice(0, 16)} UTC`
+            : "Integrity has not been manually checked in this session"
+        }
+      >
+        <form method="POST" action="/api/ledger/verify" style="margin:0">
+          <button className="btn" type="submit">Verify integrity</button>
+        </form>
+      </PageHeader>
+
       {!input.chainValid ? (
-        <div className="banner warn" style="border-color:var(--bad-line);background:var(--bad-bg);color:var(--bad)">
-          <b>TAMPERING DETECTED AT ENTRY {input.brokenAt}.</b> Entries at and after this point
-          cannot be relied upon. Investigate before accepting any report generated from this ledger.
-        </div>
+        <AttentionBanner
+          tone="bad"
+          title={`Tampering detected at entry #${input.brokenAt}`}
+          detail="Entries at and after this point cannot be relied upon. Investigate before accepting any report generated from this ledger."
+        />
       ) : null}
-      <LedgerCard
-        ledger={input.ledger}
-        chainValid={input.chainValid}
-        brokenAt={input.brokenAt}
-        milestoneById={input.milestoneById}
-        projectById={input.projectById}
-        actorByEntry={input.actorByEntry}
-        showVerify={true}
-        checkedBanner={input.checkedBanner}
-        lastCheckAt={input.lastCheckAt}
-      />
+      {input.checkedBanner ? (
+        <AttentionBanner
+          tone={input.chainValid ? "info" : "bad"}
+          icon={input.chainValid ? icons.check() : icons.alert()}
+          title={input.checkedBanner}
+          detail="Every entry hash was recomputed from stored content and compared against the recorded chain."
+        />
+      ) : null}
+
+      <div className="metric-strip">
+        <Metric d={{
+          value: input.chainValid ? "Intact" : "Broken",
+          label: "Chain integrity",
+          tone: input.chainValid ? "ok" : "bad",
+          edge: input.chainValid ? undefined : "bad",
+          sub: input.chainValid ? "All hashes recompute cleanly" : `First failure at entry #${input.brokenAt}`,
+        }} />
+        <Metric d={{ value: String(input.ledger.length), label: "Ledger entries", sub: "Verified evidence only — nothing else enters", dim: input.ledger.length === 0 }} />
+        <Metric d={{ value: head ? `#${head.seq}` : "—", label: "Head sequence", sub: head ? `Recorded ${fmtDate(head.timestamp).slice(0, 16)} UTC` : "Ledger is empty", dim: !head }} />
+      </div>
+      {head ? (
+        <TechnicalHash label="Ledger head hash (sha-256)" value={head.currentHash} />
+      ) : null}
+
+      {projects.length > 1 ? (
+        <form className="filter-bar" method="GET" action="/ledger" style="margin-top:12px">
+          <select name="project" aria-label="Filter by project">
+            <option value="">All projects</option>
+            {projects.map((p) => (
+              <option value={p.id} selected={filter === p.id}>{p.name}</option>
+            ))}
+          </select>
+          <button className="btn secondary sm" type="submit">Apply</button>
+          <span className="f-count">{rows.length} of {input.ledger.length} entries{filter ? <> · <a href="/ledger">clear</a></> : null}</span>
+        </form>
+      ) : null}
+
+      <div className="register" style="margin-top:12px">
+        <div className="reg-head">
+          <h3>Hash chain</h3>
+          <span className="hint">Newest last — each entry commits to the one before it</span>
+        </div>
+        {rows.length === 0 ? (
+          <EmptyStateV2
+            icon={icons.ledger()}
+            title={filter ? "No entries for this project" : "Ledger is empty"}
+            what="Evidence enters this register only after the VerificationAggregator records a VERIFIED outcome. An empty ledger means no evidence has completed verification yet — uploads and reviews in progress do not appear here."
+            condition={filter ? undefined : "healthy"}
+            action={filter ? <a className="btn secondary sm" href="/ledger">Show all entries</a> : undefined}
+          />
+        ) : (
+          <div className="chain">
+            {rows.map((e) => {
+              const m = input.milestoneById.get(e.milestoneId);
+              const p = projectOf(e);
+              const v = input.verificationByEntry?.get(e.id) ?? null;
+              const suspect = entrySuspect(e);
+              return (
+                <div className={`chain-row ${suspect ? "suspect" : ""}`}>
+                  <span className="ch-rail" aria-hidden="true">
+                    <span className="ch-node">{e.seq}</span>
+                  </span>
+                  <div className="ch-body">
+                    <div className="ch-top">
+                      <a className="ch-title" href={m ? `/milestone/${m.id}` : "#"}>
+                        M{m?.seq}: {m?.title ?? "Unknown milestone"}
+                      </a>
+                      <span className="ch-chips">
+                        {suspect ? (
+                          <span className="status bad"><span className="g">✕</span>Suspect after break</span>
+                        ) : (
+                          <span className="status ok"><span className="g">✓</span>Verified evidence</span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="ch-meta">
+                      {p ? <span>{p.name}</span> : null}
+                      <span className="num">{fmtDate(e.timestamp)}</span>
+                      <span>Captured by {input.actorByEntry.get(e.id) ?? "—"}</span>
+                      {v ? (
+                        <span>
+                          {v.source === "LIVE_AI" ? "AI-assisted visual check" : "Demo verification"}
+                          {v.policyVersion ? ` · policy v${v.policyVersion}` : ""}
+                        </span>
+                      ) : null}
+                    </div>
+                    <details className="ch-proof">
+                      <summary>Proof detail</summary>
+                      <TechnicalHash label="Previous entry hash" value={e.previousHash} />
+                      <TechnicalHash label={`Entry #${e.seq} hash (content + previous hash)`} value={e.currentHash} />
+                      <TechnicalHash label="Evidence payload hash" value={e.payloadHash} />
+                      <p className="sub" style="margin:8px 0 0">
+                        <a href={m ? `/milestone/${m.id}` : "#"}>Open the milestone</a> for the full
+                        evidence record, verification checks and approval history behind this entry.
+                      </p>
+                    </details>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <div className="reg-foot">
+          Each entry's hash covers its content plus the previous entry's hash — any retroactive
+          edit breaks every later hash. Verified evidence is the only thing that enters this
+          register; approvals and fund movements are recorded in their own governed workflows.
+        </div>
+      </div>
+
+      <Methodology title="How this ledger works">
+        <p>
+          When the VerificationAggregator records a VERIFIED outcome, the evidence item's
+          content hash is appended here with a hash that also commits to the previous entry.
+          Verify integrity recomputes the whole chain from stored content — it never mutates
+          records. A ledger entry is proof of verified evidence, not of legal completion,
+          inspection outcome, or payment.
+        </p>
+      </Methodology>
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );
@@ -2363,17 +2574,19 @@ export function renderCompliance(input: {
 
 function sevChip(sev: "HIGH" | "MEDIUM" | "INFO" | "LOW"): VNode {
   const cls = sev === "HIGH" ? "bad" : sev === "MEDIUM" ? "warn" : "ok";
-  return <span className={`int-sev ${cls}`}>{sev}</span>;
+  return <span className={`status ${cls}`}><span className="g">{sev === "HIGH" ? "!" : "●"}</span>{enumLabel(sev)}</span>;
 }
 
 function attChip(level: "HIGH" | "MEDIUM" | "LOW"): VNode {
   const cls = level === "HIGH" ? "bad" : level === "MEDIUM" ? "warn" : "ok";
-  return <span className={`int-sev ${cls}`}>{level}</span>;
+  const label = level === "HIGH" ? "High attention" : level === "MEDIUM" ? "Medium attention" : "Low attention";
+  return <span className={`status ${cls}`}><span className="g">{level === "HIGH" ? "!" : "●"}</span>{label}</span>;
 }
 
 function healthChip(state: "HEALTHY" | "WATCH" | "AT_RISK"): VNode {
   const cls = state === "AT_RISK" ? "bad" : state === "WATCH" ? "warn" : "ok";
-  return <span className={`int-health ${cls}`}>{state.replace("_", " ")}</span>;
+  const glyph = state === "AT_RISK" ? "!" : state === "WATCH" ? "●" : "✓";
+  return <span className={`status ${cls}`}><span className="g">{glyph}</span>{enumLabel(state)}</span>;
 }
 
 export function renderIntelligence(input: { nav: NavContext; data: IntelligenceData }): string {
@@ -2388,58 +2601,37 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
   const trendMax = v.trend ? Math.max(...v.trend.map((t) => t.total)) : 0;
   const catMax = Math.max(1, ...f.byCategory.map((c) => c.open));
 
-  const sumCard = (
-    n: number,
-    label: string,
-    href: string,
-    tone: "neutral" | "warn" | "bad",
-    icon: VNode,
-    subActive: string,
-  ): VNode => (
-    <a className={`int-stat ${n > 0 && tone !== "neutral" ? tone : ""}`} href={href}>
-      <span className="is-ic">{icon}</span>
-      <span className="is-body">
-        <span className="is-n">{n}</span>
-        <span className="is-l">{label}</span>
-        <span className="is-s">{n > 0 ? subActive : "No items at this time"}</span>
-      </span>
-    </a>
-  );
-
   return renderDocument(
     <AppShell title="OBV Intelligence" nav={input.nav} context="Operational intelligence">
       <div className="intel-wrap">
       <PageHeader
         title="OBV Intelligence"
         sub="Verification, governance and field-risk intelligence computed deterministically from recorded OBV data. Every figure traces to stored records — no generative scoring, no predictions."
+        asOf={`Portfolio scope · computed ${fmtDate(d.generatedAt).slice(0, 16)} UTC`}
       >
-        <span className="int-mode" title="All signals derive from stored records via documented rules">
-          DETERMINISTIC
+        <span className="status info" title="All signals derive from stored records via documented rules">
+          <span className="g">✓</span>Deterministic — documented rules
         </span>
       </PageHeader>
 
-      {/* ---- Section 1 · intelligence summary (uniform card row) ---- */}
-      <div className="intel-sum">
-        {sumCard(s.activeProjects, "Active projects", "/projects", "neutral", icons.projects(), "Monitored portfolio")}
-        {sumCard(s.projectsNeedingAttention, "Needing attention", "#attention", "warn", icons.alert(15), "Require review")}
-        {sumCard(s.highSeverityIssues, "High-severity issues", "/issues", "bad", icons.shield(), "Immediate action")}
-        {sumCard(s.evidenceNeedsReview, "Evidence needs review", "/compliance", "warn", icons.camera(), "Awaiting decision")}
-        {sumCard(s.pendingApprovals, "Pending approvals", "/approvals", "warn", icons.clock(15), "Awaiting roles")}
-        {sumCard(s.openClarifications, "Open clarifications", "/compliance", "warn", icons.chat(15), "Never auto-accepts")}
-        {sumCard(s.integrityAlerts, "Integrity alerts", "/ledger", "bad", icons.ledger(), "Chain findings")}
+      {/* ---- Section 1 · intelligence summary ---- */}
+      <div className="metric-strip">
+        <Metric d={{ value: String(s.activeProjects), label: "Active projects", sub: "Monitored portfolio", href: "/projects" }} />
+        <Metric d={{ value: String(s.projectsNeedingAttention), label: "Needing attention", sub: s.projectsNeedingAttention > 0 ? "Factors listed under project attention" : "No attention factors recorded", tone: s.projectsNeedingAttention > 0 ? "warn" : undefined, edge: s.projectsNeedingAttention > 0 ? "warn" : undefined, dim: s.projectsNeedingAttention === 0, href: "#attention" }} />
+        <Metric d={{ value: String(s.highSeverityIssues), label: "High-severity field issues", sub: s.highSeverityIssues > 0 ? "Immediate operational action" : "None open", tone: s.highSeverityIssues > 0 ? "bad" : undefined, edge: s.highSeverityIssues > 0 ? "bad" : undefined, dim: s.highSeverityIssues === 0, href: "/issues" }} />
+        <Metric d={{ value: String(s.evidenceNeedsReview), label: "Evidence awaiting review", sub: s.evidenceNeedsReview > 0 ? "Flagged for human decision" : "Review queue clear", tone: s.evidenceNeedsReview > 0 ? "warn" : undefined, dim: s.evidenceNeedsReview === 0, href: "/compliance" }} />
+        <Metric d={{ value: String(s.pendingApprovals), label: "Pending approvals", sub: s.pendingApprovals > 0 ? "Awaiting required roles" : "No open requests", tone: s.pendingApprovals > 0 ? "warn" : undefined, dim: s.pendingApprovals === 0, href: "/approvals" }} />
+        <Metric d={{ value: String(s.openClarifications), label: "Open clarifications", sub: "Answers never auto-accept evidence", dim: s.openClarifications === 0, href: "/compliance" }} />
+        <Metric d={{ value: String(s.integrityAlerts), label: "Integrity alerts", sub: s.integrityAlerts > 0 ? "Chain findings need investigation" : "Ledger chain intact", tone: s.integrityAlerts > 0 ? "bad" : undefined, edge: s.integrityAlerts > 0 ? "bad" : undefined, dim: s.integrityAlerts === 0, href: "/ledger" }} />
       </div>
 
       {calm ? (
-        <div className="int-calm">
-          <i>{icons.check()}</i>
-          <span>
-            <b>NO CRITICAL SIGNALS</b>
-            <span className="s">
-              All recorded verification and governance checks are currently within normal
-              operating state. The intelligence below reflects the live records.
-            </span>
-          </span>
-        </div>
+        <AttentionBanner
+          tone="info"
+          icon={icons.check()}
+          title="No critical signals"
+          detail="All recorded verification and governance checks are currently within normal operating state. The intelligence below reflects the live records."
+        />
       ) : null}
 
       {/* ---- Section 2 + 7 · signals and recommended actions ---- */}
@@ -2448,9 +2640,9 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
           <div className="panel-head">
             <h3>Attention signals</h3>
             <span className="right int-counts">
-              {critical > 0 ? <span className="int-sev bad">{critical} HIGH</span> : null}
-              {medium > 0 ? <span className="int-sev warn">{medium} MEDIUM</span> : null}
-              <span className="int-sev ok">{d.signals.length - critical - medium} INFO</span>
+              {critical > 0 ? <span className="status bad"><span className="g">!</span>{critical} high</span> : null}
+              {medium > 0 ? <span className="status warn"><span className="g">●</span>{medium} medium</span> : null}
+              <span className="status"><span className="g">●</span>{d.signals.length - critical - medium} info</span>
             </span>
           </div>
           {d.signals.length === 0 ? (
@@ -2486,22 +2678,22 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
               clarification records require intervention.
             </p>
           ) : (
-            <div className="rec-list">
+            <div className="reco-list">
               {d.recommendations.map((r, i) => (
-                <div className="rec-card">
-                  <span className="rec-head">
-                    <span className="rec-n">{i + 1}</span>
+                <div className="reco-card">
+                  <span className="reco-head">
+                    <span className="reco-n">{i + 1}</span>
                     {sevChip(r.priority)}
                   </span>
-                  <span className="rec-title">{r.title}</span>
-                  <span className="rec-why"><b>Why:</b> {r.why}</span>
-                  <span className="rec-src">Source: {r.sources.join(" · ")}</span>
+                  <span className="reco-title">{r.title}</span>
+                  <span className="reco-why"><b>Why:</b> {r.why}</span>
+                  <span className="reco-src">Source: {r.sources.join(" · ")}</span>
                   <a className="btn sm rec-act" href={r.actionHref}>{r.actionLabel}</a>
                 </div>
               ))}
             </div>
           )}
-          <p className="rec-note">
+          <p className="reco-note">
             Recommendations are deterministic next actions derived from open records — not
             generated advice.
           </p>
@@ -2532,7 +2724,7 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
               )}
               <span className="iv-row"><span>Geofence exceptions</span><b>{v.geofenceExceptions}</b></span>
               <span className="iv-row"><span>Metadata / timestamp exceptions</span><b>{v.metadataExceptions}</b></span>
-              <span className="iv-row"><span>DEMO FALLBACK evidence items</span><b>{v.demoFallbackEvidence}</b></span>
+              <span className="iv-row"><span>Demo-fallback evidence items</span><b>{v.demoFallbackEvidence}</b></span>
             </div>
             <div>
               <span className="iv-h">Assessment provenance</span>
@@ -2636,7 +2828,7 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
           ) : (
             f.byCategory.map((c) => (
               <span className="tr-row">
-                <span className="m">{c.category}</span>
+                <span className="m">{enumLabel(c.category)}</span>
                 <span className="bar"><span className="fl warn" style={`width:${Math.round((c.open / catMax) * 100)}%`}></span></span>
                 <span className="c">{c.open}</span>
               </span>
@@ -2646,7 +2838,7 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
             <div style="margin-top:10px">
               <span className="iv-h">By severity</span>
               {f.bySeverity.map((sv) => (
-                <span className="iv-row"><span>{sv.severity}</span><b>{sv.open}</b></span>
+                <span className="iv-row"><span>{enumLabel(sv.severity)}</span><b>{sv.open}</b></span>
               ))}
             </div>
           ) : null}
@@ -3758,6 +3950,33 @@ const ISSUE_STATUS_TONE: Record<string, string> = {
   AWAITING_FIELD_RESPONSE: "warn", RESOLVED: "ok", CLOSED: "neutral",
 };
 
+/** The operational next step a reader should take on an issue, given only
+ *  recorded state — never invents obligations. */
+function issueNextAction(issue: FieldIssue, canManage: boolean): string {
+  switch (issue.status) {
+    case "OPEN": return canManage ? "Acknowledge and assign an owner" : "Awaiting acknowledgement";
+    case "ACKNOWLEDGED": return "Begin work or request field response";
+    case "IN_PROGRESS": return "Record progress; resolve when corrected";
+    case "AWAITING_FIELD_RESPONSE": return "Awaiting field response";
+    case "RESOLVED": return "Close after review of the resolution";
+    case "CLOSED": return "No action — closed";
+    default: return "—";
+  }
+}
+
+function issueAge(issue: FieldIssue): string {
+  const days = Math.floor((Date.now() - Date.parse(issue.createdAt)) / 86400000);
+  return days <= 0 ? "today" : days === 1 ? "1 day" : `${days} days`;
+}
+
+function overdueBy(issue: FieldIssue): string | null {
+  if (!issue.dueAt || ["RESOLVED", "CLOSED"].includes(issue.status)) return null;
+  const ms = Date.now() - Date.parse(issue.dueAt);
+  if (ms <= 0) return null;
+  const days = Math.max(1, Math.floor(ms / 86400000));
+  return `${days} day${days === 1 ? "" : "s"} overdue`;
+}
+
 export function renderIssues(input: {
   nav: NavContext;
   issues: Array<{
@@ -3766,61 +3985,197 @@ export function renderIssues(input: {
     milestone: Milestone | null;
     assignee: User | null;
   }>;
+  filters: { severity: string; status: string; category: string; overdue: string };
   canManage: boolean;
 }): string {
+  const f = input.filters;
   const open = input.issues.filter((r) => !["RESOLVED", "CLOSED"].includes(r.issue.status));
-  const critical = open.filter((r) => r.issue.severity === "CRITICAL");
-  const overdue = open.filter(
-    (r) => r.issue.dueAt && Date.parse(r.issue.dueAt) < Date.now()
-  );
+  const highCritical = open.filter((r) => r.issue.severity === "CRITICAL" || r.issue.severity === "HIGH");
+  const overdue = open.filter((r) => overdueBy(r.issue) !== null);
   const awaiting = input.issues.filter((r) => r.issue.status === "AWAITING_FIELD_RESPONSE");
   const resolved = input.issues.filter((r) => ["RESOLVED", "CLOSED"].includes(r.issue.status));
+
+  const sevOrder: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+  const rows = input.issues
+    .filter((r) => {
+      if (f.severity && r.issue.severity !== f.severity) return false;
+      if (f.status === "" && false) return false;
+      if (f.status === "open" && ["RESOLVED", "CLOSED"].includes(r.issue.status)) return false;
+      if (f.status && f.status !== "open" && f.status !== "all" && r.issue.status !== f.status) return false;
+      if (f.category && r.issue.category !== f.category) return false;
+      if (f.overdue === "1" && overdueBy(r.issue) === null) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const ao = ["RESOLVED", "CLOSED"].includes(a.issue.status) ? 1 : 0;
+      const bo = ["RESOLVED", "CLOSED"].includes(b.issue.status) ? 1 : 0;
+      return ao - bo || sevOrder[a.issue.severity] - sevOrder[b.issue.severity] ||
+        (a.issue.createdAt < b.issue.createdAt ? -1 : 1);
+    });
+  const categories = [...new Set(input.issues.map((r) => r.issue.category))];
+  const filtered = f.severity || f.status || f.category || f.overdue;
+
+  const sevChipEl = (sev: string): VNode => (
+    <span className={`status ${SEVERITY_TONE[sev] ?? ""}`}><span className="g">{sev === "CRITICAL" || sev === "HIGH" ? "!" : "●"}</span>{enumLabel(sev)}</span>
+  );
+  const statusChipEl = (status: string): VNode => (
+    <span className={`status ${ISSUE_STATUS_TONE[status] ?? ""}`}><span className="g">{status === "RESOLVED" || status === "CLOSED" ? "✓" : "○"}</span>{enumLabel(status)}</span>
+  );
+
   return renderDocument(
     <AppShell title="Field Issues" nav={input.nav} context="Field Issues">
       <PageHeader
         title="Field Issues"
-        sub="Operational issues raised from field coordination. Issues inform human decisions — release eligibility is controlled only by the formal approval workflow."
-        crumb={{ href: "/compliance", label: "Risk & Compliance" }}
-      />
-      <div className="issue-stats">
-        <span><b className="num">{open.length}</b> Open</span>
-        <span><b className="num" style={critical.length ? "color:var(--bad)" : ""}>{critical.length}</b> Critical</span>
-        <span><b className="num" style={overdue.length ? "color:var(--warn)" : ""}>{overdue.length}</b> Overdue</span>
-        <span><b className="num">{awaiting.length}</b> Awaiting field response</span>
-        <span><b className="num">{resolved.length}</b> Resolved</span>
+        sub="Operational issues raised from field coordination. Issues inform human decisions; they never change release eligibility."
+        asOf={`${open.length} open across the portfolio · updated ${fmtDate(new Date().toISOString()).slice(0, 16)} UTC`}
+      >
+        {input.canManage ? <a className="btn" href="/issues/new">Report issue</a> : null}
+      </PageHeader>
+
+      <div className="metric-strip">
+        <Metric d={{ value: String(open.length), label: "Open issues", sub: open.length > 0 ? "Require operational follow-up" : "None open", dim: open.length === 0 }} />
+        <Metric d={{ value: String(highCritical.length), label: "High / critical severity", tone: highCritical.length > 0 ? "bad" : undefined, edge: highCritical.length > 0 ? "bad" : undefined, sub: highCritical.length > 0 ? "Address before dependent reviews" : "None recorded", dim: highCritical.length === 0, href: "/issues?severity=HIGH" }} />
+        <Metric d={{ value: String(overdue.length), label: "Past due date", tone: overdue.length > 0 ? "warn" : undefined, edge: overdue.length > 0 ? "warn" : undefined, sub: overdue.length > 0 ? "Oldest first in the register below" : "Nothing overdue", dim: overdue.length === 0, href: "/issues?overdue=1" }} />
+        <Metric d={{ value: String(awaiting.length), label: "Awaiting field response", sub: awaiting.length > 0 ? "Blocked on site personnel" : "Nothing waiting on the field", dim: awaiting.length === 0 }} />
+        <Metric d={{ value: String(resolved.length), label: "Resolved or closed", sub: "Kept for the operational record", dim: resolved.length === 0 }} />
       </div>
-      <div className="panel">
-        <div className="panel-head">
-          <h3>Register</h3>
-          <span className="right">{input.issues.length} issue{input.issues.length === 1 ? "" : "s"}</span>
+
+      {overdue.length > 0 ? (
+        <AttentionBanner
+          tone="warn"
+          title={`${overdue.length} open issue${overdue.length === 1 ? " is" : "s are"} past due`}
+          detail="Overdue operational issues delay evidence capture and reviews downstream. They do not change financial state by themselves."
+          action={<a className="btn secondary sm" href="/issues?overdue=1">Show overdue</a>}
+        />
+      ) : null}
+
+      <form className="filter-bar" method="GET" action="/issues">
+        <select name="severity" aria-label="Filter by severity">
+          <option value="">All severities</option>
+          {["CRITICAL", "HIGH", "MEDIUM", "LOW"].map((s) => (
+            <option value={s} selected={f.severity === s}>{enumLabel(s)}</option>
+          ))}
+        </select>
+        <select name="status" aria-label="Filter by status">
+          <option value="">All statuses</option>
+          <option value="open" selected={f.status === "open"}>Open (any active status)</option>
+          {["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_FIELD_RESPONSE", "RESOLVED", "CLOSED"].map((s) => (
+            <option value={s} selected={f.status === s}>{enumLabel(s)}</option>
+          ))}
+        </select>
+        <select name="category" aria-label="Filter by category">
+          <option value="">All categories</option>
+          {categories.map((c) => (
+            <option value={c} selected={f.category === c}>{enumLabel(c)}</option>
+          ))}
+        </select>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2)">
+          <input type="checkbox" name="overdue" value="1" checked={f.overdue === "1"} /> Overdue only
+        </label>
+        <button className="btn secondary sm" type="submit">Apply</button>
+        <span className="f-count">
+          {rows.length} of {input.issues.length} issue{input.issues.length === 1 ? "" : "s"}
+          {filtered ? <> · <a href="/issues">clear filters</a></> : null}
+        </span>
+      </form>
+
+      <div className="register">
+        <div className="reg-head">
+          <h3>Issue register</h3>
+          <span className="hint">Operational record — informs reviewers; separate from the Evidence Ledger</span>
         </div>
-        {input.issues.length === 0 ? (
-          <p className="sub" style="padding:14px 16px">
-            No field issues. Issues are created from coordination messages in
-            Communications or directly by authorized roles.
-          </p>
+        {rows.length === 0 ? (
+          <EmptyStateV2
+            icon={icons.alert()}
+            title={filtered ? "No issues match these filters" : "No field issues recorded"}
+            what={
+              filtered
+                ? "Issues exist but none match the current severity, status, category or overdue filters."
+                : "Field issues raised from coordination threads or by authorized roles appear here with severity, ownership and due dates. None have been recorded for this portfolio."
+            }
+            condition={filtered ? undefined : "healthy"}
+            action={
+              filtered ? (
+                <a className="btn secondary sm" href="/issues">Clear filters</a>
+              ) : input.canManage ? (
+                <a className="btn secondary sm" href="/issues/new">Report the first issue</a>
+              ) : undefined
+            }
+          />
         ) : (
-          <div className="intg-table-wrap">
-            <table className="intg-table">
-              <thead>
-                <tr><th>Issue</th><th>Project / milestone</th><th>Category</th><th>Severity</th><th>Status</th><th>Assigned</th><th>Due</th></tr>
-              </thead>
-              <tbody>
-                {input.issues.map((r) => (
+          <>
+            <div className="desktop-only reg-scroll">
+              <table className="reg">
+                <thead>
                   <tr>
-                    <td data-l="Issue"><a href={`/issue/${r.issue.id}`} style="font-weight:600;color:var(--action)">{r.issue.title}</a></td>
-                    <td data-l="Context">{r.milestone ? `M${r.milestone.seq}` : r.project?.name.slice(0, 28) ?? "—"}</td>
-                    <td data-l="Category">{r.issue.category}</td>
-                    <td data-l="Severity"><span className={`sync-tag ${SEVERITY_TONE[r.issue.severity]}`} style="margin-left:0">{r.issue.severity}</span></td>
-                    <td data-l="Status"><span className={`sync-tag ${ISSUE_STATUS_TONE[r.issue.status]}`} style="margin-left:0">{r.issue.status.replace(/_/g, " ")}</span></td>
-                    <td data-l="Assigned">{r.assignee?.name ?? "—"}</td>
-                    <td data-l="Due">{r.issue.dueAt ? r.issue.dueAt.slice(0, 10) : "—"}</td>
+                    <th>Issue</th>
+                    <th>Project / milestone</th>
+                    <th>Severity</th>
+                    <th>Status</th>
+                    <th>Owner</th>
+                    <th>Age</th>
+                    <th>Due</th>
+                    <th>Next action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const od = overdueBy(r.issue);
+                    return (
+                      <tr>
+                        <td>
+                          <a className="p" href={`/issue/${r.issue.id}`}>{r.issue.title}</a>
+                          <span className="s">{enumLabel(r.issue.category)}</span>
+                        </td>
+                        <td>
+                          {r.project ? <span className="s" style="margin:0">{r.project.name}</span> : null}
+                          {r.milestone ? <>M{r.milestone.seq} · {r.milestone.title}</> : "Project-level"}
+                        </td>
+                        <td>{sevChipEl(r.issue.severity)}</td>
+                        <td>{statusChipEl(r.issue.status)}</td>
+                        <td>{r.assignee?.name ?? "Unassigned"}</td>
+                        <td className="num">{issueAge(r.issue)}</td>
+                        <td className="num">
+                          {r.issue.dueAt ? r.issue.dueAt.slice(0, 10) : "—"}
+                          {od ? <span className="s" style="color:var(--warn)">{od}</span> : null}
+                        </td>
+                        <td>{issueNextAction(r.issue, input.canManage)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="mobile-only">
+              {rows.map((r) => {
+                const od = overdueBy(r.issue);
+                return (
+                  <a className="reco-card" href={`/issue/${r.issue.id}`}>
+                    <span className="rc-top">
+                      <span className="rc-title">{r.issue.title}</span>
+                      <span className="rc-side">{sevChipEl(r.issue.severity)}</span>
+                    </span>
+                    <span className="rc-kv">
+                      <span className="k">Status</span><span className="v">{enumLabel(r.issue.status)}</span>
+                      <span className="k">Context</span>
+                      <span className="v">{r.milestone ? `M${r.milestone.seq} · ${r.milestone.title}` : r.project?.name ?? "—"}</span>
+                      <span className="k">Owner</span><span className="v">{r.assignee?.name ?? "Unassigned"}</span>
+                      <span className="k">Open for</span><span className="v num">{issueAge(r.issue)}</span>
+                      <span className="k">Due</span>
+                      <span className="v num">{r.issue.dueAt ? r.issue.dueAt.slice(0, 10) : "—"}{od ? ` · ${od}` : ""}</span>
+                    </span>
+                    <span className="rc-next">Next: <b>{issueNextAction(r.issue, input.canManage)}</b></span>
+                  </a>
+                );
+              })}
+            </div>
+          </>
         )}
+        <div className="reg-foot">
+          Issues coordinate field response and inform reviewers. Resolving an issue never
+          verifies evidence, passes an inspection, or releases funds — those remain with
+          verification, inspection results and governed approval.
+        </div>
       </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
@@ -3890,7 +4245,7 @@ export function renderIssueDetail(input: {
         </dl>
         {input.sourceMessage ? (
           <div className="issue-src">
-            <span className="k">SOURCE MESSAGE</span>
+            <span className="k">Source message</span>
             <span className="b">
               {input.sourceMessage.senderDisplayName}
               {input.sourceMessage.provider !== "OBV" ? ` · via ${input.sourceMessage.provider === "WHATSAPP" ? "WhatsApp" : "Microsoft Teams"}` : ""}:
