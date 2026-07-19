@@ -33,7 +33,7 @@ async function main() {
 
   // ---- 1: page identity + honesty framing ----
   if (!html.includes("OBV Intelligence")) fail("page title missing");
-  if (!html.includes("DETERMINISTIC")) fail("deterministic mode chip missing");
+  if (!html.includes("Deterministic")) fail("deterministic mode chip missing");
   if (/success probability|forecast|predicted/i.test(html)) fail("unsupported predictive claim present");
   pass("page identity present; no predictive/probability claims");
 
@@ -58,16 +58,16 @@ async function main() {
     .prepare("SELECT COUNT(*) c FROM clarification_requests WHERE status IN ('OPEN','REOPENED')")
     .get().c;
 
-  // Summary card markup: <a class="int-stat ..."><span class="is-n">N</span><span class="is-l">Label</span>
+  // Summary metric markup (v4): <span class="m-v num ...">N</span><span class="m-l">Label</span>
   const cardValue = (label) => {
-    const re = new RegExp(`<span class="is-n">(\\d+)</span><span class="is-l">${label}</span>`);
+    const re = new RegExp(`<span class="m-v num[^"]*">(\\d+)</span><span class="m-l">${label}</span>`);
     const m = html.match(re);
     if (!m) fail(`summary card "${label}" missing`);
     return Number(m[1]);
   };
   if (cardValue("Active projects") !== activeProjects) fail("active projects count mismatch");
   if (cardValue("Pending approvals") !== pendingApprovals) fail("pending approvals count mismatch");
-  if (cardValue("High-severity issues") !== highIssues) fail("high-severity issue count mismatch");
+  if (cardValue("High-severity field issues") !== highIssues) fail("high-severity issue count mismatch");
   if (cardValue("Open clarifications") !== openClars) fail("open clarifications count mismatch");
   pass(
     `summary counts match database (${activeProjects} active, ${pendingApprovals} pending approvals, ${highIssues} high issues, ${openClars} clarifications)`
@@ -142,12 +142,12 @@ async function main() {
   // must clear the HIGH count; MEDIUM signals (seeded draw/budget review
   // states) legitimately keep the banner away until they are worked.
   const sevCount = (page, label) => {
-    const m = page.match(new RegExp(`<span class="int-sev [a-z]+">(\\d+) ${label}</span>`));
+    const m = page.match(new RegExp(`</span>(\\d+) ${label}</span>`));
     return m ? Number(m[1]) : 0;
   };
-  if (sevCount(html2, "HIGH") !== 0) fail("HIGH signal count not cleared after resolving the seeded issue");
-  const calmShown = html2.includes("NO CRITICAL SIGNALS");
-  const calmExpected = sevCount(html2, "HIGH") === 0 && sevCount(html2, "MEDIUM") === 0;
+  if (sevCount(html2, "high") !== 0) fail("high signal count not cleared after resolving the seeded issue");
+  const calmShown = html2.includes("No critical signals");
+  const calmExpected = sevCount(html2, "high") === 0 && sevCount(html2, "medium") === 0;
   if (calmShown !== calmExpected)
     fail(`calm banner ${calmShown ? "shown" : "missing"} but HIGH+MEDIUM counts say it should ${calmExpected ? "show" : "not show"}`);
   if (!html2.includes("Verification outcomes") || !html2.includes("Governance intelligence"))
