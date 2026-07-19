@@ -10,10 +10,12 @@ Screenshots: `docs/reconstruction/before/` and `docs/reconstruction/after/`
 1. `a902dc0` — frontend audit, route inventory, defect census, before-screenshots
 2. `b5b32f9` — design-system foundation + application shell / navigation reconstruction
 3. `7737bf4` — lender workflow: Field Issues, Ledger, Intelligence, Projects + typography detox
-4. `6613758` / `11c54e3` — operational pages: Budget, Reports, Change Orders, Pilot, creation workspaces
-5. `453cb39` — creation workspaces, communications trust boundary, label cleanup
-6. `cf02bb9` — responsive hardening (evidence-panel collapse, touch targets)
-7. (final) — frontend visual test suite + regression alignment + after-screenshots
+4. `a019732` — lender workflow: Approvals, Draws, Evidence Review, Exceptions
+5. `6d2a43f` — intelligence UI test assertions aligned to v4 markup
+6. `6613758` / `11c54e3` — operational pages: Budget, Reports, Change Orders, Pilot, creation workspaces
+7. `453cb39` — creation workspaces, communications trust boundary, label cleanup
+8. `cf02bb9` — responsive hardening (evidence-panel collapse, touch targets)
+9. `d07b161` — frontend visual test suite + after-screenshots + this report
 
 ## Design system summary
 
