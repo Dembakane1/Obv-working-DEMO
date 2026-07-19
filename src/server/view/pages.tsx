@@ -1119,8 +1119,8 @@ export function renderMilestoneDetail(input: {
           </span>
         );
         const gateRow = (title: string, state: unknown, sub: unknown) => (
-          <div className="gate-row" style="display:grid;grid-template-columns:190px minmax(0,1fr);gap:10px;padding:9px 0;border-top:1px solid var(--line);align-items:baseline">
-            <span style="font:600 10.5px/1.3 var(--sans,inherit);letter-spacing:.7px;color:var(--ink-3);text-transform:uppercase">{title}</span>
+          <div className="gate-row" style="display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr);gap:10px;padding:9px 0;border-top:1px solid var(--line);align-items:baseline">
+            <span style="font:550 12px/1.35 var(--sans,inherit);color:var(--ink-3)">{title}</span>
             <span style="font-size:12.5px;min-width:0;overflow-wrap:anywhere">
               {state}
               {sub ? <span className="sub" style="display:block;font-size:11px;margin-top:2px">{sub}</span> : null}
@@ -1561,28 +1561,41 @@ export function renderApprovals(input: {
       <PageHeader
         title="Approvals"
         sub="Release governance — every required role must approve verified evidence before a tranche becomes release-eligible."
+        asOf={`${pending.length} pending request${pending.length === 1 ? "" : "s"} for your portfolio`}
       >
-        <div className="ap-head-actions">
-          <div style="text-align:right">
-            <div className="t-display num" style="font-size:21px">{money(atStake)}</div>
-            <div className="t-meta">{pending.length} request{pending.length === 1 ? "" : "s"} · held pending governance</div>
-          </div>
-          <a
-            className="btn secondary sm"
-            href="/approvals/export.csv"
-            title="Download the approval register (read-only CSV)"
-          >
-            {icons.download(14)} Export approvals
-          </a>
-        </div>
+        <a
+          className="btn secondary sm"
+          href="/approvals/export.csv"
+          title="Download the approval register (read-only CSV)"
+        >
+          {icons.download(14)} Export approvals
+        </a>
       </PageHeader>
+
+      <div className="metric-strip">
+        <Metric d={{ value: String(pending.length), label: "Awaiting decision", tone: pending.length > 0 ? "warn" : undefined, edge: pending.length > 0 ? "warn" : undefined, sub: pending.length > 0 ? "Every required role must sign" : "Queue clear", dim: pending.length === 0 }} />
+        <Metric d={{ value: money(atStake), label: "Value awaiting approval", sub: "Held until governance completes", dim: atStake === 0 }} />
+        <Metric d={{
+          value: (() => {
+            const oldest = pending.reduce<string | null>((min, i) => (!min || i.approval.createdAt < min ? i.approval.createdAt : min), null);
+            if (!oldest) return "—";
+            const days = Math.floor((Date.now() - Date.parse(oldest)) / 86400000);
+            return days <= 0 ? "today" : `${days}d`;
+          })(),
+          label: "Oldest pending request",
+          sub: pending.length > 0 ? "Waiting time for the earliest submission" : "Nothing waiting",
+          dim: pending.length === 0,
+        }} />
+        <Metric d={{ value: String(resolved.length), label: "Resolved approvals", sub: "Full audit trail retained below", dim: resolved.length === 0 }} />
+      </div>
 
       {pending.length === 0 ? (
         <div className="panel">
-          <EmptyState
+          <EmptyStateV2
             icon={icons.approvals()}
             title="Nothing awaiting approval"
-            message="When a milestone is verified, its release approval appears here."
+            what="When evidence for a milestone or draw completes verification, its release approval request appears here for every required role. Nothing is currently waiting on you."
+            condition="healthy"
           />
         </div>
       ) : (
@@ -1846,7 +1859,7 @@ export function renderApprovals(input: {
                   </span>
                   <span className="res-cell">
                     <span className="l">Status</span>
-                    <span className={`chip ${ok ? "ok" : "bad"}`}>{ok ? "APPROVED & RELEASED" : "REJECTED — RETURNED"}</span>
+                    <span className={`chip ${ok ? "ok" : "bad"}`}>{ok ? "Approved · released through governance" : "Rejected — returned to project"}</span>
                   </span>
                   <span className="res-cell">
                     <span className="l">{ok ? "Released on" : "Decided on"}</span>
@@ -2476,18 +2489,17 @@ export function renderCompliance(input: {
   return renderDocument(
     <AppShell title="Risk & Compliance" nav={input.nav}>
       <PageHeader
-        title="Risk & compliance"
-        sub="Open items requiring compliance attention, summarized from recorded verification and governance data."
+        title="Evidence review"
+        sub="Human review of flagged evidence, plus open compliance items summarized from recorded verification and governance data."
+        asOf={`${d.needsReview.length} item${d.needsReview.length === 1 ? "" : "s"} awaiting a reviewer decision`}
       />
 
-      <OperationalStatus
-        items={[
-          { tone: d.needsReview.length > 0 ? "warn" : "ok", value: String(d.needsReview.length), label: "evidence needing review" },
-          { tone: d.rejected.length > 0 ? "bad" : "ok", value: String(d.rejected.length), label: "rejected evidence" },
-          { tone: d.awaitingApproval.length > 0 ? "warn" : "idle", value: String(d.awaitingApproval.length), label: "awaiting approval" },
-          { tone: d.chainValid ? "ok" : "bad", value: d.chainValid ? "Intact" : `Alert #${d.brokenAt}`, label: "ledger integrity" },
-        ]}
-      />
+      <div className="metric-strip">
+        <Metric d={{ value: String(d.needsReview.length), label: "Evidence awaiting review", tone: d.needsReview.length > 0 ? "warn" : undefined, edge: d.needsReview.length > 0 ? "warn" : undefined, sub: d.needsReview.length > 0 ? "Flagged by deterministic checks or AI assessment" : "Review queue clear", dim: d.needsReview.length === 0 }} />
+        <Metric d={{ value: String(d.rejected.length), label: "Rejected evidence", tone: d.rejected.length > 0 ? "bad" : undefined, sub: d.rejected.length > 0 ? "Requires recapture in the field" : "None rejected", dim: d.rejected.length === 0 }} />
+        <Metric d={{ value: String(d.awaitingApproval.length), label: "Verified, awaiting approval", sub: d.awaitingApproval.length > 0 ? "With governance — see Approvals" : "Nothing at governance", dim: d.awaitingApproval.length === 0, href: "/approvals" }} />
+        <Metric d={{ value: d.chainValid ? "Intact" : "Broken", label: "Ledger integrity", tone: d.chainValid ? "ok" : "bad", edge: d.chainValid ? undefined : "bad", sub: d.chainValid ? "Hash chain recomputes cleanly" : `First failure at entry #${d.brokenAt}`, href: "/ledger" }} />
+      </div>
 
       <h2 className="section">Field issues</h2>
       <div className="panel">
@@ -3656,11 +3668,11 @@ function CommsContextPanel(props: {
           style="padding:10px 14px;display:flex;flex-direction:column;gap:8px"
         >
           <input type="hidden" name="action" value="connect" />
-          <label style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)">
+          <label style="font-size:12px;color:var(--ink-3);font-weight:550">
             Team ID
             <input name="teamId" required style="width:100%;box-sizing:border-box;font:inherit;font-size:12px;padding:6px 8px;border:1px solid var(--line-2);margin-top:3px" />
           </label>
-          <label style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)">
+          <label style="font-size:12px;color:var(--ink-3);font-weight:550">
             Channel ID
             <input name="channelId" required style="width:100%;box-sizing:border-box;font:inherit;font-size:12px;padding:6px 8px;border:1px solid var(--line-2);margin-top:3px" />
           </label>

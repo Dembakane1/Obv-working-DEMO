@@ -17,6 +17,8 @@ import {
   fmtDate,
   money,
   roleLabel,
+  Metric,
+  EmptyStateV2,
 } from "./components";
 import type {
   ApprovalRecord,
@@ -96,12 +98,12 @@ const REQ_STATE_TONE: Record<string, string> = {
 };
 
 const RECOMMENDATION_LABEL: Record<string, string> = {
-  READY_FOR_GOVERNANCE: "READY FOR GOVERNANCE",
-  HOLD_DOCUMENTS_MISSING: "HOLD — DOCUMENTS MISSING",
-  HOLD_EVIDENCE_NEEDS_REVIEW: "HOLD — EVIDENCE NEEDS REVIEW",
-  HOLD_OPEN_HIGH_SEVERITY_ISSUE: "HOLD — OPEN HIGH-SEVERITY ISSUE",
-  PARTIAL_SUPPORT: "PARTIAL SUPPORT",
-  RETURN_FOR_CLARIFICATION: "RETURN FOR CLARIFICATION",
+  READY_FOR_GOVERNANCE: "Ready for governance",
+  HOLD_DOCUMENTS_MISSING: "Hold — documents missing",
+  HOLD_EVIDENCE_NEEDS_REVIEW: "Hold — evidence needs review",
+  HOLD_OPEN_HIGH_SEVERITY_ISSUE: "Hold — open high-severity issue",
+  PARTIAL_SUPPORT: "Partial support",
+  RETURN_FOR_CLARIFICATION: "Return for clarification",
 };
 
 const RECOMMENDATION_TONE: Record<string, string> = {
@@ -153,11 +155,11 @@ export function renderDrawRegister(input: {
           <a className="btn" href="/draws/new">Create Draw Request</a>
         ) : null}
       </PageHeader>
-      <div className="issue-stats">
-        <span><b className="num">{active.length}</b> Active</span>
-        <span><b className="num">{inReview.length}</b> In review</span>
-        <span><b className="num" style={awaitingGov.length ? "color:var(--warn)" : ""}>{awaitingGov.length}</b> Awaiting governance</span>
-        <span><b className="num">{released.length}</b> Released</span>
+      <div className="metric-strip">
+        <Metric d={{ value: String(active.length), label: "Active draw requests", sub: active.length > 0 ? "In the review pipeline" : "None active", dim: active.length === 0 }} />
+        <Metric d={{ value: String(inReview.length), label: "In lender review", sub: inReview.length > 0 ? "Documents and evidence being checked" : "Review queue clear", dim: inReview.length === 0 }} />
+        <Metric d={{ value: String(awaitingGov.length), label: "Awaiting formal approval", tone: awaitingGov.length > 0 ? "warn" : undefined, edge: awaitingGov.length > 0 ? "warn" : undefined, sub: awaitingGov.length > 0 ? "Review complete — roles must sign" : "Nothing at governance", dim: awaitingGov.length === 0 }} />
+        <Metric d={{ value: String(released.length), label: "Released", tone: released.length > 0 ? "ok" : undefined, sub: "Through governed approval only", dim: released.length === 0 }} />
       </div>
       <div className="panel">
         <div className="panel-head">
@@ -165,10 +167,13 @@ export function renderDrawRegister(input: {
           <span className="right">{input.rows.length} draw{input.rows.length === 1 ? "" : "s"}</span>
         </div>
         {input.rows.length === 0 ? (
-          <p className="sub" style="padding:14px 16px">
-            No draw requests yet. Create one to run a governed draw review —
-            budget lines, documents, field evidence and formal approval.
-          </p>
+          <EmptyStateV2
+            icon={icons.dollar()}
+            title="No draw requests yet"
+            what="Draw requests run the governed review: budget lines, required documents, field-evidence support, exceptions and formal approval. None have been submitted for this portfolio."
+            condition="healthy"
+            action={input.canCreate ? <a className="btn secondary sm" href="/draws/new">Create the first draw request</a> : undefined}
+          />
         ) : (
           <div className="intg-table-wrap">
             <table className="intg-table">

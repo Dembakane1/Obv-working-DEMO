@@ -3409,3 +3409,18 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
 }
 
 .asset .a-next b { color: var(--ink-2); font-weight: 600; }
+
+/* ---- register filter grid (exceptions and similar dense filters) ---- */
+.filter-grid { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; margin-bottom: 12px; }
+.filter-grid .f-lab { font-size: 12px; color: var(--ink-3); font-weight: 550; min-width: 0; }
+.filter-grid .f-lab select {
+  display: block; margin-top: 3px; height: 36px; max-width: 100%;
+  border: 1px solid var(--line-2); border-radius: 7px; background: var(--surface);
+  font: 500 12.5px var(--sans); color: var(--ink-2); padding: 0 8px;
+}
+.filter-grid .f-check { display: flex; align-items: center; gap: 6px; padding-bottom: 8px; }
+.filter-grid .f-check input { width: auto; }
+@media (max-width: 640px) {
+  .filter-grid .f-lab { flex: 1 1 45%; }
+  .filter-grid .f-lab select { width: 100%; }
+}
