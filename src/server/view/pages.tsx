@@ -4345,10 +4345,11 @@ export function renderIssueNew(input: {
         sub="An operational issue for human coordination. Issues never change financial state."
         crumb={{ href: "/issues", label: "Field Issues" }}
       />
-      <div className="panel panel-pad" style="max-width:640px">
+      <div className="work-grid">
+      <div className="panel panel-pad">
         {input.sourceMessage ? (
           <div className="issue-src" style="margin:0 0 14px">
-            <span className="k">FROM MESSAGE</span>
+            <span className="k">From message</span>
             <span className="b">
               {input.sourceMessage.senderDisplayName}
               {input.sourceMessage.provider === "WHATSAPP" ? " · via WhatsApp" : input.sourceMessage.provider === "TEAMS" ? " · via Microsoft Teams" : ""}:
