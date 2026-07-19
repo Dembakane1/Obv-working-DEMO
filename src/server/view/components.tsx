@@ -334,7 +334,7 @@ export function AppShell(props: {
                 <span className="o">{props.nav.orgName ?? "OpenBuild Verify"}</span>
               </span>
               <span className="u">
-                <span className="env-tag" style="font-size:8.5px;padding:1px 5px">Demo</span>{" "}
+                <span className="env-tag" style="font-size:10px;padding:1px 5px">Demo</span>{" "}
                 <a href="/demo">switch</a>
               </span>
             </div>

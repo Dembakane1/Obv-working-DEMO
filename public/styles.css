@@ -248,7 +248,7 @@ button { font-family: var(--sans); }
 .topbar .ctx .sep { color: var(--line-2); }
 .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 .env-tag {
-  font-size: 9.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
   color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn-line);
   border-radius: 4px; padding: 2px 7px; white-space: nowrap;
 }

@@ -255,7 +255,7 @@ async function waitUp() {
     const dashPage = await page("pm", "/issues");
     assert(
       dashPage.includes("Gravel shortfall at km 12 stockpile") &&
-        dashPage.includes("release eligibility is controlled only by the formal approval workflow"),
+        dashPage.includes("they never change release eligibility"),
       "issues dashboard lists the register with the governance disclaimer"
     );
 

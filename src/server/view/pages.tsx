@@ -3401,6 +3401,7 @@ export function renderCommunications(input: {
   });
   return renderDocument(
     <AppShell title="Communications" nav={input.nav} context={selected?.thread.title}>
+      <h1 className="sr-only">Communications</h1>
       <div className={`comms ${selected ? "has-selection" : ""}`}>
         <section className="comms-list" aria-label="Threads">
           <div className="comms-list-head">
