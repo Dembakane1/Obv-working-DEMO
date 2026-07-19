@@ -65,6 +65,29 @@ export function roleLabel(role: UserRole): string {
   return map[role];
 }
 
+/** Present an UPPER_SNAKE enum value as sentence-case operational language.
+ *  Overrides cover terms whose plain title-casing would mislead. */
+const ENUM_LABELS: Record<string, string> = {
+  NEEDS_REVIEW: "Needs review",
+  AWAITING_FIELD_RESPONSE: "Awaiting field response",
+  CORRECTIONS_REQUIRED: "Corrections required",
+  NOT_STARTED: "Not started",
+  PENDING_EVIDENCE: "Awaiting evidence",
+  UNDER_REVIEW: "Under review",
+  IN_PROGRESS: "In progress",
+  HIGH: "High",
+  MEDIUM: "Medium",
+  LOW: "Low",
+  CRITICAL: "Critical",
+  INFO: "Info",
+};
+export function enumLabel(value: string | null | undefined): string {
+  if (!value) return "—";
+  if (ENUM_LABELS[value]) return ENUM_LABELS[value];
+  const words = value.replace(/_/g, " ").toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 export function initials(name: string): string {
   return name
     .split(/\s+/)
@@ -156,34 +179,57 @@ export interface NavContext {
 
 interface NavItem { key: string; href: string; label: string; icon: () => VNode; badge?: "approvals" | "issues" | "exceptions" }
 
-const NAV_ITEMS: NavItem[] = [
-  { key: "overview", href: "/overview", label: "Overview", icon: icons.overview },
-  { key: "projects", href: "/projects", label: "Projects", icon: icons.projects },
-  { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
-  { key: "approvals", href: "/approvals", label: "Approvals", icon: icons.approvals, badge: "approvals" },
-  { key: "draws", href: "/draws", label: "Draw Requests", icon: icons.dollar },
-  { key: "change-orders", href: "/change-orders", label: "Change Orders", icon: icons.refresh },
-  { key: "compliance", href: "/compliance", label: "Evidence Review", icon: icons.shield },
-  { key: "comms", href: "/communications", label: "Communications", icon: icons.chat },
-  { key: "issues", href: "/issues", label: "Field Issues", icon: icons.alert, badge: "issues" },
-  { key: "exceptions", href: "/exceptions", label: "Exceptions", icon: icons.shield, badge: "exceptions" },
-  { key: "field", href: "/field", label: "Field Capture", icon: icons.camera },
-  { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
-  { key: "ledger", href: "/ledger", label: "Ledger", icon: icons.ledger },
+/** Grouped primary navigation — the lender workflow reads top-to-bottom:
+ *  portfolio context → capital decisions → verification truth → field ops. */
+export interface NavGroup { title: string | null; items: NavItem[] }
+
+export const NAV_GROUPS: NavGroup[] = [
+  {
+    title: null,
+    items: [
+      { key: "overview", href: "/overview", label: "Overview", icon: icons.overview },
+      { key: "projects", href: "/projects", label: "Projects", icon: icons.projects },
+      { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
+      { key: "insights", href: "/insights", label: "OBV Intelligence", icon: icons.insights },
+    ],
+  },
+  {
+    title: "Capital control",
+    items: [
+      { key: "approvals", href: "/approvals", label: "Approvals", icon: icons.approvals, badge: "approvals" },
+      { key: "draws", href: "/draws", label: "Draw Requests", icon: icons.dollar },
+      { key: "change-orders", href: "/change-orders", label: "Change Orders", icon: icons.refresh },
+      { key: "budget", href: "/budget", label: "Budget & Progress", icon: icons.ledger },
+    ],
+  },
+  {
+    title: "Verification & records",
+    items: [
+      { key: "compliance", href: "/compliance", label: "Evidence Review", icon: icons.shield },
+      { key: "ledger", href: "/ledger", label: "Evidence Ledger", icon: icons.ledger },
+      { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
+    ],
+  },
+  {
+    title: "Field operations",
+    items: [
+      { key: "issues", href: "/issues", label: "Field Issues", icon: icons.alert, badge: "issues" },
+      { key: "exceptions", href: "/exceptions", label: "Exceptions", icon: icons.shield, badge: "exceptions" },
+      { key: "field", href: "/field", label: "Field Capture", icon: icons.camera },
+      { key: "comms", href: "/communications", label: "Communications", icon: icons.chat },
+    ],
+  },
+  {
+    title: "Pilot",
+    items: [
+      { key: "setup", href: "/setup", label: "Pilot Setup", icon: icons.projects },
+      { key: "pilot", href: "/pilot", label: "Pilot Operations", icon: icons.activity },
+      { key: "integrations", href: "/communications/integrations", label: "Integrations", icon: icons.refresh },
+    ],
+  },
 ];
 
-const NAV_ITEMS_PILOT: NavItem[] = [
-  { key: "setup", href: "/setup", label: "Pilot Setup", icon: icons.projects },
-  { key: "pilot", href: "/pilot", label: "Pilot Operations", icon: icons.activity },
-  { key: "integrations", href: "/communications/integrations", label: "Integrations", icon: icons.refresh },
-];
-
-const NAV_ITEMS_UTILITY: NavItem[] = [
-  { key: "insights", href: "/insights", label: "OBV Intelligence", icon: icons.insights },
-  { key: "budget", href: "/budget", label: "Budget & Progress", icon: icons.ledger },
-];
-
-const ALL_NAV_ITEMS = [...NAV_ITEMS, ...NAV_ITEMS_PILOT, ...NAV_ITEMS_UTILITY];
+const ALL_NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
 
 const BOTTOM_NAV = ["overview", "projects", "approvals", "ledger"];
 
@@ -237,11 +283,12 @@ export function AppShell(props: {
               </span>
             </div>
             <nav className="sidebar-nav" aria-label="Primary">
-              {NAV_ITEMS.map(navLink)}
-              <div className="nav-group">Pilot</div>
-              {NAV_ITEMS_PILOT.map(navLink)}
-              <div className="nav-group">Analysis</div>
-              {NAV_ITEMS_UTILITY.map(navLink)}
+              {NAV_GROUPS.map((g) => (
+                <>
+                  {g.title ? <div className="nav-group">{g.title}</div> : null}
+                  {g.items.map(navLink)}
+                </>
+              ))}
             </nav>
             {props.nav.orgName ? (
               <div className="sidebar-org">
@@ -297,19 +344,27 @@ export function AppShell(props: {
         </div>
 
         <nav className="bottom-nav" aria-label="Primary">
-          {NAV_ITEMS.filter((i) => BOTTOM_NAV.includes(i.key)).map((item) => (
-            <a href={item.href} className={active === item.key ? "active" : ""}>
-              <span className="bn-ico">
-                {item.icon()}
-                {item.key === "approvals" && pendingApprovals > 0 ? (
-                  <span className="bn-badge">{pendingApprovals}</span>
-                ) : null}
-              </span>
-              {item.key === "approvals" ? "Approvals" : item.key === "ledger" ? "Ledger" : item.label.split(" ")[0]}
-            </a>
-          ))}
-          <a href="/more" className={active === "more" ? "active" : ""}>
-            {icons.more()}
+          {BOTTOM_NAV.map((key) => {
+            const item = ALL_NAV_ITEMS.find((i) => i.key === key)!;
+            const short =
+              key === "overview" ? "Overview" : key === "projects" ? "Projects" : key === "approvals" ? "Approvals" : "Ledger";
+            return (
+              <a href={item.href} className={active === item.key ? "active" : ""} aria-current={active === item.key ? "page" : undefined}>
+                <span className="bn-ico">
+                  {item.icon()}
+                  {item.key === "approvals" && pendingApprovals > 0 ? (
+                    <span className="bn-badge">{pendingApprovals}</span>
+                  ) : null}
+                </span>
+                {short}
+              </a>
+            );
+          })}
+          <a href="/more" className={active === "more" ? "active" : ""} aria-current={active === "more" ? "page" : undefined}>
+            <span className="bn-ico">
+              {icons.more()}
+              {openIssues + openExceptions > 0 ? <span className="bn-badge">{openIssues + openExceptions}</span> : null}
+            </span>
             More
           </a>
         </nav>
@@ -321,6 +376,8 @@ export function AppShell(props: {
 export function PageHeader(props: {
   title: string;
   sub?: string;
+  /** As-of / scope context line, e.g. "Portfolio · computed 2026-07-19 03:11 UTC". */
+  asOf?: string;
   crumb?: { href: string; label: string };
   children?: Child;
 }): VNode {
@@ -332,6 +389,7 @@ export function PageHeader(props: {
         ) : null}
         <h1>{props.title}</h1>
         {props.sub ? <p className="sub">{props.sub}</p> : null}
+        {props.asOf ? <span className="asof">{props.asOf}</span> : null}
       </div>
       {props.children ? <div className="actions">{props.children}</div> : null}
     </header>
@@ -857,6 +915,233 @@ export function EmptyState(props: { icon: VNode; title: string; message: string;
       <h4>{props.title}</h4>
       <p>{props.message}</p>
       {props.children}
+    </div>
+  );
+}
+
+// =====================================================================
+// v4 reconstruction shared components — page archetype building blocks.
+// Presentation only: all data arrives via props from route handlers.
+// =====================================================================
+
+export interface MetricData {
+  value: string;
+  label: string;
+  sub?: string;
+  tone?: "ok" | "warn" | "bad";
+  edge?: "accent" | "warn" | "bad";
+  href?: string;
+  /** Zero-value metrics render de-emphasized so they stop dominating. */
+  dim?: boolean;
+}
+
+export function Metric(props: { d: MetricData }): VNode {
+  const { d } = props;
+  const cls = [
+    "metric",
+    d.dim ? "dim" : "",
+    d.edge === "accent" ? "accent" : d.edge === "warn" ? "warn-edge" : d.edge === "bad" ? "bad-edge" : "",
+  ].join(" ").trim();
+  const body = (
+    <>
+      <span className={`m-v num ${d.tone ?? ""}`}>{d.value}</span>
+      <span className="m-l">{d.label}</span>
+      {d.sub ? <span className="m-s">{d.sub}</span> : null}
+    </>
+  );
+  return d.href ? <a className={cls} href={d.href}>{body}</a> : <div className={cls}>{body}</div>;
+}
+
+export function MetricStrip(props: { metrics: MetricData[] }): VNode {
+  return <div className="metric-strip">{props.metrics.map((d) => <Metric d={d} />)}</div>;
+}
+
+export function AttentionBanner(props: {
+  tone?: "warn" | "bad" | "info";
+  title: string;
+  detail?: string;
+  icon?: VNode;
+  action?: VNode;
+}): VNode {
+  return (
+    <div className={`attn ${props.tone ?? "warn"}`}>
+      <span className="a-ico" aria-hidden="true">{props.icon ?? icons.alert()}</span>
+      <span className="a-body">
+        <span className="a-t">{props.title}</span>
+        {props.detail ? <span className="a-s">{props.detail}</span> : null}
+      </span>
+      {props.action ? <span className="a-act">{props.action}</span> : null}
+    </div>
+  );
+}
+
+export function SectionHead(props: { title: string; hint?: string; right?: Child }): VNode {
+  return (
+    <div className="sec-head">
+      <h2>{props.title}</h2>
+      {props.hint ? <span className="hint">{props.hint}</span> : null}
+      {props.right ? <span className="right">{props.right}</span> : null}
+    </div>
+  );
+}
+
+/** GET filter bar. Children are extra <select> controls; the form submits
+ *  itself on change via the submit-on-change hook in poll.js-free pages. */
+export function FilterBar(props: {
+  action: string;
+  searchName?: string;
+  searchValue?: string;
+  searchPlaceholder?: string;
+  count?: string;
+  children?: Child;
+}): VNode {
+  return (
+    <form className="filter-bar" method="GET" action={props.action}>
+      {props.searchName ? (
+        <label className="search">
+          <input
+            type="search"
+            name={props.searchName}
+            value={props.searchValue ?? ""}
+            placeholder={props.searchPlaceholder ?? "Search"}
+            aria-label={props.searchPlaceholder ?? "Search"}
+          />
+        </label>
+      ) : null}
+      {props.children}
+      <button className="btn secondary sm" type="submit">Apply</button>
+      {props.count ? <span className="f-count">{props.count}</span> : null}
+    </form>
+  );
+}
+
+/** Empty state that explains what belongs here, why it is empty, whether
+ *  that is healthy, and what an authorized user can do next. */
+export function EmptyStateV2(props: {
+  icon?: VNode;
+  title: string;
+  what: string;
+  condition?: "healthy" | "incomplete" | "unconfigured";
+  action?: VNode;
+}): VNode {
+  const chip =
+    props.condition === "healthy" ? (
+      <span className="status ok"><span className="g">✓</span>Healthy — nothing outstanding</span>
+    ) : props.condition === "incomplete" ? (
+      <span className="data-incomplete">Data incomplete</span>
+    ) : props.condition === "unconfigured" ? (
+      <span className="status"><span className="g">○</span>Not yet configured</span>
+    ) : null;
+  return (
+    <div className="empty-state">
+      <span className="e-ico" aria-hidden="true">{props.icon ?? icons.activity()}</span>
+      <h4>{props.title}</h4>
+      <p>{props.what}</p>
+      {chip ? <span className="e-state">{chip}</span> : null}
+      {props.action ? <div className="e-act">{props.action}</div> : null}
+    </div>
+  );
+}
+
+export function Methodology(props: { title?: string; children?: Child }): VNode {
+  return (
+    <div className="methodology">
+      <h4>{props.title ?? "Methodology"}</h4>
+      {props.children}
+    </div>
+  );
+}
+
+export function TechnicalHash(props: { label: string; value: string | null | undefined }): VNode {
+  return (
+    <div className="hash-field">
+      <span className="hf-l">{props.label}</span>
+      {props.value ?? "—"}
+    </div>
+  );
+}
+
+export interface QueueItem {
+  href: string;
+  tone?: "warn" | "bad" | "ok";
+  icon: VNode;
+  title: string;
+  sub?: string;
+  metaTop?: string;
+  metaBottom?: string;
+}
+
+export function ActionQueue(props: { items: QueueItem[]; empty?: VNode }): VNode {
+  if (props.items.length === 0 && props.empty) return <div className="queue">{props.empty}</div>;
+  return (
+    <div className="queue">
+      {props.items.map((i) => (
+        <a className="queue-row" href={i.href}>
+          <span className={`q-ico ${i.tone ?? ""}`} aria-hidden="true">{i.icon}</span>
+          <span className="q-body">
+            <span className="q-t">{i.title}</span>
+            {i.sub ? <span className="q-s">{i.sub}</span> : null}
+          </span>
+          {i.metaTop || i.metaBottom ? (
+            <span className="q-meta">
+              {i.metaTop ? <b>{i.metaTop}</b> : null}
+              {i.metaBottom ?? ""}
+            </span>
+          ) : null}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+export interface AmountCell {
+  value: string;
+  label: string;
+  tone?: "ok" | "warn" | "bad";
+  muted?: boolean;
+}
+
+/** Distinct financial amount categories — never one ambiguous number. */
+export function AmountBreakdown(props: { cells: AmountCell[] }): VNode {
+  return (
+    <div className="amounts">
+      {props.cells.map((c) => (
+        <div className={`am ${c.tone ?? ""} ${c.muted ? "muted" : ""}`}>
+          <span className="a-v">{c.value}</span>
+          <span className="a-l">{c.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function Timeline(props: {
+  items: Array<{ tone?: "ok" | "warn" | "bad"; text: Child; when: string; who?: string }>;
+}): VNode {
+  return (
+    <ul className="tl">
+      {props.items.map((i) => (
+        <li className={i.tone ?? ""}>
+          <span className="tl-t">{i.text}</span>
+          <span className="tl-m">
+            <span>{i.when}</span>
+            {i.who ? <span>{i.who}</span> : null}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function Provenance(props: { rows: Array<{ k: string; v: Child }> }): VNode {
+  return (
+    <div className="prov">
+      {props.rows.map((r) => (
+        <div className="pv-row">
+          <span className="pv-k">{r.k}</span>
+          <span className="pv-v">{r.v}</span>
+        </div>
+      ))}
     </div>
   );
 }

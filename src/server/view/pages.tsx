@@ -2739,43 +2739,79 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
 
 export function renderMore(input: { nav: NavContext }): string {
   const { user } = input.nav;
-  const items = [
-    { href: "/map", label: "Project Map", icon: icons.map, desc: "Spatial project intelligence" },
-    { href: "/communications", label: "Communications", icon: icons.chat, desc: "Project-linked coordination threads" },
-    { href: "/field", label: "Field Capture", icon: icons.camera, desc: "Mobile evidence capture" },
-    { href: "/reports", label: "Reports", icon: icons.reports, desc: "Document registry & exports" },
-    { href: "/compliance", label: "Risk & Compliance", icon: icons.shield, desc: "Open review items and integrity" },
-    { href: "/issues", label: "Field Issues", icon: icons.activity, desc: "Operational issues from field coordination" },
-    { href: "/pilot", label: "Pilot Operations", icon: icons.activity, desc: "Pilot status across projects" },
-    { href: "/setup", label: "Pilot Setup", icon: icons.projects, desc: "Customer onboarding & project configuration" },
-    { href: "/insights", label: "OBV Intelligence", icon: icons.insights, desc: "Operational intelligence from recorded data" },
+  const openIssues = input.nav.openIssues ?? 0;
+  const openExceptions = input.nav.openExceptions ?? 0;
+  const groups: Array<{ title: string; items: Array<{ href: string; label: string; icon: () => VNode; desc: string; badge?: number }> }> = [
+    {
+      title: "Portfolio & analysis",
+      items: [
+        { href: "/map", label: "Map / Satellite", icon: icons.map, desc: "Spatial project intelligence" },
+        { href: "/insights", label: "OBV Intelligence", icon: icons.insights, desc: "Deterministic intelligence from recorded data" },
+        { href: "/budget", label: "Budget & Progress", icon: icons.ledger, desc: "Verified physical vs financial progress" },
+      ],
+    },
+    {
+      title: "Capital control",
+      items: [
+        { href: "/draws", label: "Draw Requests", icon: icons.dollar, desc: "Lender review of contractor draw requests" },
+        { href: "/change-orders", label: "Change Orders", icon: icons.refresh, desc: "Governed budget and scope changes" },
+      ],
+    },
+    {
+      title: "Verification & records",
+      items: [
+        { href: "/compliance", label: "Evidence Review", icon: icons.shield, desc: "Flagged evidence awaiting human review" },
+        { href: "/reports", label: "Reports", icon: icons.reports, desc: "Verification reports and audit packages" },
+      ],
+    },
+    {
+      title: "Field operations",
+      items: [
+        { href: "/issues", label: "Field Issues", icon: icons.alert, desc: "Operational issues from field coordination", badge: openIssues },
+        { href: "/exceptions", label: "Exceptions", icon: icons.shield, desc: "Control-surveillance register", badge: openExceptions },
+        { href: "/field", label: "Field Capture", icon: icons.camera, desc: "Mobile evidence capture" },
+        { href: "/communications", label: "Communications", icon: icons.chat, desc: "Project-linked coordination threads" },
+      ],
+    },
+    {
+      title: "Pilot",
+      items: [
+        { href: "/setup", label: "Pilot Setup", icon: icons.projects, desc: "Customer onboarding & project configuration" },
+        { href: "/pilot", label: "Pilot Operations", icon: icons.activity, desc: "Pilot status across projects" },
+        { href: "/communications/integrations", label: "Integrations", icon: icons.refresh, desc: "Teams & WhatsApp bridge status" },
+      ],
+    },
   ];
   return renderDocument(
     <AppShell title="More" nav={{ ...input.nav, active: "more" }}>
-      <PageHeader title="More" />
-      <div className="panel">
-        {items.map((i, idx) => (
-          <a href={i.href} style={`display:flex;gap:12px;align-items:center;padding:13px 16px;color:var(--ink);min-height:48px;${idx > 0 ? "border-top:1px solid var(--line)" : ""}`}>
-            <span style="width:32px;height:32px;border-radius:7px;background:var(--inset);border:1px solid var(--line);color:var(--ink-3);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-              {i.icon()}
-            </span>
-            <span style="min-width:0">
-              <span style="font-weight:600;display:block;font-size:13px">{i.label}</span>
-              <span className="sub" style="display:block;font-size:11.5px">{i.desc}</span>
-            </span>
-            <span style="margin-left:auto;color:var(--ink-4)">{icons.arrowRight(14)}</span>
-          </a>
-        ))}
-      </div>
-      <div className="panel panel-pad" style="display:flex;gap:12px;align-items:center;margin-top:12px">
-        <span style="width:36px;height:36px;border-radius:8px;background:var(--inset);border:1px solid var(--line);color:var(--ink-2);font-weight:650;font-size:12px;display:flex;align-items:center;justify-content:center">
-          {initials(user.name)}
-        </span>
-        <span style="min-width:0;flex:1">
-          <span style="font-weight:600;display:block;font-size:13px">{user.name}</span>
-          <span className="sub" style="display:block;font-size:11.5px">{roleLabel(user.role)}{input.nav.orgName ? ` · ${input.nav.orgName}` : ""}</span>
-        </span>
-        <a className="btn secondary sm" href="/demo">Switch user</a>
+      <PageHeader title="More" sub="All destinations not shown in the bottom navigation." />
+      {groups.map((g) => (
+        <div className="more-group">
+          <div className="mg-t">{g.title}</div>
+          <div className="more-list">
+            {g.items.map((i) => (
+              <a className="more-row" href={i.href}>
+                <span className="mr-ico" aria-hidden="true">{i.icon()}</span>
+                <span className="mr-body">
+                  <span className="mr-t">{i.label}</span>
+                  <span className="mr-s">{i.desc}</span>
+                </span>
+                {i.badge && i.badge > 0 ? <span className="mr-badge">{i.badge}</span> : null}
+                <span className="mr-arrow" aria-hidden="true">{icons.arrowRight(14)}</span>
+              </a>
+            ))}
+          </div>
+        </div>
+      ))}
+      <div className="more-list">
+        <div className="more-row">
+          <span className="mr-ico" aria-hidden="true" style="font:650 12px var(--sans)">{initials(user.name)}</span>
+          <span className="mr-body">
+            <span className="mr-t">{user.name}</span>
+            <span className="mr-s">{roleLabel(user.role)}{input.nav.orgName ? ` · ${input.nav.orgName}` : ""}</span>
+          </span>
+          <a className="btn secondary sm" href="/demo">Switch user</a>
+        </div>
       </div>
     </AppShell>
   );
