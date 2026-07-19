@@ -2292,7 +2292,34 @@ export function renderReports(input: {
             <h3>Audit package register</h3>
             <span className="right">{input.auditPackages.length} package(s) · immutable once ready</span>
           </div>
-          <div className="table-scroll">
+          <div className="mobile-only">
+            {input.auditPackages.map((pkg) => {
+              const project = projectById.get(pkg.projectId);
+              const by = input.users.get(pkg.requestedBy);
+              return (
+                <div className="rec-card">
+                  <span className="rc-top">
+                    <span className="rc-title">Audit package v{pkg.packageVersion} · {project?.name ?? pkg.projectId}</span>
+                    <span className="rc-side">{apStatusChip(pkg)}</span>
+                  </span>
+                  <span className="rc-kv">
+                    <span className="k">As of</span><span className="v num">{fmtDate(pkg.asOfTimestamp).slice(0, 16)}</span>
+                    <span className="k">Integrity</span>
+                    <span className="v">
+                      {pkg.integrityState === "NOT_EVALUATED" ? "Not evaluated" : pkg.integrityState === "CLEAN" ? "Clean" : pkg.integrityCritical > 0 ? `${pkg.integrityCritical} critical finding${pkg.integrityCritical === 1 ? "" : "s"}` : "Warnings"}
+                      {" · ledger "}{pkg.ledgerIntegrityState === "INTACT" ? "intact" : pkg.ledgerIntegrityState.toLowerCase()}
+                    </span>
+                    <span className="k">Files</span><span className="v num">{pkg.fileCount || "—"}{pkg.sizeBytes ? ` · ${Math.max(1, Math.round(pkg.sizeBytes / 1024))} KB` : ""}</span>
+                    <span className="k">Requested by</span><span className="v">{by?.name ?? pkg.requestedBy}</span>
+                  </span>
+                  {["READY", "SUPERSEDED"].includes(pkg.status) ? (
+                    <span className="rc-next"><a className="btn secondary sm" href={`/audit-packages/${pkg.id}/download`}>Download ZIP</a></span>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+          <div className="desktop-only table-scroll">
             <table className="data">
               <thead>
                 <tr>
@@ -2303,7 +2330,7 @@ export function renderReports(input: {
                   <th>Integrity</th>
                   <th>Files</th>
                   <th>Requested by</th>
-                  <th></th>
+                  <th aria-label="Actions"></th>
                 </tr>
               </thead>
               <tbody>
@@ -4373,6 +4400,17 @@ export function renderIssueNew(input: {
             <a className="btn ghost" href={input.sourceMessage ? `/communications?thread=${input.sourceMessage.threadId}` : "/issues"}>Cancel</a>
           </div>
         </form>
+      </div>
+      <div>
+        <Methodology title="What happens next">
+          <p>
+            The issue enters the register with severity, ownership and due date. Reviewers see
+            it alongside the affected milestone, and it can link a clarification, evidence
+            draft or exception. Resolving an issue never verifies evidence, passes an
+            inspection, or releases funds.
+          </p>
+        </Methodology>
+      </div>
       </div>
     </AppShell>
   );

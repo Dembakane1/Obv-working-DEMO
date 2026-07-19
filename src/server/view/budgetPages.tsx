@@ -9,7 +9,7 @@
  */
 import { h, Fragment, VNode, renderDocument } from "./jsx";
 import { icons } from "./icons";
-import { AppShell, NavContext, PageHeader, fmtDate, money } from "./components";
+import { AppShell, NavContext, PageHeader, fmtDate, money, Metric, EmptyStateV2 } from "./components";
 import type {
   BudgetLine,
   BudgetLineProgressRow,
@@ -75,42 +75,71 @@ export interface BudgetPortfolioRow {
 }
 
 export function renderBudgetPortfolio(input: { nav: NavContext; rows: BudgetPortfolioRow[] }): string {
+  const complete = input.rows.filter((r) => r.financial.dataComplete);
+  const incomplete = input.rows.filter((r) => !r.financial.dataComplete);
+  const totalBudget = input.rows.reduce((s, r) => s + r.financial.budgetBasis, 0);
+  const totalPaid = input.rows.reduce((s, r) => s + r.financial.paidToDate, 0);
+  const openDraws = input.rows.reduce((s, r) => s + r.financial.openDrawRequested, 0);
+  const flagged = input.rows.filter((r) => ["WATCH", "FINANCIAL_AHEAD"].includes(r.financial.varianceState));
   return renderDocument(
     <AppShell title="Budget & Progress" nav={input.nav} context="Budget & Progress">
       <PageHeader
         title="Budget & Progress"
         sub="Money claimed or paid, compared with physical progress supported by verified evidence. Two different measurements — compared side by side, never merged."
+        asOf={
+          incomplete.length > 0
+            ? `${complete.length} of ${input.rows.length} projects have complete budget data — totals below cover recorded data only`
+            : `${input.rows.length} project${input.rows.length === 1 ? "" : "s"} with recorded budget data`
+        }
       />
-      {input.rows.length === 0 ? (
-        <div className="panel panel-pad"><p className="sub" style="margin:0">No active projects.</p></div>
-      ) : (
-        input.rows.map((r) => (
-          <div className="panel panel-pad" style="margin-bottom:12px">
-            <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
-              <h3 style="margin:0;font-size:13.5px">
-                <a href={`/project/${r.project.id}/budget`} style="color:var(--action)">{r.project.name}</a>
-              </h3>
-              <VarianceTag state={r.financial.varianceState} />
-              <span className="sub" style="margin-left:auto">
-                Budget {money(r.financial.budgetBasis)} · paid {money(r.financial.paidToDate)}
-                {r.financial.openDrawRequested > 0 ? ` · ${money(r.financial.openDrawRequested)} in open draws` : ""}
-              </span>
+      <div className="metric-strip">
+        <Metric d={{ value: money(totalBudget), label: "Recorded budget basis", sub: incomplete.length > 0 ? "Partial — some projects lack budget data" : "Across all active projects" }} />
+        <Metric d={{ value: money(totalPaid), label: "Paid to date", sub: "Released tranches and recorded payments" }} />
+        <Metric d={{ value: openDraws > 0 ? money(openDraws) : "$0", label: "In open draw requests", sub: openDraws > 0 ? "Requested, not yet released" : "No open draw value", dim: openDraws === 0 }} />
+        <Metric d={{ value: String(flagged.length), label: "Variance flags", tone: flagged.length > 0 ? "warn" : undefined, edge: flagged.length > 0 ? "warn" : undefined, sub: flagged.length > 0 ? "Financial progress ahead of verified physical" : "All within range", dim: flagged.length === 0 }} />
+      </div>
+      <div className="register">
+        <div className="reg-head">
+          <h3>Project comparison</h3>
+          <span className="hint">Financial vs verified physical, same scale</span>
+        </div>
+        {input.rows.length === 0 ? (
+          <EmptyStateV2
+            icon={icons.ledger()}
+            title="No projects with budget data"
+            what="Once a project has budget lines configured, its financial progress is compared here against verified physical progress from the evidence record."
+            condition="unconfigured"
+            action={<a className="btn secondary sm" href="/setup">Open pilot setup</a>}
+          />
+        ) : (
+          input.rows.map((r) => (
+            <div className="bvp-proj">
+              <div className="bvp-proj-head">
+                <a className="p" href={`/project/${r.project.id}/budget`}>{r.project.name}</a>
+                <VarianceTag state={r.financial.varianceState} />
+                {!r.financial.dataComplete ? <span className="data-incomplete">Data incomplete</span> : null}
+                <span className="bvp-figs num">
+                  Budget {money(r.financial.budgetBasis)} · paid {money(r.financial.paidToDate)}
+                  {r.financial.openDrawRequested > 0 ? ` · ${money(r.financial.openDrawRequested)} in open draws` : ""}
+                </span>
+              </div>
+              <div className="bvp-proj-bars">
+                <ProgressCompareBars
+                  financialPct={r.financial.dataComplete ? r.financial.claimedPct : null}
+                  verifiedPct={r.financial.dataComplete ? r.financial.verifiedPhysicalPct : null}
+                  financialLabel="Financial progress (paid + claimed)"
+                />
+              </div>
+              <a className="bvp-open" href={`/project/${r.project.id}/budget`}>Open budget register →</a>
             </div>
-            <div style="max-width:640px;margin-top:10px">
-              <ProgressCompareBars
-                financialPct={r.financial.dataComplete ? r.financial.claimedPct : null}
-                verifiedPct={r.financial.dataComplete ? r.financial.verifiedPhysicalPct : null}
-                financialLabel="Financial progress (paid + claimed)"
-              />
-            </div>
-          </div>
-        ))
-      )}
-      <p className="sub" style="margin:10px 2px;font-size:11px">
-        Figures come from stored budget lines, released tranches, open draw requests and the
-        verified-evidence record. A variance means financial progress is ahead of currently
-        verified physical progress — it is not a finding about conduct.
-      </p>
+          ))
+        )}
+        <div className="reg-foot">
+          Figures come from stored budget lines, released tranches, open draw requests and the
+          verified-evidence record. A variance means financial progress is ahead of currently
+          verified physical progress — it is not a finding about conduct.
+        </div>
+      </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );

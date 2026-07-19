@@ -7,7 +7,7 @@
  */
 import { h, Fragment, VNode, renderDocument } from "./jsx";
 import { icons } from "./icons";
-import { AppShell, NavContext, PageHeader, fmtDate, money, roleLabel } from "./components";
+import { AppShell, NavContext, PageHeader, fmtDate, money, roleLabel, Metric, EmptyStateV2, enumLabel } from "./components";
 import type {
   ApprovalRecord,
   ApprovalRequest,
@@ -71,13 +71,11 @@ export function renderCoRegister(input: {
       >
         {input.canCreate ? <a className="btn" href="/change-orders/new">Create Change Order</a> : null}
       </PageHeader>
-      <div className="issue-stats">
-        <span><b className="num">{input.rows.length}</b> Total</span>
-        <span><b className="num">{open.length}</b> In review</span>
-        <span><b className="num">{approved.length}</b> Approved / implemented</span>
-        <span>
-          <b className="num">{money(approved.reduce((s, r) => s + (r.co.approvedAmount ?? 0), 0))}</b> Approved value
-        </span>
+      <div className="metric-strip">
+        <Metric d={{ value: String(input.rows.length), label: "Change orders", sub: "All recorded change control", dim: input.rows.length === 0 }} />
+        <Metric d={{ value: String(open.length), label: "In review", tone: open.length > 0 ? "warn" : undefined, sub: open.length > 0 ? "Submitted — nothing applied yet" : "Review queue clear", dim: open.length === 0 }} />
+        <Metric d={{ value: String(approved.length), label: "Approved / implemented", sub: "Applied through formal approval only", dim: approved.length === 0 }} />
+        <Metric d={{ value: money(approved.reduce((s, r) => s + (r.co.approvedAmount ?? 0), 0)), label: "Approved value", sub: "Approved amounts may differ from requested", dim: approved.length === 0 }} />
       </div>
       <div className="panel">
         <div className="panel-head">
@@ -85,7 +83,13 @@ export function renderCoRegister(input: {
           <span className="right">{input.rows.length} record(s)</span>
         </div>
         {input.rows.length === 0 ? (
-          <p className="sub" style="padding:14px 16px">No change orders yet.</p>
+          <EmptyStateV2
+            icon={icons.refresh()}
+            title="No change orders yet"
+            what="Change orders run governed change control: a submitted request modifies nothing until formal approval applies the budget and schedule impact transactionally, with an audited configuration snapshot."
+            condition="healthy"
+            action={input.canCreate ? <a className="btn secondary sm" href="/change-orders/new">Create the first change order</a> : undefined}
+          />
         ) : (
           <div className="intg-table-wrap">
             <table className="intg-table">
@@ -106,7 +110,7 @@ export function renderCoRegister(input: {
                     </td>
                     <td data-l="Project">{r.project?.name.slice(0, 24) ?? "—"}</td>
                     <td data-l="Title">{r.co.title.slice(0, 40)}</td>
-                    <td data-l="Reason">{r.co.reasonCategory.replace(/_/g, " ").toLowerCase()}</td>
+                    <td data-l="Reason">{enumLabel(r.co.reasonCategory)}</td>
                     <td data-l="Requested" style="font-variant-numeric:tabular-nums">{money(r.co.requestedAmount)}</td>
                     <td data-l="Approved" style="font-variant-numeric:tabular-nums">{r.co.approvedAmount !== null ? money(r.co.approvedAmount) : "—"}</td>
                     <td data-l="Schedule">{r.co.scheduleImpactDays ? `+${r.co.scheduleImpactDays}d` : "—"}</td>

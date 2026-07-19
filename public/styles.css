@@ -3424,3 +3424,15 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
   .filter-grid .f-lab { flex: 1 1 45%; }
   .filter-grid .f-lab select { width: 100%; }
 }
+
+/* ---- budget portfolio comparison rows ---- */
+.bvp-proj { padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.bvp-proj:last-of-type { border-bottom: 0; }
+.bvp-proj-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.bvp-proj-head .p { font-weight: 650; font-size: 14px; color: var(--ink); }
+.bvp-proj-head .bvp-figs { margin-left: auto; font-size: 12px; color: var(--ink-3); }
+.bvp-proj-bars { max-width: 720px; margin-top: 10px; }
+.bvp-open { display: inline-block; margin-top: 8px; font-size: 12.5px; font-weight: 600; }
+@media (max-width: 640px) {
+  .bvp-proj-head .bvp-figs { margin-left: 0; width: 100%; }
+}

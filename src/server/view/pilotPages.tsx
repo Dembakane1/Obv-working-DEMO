@@ -9,9 +9,12 @@ import { h, Fragment, renderDocument, VNode } from "./jsx";
 import {
   AppShell,
   EmptyState,
+  EmptyStateV2,
+  Metric,
   NavContext,
   OperationalStatus,
   PageHeader,
+  enumLabel,
   fmtDate,
   money,
   STYLESHEET_HREF,
@@ -1141,25 +1144,19 @@ export function renderPilotDashboard(input: {
         <a className="btn ghost" href="/setup">Pilot Setup →</a>
       </PageHeader>
 
-      <OperationalStatus
-        items={[
-          { tone: "ok", value: String(s.activeProjects), label: "active projects" },
-          { tone: s.draftProjects ? "warn" : "idle", value: String(s.draftProjects), label: "drafts in setup" },
-          { tone: s.pendingApprovals ? "warn" : "ok", value: String(s.pendingApprovals), label: "pending approvals" },
-          { tone: s.needsReview ? "warn" : "ok", value: String(s.needsReview), label: "evidence needing review" },
-        ]}
-      />
-
-      <div className="issue-stats" style="margin-top:12px">
-        <span><b className="num">{s.evidenceSubmitted}</b> Evidence submitted</span>
-        <span><b className="num">{s.verified}</b> Verified</span>
-        <span><b className="num" style={s.needsReview ? "color:var(--warn)" : ""}>{s.needsReview}</b> Needs review</span>
-        <span><b className="num" style={s.rejected ? "color:var(--bad)" : ""}>{s.rejected}</b> Rejected</span>
-        <span><b className="num">{money(s.fundsHeld)}</b> Held</span>
-        <span><b className="num">{money(s.fundsReleased)}</b> Released</span>
-        <span><b className="num" style={s.openIssues ? "color:var(--warn)" : ""}>{s.openIssues}</b> Open field issues</span>
-        <span><b className="num">{s.openClarifications}</b> Open clarifications</span>
-        <span><b className="num">{s.invitationsPending}</b> Invitations pending</span>
+      <div className="metric-strip">
+        <Metric d={{ value: String(s.activeProjects), label: "Active projects", sub: "Launched and governed", dim: s.activeProjects === 0 }} />
+        <Metric d={{ value: String(s.draftProjects), label: "Drafts in setup", tone: s.draftProjects ? "warn" : undefined, sub: s.draftProjects ? "Not yet launched" : "No drafts", dim: s.draftProjects === 0 }} />
+        <Metric d={{ value: String(s.pendingApprovals), label: "Pending approvals", tone: s.pendingApprovals ? "warn" : undefined, sub: s.pendingApprovals ? "Awaiting required roles" : "Queue clear", dim: s.pendingApprovals === 0, href: "/approvals" }} />
+        <Metric d={{ value: String(s.needsReview), label: "Evidence needing review", tone: s.needsReview ? "warn" : undefined, sub: s.needsReview ? "Awaiting reviewer decision" : "Nothing flagged", dim: s.needsReview === 0, href: "/compliance" }} />
+        <Metric d={{ value: money(s.fundsHeld), label: "Funds held", sub: "Virtual project accounts" }} />
+        <Metric d={{ value: money(s.fundsReleased), label: "Released", tone: s.fundsReleased > 0 ? "ok" : undefined, sub: "Through governed approval", dim: s.fundsReleased === 0 }} />
+      </div>
+      <div className="metric-strip">
+        <Metric d={{ value: String(s.evidenceSubmitted), label: "Evidence submitted", sub: `${s.verified} verified · ${s.needsReview} needs review · ${s.rejected} rejected`, dim: s.evidenceSubmitted === 0 }} />
+        <Metric d={{ value: String(s.openIssues), label: "Open field issues", tone: s.openIssues ? "warn" : undefined, sub: s.openIssues ? "Operational follow-up" : "None open", dim: s.openIssues === 0, href: "/issues" }} />
+        <Metric d={{ value: String(s.openClarifications), label: "Open clarifications", sub: "Answers never auto-accept evidence", dim: s.openClarifications === 0 }} />
+        <Metric d={{ value: String(s.invitationsPending), label: "Invitations pending", sub: s.invitationsPending ? "Awaiting acceptance" : "All accepted", dim: s.invitationsPending === 0 }} />
       </div>
 
       {input.drafts.length > 0 ? (
@@ -1169,9 +1166,9 @@ export function renderPilotDashboard(input: {
             <div className="setup-proj" style={i > 0 ? "border-top:1px solid var(--line)" : ""}>
               <span className="sp-id">
                 <b>{project.name}</b>
-                <span className="s">{blockers === 0 ? "READY TO LAUNCH" : `${blockers} blocker(s) remain`}</span>
+                <span className="s">{blockers === 0 ? "Ready to launch" : `${blockers} blocker${blockers === 1 ? "" : "s"} remain`}</span>
               </span>
-              <span className={`sync-tag ${blockers === 0 ? "ok" : "warn"}`}>{blockers === 0 ? "READY" : "NOT READY"}</span>
+              <span className={`sync-tag ${blockers === 0 ? "ok" : "warn"}`}>{blockers === 0 ? "Ready" : "Not ready"}</span>
               <a className="btn ghost sm" href={`/setup/project/${project.id}?stage=review`}>Open Checklist</a>
             </div>
           ))}
@@ -1181,7 +1178,13 @@ export function renderPilotDashboard(input: {
       <div className="panel" style="margin-top:12px">
         <div className="panel-head"><h3>Active projects</h3></div>
         {input.active.length === 0 ? (
-          <p className="sub" style="padding:14px 16px">No active projects.</p>
+          <EmptyStateV2
+            icon={icons.projects()}
+            title="No active projects"
+            what="Projects appear here once launched from pilot setup. Draft projects and their launch blockers are listed above."
+            condition="unconfigured"
+            action={<a className="btn secondary sm" href="/setup">Open pilot setup</a>}
+          />
         ) : (
           <div className="intg-table-wrap">
             <table className="intg-table">
@@ -1190,7 +1193,7 @@ export function renderPilotDashboard(input: {
                 {input.active.map(({ project, held, released, pendingApprovals }) => (
                   <tr>
                     <td data-l="Project" style="font-weight:600">{project.name}</td>
-                    <td data-l="Status"><span className="sync-tag ok" style="margin-left:0">{project.status}</span></td>
+                    <td data-l="Status"><span className="sync-tag ok" style="margin-left:0">{enumLabel(project.status)}</span></td>
                     <td data-l="Held">{money(held)}</td>
                     <td data-l="Released">{money(released)}</td>
                     <td data-l="Approvals">{pendingApprovals}</td>
