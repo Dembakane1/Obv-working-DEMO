@@ -18,6 +18,7 @@ import * as budget from "./budgetProgress";
 import { retainageSummary } from "./retainage";
 import { wormEvidenceStore } from "./WormEvidenceStore";
 import { buildZip, csv, PackageFile } from "./auditPackage";
+import { buildLenderDrawFiles } from "./lenderReporting";
 import { createHash } from "node:crypto";
 import type {
   ApprovalRecord, ApprovalRequest, DrawAccountEvent, DrawDocument,
@@ -1177,6 +1178,11 @@ export function buildDrawPackageFiles(d: DrawPackageData): {
       2
     )
   );
+
+  // ---- lender operating layer registers (additive) ----
+  for (const lf of buildLenderDrawFiles(d.project.id, d.draw.id)) {
+    add(lf.name, lf.content, lf.count);
+  }
 
   return { files, counts };
 }

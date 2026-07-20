@@ -23,6 +23,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import * as repo from "../db/repo";
+import { buildLenderFiles } from "./lenderReporting";
 import * as permitService from "./permits";
 import { AUDIT_PACKAGES_DIR, DATA_DIR, REPORTS_DIR, UPLOADS_DIR } from "../db/index";
 import { wormEvidenceStore } from "./WormEvidenceStore";
@@ -1332,6 +1333,14 @@ function buildRegisters(
       2
     ),
     "10_integrity"
+  );
+
+  // ---- 07_lender (lender operating layer, as-of filtered) ----
+  for (const lf of buildLenderFiles(project.id, null, asOf)) {
+    add(`07_lender/${lf.name}`, lf.content, "07_lender", lf.count);
+  }
+  notes.push(
+    "Lender-layer registers are administrative records: loan figures are external servicing references, external funding rows mirror lender actions outside OBV, and none of them change verification, approval, or release state."
   );
 
   return { files, counts, sections, notes };
