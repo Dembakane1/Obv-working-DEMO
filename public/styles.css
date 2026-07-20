@@ -3447,3 +3447,16 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
   .filter-bar select, .filter-bar .search, .filter-grid .f-lab select { min-height: 44px; }
   input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 }
+
+/* ---- preview-deployment banner (never rendered in production) ---- */
+.preview-banner {
+  position: sticky; top: 0; z-index: 100;
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  background: #3b2f73;
+  color: #e9e6fb;
+  font-size: 12px; font-weight: 500;
+  padding: 6px 16px;
+  border-bottom: 1px solid #55499a;
+}
+.preview-banner b { font-weight: 700; letter-spacing: 0.02em; color: #fff; }
+.preview-banner span { font-family: var(--mono); font-size: 11px; }

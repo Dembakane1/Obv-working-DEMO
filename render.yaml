@@ -49,3 +49,22 @@ services:
     # envVars:
     #   - key: OBV_DATA_DIR
     #     value: /var/data
+
+  # ---- FRONTEND PREVIEW (separate URL; never production) -------------
+  # Deploys the frontend-reconstruction branch under its own URL
+  # (https://obv-frontend-preview.onrender.com once created). OBV_PREVIEW=1
+  # turns on the preview banner; production never sets it. To create this
+  # service: Render dashboard → New → Blueprint (or "New → Web Service",
+  # branch claude/obv-frontend-reconstruction, Docker runtime) → Apply.
+  - type: web
+    name: obv-frontend-preview
+    runtime: docker
+    plan: free
+    branch: claude/obv-frontend-reconstruction
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: OBV_PREVIEW
+        value: "1"
+      - key: OBV_ACCESS_CODE
+        sync: false

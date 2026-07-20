@@ -164,6 +164,26 @@ export function FallbackChip(): VNode {
 
 // ---------------------------------------------------------- app shell
 
+/** Preview-deployment banner. Renders ONLY when the process is explicitly
+ *  marked as a preview (OBV_PREVIEW=1) or Render reports a non-production
+ *  branch. Production deploys never set either condition, so the banner
+ *  can never appear there. */
+const PREVIEW_BRANCH = process.env.RENDER_GIT_BRANCH ?? process.env.OBV_PREVIEW_BRANCH ?? "";
+const PREVIEW_COMMIT = (process.env.RENDER_GIT_COMMIT ?? process.env.OBV_PREVIEW_COMMIT ?? "").slice(0, 7);
+const IS_PREVIEW =
+  process.env.OBV_PREVIEW === "1" || PREVIEW_BRANCH === "claude/obv-frontend-reconstruction";
+
+export function PreviewBanner(): VNode | null {
+  if (!IS_PREVIEW) return null;
+  return (
+    <div className="preview-banner" role="note">
+      <b>Frontend preview</b>
+      <span>Branch: {PREVIEW_BRANCH || "claude/obv-frontend-reconstruction"}</span>
+      <span>Commit: {PREVIEW_COMMIT || "local build"}</span>
+    </div>
+  );
+}
+
 export interface NavContext {
   user: User;
   active: string;
@@ -273,6 +293,7 @@ export function AppShell(props: {
         <meta name="theme-color" content="#0d1626" />
       </head>
       <body>
+        <PreviewBanner />
         <div className="shell">
           <aside className="sidebar">
             <div className="sidebar-brand">

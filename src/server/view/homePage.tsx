@@ -11,7 +11,7 @@
  */
 import { h, Fragment, renderDocument, VNode } from "./jsx";
 import { brandMark, icons } from "./icons";
-import { money, STYLESHEET_HREF } from "./components";
+import { money, STYLESHEET_HREF, PreviewBanner } from "./components";
 
 export interface HomeSnapshot {
   projectName: string;
@@ -210,6 +210,7 @@ export function renderHome(snap: HomeSnapshot | null): string {
         <meta name="theme-color" content="#0d1626" />
       </head>
       <body className="hp-body">
+        <PreviewBanner />
         {/* ---- 1 · enterprise navigation ---- */}
         <header className="hp-nav">
           <a className="hp-brand" href="/" aria-label="OpenBuild Verify home">

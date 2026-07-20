@@ -47,6 +47,7 @@ import {
   TechnicalHash,
   Timeline,
   enumLabel,
+  PreviewBanner,
 } from "./components";
 import type {
   ApprovalRecord,
@@ -3066,6 +3067,7 @@ export function renderFieldShell(user: User): string {
         <meta name="apple-mobile-web-app-capable" content="yes" />
       </head>
       <body className="field-body">
+        <PreviewBanner />
         <div className="field-shell">
           <div className="field-head">
             <span className="mark">{brandMark(16)}</span>
