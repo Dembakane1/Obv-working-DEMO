@@ -1165,6 +1165,11 @@ export type ExceptionSourceType =
   | "INTEGRATION"
   | "INSPECTION"
   | "INSPECTION_REQUIREMENT"
+  | "DRAW_INSPECTION"
+  | "LENDER_DECISION"
+  | "LIEN_WAIVER"
+  | "EXTERNAL_FUNDING"
+  | "LOAN_ASSET"
   | "PERMIT"
   | "OFFICIAL_SOURCE"
   | "MANUAL";
@@ -1685,4 +1690,414 @@ export interface MilestoneGates {
   inspection: JurisdictionalInspection | null; // latest active record
   inspectionGate: InspectionGateState;
   eligibility: MilestoneDrawEligibility;
+}
+
+// ===================================================================
+// Lender-pilot operating layer (additive; administrative records that
+// never replace the governed verification/approval/release truth).
+// ===================================================================
+
+
+// ---------------------------------------------------------------- loan & asset
+
+export type LoanAssetStatus =
+  | "ACTIVE" | "PAID_OFF" | "DEFAULTED" | "TRANSFERRED" | "CLOSED" | "UNKNOWN";
+export type LoanRiskLevel = "LOW" | "MEDIUM" | "HIGH" | "UNRATED";
+
+export interface LoanAsset {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  loanNumber: string;
+  propertyAddress: string | null;
+  propertyType: string | null;
+  borrowerOrganizationId: string | null;
+  primaryContractorOrganizationId: string | null;
+  lenderOrganizationId: string | null;
+  originalLoanAmount: number | null;
+  currentLoanAmount: number | null;
+  /** External reference figures. The governed OBV budget remains
+   *  authoritative for verification; differences are surfaced, never
+   *  silently synchronized. */
+  originalConstructionBudget: number | null;
+  currentApprovedConstructionBudget: number | null;
+  originalConstructionReserve: number | null;
+  currentConstructionReserve: number | null;
+  closingDate: string | null;
+  estimatedConstructionCompletionDate: string | null;
+  originalMaturityDate: string | null;
+  currentMaturityDate: string | null;
+  servicingSystemName: string | null;
+  servicingSystemReference: string | null;
+  currentServicerOrganizationId: string | null;
+  currentLoanOwnerOrganizationId: string | null;
+  warehouseLenderOrganizationId: string | null;
+  secondaryMarketPurchaserOrganizationId: string | null;
+  occupancyType: string | null;
+  loanPurpose: string | null;
+  riskLevel: LoanRiskLevel;
+  status: LoanAssetStatus;
+  inspectorAssignedUserId: string | null;
+  lenderReviewerAssignedUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LoanOwnershipEvent {
+  id: string;
+  loanAssetId: string;
+  priorOwnerOrganizationId: string | null;
+  newOwnerOrganizationId: string;
+  effectiveAt: string;
+  transferType: string | null;
+  reference: string | null;
+  recordedByUserId: string;
+  createdAt: string;
+}
+
+export interface LoanServicingEvent {
+  id: string;
+  loanAssetId: string;
+  priorServicerOrganizationId: string | null;
+  newServicerOrganizationId: string;
+  effectiveAt: string;
+  reference: string | null;
+  recordedByUserId: string;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------- parties
+
+export type ProjectPartyType =
+  | "BORROWER" | "CONTRACTOR" | "LENDER" | "SERVICER" | "WAREHOUSE_LENDER"
+  | "SECONDARY_MARKET_PURCHASER" | "TITLE_COMPANY" | "INSPECTION_COMPANY"
+  | "GOVERNMENT_AUTHORITY" | "CONSULTANT" | "OTHER";
+
+export interface ProjectPartyAssignment {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  partyOrganizationId: string;
+  partyType: ProjectPartyType;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  active: boolean;
+  reference: string | null;
+  notes: string | null;
+  createdByUserId: string;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------- jurisdiction
+
+export type JurisdictionTemplateKey =
+  | "DISTRICT_OF_COLUMBIA" | "MONTGOMERY_COUNTY_MD" | "PRINCE_GEORGES_COUNTY_MD"
+  | "FAIRFAX_COUNTY_VA" | "ARLINGTON_COUNTY_VA" | "ALEXANDRIA_VA"
+  | "LOUDOUN_COUNTY_VA" | "PRINCE_WILLIAM_COUNTY_VA" | "FALLS_CHURCH_VA" | "OTHER";
+
+export interface JurisdictionProfile {
+  id: string;
+  projectId: string;
+  templateKey: JurisdictionTemplateKey;
+  state: string | null;
+  countyOrCity: string | null;
+  jurisdictionName: string | null;
+  permitAuthority: string | null;
+  permitSystemName: string | null;
+  officialSystemUrl: string | null;
+  timezone: string | null;
+  jurisdictionCode: string | null;
+  notes: string | null;
+  configuredByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ------------------------------------------------- independent draw inspections
+
+export type DrawInspectionStatus =
+  | "NOT_REQUIRED" | "REQUESTED" | "SCHEDULING" | "SCHEDULED" | "ACCESS_FAILED"
+  | "COMPLETED" | "REPORT_PENDING" | "REPORT_RECEIVED" | "UNDER_OBV_REVIEW"
+  | "CORRECTION_REQUIRED" | "FINALIZED" | "ACCEPTED" | "FAILED"
+  | "REINSPECTION_REQUIRED" | "CANCELLED";
+
+export interface DrawInspection {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  drawRequestId: string;
+  inspectionType: string;
+  inspectionCompanyOrganizationId: string | null;
+  inspectorUserId: string | null;
+  inspectorDisplayName: string | null;
+  inspectorCredential: string | null;
+  inspectorContact: string | null;
+  requestedAt: string | null;
+  requestedByUserId: string | null;
+  scheduledAt: string | null;
+  propertyAccessContact: string | null;
+  preferredInspectionStart: string | null;
+  preferredInspectionEnd: string | null;
+  completedAt: string | null;
+  reportReceivedAt: string | null;
+  finalizedAt: string | null;
+  status: DrawInspectionStatus;
+  reinspectionOfInspectionId: string | null;
+  borrowerResponseStatus: "NOT_REQUESTED" | "REQUESTED" | "RESPONDED" | null;
+  borrowerResponseNote: string | null;
+  obvReviewStatus: "PENDING" | "REVIEWED" | "CORRECTION_REQUIRED" | null;
+  obvReviewedByUserId: string | null;
+  lenderAcceptanceStatus: "PENDING" | "ACCEPTED" | "NOT_ACCEPTED" | null;
+  lenderAcceptedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DrawInspectionLine {
+  id: string;
+  drawInspectionId: string;
+  drawLineItemId: string | null;
+  budgetLineId: string | null;
+  milestoneId: string | null;
+  percentCompleteReported: number | null;
+  materialsPresent: boolean | null;
+  materialsStoredOnSite: boolean | null;
+  materialsStoredOffSite: boolean | null;
+  workConsistentWithPlans: boolean | null;
+  workmanshipObservation: string | null;
+  visibleDefects: string | null;
+  safetyConcerns: string | null;
+  inaccessibleAreas: string | null;
+  inspectorNote: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type InspectionReportVersionStatus = "DRAFT" | "FINALIZED" | "SUPERSEDED";
+
+export interface DrawInspectionReportVersion {
+  id: string;
+  drawInspectionId: string;
+  version: number;
+  status: InspectionReportVersionStatus;
+  reportDate: string | null;
+  summary: string | null;
+  conclusion: string | null;
+  preparedByUserId: string;
+  finalizedByUserId: string | null;
+  createdAt: string;
+  finalizedAt: string | null;
+  priorVersionId: string | null;
+  correctionReason: string | null;
+  documentPath: string | null;
+  documentHash: string | null;
+}
+
+export interface DrawInspectionEvent {
+  id: string;
+  drawInspectionId: string;
+  type: string;
+  detail: string;
+  actorUserId: string | null;
+  createdAt: string;
+}
+
+// ------------------------------------------------------- lender decision
+
+export type LenderDecisionType =
+  | "PENDING" | "APPROVED" | "CONDITIONALLY_APPROVED" | "REDUCED"
+  | "REJECTED" | "WITHDRAWN" | "FUNDED";
+
+export interface LenderDrawDecision {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  drawRequestId: string;
+  requestedAmount: number;
+  verifiedAmount: number | null;
+  recommendedAmount: number | null;
+  approvedAmount: number | null;
+  reducedAmount: number | null;
+  rejectedAmount: number | null;
+  decision: LenderDecisionType;
+  reviewerUserId: string;
+  decisionAt: string | null;
+  decisionReason: string | null;
+  holdbackAmount: number | null;
+  retainageAmount: number | null;
+  exceptionsAccepted: string | null;
+  governmentInspectionRequirement: string | null;
+  lienReleaseRequirement: string | null;
+  fundingInstructions: string | null;
+  notes: string | null;
+  approvalRequestId: string | null;
+  supersedesDecisionId: string | null;
+  supersededByDecisionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type LenderConditionStatus =
+  | "OPEN" | "IN_PROGRESS" | "SATISFIED" | "WAIVED" | "FAILED" | "CANCELLED";
+
+export interface LenderDecisionCondition {
+  id: string;
+  lenderDecisionId: string;
+  conditionType: string;
+  description: string;
+  responsiblePartyOrganizationId: string | null;
+  dueAt: string | null;
+  status: LenderConditionStatus;
+  supportingDocumentId: string | null;
+  satisfiedByUserId: string | null;
+  satisfiedAt: string | null;
+  waiverReason: string | null;
+  waivedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---------------------------------------------------------- lien waivers
+
+export type LienWaiverStatus =
+  | "NOT_REQUIRED" | "REQUIRED" | "REQUESTED" | "RECEIVED" | "UNDER_REVIEW"
+  | "ACCEPTED" | "REJECTED" | "EXPIRED" | "SUPERSEDED";
+
+export interface LienWaiverRecord {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  drawRequestId: string;
+  drawLineItemId: string | null;
+  drawDocumentId: string | null;
+  contractorOrSupplierOrganizationId: string | null;
+  signingParty: string | null;
+  waiverType: string | null;
+  waiverScope: string | null;
+  relatedAmount: number | null;
+  coveredThrough: string | null;
+  requestedAt: string | null;
+  receivedAt: string | null;
+  reviewedAt: string | null;
+  acceptedAt: string | null;
+  rejectedAt: string | null;
+  signatureDate: string | null;
+  status: LienWaiverStatus;
+  reviewedByUserId: string | null;
+  rejectionReason: string | null;
+  documentHash: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ------------------------------------------------------ external funding
+
+export type ExternalFundingStatus =
+  | "NOT_SCHEDULED" | "SCHEDULED" | "PROCESSING" | "DISBURSED" | "FAILED"
+  | "REVERSED" | "CANCELLED" | "CLOSED";
+
+export interface ExternalFundingRecord {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  drawRequestId: string;
+  lenderDecisionId: string | null;
+  fundingMethod: string | null;
+  scheduledAt: string | null;
+  fundedAt: string | null;
+  amountScheduled: number | null;
+  amountDisbursed: number | null;
+  wireFee: number | null;
+  transactionReference: string | null;
+  confirmationDocumentId: string | null;
+  status: ExternalFundingStatus;
+  failureReason: string | null;
+  reversalReference: string | null;
+  reversedAt: string | null;
+  closedAt: string | null;
+  recordedByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// -------------------------------------------------- membership & capability
+
+export type ProjectParticipantType =
+  | "BORROWER" | "CONTRACTOR" | "INSPECTOR" | "OBV_REVIEWER"
+  | "LENDER_REVIEWER" | "ADMINISTRATOR";
+
+export type ProjectCapability =
+  | "SUBMIT_DRAW" | "UPLOAD_DRAW_DOCUMENT" | "REPORT_CONTRACTOR_COMPLETION"
+  | "SCHEDULE_DRAW_INSPECTION" | "RECORD_INSPECTION_FINDINGS"
+  | "FINALIZE_INSPECTION_REPORT" | "REVIEW_EVIDENCE" | "REVIEW_DRAW"
+  | "RECORD_LENDER_DECISION" | "ACCEPT_EXCEPTION" | "MANAGE_PROJECT_CONFIGURATION"
+  | "MANAGE_USERS" | "RECORD_EXTERNAL_FUNDING";
+
+export interface ProjectMembership {
+  id: string;
+  projectId: string;
+  userId: string;
+  participantType: ProjectParticipantType;
+  capabilitySet: ProjectCapability[];
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  active: boolean;
+  assignedByUserId: string;
+  createdAt: string;
+}
+
+// -------------------------------------------------------- lender policy
+
+export interface LenderDrawPolicy {
+  id: string;
+  organizationId: string;
+  projectId: string | null;
+  version: number;
+  requiredDocumentTypes: string[];
+  requiredEvidence: string | null;
+  independentInspectionRequired: boolean;
+  governmentInspectionRequired: boolean;
+  maxDrawFrequencyDays: number | null;
+  minDrawAmount: number | null;
+  retainagePct: number | null;
+  storedMaterialRule: string | null;
+  offsiteMaterialRule: string | null;
+  changeOrderRule: string | null;
+  budgetTransferRule: string | null;
+  lienWaiverRule: string | null;
+  approvalLimit: number | null;
+  reviewerHierarchy: string | null;
+  exceptionSeverityMap: string | null;
+  mandatoryFundingConditions: string[];
+  turnaroundTargetDays: number | null;
+  borrowerCertification: string | null;
+  contractorCertification: string | null;
+  active: boolean;
+  configuredByUserId: string;
+  reason: string | null;
+  createdAt: string;
+}
+
+// ----------------------------------------------------- derived workflow stage
+
+export type DrawWorkflowStage =
+  | "DRAW_REQUEST_SUBMITTED" | "INITIAL_COMPLETENESS_REVIEW"
+  | "MISSING_INFORMATION_REQUESTED" | "INSPECTION_REQUESTED"
+  | "INSPECTION_SCHEDULED" | "PHYSICAL_INSPECTION_COMPLETED"
+  | "EVIDENCE_REVIEW_COMPLETED" | "GOVERNMENT_INSPECTION_CHECKED"
+  | "FINANCIAL_DOCUMENTS_REVIEWED" | "EXCEPTIONS_IDENTIFIED"
+  | "CORRECTIONS_REQUESTED" | "ELIGIBLE_FOR_LENDER_REVIEW"
+  | "LENDER_REVIEW_IN_PROGRESS" | "APPROVED" | "CONDITIONALLY_APPROVED"
+  | "REDUCED" | "REJECTED" | "LIEN_RELEASE_REQUESTED" | "LIEN_RELEASE_COMPLETED"
+  | "FUNDS_SCHEDULED" | "FUNDS_DISBURSED" | "DRAW_CLOSED";
+
+export interface DrawStageEvent {
+  id: string;
+  drawRequestId: string;
+  priorStage: DrawWorkflowStage | null;
+  newStage: DrawWorkflowStage;
+  actorUserId: string | null;
+  reason: string | null;
+  sourceRecordId: string | null;
+  createdAt: string;
 }

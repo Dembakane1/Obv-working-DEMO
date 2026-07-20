@@ -998,6 +998,36 @@ export function sourceContext(e: ObvException): {
         latitude: null,
         longitude: null,
       };
+    case "DRAW_INSPECTION":
+      return {
+        label: "Independent draw inspection",
+        href: e.drawRequestId ? `/draw/${e.drawRequestId}` : `/project/${e.projectId}`,
+        latitude: null, longitude: null,
+      };
+    case "LENDER_DECISION":
+      return {
+        label: "Lender draw decision",
+        href: e.drawRequestId ? `/draw/${e.drawRequestId}?tab=governance` : `/project/${e.projectId}`,
+        latitude: null, longitude: null,
+      };
+    case "LIEN_WAIVER":
+      return {
+        label: "Lien waiver record",
+        href: e.drawRequestId ? `/draw/${e.drawRequestId}?tab=documents` : `/project/${e.projectId}`,
+        latitude: null, longitude: null,
+      };
+    case "EXTERNAL_FUNDING":
+      return {
+        label: "External funding record (administrative)",
+        href: e.drawRequestId ? `/draw/${e.drawRequestId}` : `/project/${e.projectId}`,
+        latitude: null, longitude: null,
+      };
+    case "LOAN_ASSET":
+      return {
+        label: "Loan & asset profile",
+        href: `/project/${e.projectId}`,
+        latitude: null, longitude: null,
+      };
     case "MANUAL":
       return { label: "Manually raised", href: `/project/${e.projectId}`, latitude: null, longitude: null };
   }

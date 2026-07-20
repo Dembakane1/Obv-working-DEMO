@@ -965,6 +965,375 @@ CREATE TABLE IF NOT EXISTS official_source_records (
   notes TEXT,
   created_at TEXT NOT NULL
 );
+
+-- ================= lender-pilot operating layer (additive) ==============
+-- Administrative lender records. Nothing here replaces the governed
+-- verification/approval/release truth, and none of these tables is
+-- reachable from VirtualAccountService.
+
+CREATE TABLE IF NOT EXISTS loan_assets (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  loan_number TEXT NOT NULL,
+  property_address TEXT,
+  property_type TEXT,
+  borrower_organization_id TEXT REFERENCES organizations(id),
+  primary_contractor_organization_id TEXT REFERENCES organizations(id),
+  lender_organization_id TEXT REFERENCES organizations(id),
+  original_loan_amount INTEGER,
+  current_loan_amount INTEGER,
+  original_construction_budget INTEGER,
+  current_approved_construction_budget INTEGER,
+  original_construction_reserve INTEGER,
+  current_construction_reserve INTEGER,
+  closing_date TEXT,
+  estimated_construction_completion_date TEXT,
+  original_maturity_date TEXT,
+  current_maturity_date TEXT,
+  servicing_system_name TEXT,
+  servicing_system_reference TEXT,
+  current_servicer_organization_id TEXT REFERENCES organizations(id),
+  current_loan_owner_organization_id TEXT REFERENCES organizations(id),
+  warehouse_lender_organization_id TEXT REFERENCES organizations(id),
+  secondary_market_purchaser_organization_id TEXT REFERENCES organizations(id),
+  occupancy_type TEXT,
+  loan_purpose TEXT,
+  risk_level TEXT NOT NULL DEFAULT 'UNRATED' CHECK (risk_level IN ('LOW','MEDIUM','HIGH','UNRATED')),
+  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','PAID_OFF','DEFAULTED','TRANSFERRED','CLOSED','UNKNOWN')),
+  inspector_assigned_user_id TEXT REFERENCES users(id),
+  lender_reviewer_assigned_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (organization_id, loan_number)
+);
+
+CREATE TABLE IF NOT EXISTS loan_ownership_events (
+  id TEXT PRIMARY KEY,
+  loan_asset_id TEXT NOT NULL REFERENCES loan_assets(id),
+  prior_owner_organization_id TEXT REFERENCES organizations(id),
+  new_owner_organization_id TEXT NOT NULL REFERENCES organizations(id),
+  effective_at TEXT NOT NULL,
+  transfer_type TEXT,
+  reference TEXT,
+  recorded_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS loan_servicing_events (
+  id TEXT PRIMARY KEY,
+  loan_asset_id TEXT NOT NULL REFERENCES loan_assets(id),
+  prior_servicer_organization_id TEXT REFERENCES organizations(id),
+  new_servicer_organization_id TEXT NOT NULL REFERENCES organizations(id),
+  effective_at TEXT NOT NULL,
+  reference TEXT,
+  recorded_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_party_assignments (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  party_organization_id TEXT NOT NULL REFERENCES organizations(id),
+  party_type TEXT NOT NULL CHECK (party_type IN
+    ('BORROWER','CONTRACTOR','LENDER','SERVICER','WAREHOUSE_LENDER',
+     'SECONDARY_MARKET_PURCHASER','TITLE_COMPANY','INSPECTION_COMPANY',
+     'GOVERNMENT_AUTHORITY','CONSULTANT','OTHER')),
+  effective_from TEXT,
+  effective_to TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  reference TEXT,
+  notes TEXT,
+  created_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS jurisdiction_profiles (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL UNIQUE REFERENCES projects(id),
+  template_key TEXT NOT NULL DEFAULT 'OTHER',
+  state TEXT,
+  county_or_city TEXT,
+  jurisdiction_name TEXT,
+  permit_authority TEXT,
+  permit_system_name TEXT,
+  official_system_url TEXT,
+  timezone TEXT,
+  jurisdiction_code TEXT,
+  notes TEXT,
+  configured_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Independent lender-ordered draw inspections. NEVER the same record or
+-- status set as government jurisdictional_inspections.
+CREATE TABLE IF NOT EXISTS draw_inspections (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  inspection_type TEXT NOT NULL DEFAULT 'DRAW_PROGRESS',
+  inspection_company_organization_id TEXT REFERENCES organizations(id),
+  inspector_user_id TEXT REFERENCES users(id),
+  inspector_display_name TEXT,
+  inspector_credential TEXT,
+  inspector_contact TEXT,
+  requested_at TEXT,
+  requested_by_user_id TEXT REFERENCES users(id),
+  scheduled_at TEXT,
+  property_access_contact TEXT,
+  preferred_inspection_start TEXT,
+  preferred_inspection_end TEXT,
+  completed_at TEXT,
+  report_received_at TEXT,
+  finalized_at TEXT,
+  status TEXT NOT NULL DEFAULT 'REQUESTED' CHECK (status IN
+    ('NOT_REQUIRED','REQUESTED','SCHEDULING','SCHEDULED','ACCESS_FAILED',
+     'COMPLETED','REPORT_PENDING','REPORT_RECEIVED','UNDER_OBV_REVIEW',
+     'CORRECTION_REQUIRED','FINALIZED','ACCEPTED','FAILED',
+     'REINSPECTION_REQUIRED','CANCELLED')),
+  reinspection_of_inspection_id TEXT REFERENCES draw_inspections(id),
+  borrower_response_status TEXT,
+  borrower_response_note TEXT,
+  obv_review_status TEXT,
+  obv_reviewed_by_user_id TEXT REFERENCES users(id),
+  lender_acceptance_status TEXT,
+  lender_accepted_by_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS draw_inspection_lines (
+  id TEXT PRIMARY KEY,
+  draw_inspection_id TEXT NOT NULL REFERENCES draw_inspections(id),
+  draw_line_item_id TEXT REFERENCES draw_line_items(id),
+  budget_line_id TEXT REFERENCES budget_lines(id),
+  milestone_id TEXT REFERENCES milestones(id),
+  percent_complete_reported REAL,
+  materials_present INTEGER,
+  materials_stored_on_site INTEGER,
+  materials_stored_off_site INTEGER,
+  work_consistent_with_plans INTEGER,
+  workmanship_observation TEXT,
+  visible_defects TEXT,
+  safety_concerns TEXT,
+  inaccessible_areas TEXT,
+  inspector_note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Immutable once finalized; corrections create a new version.
+CREATE TABLE IF NOT EXISTS draw_inspection_report_versions (
+  id TEXT PRIMARY KEY,
+  draw_inspection_id TEXT NOT NULL REFERENCES draw_inspections(id),
+  version INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','FINALIZED','SUPERSEDED')),
+  report_date TEXT,
+  summary TEXT,
+  conclusion TEXT,
+  prepared_by_user_id TEXT NOT NULL REFERENCES users(id),
+  finalized_by_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  finalized_at TEXT,
+  prior_version_id TEXT REFERENCES draw_inspection_report_versions(id),
+  correction_reason TEXT,
+  document_path TEXT,
+  document_hash TEXT,
+  UNIQUE (draw_inspection_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS draw_inspection_attachments (
+  id TEXT PRIMARY KEY,
+  draw_inspection_id TEXT NOT NULL REFERENCES draw_inspections(id),
+  report_version_id TEXT REFERENCES draw_inspection_report_versions(id),
+  title TEXT NOT NULL,
+  file_path TEXT,
+  file_hash TEXT,
+  uploaded_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS draw_inspection_events (
+  id TEXT PRIMARY KEY,
+  draw_inspection_id TEXT NOT NULL REFERENCES draw_inspections(id),
+  type TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+-- The lender's business decision AFTER formal governance. Never a release
+-- mechanism: no code path from here to VirtualAccountService.
+CREATE TABLE IF NOT EXISTS lender_draw_decisions (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  requested_amount INTEGER NOT NULL,
+  verified_amount INTEGER,
+  recommended_amount INTEGER,
+  approved_amount INTEGER,
+  reduced_amount INTEGER,
+  rejected_amount INTEGER,
+  decision TEXT NOT NULL DEFAULT 'PENDING' CHECK (decision IN
+    ('PENDING','APPROVED','CONDITIONALLY_APPROVED','REDUCED','REJECTED','WITHDRAWN','FUNDED')),
+  reviewer_user_id TEXT NOT NULL REFERENCES users(id),
+  decision_at TEXT,
+  decision_reason TEXT,
+  holdback_amount INTEGER,
+  retainage_amount INTEGER,
+  exceptions_accepted TEXT,
+  government_inspection_requirement TEXT,
+  lien_release_requirement TEXT,
+  funding_instructions TEXT,
+  notes TEXT,
+  approval_request_id TEXT REFERENCES approval_requests(id),
+  supersedes_decision_id TEXT REFERENCES lender_draw_decisions(id),
+  superseded_by_decision_id TEXT REFERENCES lender_draw_decisions(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lender_decision_conditions (
+  id TEXT PRIMARY KEY,
+  lender_decision_id TEXT NOT NULL REFERENCES lender_draw_decisions(id),
+  condition_type TEXT NOT NULL,
+  description TEXT NOT NULL,
+  responsible_party_organization_id TEXT REFERENCES organizations(id),
+  due_at TEXT,
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN
+    ('OPEN','IN_PROGRESS','SATISFIED','WAIVED','FAILED','CANCELLED')),
+  supporting_document_id TEXT REFERENCES draw_documents(id),
+  satisfied_by_user_id TEXT REFERENCES users(id),
+  satisfied_at TEXT,
+  waiver_reason TEXT,
+  waived_by_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Governed lien-waiver lifecycle; DrawDocument metadata stays valid and an
+-- uploaded document alone never makes a waiver ACCEPTED.
+CREATE TABLE IF NOT EXISTS lien_waiver_records (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  draw_line_item_id TEXT REFERENCES draw_line_items(id),
+  draw_document_id TEXT REFERENCES draw_documents(id),
+  contractor_or_supplier_organization_id TEXT REFERENCES organizations(id),
+  signing_party TEXT,
+  waiver_type TEXT,
+  waiver_scope TEXT,
+  related_amount INTEGER,
+  covered_through TEXT,
+  requested_at TEXT,
+  received_at TEXT,
+  reviewed_at TEXT,
+  accepted_at TEXT,
+  rejected_at TEXT,
+  signature_date TEXT,
+  status TEXT NOT NULL DEFAULT 'REQUIRED' CHECK (status IN
+    ('NOT_REQUIRED','REQUIRED','REQUESTED','RECEIVED','UNDER_REVIEW',
+     'ACCEPTED','REJECTED','EXPIRED','SUPERSEDED')),
+  reviewed_by_user_id TEXT REFERENCES users(id),
+  rejection_reason TEXT,
+  document_hash TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Administrative mirror of the lender's EXTERNAL funding action. Sends no
+-- money; never touches VirtualAccountService or the account event ledgers.
+CREATE TABLE IF NOT EXISTS external_funding_records (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  lender_decision_id TEXT REFERENCES lender_draw_decisions(id),
+  funding_method TEXT,
+  scheduled_at TEXT,
+  funded_at TEXT,
+  amount_scheduled INTEGER,
+  amount_disbursed INTEGER,
+  wire_fee INTEGER,
+  transaction_reference TEXT,
+  confirmation_document_id TEXT REFERENCES draw_documents(id),
+  status TEXT NOT NULL DEFAULT 'NOT_SCHEDULED' CHECK (status IN
+    ('NOT_SCHEDULED','SCHEDULED','PROCESSING','DISBURSED','FAILED',
+     'REVERSED','CANCELLED','CLOSED')),
+  failure_reason TEXT,
+  reversal_reference TEXT,
+  reversed_at TEXT,
+  closed_at TEXT,
+  recorded_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_memberships (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  participant_type TEXT NOT NULL CHECK (participant_type IN
+    ('BORROWER','CONTRACTOR','INSPECTOR','OBV_REVIEWER','LENDER_REVIEWER','ADMINISTRATOR')),
+  capability_set TEXT NOT NULL DEFAULT '[]',
+  effective_from TEXT,
+  effective_to TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  assigned_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+-- Versioned lender draw policy (structured configuration, no executable
+-- rules). Each version is a new row; the active flag marks the current
+-- version and history is never rewritten.
+CREATE TABLE IF NOT EXISTS lender_draw_policies (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  version INTEGER NOT NULL,
+  required_document_types TEXT NOT NULL DEFAULT '[]',
+  required_evidence TEXT,
+  independent_inspection_required INTEGER NOT NULL DEFAULT 0,
+  government_inspection_required INTEGER NOT NULL DEFAULT 0,
+  max_draw_frequency_days INTEGER,
+  min_draw_amount INTEGER,
+  retainage_pct REAL,
+  stored_material_rule TEXT,
+  offsite_material_rule TEXT,
+  change_order_rule TEXT,
+  budget_transfer_rule TEXT,
+  lien_waiver_rule TEXT,
+  approval_limit INTEGER,
+  reviewer_hierarchy TEXT,
+  exception_severity_map TEXT,
+  mandatory_funding_conditions TEXT NOT NULL DEFAULT '[]',
+  turnaround_target_days INTEGER,
+  borrower_certification TEXT,
+  contractor_certification TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  configured_by_user_id TEXT NOT NULL REFERENCES users(id),
+  reason TEXT,
+  created_at TEXT NOT NULL
+);
+
+-- Append-only history of the DERIVED draw workflow stage. The stage itself
+-- is computed from authoritative records on read; this log only records
+-- observed transitions (written by mutating actions, never by GETs).
+CREATE TABLE IF NOT EXISTS draw_stage_events (
+  id TEXT PRIMARY KEY,
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  prior_stage TEXT,
+  new_stage TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  reason TEXT,
+  source_record_id TEXT,
+  created_at TEXT NOT NULL
+);
 `;
 
 export function getDb(): DatabaseSync {
