@@ -11,7 +11,8 @@
  */
 import * as repo from "../db/repo";
 import * as lrepo from "../db/lenderRepo";
-import { audit } from "./pilot/onboarding";
+import { audit, snapshotProject } from "./pilot/onboarding";
+import { parseIsoDate } from "./permits";
 import {
   LenderError,
   assertCapability,
@@ -92,10 +93,11 @@ export function createLoanAsset(
     currentApprovedConstructionBudget: num(input.currentApprovedConstructionBudget),
     originalConstructionReserve: num(input.originalConstructionReserve),
     currentConstructionReserve: num(input.currentConstructionReserve),
-    closingDate: input.closingDate?.trim() || null,
-    estimatedConstructionCompletionDate: input.estimatedConstructionCompletionDate?.trim() || null,
-    originalMaturityDate: input.originalMaturityDate?.trim() || null,
-    currentMaturityDate: input.currentMaturityDate?.trim() || null,
+    closingDate: parseIsoDate(input.closingDate, "closingDate"),
+    estimatedConstructionCompletionDate: parseIsoDate(
+      input.estimatedConstructionCompletionDate, "estimatedConstructionCompletionDate"),
+    originalMaturityDate: parseIsoDate(input.originalMaturityDate, "originalMaturityDate"),
+    currentMaturityDate: parseIsoDate(input.currentMaturityDate, "currentMaturityDate"),
     servicingSystemName: input.servicingSystemName?.trim() || null,
     servicingSystemReference: input.servicingSystemReference?.trim() || null,
     currentServicerOrganizationId: assertOrgRef(input.currentServicerOrganizationId, "currentServicerOrganizationId"),
@@ -161,6 +163,11 @@ export function updateLoanAsset(user: User, loanAssetId: string, patch: Partial<
   ] as const) {
     if (key in patch) (patch as unknown as Record<string, unknown>)[key] = num(patch[key]);
   }
+  for (const key of [
+    "closingDate", "estimatedConstructionCompletionDate", "originalMaturityDate", "currentMaturityDate",
+  ] as const) {
+    if (key in patch) (patch as unknown as Record<string, unknown>)[key] = parseIsoDate(patch[key], key);
+  }
   lrepo.updateLoanAsset(loanAssetId, patch);
   audit({
     projectId: project.id,
@@ -186,8 +193,14 @@ export function recordOwnershipTransfer(
   assertRecorder(user, project.id);
   const newOwner = assertOrgRef(input.newOwnerOrganizationId, "newOwnerOrganizationId");
   if (!newOwner) throw new LenderError("newOwnerOrganizationId is required", 400);
-  const effectiveAt = (input.effectiveAt ?? "").trim();
+  const effectiveAt = parseIsoDate(input.effectiveAt, "effectiveAt");
   if (!effectiveAt) throw new LenderError("effectiveAt is required", 400);
+  // Documented pilot rule: future-dated transfers are REJECTED rather than
+  // recorded, so the current-owner pointer can never point at an
+  // organization whose ownership has not yet taken effect.
+  if (Date.parse(effectiveAt) > Date.now()) {
+    throw new LenderError("effectiveAt cannot be in the future — record the transfer once it takes effect", 422);
+  }
   const event: LoanOwnershipEvent = {
     id: lrepo.newId(),
     loanAssetId,
@@ -199,9 +212,9 @@ export function recordOwnershipTransfer(
     recordedByUserId: user.id,
     createdAt: new Date().toISOString(),
   };
-  lrepo.insertLoanOwnershipEvent(event);
-  // Update the derived pointer WITHOUT rewriting history.
-  lrepo.updateLoanAsset(loanAssetId, { currentLoanOwnerOrganizationId: newOwner } as Partial<LoanAsset>);
+  // Append the history event and move the derived pointer atomically —
+  // history is never rewritten, and the pointer can never diverge from it.
+  lrepo.recordLoanTransferTx("ownership", event, loanAssetId, newOwner);
   return event;
 }
 
@@ -216,8 +229,12 @@ export function recordServicingTransfer(
   assertRecorder(user, project.id);
   const newServicer = assertOrgRef(input.newServicerOrganizationId, "newServicerOrganizationId");
   if (!newServicer) throw new LenderError("newServicerOrganizationId is required", 400);
-  const effectiveAt = (input.effectiveAt ?? "").trim();
+  const effectiveAt = parseIsoDate(input.effectiveAt, "effectiveAt");
   if (!effectiveAt) throw new LenderError("effectiveAt is required", 400);
+  // Same documented pilot rule as ownership: no future-dated transfers.
+  if (Date.parse(effectiveAt) > Date.now()) {
+    throw new LenderError("effectiveAt cannot be in the future — record the transfer once it takes effect", 422);
+  }
   const event: LoanServicingEvent = {
     id: lrepo.newId(),
     loanAssetId,
@@ -228,8 +245,7 @@ export function recordServicingTransfer(
     recordedByUserId: user.id,
     createdAt: new Date().toISOString(),
   };
-  lrepo.insertLoanServicingEvent(event);
-  lrepo.updateLoanAsset(loanAssetId, { currentServicerOrganizationId: newServicer } as Partial<LoanAsset>);
+  lrepo.recordLoanTransferTx("servicing", event, loanAssetId, newServicer);
   return event;
 }
 
@@ -304,7 +320,7 @@ export function assignParty(
     projectId: project.id,
     partyOrganizationId: partyOrg,
     partyType: input.partyType,
-    effectiveFrom: input.effectiveFrom?.trim() || now,
+    effectiveFrom: parseIsoDate(input.effectiveFrom, "effectiveFrom") || now,
     effectiveTo: null,
     active: true,
     reference: input.reference?.trim() || null,
@@ -441,8 +457,13 @@ export function configureLenderPolicy(
     reason: input.reason?.trim() || null,
     createdAt: now,
   };
-  lrepo.deactivatePolicies(organizationId, projectId);
-  lrepo.insertLenderPolicy(policy);
+  // Deactivate priors + insert the new version in one transaction so a
+  // failure can never leave the org/project with zero (or two) active
+  // policy versions.
+  lrepo.createPolicyVersionTx(policy);
+  if (projectId) {
+    snapshotProject(projectId, `Lender draw policy v${version} configured`, user);
+  }
   audit({
     projectId,
     actorUserId: user.id,
@@ -456,10 +477,54 @@ export function configureLenderPolicy(
   return policy;
 }
 
-/** The policy version a draw operates under (project override else org
- *  default), resolved at read time and included in reports. */
+/** The CURRENTLY ACTIVE policy for a project (project override else org
+ *  default). For anything describing a specific draw, prefer
+ *  appliedPolicyForDraw — the version frozen at first submission. */
 export function policyForDraw(projectId: string): LenderDrawPolicy | null {
   const project = repo.getProject(projectId);
   if (!project) return null;
   return lrepo.getEffectivePolicy(project.organizationId, projectId);
+}
+
+/**
+ * Freeze the applied policy for a draw at FIRST successful submission.
+ *
+ * Documented rule: the policy (id + version) in effect when the draw is
+ * first submitted is recorded once in draw_policy_applications and never
+ * rewritten — later policy changes or resubmissions do not alter it.
+ * Draws submitted before this feature existed (or submitted while no
+ * policy was configured) have no application row and report NOT RECORDED;
+ * the frozen record is never backfilled or invented.
+ */
+export function freezeAppliedPolicy(drawRequestId: string): void {
+  if (lrepo.getPolicyApplication(drawRequestId)) return; // resubmission keeps the original
+  const draw = repo.getDrawRequest(drawRequestId);
+  if (!draw) return;
+  const policy = policyForDraw(draw.projectId);
+  if (!policy) return; // nothing configured — stays NOT RECORDED, never invented
+  try {
+    lrepo.insertPolicyApplication({
+      id: lrepo.newId(),
+      drawRequestId,
+      policyId: policy.id,
+      policyVersion: policy.version,
+      appliedAt: new Date().toISOString(),
+      source: policy.projectId ? "PROJECT_OVERRIDE" : "ORGANIZATION_DEFAULT",
+    });
+  } catch (err) {
+    // Concurrent first submissions: the UNIQUE draw_request_id column means
+    // one insert wins; the other silently keeps the winner's frozen record.
+    if (!(err as Error).message.includes("UNIQUE")) throw err;
+  }
+}
+
+/** The policy the draw actually operates under: the frozen application
+ *  (resolved to its exact stored version), or null → NOT RECORDED. */
+export function appliedPolicyForDraw(drawRequestId: string): {
+  application: ReturnType<typeof lrepo.getPolicyApplication>;
+  policy: LenderDrawPolicy | null;
+} {
+  const application = lrepo.getPolicyApplication(drawRequestId);
+  if (!application) return { application: null, policy: null };
+  return { application, policy: lrepo.getPolicy(application.policyId) };
 }

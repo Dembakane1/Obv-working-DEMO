@@ -14,6 +14,7 @@ import * as repo from "../db/repo";
 import * as lrepo from "../db/lenderRepo";
 import { teamsNotifier } from "./TeamsNotifier";
 import { LenderError, assertCapability, assertProjectAccess } from "./lenderAccess";
+import { parseIsoDate, PermitError } from "./permits";
 import type {
   DrawRequest,
   ExternalFundingRecord,
@@ -36,8 +37,20 @@ export function currentDecision(drawRequestId: string): LenderDrawDecision | nul
   return active.length > 0 ? active[active.length - 1] : null;
 }
 
-/** Mandatory conditions still open on the current decision — a
- *  conditionally approved draw is NOT fundable while any remain. */
+/** Conditions that BLOCK funding. A conditional approval is fundable only
+ *  when every condition is SATISFIED or formally WAIVED (with a reason, by
+ *  an authorized lender role). OPEN, IN_PROGRESS, FAILED and CANCELLED all
+ *  block: a FAILED condition never becomes fundable merely because it is
+ *  no longer open, and a CANCELLED condition only stops blocking when a
+ *  superseding lender decision formally removes it (new decision → new
+ *  condition set). */
+export function blockingConditions(decisionId: string): LenderDecisionCondition[] {
+  return lrepo.listDecisionConditions(decisionId).filter((c) =>
+    ["OPEN", "IN_PROGRESS", "FAILED", "CANCELLED"].includes(c.status)
+  );
+}
+
+/** @deprecated retained for callers that only track open work. */
 export function openConditions(decisionId: string): LenderDecisionCondition[] {
   return lrepo.listDecisionConditions(decisionId).filter((c) =>
     ["OPEN", "IN_PROGRESS"].includes(c.status)
@@ -85,28 +98,33 @@ export function recordLenderDecision(
       409
     );
   }
-  // The decision must reference COMPLETED formal governance (except a
-  // provisional PENDING placeholder or a WITHDRAWN closure).
-  const approval = repo.getApprovalRequestForDraw(draw.id);
-  const requiresGovernance = ["APPROVED", "CONDITIONALLY_APPROVED", "REDUCED", "REJECTED"].includes(input.decision);
-  if (requiresGovernance) {
-    if (!approval || approval.status === "PENDING") {
-      throw new LenderError(
-        "A final lender decision requires the completed formal approval process (OBV governance is the source of record)",
-        409
-      );
-    }
-  }
   const requested = draw.requestedAmount;
   const approved = input.approvedAmount ?? null;
   const reduced = input.reducedAmount ?? null;
   const rejected = input.rejectedAmount ?? null;
   const reason = (input.decisionReason ?? "").trim();
 
-  // Amount reconciliation per decision type.
+  // Amount reconciliation per decision type. Every amount must be a finite
+  // non-negative integer (checked below); categories may never total more
+  // than the request.
+  const amt = (v: number | null, label: string): number | null => {
+    if (v === null || v === undefined) return null;
+    if (!Number.isFinite(v) || v < 0) throw new LenderError(`${label} must be a finite non-negative amount`, 400);
+    return Math.round(v);
+  };
+  const holdback = amt(input.holdbackAmount ?? null, "holdbackAmount");
+  const retainage = amt(input.retainageAmount ?? null, "retainageAmount");
+  amt(approved, "approvedAmount"); amt(reduced, "reducedAmount"); amt(rejected, "rejectedAmount");
+  if ((approved ?? 0) + (reduced ?? 0) + (rejected ?? 0) > requested) {
+    throw new LenderError("Approved + reduced + rejected amounts cannot exceed the requested amount", 400);
+  }
+  if ((holdback ?? 0) > (approved ?? 0) || (retainage ?? 0) > (approved ?? 0)) {
+    throw new LenderError("Holdback and retainage cannot exceed the approved amount", 400);
+  }
   if (input.decision === "APPROVED") {
-    if (approved === null || approved <= 0) throw new LenderError("APPROVED requires approvedAmount", 400);
-    if (approved > requested) throw new LenderError("approvedAmount cannot exceed the requested amount", 400);
+    if (approved === null || approved !== requested) {
+      throw new LenderError("APPROVED requires approvedAmount equal to the full requested amount (use REDUCED otherwise)", 400);
+    }
   }
   if (input.decision === "REDUCED") {
     if (!reason) throw new LenderError("REDUCED requires a reduction reason", 400);
@@ -133,10 +151,73 @@ export function recordLenderDecision(
     if (approved === null || approved <= 0 || approved > requested) {
       throw new LenderError("CONDITIONALLY_APPROVED requires a valid approvedAmount", 400);
     }
+    // The undisposed difference must be explicitly categorized.
+    const undisposed = requested - approved;
+    if (undisposed > 0 && (holdback ?? 0) + (reduced ?? 0) + (rejected ?? 0) !== undisposed) {
+      throw new LenderError(
+        `CONDITIONALLY_APPROVED must categorize the undisposed ${undisposed} as holdback, reduced or rejected`,
+        400
+      );
+    }
+  }
+
+  // Governance → decision truth table, checked after input-shape
+  // validation (malformed input is 400; a state conflict is 409). The
+  // ApprovalRequest is the current authoritative request for this draw;
+  // getApprovalRequestForDraw returns the latest:
+  //   APPROVED / CONDITIONALLY_APPROVED / REDUCED  → approval.status APPROVED
+  //   REJECTED                                     → approval.status REJECTED
+  //   PENDING / WITHDRAWN                          → non-final, no governance needed
+  const approval = repo.getApprovalRequestForDraw(draw.id);
+  const requiresGovernance = ["APPROVED", "CONDITIONALLY_APPROVED", "REDUCED", "REJECTED"].includes(input.decision);
+  if (requiresGovernance) {
+    if (!approval || approval.status === "PENDING") {
+      throw new LenderError(
+        "A final lender decision requires the completed formal approval process (OBV governance is the source of record)",
+        409
+      );
+    }
+    const favorable = input.decision !== "REJECTED";
+    if (favorable && approval.status !== "APPROVED") {
+      throw new LenderError(
+        `A ${input.decision} lender decision cannot be recorded against ${approval.status} formal governance`,
+        409
+      );
+    }
+    if (!favorable && approval.status !== "REJECTED") {
+      throw new LenderError(
+        "A REJECTED lender decision requires REJECTED formal governance (record an amendment if governance later changes)",
+        409
+      );
+    }
+    // Completed every required role, with no contradictory records.
+    const records = repo.listApprovalRecordsForRequest(approval.id);
+    const byRole = new Map(records.map((r) => [r.role, r]));
+    const missing = approval.requiredRoles.filter((role) => !byRole.has(role));
+    if (approval.status === "APPROVED") {
+      if (missing.length > 0) {
+        throw new LenderError(`Formal governance is incomplete: awaiting ${missing.join(", ")}`, 409);
+      }
+      if (records.some((r) => r.decision !== "APPROVED")) {
+        throw new LenderError("Approval records contradict the APPROVED governance outcome", 409);
+      }
+    }
+    if (approval.status === "REJECTED" && !records.some((r) => r.decision === "REJECTED")) {
+      throw new LenderError("REJECTED governance has no rejecting approval record", 409);
+    }
   }
 
   // Supersede rather than overwrite: prior final decisions stay history.
+  // PENDING placeholders: at most one active PENDING; a final decision
+  // automatically supersedes the active PENDING so no orphan remains.
   const prior = currentDecision(draw.id);
+  const supersedeIds: string[] = [];
+  if (prior && prior.decision === "PENDING") {
+    if (input.decision === "PENDING") {
+      throw new LenderError("An active PENDING decision already exists", 409);
+    }
+    supersedeIds.push(prior.id);
+  }
   if (prior && prior.decision !== "PENDING" && !input.supersedesDecisionId) {
     throw new LenderError(
       "A final decision already exists — record an amendment by passing supersedesDecisionId",
@@ -151,17 +232,33 @@ export function recordLenderDecision(
     if (superseded.supersededByDecisionId) {
       throw new LenderError("That decision has already been superseded", 409);
     }
+    if (!supersedeIds.includes(superseded.id)) supersedeIds.push(superseded.id);
   }
 
   const now = new Date().toISOString();
+  // Distinct amount provenance (never copied from one another):
+  //  - verifiedAmount: sum of reviewed line supportedAmount (authoritative
+  //    line/evidence assessment)
+  //  - recommendedAmount: the finalized advisory recommendation
+  //  - approvedAmount: the lender's formal business decision (input).
+  const lines = repo.listDrawLines(draw.id);
+  const verifiedFromLines = lines.some((l) => l.supportedAmount !== null)
+    ? lines.reduce((sum, l) => sum + (l.supportedAmount ?? 0), 0)
+    : null;
   const decision: LenderDrawDecision = {
     id: lrepo.newId(),
     organizationId: project.organizationId,
     projectId: project.id,
     drawRequestId: draw.id,
     requestedAmount: requested,
-    verifiedAmount: draw.recommendedAmount ?? null,
+    verifiedAmount: verifiedFromLines,
+    verifiedAmountSource: verifiedFromLines !== null
+      ? "sum of reviewed draw-line supportedAmount (line/evidence assessment)"
+      : null,
     recommendedAmount: draw.recommendedAmount ?? null,
+    recommendedAmountSource: draw.recommendedAmount !== null && draw.recommendedAmount !== undefined
+      ? "finalized reviewer recommendation (advisory)"
+      : null,
     approvedAmount: approved,
     reducedAmount: reduced,
     rejectedAmount: input.decision === "REJECTED" ? requested : rejected,
@@ -169,8 +266,8 @@ export function recordLenderDecision(
     reviewerUserId: user.id,
     decisionAt: input.decision === "PENDING" ? null : now,
     decisionReason: reason || null,
-    holdbackAmount: input.holdbackAmount ?? null,
-    retainageAmount: input.retainageAmount ?? draw.retainageWithheld ?? null,
+    holdbackAmount: holdback,
+    retainageAmount: retainage ?? draw.retainageWithheld ?? null,
     exceptionsAccepted: input.exceptionsAccepted?.trim() || null,
     governmentInspectionRequirement: input.governmentInspectionRequirement?.trim() || null,
     lienReleaseRequirement: input.lienReleaseRequirement?.trim() || null,
@@ -182,20 +279,23 @@ export function recordLenderDecision(
     createdAt: now,
     updatedAt: now,
   };
-  lrepo.insertLenderDecision(decision);
-  if (input.supersedesDecisionId) {
-    lrepo.updateLenderDecision(input.supersedesDecisionId, { supersededByDecisionId: decision.id });
-  }
-  for (const c of input.conditions ?? []) {
+  // Validate EVERY condition before writing anything, then insert the
+  // decision + supersedes + conditions in one transaction. The partial
+  // unique index (one non-superseded decision per draw) turns concurrent
+  // final-decision races into one success and one controlled 409.
+  const conditionRows = (input.conditions ?? []).map((c) => {
     if (!c.description?.trim()) throw new LenderError("Each condition needs a description", 400);
-    lrepo.insertDecisionCondition({
+    if (c.responsiblePartyOrganizationId && !repo.getOrganization(c.responsiblePartyOrganizationId)) {
+      throw new LenderError("Condition responsible party references an unknown organization", 422);
+    }
+    return {
       id: lrepo.newId(),
       lenderDecisionId: decision.id,
       conditionType: c.conditionType?.trim() || "OTHER",
       description: c.description.trim(),
       responsiblePartyOrganizationId: c.responsiblePartyOrganizationId ?? null,
-      dueAt: c.dueAt?.trim() || null,
-      status: "OPEN",
+      dueAt: parseIsoDate(c.dueAt ?? null, "condition dueAt"),
+      status: "OPEN" as const,
       supportingDocumentId: null,
       satisfiedByUserId: null,
       satisfiedAt: null,
@@ -203,6 +303,20 @@ export function recordLenderDecision(
       waivedByUserId: null,
       createdAt: now,
       updatedAt: now,
+    };
+  });
+  try {
+    lrepo.createDecisionTx(decision, conditionRows, supersedeIds);
+  } catch (e) {
+    if (e instanceof Error && /UNIQUE constraint/.test(e.message)) {
+      throw new LenderError("Another current lender decision was recorded concurrently", 409);
+    }
+    throw e;
+  }
+  for (const c of conditionRows) {
+    lrepo.insertConditionEvent({
+      id: lrepo.newId(), conditionId: c.id, priorStatus: null, newStatus: "OPEN",
+      reason: "Created with the lender decision", actorUserId: user.id, createdAt: now,
     });
   }
   void teamsNotifier.notify(
@@ -244,6 +358,15 @@ export function updateCondition(
     satisfiedByUserId: input.status === "SATISFIED" ? user.id : condition.satisfiedByUserId,
     satisfiedAt: input.status === "SATISFIED" ? new Date().toISOString() : condition.satisfiedAt,
     supportingDocumentId: input.supportingDocumentId ?? condition.supportingDocumentId,
+  });
+  lrepo.insertConditionEvent({
+    id: lrepo.newId(),
+    conditionId,
+    priorStatus: condition.status,
+    newStatus: input.status,
+    reason: input.status === "WAIVED" ? input.waiverReason!.trim() : null,
+    actorUserId: user.id,
+    createdAt: new Date().toISOString(),
   });
   return lrepo.getDecisionCondition(conditionId)!;
 }
@@ -294,13 +417,13 @@ export function createLienWaiver(
     waiverType: input.waiverType?.trim() || null,
     waiverScope: input.waiverScope?.trim() || null,
     relatedAmount: input.relatedAmount ?? null,
-    coveredThrough: input.coveredThrough?.trim() || null,
+    coveredThrough: parseIsoDate(input.coveredThrough, "coveredThrough"),
     requestedAt: null,
     receivedAt: null,
     reviewedAt: null,
     acceptedAt: null,
     rejectedAt: null,
-    signatureDate: input.signatureDate?.trim() || null,
+    signatureDate: parseIsoDate(input.signatureDate, "signatureDate"),
     status: "REQUIRED",
     reviewedByUserId: null,
     rejectionReason: null,
@@ -399,16 +522,31 @@ export function scheduleFunding(
   if (!decision || decision.drawRequestId !== draw.id) {
     throw new LenderError("Funding requires the lender decision it executes", 422);
   }
+  if (decision.supersededByDecisionId) {
+    throw new LenderError("A superseded lender decision cannot be funded", 409);
+  }
   if (!["APPROVED", "CONDITIONALLY_APPROVED", "REDUCED"].includes(decision.decision)) {
     throw new LenderError("Funding can only be scheduled against an approved decision", 409);
   }
-  const blocking = openConditions(decision.id);
+  const blocking = blockingConditions(decision.id);
   if (decision.decision === "CONDITIONALLY_APPROVED" && blocking.length > 0) {
     throw new LenderError(
-      `Conditional approval is not fundable while ${blocking.length} mandatory condition(s) remain open`,
+      `Conditional approval is not fundable while ${blocking.length} condition(s) are unsatisfied and unwaived`,
       409
     );
   }
+  const available = (decision.approvedAmount ?? 0) - lrepo.disbursedTotal(draw.id);
+  const scheduledAmount = input.amountScheduled ?? decision.approvedAmount;
+  if (scheduledAmount === null || !Number.isFinite(scheduledAmount) || scheduledAmount <= 0) {
+    throw new LenderError("amountScheduled must be a positive amount", 400);
+  }
+  if (scheduledAmount > available) {
+    throw new LenderError(
+      `amountScheduled (${scheduledAmount}) exceeds the remaining lender-approved amount (${available})`,
+      409
+    );
+  }
+  parseIsoDate(input.scheduledAt ?? null, "scheduledAt");
   const now = new Date().toISOString();
   const record: ExternalFundingRecord = {
     id: lrepo.newId(),
@@ -419,7 +557,7 @@ export function scheduleFunding(
     fundingMethod: input.fundingMethod?.trim() || null,
     scheduledAt: input.scheduledAt?.trim() || now,
     fundedAt: null,
-    amountScheduled: input.amountScheduled ?? decision.approvedAmount,
+    amountScheduled: scheduledAmount,
     amountDisbursed: null,
     wireFee: input.wireFee ?? null,
     transactionReference: null,
@@ -433,11 +571,40 @@ export function scheduleFunding(
     createdAt: now,
     updatedAt: now,
   };
-  lrepo.insertFundingRecord(record);
+  try {
+    lrepo.insertFundingRecord(record);
+  } catch (e) {
+    if (e instanceof Error && /UNIQUE constraint/.test(e.message)) {
+      throw new LenderError("An active external funding record already exists for this draw", 409);
+    }
+    throw e;
+  }
   void teamsNotifier.notify("FUNDING_SCHEDULED", `External funding scheduled for Draw #${draw.drawNumber} (administrative record)`, {
     projectId: project.id,
   });
   return record;
+}
+
+/** Derived payment status for a decision — funded state comes from the
+ *  external funding records, never from rewriting decision history. */
+export function derivedPaymentStatus(drawRequestId: string): {
+  status: "NOT_FUNDED" | "SCHEDULED" | "DISBURSED" | "REVERSED" | "CLOSED";
+  disbursedTotal: number;
+} {
+  const records = lrepo.listFundingRecords(drawRequestId);
+  const active = records.filter((f) => !f.reversedAt);
+  const anyReversed = records.some((f) => f.status === "REVERSED" || f.reversedAt !== null);
+  if (records.some((f) => f.status === "CLOSED" && !f.reversedAt)) {
+    return { status: "CLOSED", disbursedTotal: lrepo.disbursedTotal(drawRequestId) };
+  }
+  if (active.some((f) => f.status === "DISBURSED")) {
+    return { status: "DISBURSED", disbursedTotal: lrepo.disbursedTotal(drawRequestId) };
+  }
+  if (active.some((f) => ["SCHEDULED", "PROCESSING"].includes(f.status))) {
+    return { status: "SCHEDULED", disbursedTotal: lrepo.disbursedTotal(drawRequestId) };
+  }
+  if (anyReversed) return { status: "REVERSED", disbursedTotal: lrepo.disbursedTotal(drawRequestId) };
+  return { status: "NOT_FUNDED", disbursedTotal: lrepo.disbursedTotal(drawRequestId) };
 }
 
 export function transitionFunding(
@@ -489,18 +656,28 @@ export function transitionFunding(
     patch.reversedAt = now;
   }
   if (input.status === "CLOSED") patch.closedAt = now;
-  lrepo.updateFundingRecord(fundingId, patch);
+  // Transactional write with the cumulative-disbursement cap: total
+  // non-reversed external disbursements can never exceed the lender-
+  // approved amount. The FINALIZED lender decision itself is NEVER
+  // mutated — funded state is DERIVED from ExternalFundingRecord and
+  // shown as workflow/payment status.
+  const capDecision = record.lenderDecisionId ? lrepo.getLenderDecision(record.lenderDecisionId) : null;
+  try {
+    lrepo.transitionFundingTx(
+      fundingId,
+      patch,
+      input.status === "DISBURSED" && capDecision
+        ? { approvedAmount: capDecision.approvedAmount, drawRequestId: record.drawRequestId }
+        : null
+    );
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("CAP:")) {
+      throw new LenderError(e.message.slice(5).trim(), 409);
+    }
+    throw e;
+  }
   const updated = lrepo.getFundingRecord(fundingId)!;
   if (input.status === "DISBURSED") {
-    // Recording the external disbursement also marks the decision FUNDED —
-    // an administrative status, still with zero contact with the governed
-    // virtual account.
-    if (updated.lenderDecisionId) {
-      const decision = lrepo.getLenderDecision(updated.lenderDecisionId);
-      if (decision && !decision.supersededByDecisionId && decision.decision !== "FUNDED") {
-        lrepo.updateLenderDecision(decision.id, { decision: "FUNDED" });
-      }
-    }
     void teamsNotifier.notify("EXTERNAL_FUNDS_DISBURSED", `External disbursement recorded (${updated.transactionReference})`, {
       projectId: record.projectId,
     });

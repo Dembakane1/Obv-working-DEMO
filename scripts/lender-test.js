@@ -263,10 +263,16 @@ function readZip(buf) {
     );
 
     // ================= PART E · memberships & capabilities =================
+    // Bootstrap: the funder's FIRST membership must carry MANAGE_USERS or
+    // membership management would dead-end (bootstrap fires only once).
+    const adminMembership = await j("funder", "POST", `/api/projects/${P}/memberships`, {
+      userId: "user-funder", participantType: "ADMINISTRATOR",
+    }, 201);
+    assert(adminMembership.membership.participantType === "ADMINISTRATOR", "funder bootstraps the first membership (self as administrator)");
     const membership = await j("funder", "POST", `/api/projects/${P}/memberships`, {
       userId: "user-field", participantType: "INSPECTOR",
     }, 201);
-    assert(membership.membership.participantType === "INSPECTOR", "funder bootstraps the first membership (field engineer as independent inspector)");
+    assert(membership.membership.participantType === "INSPECTOR", "administrator assigns the field engineer as independent inspector");
     const fieldCaps = (await j("field", "GET", `/api/projects/${P}/memberships`, undefined, 200)).capabilities;
     assert(
       fieldCaps.includes("RECORD_INSPECTION_FINDINGS") && !fieldCaps.includes("RECORD_LENDER_DECISION"),
@@ -274,6 +280,20 @@ function readZip(buf) {
     );
     const pmCaps = (await j("pm", "GET", `/api/projects/${P}/memberships`, undefined, 200)).capabilities;
     assert(!pmCaps.includes("RECORD_LENDER_DECISION"), "project manager holds no lender-decision capability by default");
+
+    // Legacy-compatibility transition rule (issue #1): once ANY active
+    // membership exists, capabilities are authoritative for core draw
+    // actions — the PM (no membership yet) is refused draw creation.
+    const pmNoCap = await api("pm", "POST", "/api/draws", {
+      projectId: P, requestedAmount: 400000, periodStart: "2026-06-01", periodEnd: "2026-06-30",
+    });
+    assert(
+      pmNoCap.status === 403 && /SUBMIT_DRAW/.test(await pmNoCap.text()),
+      "with memberships present, a member-less PM is denied draw creation (capabilities authoritative)"
+    );
+    await j("funder", "POST", `/api/projects/${P}/memberships`, {
+      userId: "user-pm", participantType: "BORROWER",
+    }, 201);
 
     // ================= PART F · draw + independent inspection =================
     const drawRes = await j("pm", "POST", "/api/draws", {
@@ -452,7 +472,12 @@ function readZip(buf) {
     }, 200);
     assert(disbursed.funding.fundedAt && disbursed.funding.amountDisbursed === 395000, "external disbursement recorded with reference and attributable user");
     const decisionAfter = await j("funder", "GET", `${D}/lender-decision`, undefined, 200);
-    assert(decisionAfter.decision.decision === "FUNDED", "decision reaches FUNDED only through the external funding record");
+    assert(
+      decisionAfter.decision.decision === "CONDITIONALLY_APPROVED" &&
+        decisionAfter.paymentStatus.status === "DISBURSED" &&
+        decisionAfter.paymentStatus.disbursedTotal === 395000,
+      "decision history is never rewritten to FUNDED — payment status is DERIVED from the funding record"
+    );
 
     await j("funder", "POST", "/api/exceptions/evaluate", {}, 200);
     assert(
@@ -482,8 +507,9 @@ function readZip(buf) {
     const stageA = await j("funder", "GET", `${D}/stage`, undefined, 200);
     const stageB = await j("funder", "GET", `${D}/stage`, undefined, 200);
     assert(
-      stageA.history.length === stageB.history.length && stageA.stage === "DRAW_CLOSED",
-      `stage history is append-only from mutations; GET derives (${stageA.stage}) without writing`
+      stageA.history.length === stageB.history.length &&
+        stageA.stage !== "DRAW_CLOSED" && stageA.stage !== "FUNDS_DISBURSED",
+      `REVERSED funding never derives as disbursed/closed — stage falls back honestly (${stageA.stage}); GET derives without writing`
     );
     assert(
       stageA.history.every((e, i, arr) => i === 0 || arr[i - 1].newStage === e.priorStage),
@@ -545,6 +571,12 @@ function readZip(buf) {
     );
 
     // ================= PART N · submitter cannot decide =================
+    // Give the funder SUBMIT_DRAW via an explicit BORROWER membership so
+    // they can author a draw; the separation-of-duties check must still
+    // block them from deciding it (capabilities never relax SoD).
+    await j("funder", "POST", `/api/projects/${P}/memberships`, {
+      userId: "user-funder", participantType: "BORROWER",
+    }, 201);
     const d2 = (await j("funder", "POST", "/api/draws", { projectId: P, requestedAmount: 100000, periodStart: "2026-08-01", periodEnd: "2026-08-31" }, 201)).draw;
     const D2 = `/api/draws/${d2.id}`;
     const l2 = (await j("funder", "POST", `${D2}/lines`, {
@@ -566,6 +598,233 @@ function readZip(buf) {
       decision: "REJECTED", decisionReason: "test",
     });
     assert(selfDecide.status === 403, "the draw submitter cannot record the lender decision on their own draw");
+
+    // ================= PART O · hardening pass =================
+
+    // ---- O1 · policy freeze at first submission ----
+    const d3 = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 100000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
+    const D3 = `/api/draws/${d3.id}`;
+    const l3 = (await j("pm", "POST", `${D3}/lines`, {
+      description: "Drainage channel lining", scheduledValue: 200000, currentRequested: 100000, percentCompleteClaimed: 60,
+    }, 201)).line;
+    await j("pm", "POST", `${D3}/submit`, undefined, 200);
+    const app3 = q1("SELECT policy_version AS v FROM draw_policy_applications WHERE draw_request_id = ?", d3.id);
+    assert(app3 && Number(app3.v) === 2, "first submission freezes the applied policy version (v2)");
+    await j("funder", "POST", `/api/projects/${P}/lender-policy`, { retainagePct: 8, reason: "Retainage revised mid-pilot" }, 201);
+    const app3b = q1("SELECT policy_version AS v, COUNT(*) AS c FROM draw_policy_applications WHERE draw_request_id = ?", d3.id);
+    assert(Number(app3b.v) === 2 && Number(app3b.c) === 1, "a later policy version (v3) does NOT rewrite the frozen application");
+    await j("funder", "POST", `${D3}/return`, { reason: "Add culvert invoices" }, 200);
+    await j("pm", "POST", `${D3}/submit`, undefined, 200);
+    const app3c = q1("SELECT policy_version AS v, COUNT(*) AS c FROM draw_policy_applications WHERE draw_request_id = ?", d3.id);
+    assert(Number(app3c.v) === 2 && Number(app3c.c) === 1, "resubmission keeps the ORIGINAL frozen policy application");
+    const pkg2 = await (await api("funder", "POST", `${D}/verification-package`)).json();
+    const zip2 = readZip(Buffer.from(await (await fetch(`${BASE}/reports/file/${pkg2.report.id}`, { headers: { cookie: jars.funder } })).arrayBuffer()));
+    const appliedJson = JSON.parse(zip2["lender-policy-applied.json"].toString("utf8"));
+    assert(
+      appliedJson.state === "RECORDED" && appliedJson.version === 2 && appliedJson.frozenAt === "first draw submission",
+      "the draw package reports the FROZEN policy version (v2), not the now-active v3"
+    );
+    const legacyDraw = q1(
+      "SELECT id FROM draw_requests WHERE submitted_at IS NOT NULL AND id NOT IN (?, ?, ?) LIMIT 1",
+      draw.id, d2.id, d3.id
+    );
+    assert(
+      !legacyDraw || q1("SELECT COUNT(*) AS c FROM draw_policy_applications WHERE draw_request_id = ?", legacyDraw.id).c === 0,
+      "legacy draws keep no invented policy application (report NOT RECORDED, never backfilled)"
+    );
+
+    // ---- O2 · membership grants lender-endpoint access ----
+    const xBefore = await api("tenantx", "GET", `${D3}/stage`);
+    assert(xBefore.status === 404, "before membership, the unrelated org still gets 404 on lender endpoints");
+    const xMember = (await j("funder", "POST", `/api/projects/${P}/memberships`, {
+      userId: "user-x", participantType: "OBV_REVIEWER",
+    }, 201)).membership;
+    const xAfter = await api("tenantx", "GET", `${D3}/stage`);
+    assert(xAfter.status === 200, "an explicit active membership grants lender-endpoint access across org lines");
+    const otherProj = q1("SELECT id FROM projects WHERE id != ? LIMIT 1", P);
+    if (otherProj) {
+      const xOther = await api("tenantx", "GET", `/api/projects/${otherProj.id}/loan`);
+      assert(xOther.status === 404, "membership on one project grants NOTHING on unrelated projects (still 404)");
+    }
+    await j("funder", "POST", `/api/memberships/${xMember.id}/end`, { projectId: P }, 200);
+    const xEnded = await api("tenantx", "GET", `${D3}/stage`);
+    assert(xEnded.status === 404, "ending the membership restores the 404 tenant boundary");
+
+    // ---- O3 · governance truth table, amounts, PENDING, provenance ----
+    const d4 = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 200000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
+    const D4 = `/api/draws/${d4.id}`;
+    const l4 = (await j("pm", "POST", `${D4}/lines`, {
+      description: "Shoulder regrading km 11–14", scheduledValue: 400000, currentRequested: 200000, percentCompleteClaimed: 55,
+    }, 201)).line;
+    await j("pm", "POST", `${D4}/submit`, undefined, 200);
+    await j("compliance", "POST", `${D4}/lines/${l4.id}/review`, {
+      decision: "PARTIALLY_SUPPORTED", supportedAmount: 150000, reason: "Km 13–14 regrade not yet evidenced",
+    }, 200);
+    const reqRows4 = q("SELECT id, title FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1", d4.id);
+    const docIds4 = [];
+    for (const r of reqRows4) {
+      docIds4.push((await j("pm", "POST", `${D4}/documents`, { requirementId: r.id, title: r.title }, 201)).document.id);
+    }
+    const stagePreDocReview = await j("funder", "GET", `${D4}/stage`, undefined, 200);
+    assert(
+      stagePreDocReview.stage !== "FINANCIAL_DOCUMENTS_REVIEWED" &&
+        stagePreDocReview.stage !== "GOVERNMENT_INSPECTION_CHECKED" &&
+        stagePreDocReview.stage !== "EVIDENCE_REVIEW_COMPLETED",
+      `documents merely RECEIVED do not derive FINANCIAL_DOCUMENTS_REVIEWED (got ${stagePreDocReview.stage})`
+    );
+    for (const id of docIds4) {
+      await j("compliance", "POST", `${D4}/documents/${id}/review`, { decision: "ACCEPTED" }, 200);
+    }
+    const stagePostDocReview = await j("funder", "GET", `${D4}/stage`, undefined, 200);
+    assert(
+      ["FINANCIAL_DOCUMENTS_REVIEWED", "GOVERNMENT_INSPECTION_CHECKED"].includes(stagePostDocReview.stage),
+      `reviewed documents ground the derived stage (${stagePostDocReview.stage})`
+    );
+    await j("compliance", "POST", `${D4}/governance`, {}, 200);
+    const ap4 = q1("SELECT id FROM approval_requests WHERE draw_request_id = ?", d4.id).id;
+    await j("funder", "POST", `/api/approvals/${ap4}/decision`, { decision: "APPROVED" }, 200);
+    await j("compliance", "POST", `/api/approvals/${ap4}/decision`, { decision: "APPROVED" }, 200);
+
+    const rejVsGov = await api("funder", "POST", `${D4}/lender-decision`, {
+      decision: "REJECTED", decisionReason: "attempting rejection against approved governance",
+    });
+    assert(rejVsGov.status === 409, "REJECTED lender decision against APPROVED formal governance is refused (truth table)");
+    const partialApproved = await api("funder", "POST", `${D4}/lender-decision`, {
+      decision: "APPROVED", approvedAmount: 150000,
+    });
+    assert(partialApproved.status === 400, "APPROVED with approvedAmount below requested is refused (use REDUCED)");
+    await j("funder", "POST", `${D4}/lender-decision`, { decision: "PENDING" }, 201);
+    const dupPending = await api("funder", "POST", `${D4}/lender-decision`, { decision: "PENDING" });
+    assert(dupPending.status === 409, "a second active PENDING decision is refused");
+    const dec4 = (await j("funder", "POST", `${D4}/lender-decision`, {
+      decision: "APPROVED", approvedAmount: 200000, decisionReason: "Full approval after review",
+    }, 201)).decision;
+    const decRows4 = q("SELECT decision, superseded_by_decision_id AS sup FROM lender_draw_decisions WHERE draw_request_id = ?", d4.id);
+    assert(
+      decRows4.length === 2 &&
+        decRows4.filter((r) => r.sup === null).length === 1 &&
+        decRows4.some((r) => r.decision === "PENDING" && r.sup !== null),
+      "a final decision auto-supersedes the active PENDING — exactly one current decision (DB-enforced)"
+    );
+    assert(
+      dec4.verifiedAmount === 150000 &&
+        /supportedAmount/.test(dec4.verifiedAmountSource || "") &&
+        /advisory/.test(dec4.recommendedAmountSource || "") &&
+        dec4.verifiedAmountSource !== dec4.recommendedAmountSource,
+      "verifiedAmount derives from reviewed line support with its OWN provenance — never copied from the advisory recommendation"
+    );
+    const dupFinal = await api("funder", "POST", `${D4}/lender-decision`, {
+      decision: "APPROVED", approvedAmount: 200000, decisionReason: "duplicate",
+    });
+    assert(dupFinal.status === 409, "a second final decision without supersedesDecisionId is refused");
+
+    // ---- O4 · cumulative funding cap & one active record ----
+    const f1 = (await j("funder", "POST", `${D4}/funding`, { fundingMethod: "WIRE", amountScheduled: 150000 }, 201)).funding;
+    const dupActive = await api("funder", "POST", `${D4}/funding`, { amountScheduled: 50000 });
+    assert(dupActive.status === 409, "a second ACTIVE funding record for the same draw is refused (partial unique index)");
+    await j("funder", "POST", `/api/funding/${f1.id}`, { status: "DISBURSED", transactionReference: "WIRE-A1" }, 200);
+    const overAvail = await api("funder", "POST", `${D4}/funding`, { amountScheduled: 60000 });
+    assert(overAvail.status === 409, "scheduling beyond the remaining approved amount is refused");
+    const f2 = (await j("funder", "POST", `${D4}/funding`, { amountScheduled: 50000 }, 201)).funding;
+    const overCap = await api("funder", "POST", `/api/funding/${f2.id}`, {
+      status: "DISBURSED", transactionReference: "WIRE-A2", amountDisbursed: 60000,
+    });
+    assert(overCap.status === 409, "cumulative disbursements can never exceed the lender-approved amount (tx-checked)");
+    await j("funder", "POST", `/api/funding/${f2.id}`, { status: "DISBURSED", transactionReference: "WIRE-A2", amountDisbursed: 50000 }, 200);
+    const pay4 = (await j("funder", "GET", `${D4}/lender-decision`, undefined, 200)).paymentStatus;
+    assert(pay4.status === "DISBURSED" && pay4.disbursedTotal === 200000, "derived payment status reflects full cumulative disbursement");
+
+    // ---- O5 · condition lifecycle blocks funding; append-only events ----
+    await j("compliance", "POST", `${D3}/lines/${l3.id}/review`, { decision: "SUPPORTED" }, 200);
+    const reqRows3 = q("SELECT id, title FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1", d3.id);
+    for (const r of reqRows3) {
+      await j("pm", "POST", `${D3}/documents`, { requirementId: r.id, title: r.title }, 201);
+    }
+    await j("compliance", "POST", `${D3}/governance`, {}, 200);
+    const ap3 = q1("SELECT id FROM approval_requests WHERE draw_request_id = ?", d3.id).id;
+    await j("funder", "POST", `/api/approvals/${ap3}/decision`, { decision: "APPROVED" }, 200);
+    await j("compliance", "POST", `/api/approvals/${ap3}/decision`, { decision: "APPROVED" }, 200);
+    const badDisposal = await api("funder", "POST", `${D3}/lender-decision`, {
+      decision: "CONDITIONALLY_APPROVED", approvedAmount: 80000, decisionReason: "partial",
+      conditions: [{ description: "Deliver culvert invoices" }],
+    });
+    assert(badDisposal.status === 400, "CONDITIONALLY_APPROVED must categorize the undisposed difference (holdback/reduced/rejected)");
+    const dec3 = (await j("funder", "POST", `${D3}/lender-decision`, {
+      decision: "CONDITIONALLY_APPROVED", approvedAmount: 80000, holdbackAmount: 20000,
+      decisionReason: "Approved less pending invoice support",
+      conditions: [{ conditionType: "DOCUMENT", description: "Deliver culvert invoices", dueAt: "2026-08-15" }],
+    }, 201)).decision;
+    const cond3 = (await j("funder", "GET", `${D3}/lender-decision`, undefined, 200)).conditions[0];
+    for (const status of ["IN_PROGRESS", "FAILED"]) {
+      await j("funder", "POST", `/api/decision-conditions/${cond3.id}`, { status }, 200);
+      const blocked = await api("funder", "POST", `${D3}/funding`, {});
+      assert(blocked.status === 409, `a ${status} condition blocks funding (only SATISFIED/WAIVED are fundable)`);
+    }
+    const terminalCond = await api("funder", "POST", `/api/decision-conditions/${cond3.id}`, { status: "SATISFIED" });
+    assert(terminalCond.status === 409, "a FAILED condition is terminal — no silent resurrection");
+    const condEvents = q("SELECT prior_status AS p, new_status AS s FROM lender_condition_events WHERE condition_id = ? ORDER BY created_at", cond3.id);
+    assert(
+      condEvents.length === 3 && condEvents[0].p === null && condEvents[0].s === "OPEN" &&
+        condEvents[1].s === "IN_PROGRESS" && condEvents[2].s === "FAILED" &&
+        condEvents[2].p === "IN_PROGRESS",
+      "condition history is append-only: OPEN → IN_PROGRESS → FAILED fully chained"
+    );
+
+    // ---- O6 · inspection line integrity + transactional reinspection ----
+    const insp3 = (await j("funder", "POST", `${D3}/inspections`, { inspectorUserId: "user-field" }, 201)).inspection;
+    await j("funder", "POST", `/api/draw-inspections/${insp3.id}/schedule`, { scheduledAt: "2026-07-25T09:00:00Z" }, 200);
+    await j("field", "POST", `/api/draw-inspections/${insp3.id}/complete`, {}, 200);
+    await j("field", "POST", `/api/draw-inspections/${insp3.id}/lines`, { drawLineItemId: l3.id, percentCompleteReported: 55 }, 201);
+    const dupFinding = await api("field", "POST", `/api/draw-inspections/${insp3.id}/lines`, { drawLineItemId: l3.id, percentCompleteReported: 60 });
+    assert(dupFinding.status === 409, "a duplicate finding for the same draw line on one inspection is refused");
+    const otherMs = q1("SELECT id FROM milestones WHERE project_id != ? LIMIT 1", P);
+    if (otherMs) {
+      const crossMs = await api("field", "POST", `/api/draw-inspections/${insp3.id}/lines`, { milestoneId: otherMs.id });
+      assert(crossMs.status === 422, "a finding referencing another project's milestone is refused (422, no tenant leak)");
+    }
+    const badBudget = await api("field", "POST", `/api/draw-inspections/${insp3.id}/lines`, { budgetLineId: "bl-unknown" });
+    assert(badBudget.status === 422, "a finding referencing an unknown budget line is refused (422)");
+    await j("field", "POST", `/api/draw-inspections/${insp3.id}/report`, {
+      summary: "Drainage lining largely complete", conclusion: "55% verified on site",
+    }, 201);
+    const v3id = q1("SELECT id FROM draw_inspection_report_versions WHERE draw_inspection_id = ?", insp3.id).id;
+    await j("field", "POST", `/api/inspection-reports/${v3id}/finalize`, {}, 200);
+    const re1 = (await j("funder", "POST", `/api/draw-inspections/${insp3.id}/reinspection`, { reason: "Culvert bedding disputed" }, 201)).inspection;
+    assert(re1.reinspectionOfInspectionId === insp3.id && re1.status === "REQUESTED", "reinspection flags the prior and opens a linked child atomically");
+    const re2 = await api("funder", "POST", `/api/draw-inspections/${insp3.id}/reinspection`, { reason: "second attempt" });
+    assert(re2.status === 409, "a second reinspection of the same prior inspection is refused (single-child guarantee)");
+
+    // ---- O7 · strict dates & transactional transfers ----
+    const badLoanDate = await api("funder", "POST", `/api/loans/${loan.id}`, { closingDate: "01/15/2026" });
+    assert(badLoanDate.status === 400, "a non-ISO loan date is rejected by strict permit-module validation");
+    const badSched = await api("funder", "POST", `/api/draw-inspections/${re1.id}/schedule`, { scheduledAt: "next Tuesday" });
+    assert(badSched.status === 400, "a non-ISO inspection scheduledAt is rejected");
+    const badDueAt = await api("funder", "POST", `${D3}/lender-decision`, {
+      decision: "CONDITIONALLY_APPROVED", approvedAmount: 80000, holdbackAmount: 20000,
+      decisionReason: "amendment attempt", supersedesDecisionId: dec3.id,
+      conditions: [{ description: "x", dueAt: "2026-99-99" }],
+    });
+    assert(
+      badDueAt.status === 400 &&
+        q1("SELECT COUNT(*) AS c FROM lender_draw_decisions WHERE draw_request_id = ? AND superseded_by_decision_id IS NULL", d3.id).c === 1,
+      "an invalid condition dueAt fails validation BEFORE any write — the prior decision remains untouched and current"
+    );
+    const futureXfer = await api("funder", "POST", `/api/loans/${loan.id}/ownership-transfer`, {
+      newOwnerOrganizationId: "org-borrower", effectiveAt: "2030-01-01",
+    });
+    const ownerAfter = q1("SELECT current_loan_owner_organization_id AS o FROM loan_assets WHERE id = ?", loan.id).o;
+    assert(
+      futureXfer.status === 422 && ownerAfter === orgId,
+      "a future-dated ownership transfer is rejected (documented pilot rule) — the current pointer is untouched"
+    );
+    const badXferDate = await api("funder", "POST", `/api/loans/${loan.id}/ownership-transfer`, {
+      newOwnerOrganizationId: "org-borrower", effectiveAt: "someday",
+    });
+    assert(badXferDate.status === 400, "a malformed transfer effectiveAt is rejected");
+    const badMemberDates = await api("funder", "POST", `/api/projects/${P}/memberships`, {
+      userId: "user-x", participantType: "OBV_REVIEWER", effectiveFrom: "2026-08-01", effectiveTo: "2026-07-01",
+    });
+    assert(badMemberDates.status === 422, "a membership with effectiveTo before effectiveFrom is rejected");
 
     console.log(`\nLENDER-PILOT DOMAIN TESTS PASSED — ${n} checkpoints.`);
   } finally {

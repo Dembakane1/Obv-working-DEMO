@@ -1933,8 +1933,32 @@ export interface LenderDrawDecision {
   approvalRequestId: string | null;
   supersedesDecisionId: string | null;
   supersededByDecisionId: string | null;
+  /** Provenance: where verifiedAmount / recommendedAmount came from. */
+  verifiedAmountSource: string | null;
+  recommendedAmountSource: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Append-only history of decision-condition status changes. */
+export interface LenderConditionEvent {
+  id: string;
+  conditionId: string;
+  priorStatus: string | null;
+  newStatus: string;
+  reason: string | null;
+  actorUserId: string | null;
+  createdAt: string;
+}
+
+/** The lender policy version frozen to a draw at first formal submission. */
+export interface DrawPolicyApplication {
+  id: string;
+  drawRequestId: string;
+  policyId: string;
+  policyVersion: number;
+  appliedAt: string;
+  source: string;
 }
 
 export type LenderConditionStatus =

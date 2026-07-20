@@ -1324,6 +1324,28 @@ CREATE TABLE IF NOT EXISTS lender_draw_policies (
 -- Append-only history of the DERIVED draw workflow stage. The stage itself
 -- is computed from authoritative records on read; this log only records
 -- observed transitions (written by mutating actions, never by GETs).
+-- Append-only lender decision condition status history.
+CREATE TABLE IF NOT EXISTS lender_condition_events (
+  id TEXT PRIMARY KEY,
+  condition_id TEXT NOT NULL REFERENCES lender_decision_conditions(id),
+  prior_status TEXT,
+  new_status TEXT NOT NULL,
+  reason TEXT,
+  actor_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+-- Frozen lender-policy application per draw (set at first formal
+-- submission; later policy versions never rewrite prior draws).
+CREATE TABLE IF NOT EXISTS draw_policy_applications (
+  id TEXT PRIMARY KEY,
+  draw_request_id TEXT NOT NULL UNIQUE REFERENCES draw_requests(id),
+  policy_id TEXT NOT NULL REFERENCES lender_draw_policies(id),
+  policy_version INTEGER NOT NULL,
+  applied_at TEXT NOT NULL,
+  source TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS draw_stage_events (
   id TEXT PRIMARY KEY,
   draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
@@ -1492,6 +1514,40 @@ export function getDb(): DatabaseSync {
          ON messages(thread_id, external_message_id)
          WHERE external_message_id IS NOT NULL`
     );
+    // ---- lender-domain integrity constraints (additive) ----
+    // Exactly one current (non-superseded) lender decision per draw.
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_one_current_lender_decision
+         ON lender_draw_decisions(draw_request_id)
+         WHERE superseded_by_decision_id IS NULL`
+    );
+    // One direct reinspection child per prior independent inspection.
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_draw_reinspection_single_child
+         ON draw_inspections(reinspection_of_inspection_id)
+         WHERE reinspection_of_inspection_id IS NOT NULL`
+    );
+    // At most one in-flight external funding record per draw.
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_funding
+         ON external_funding_records(draw_request_id)
+         WHERE status IN ('SCHEDULED','PROCESSING')`
+    );
+    // One inspector finding per draw line per inspection (findings are not
+    // versioned; corrections go through report versions).
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_inspection_line_unique
+         ON draw_inspection_lines(draw_inspection_id, draw_line_item_id)
+         WHERE draw_line_item_id IS NOT NULL`
+    );
+    // Amount provenance on lender decisions (additive).
+    for (const ddl of [
+      "ALTER TABLE lender_draw_decisions ADD COLUMN verified_amount_source TEXT",
+      "ALTER TABLE lender_draw_decisions ADD COLUMN recommended_amount_source TEXT",
+    ]) {
+      try { db.exec(ddl); } catch { /* column already present */ }
+    }
+
     // Additive migration for notification delivery provenance.
     for (const ddl of [
       "ALTER TABLE notifications ADD COLUMN project_id TEXT",

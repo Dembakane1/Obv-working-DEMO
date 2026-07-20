@@ -21,6 +21,7 @@
 import * as repo from "../db/repo";
 import { audit, snapshotProject } from "./pilot/onboarding";
 import { canAccessProjectFinance } from "./budgetProgress";
+import { capabilityGate } from "./lenderAccess";
 import { effectiveStatus as permitEffectiveStatus, completeSourcesForInspection } from "./permits";
 import type {
   ContractorCompletionStatus, EvidenceReviewStatus, GateReason,
@@ -66,6 +67,14 @@ export function reportContractorCompletion(
   const { milestone, project } = assertAccess(user, milestoneId);
   if (!CONTRACTOR_ROLES.has(user.role)) {
     throw new GateError("Contractor completion is reported by the delivery side (project manager / field)", 403);
+  }
+  // Legacy-compatibility rule: with no active memberships the role check
+  // above is authoritative; once memberships exist on the project,
+  // REPORT_CONTRACTOR_COMPLETION is required in addition.
+  try {
+    capabilityGate(user, project.id, "REPORT_CONTRACTOR_COMPLETION");
+  } catch (err) {
+    throw new GateError((err as Error).message, 403);
   }
   if (!["IN_PROGRESS", "REPORTED_COMPLETE", "WITHDRAWN"].includes(input.status)) {
     throw new GateError("status must be IN_PROGRESS, REPORTED_COMPLETE or WITHDRAWN");

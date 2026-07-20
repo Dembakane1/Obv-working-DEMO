@@ -22,6 +22,7 @@
  *     required role has approved.
  */
 import * as repo from "../db/repo";
+import { capabilityGate } from "./lenderAccess";
 import { virtualAccountService } from "./VirtualAccountService";
 import { teamsNotifier } from "./TeamsNotifier";
 import { mirrorEvent, ensureDrawThread } from "./chat";
@@ -94,6 +95,10 @@ function assertReviewer(user: User, draw: DrawRequest): void {
       403
     );
   }
+  // Once the project has active memberships, REVIEW_DRAW is additionally
+  // required (capabilities authoritative); separation of duties above is
+  // never relaxed by a capability grant.
+  capabilityGate(user, draw.projectId, "REVIEW_DRAW");
 }
 
 /** Statuses in which the requester may still edit the draw contents. */
@@ -165,6 +170,9 @@ export function createDraw(
   }
   const project = repo.getProject(input.projectId);
   if (!project) throw new DrawError("Unknown project", 404);
+  // Legacy-compatibility rule: no active memberships → legacy role checks
+  // above stand alone; once memberships exist, SUBMIT_DRAW is required.
+  capabilityGate(user, project.id, "SUBMIT_DRAW");
   const drawNumber = input.drawNumber ?? repo.nextDrawNumber(project.id);
   if (repo.listDrawRequestsForProject(project.id).some((d) => d.drawNumber === drawNumber)) {
     throw new DrawError(`Draw #${drawNumber} already exists for this project`, 409);
@@ -481,6 +489,7 @@ export function recordDocument(
 ): DrawDocument {
   const draw = getDrawOr404(drawId);
   assertAccess(user, draw);
+  capabilityGate(user, draw.projectId, "UPLOAD_DRAW_DOCUMENT");
   if (!EDITABLE.includes(draw.status) && !REVIEWABLE.includes(draw.status)) {
     throw new DrawError(`Draw is ${draw.status} — documents can no longer be recorded`, 409);
   }
@@ -736,6 +745,7 @@ export function completeness(drawRequestId: string): DrawCompleteness {
 export async function submitDraw(user: User, drawId: string): Promise<DrawRequest> {
   const draw = getDrawOr404(drawId);
   assertAccess(user, draw);
+  capabilityGate(user, draw.projectId, "SUBMIT_DRAW");
   if (!EDITABLE.includes(draw.status)) {
     throw new DrawError(`A ${draw.status} draw cannot be submitted`, 409);
   }

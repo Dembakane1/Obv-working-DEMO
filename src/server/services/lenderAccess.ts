@@ -18,6 +18,7 @@
 import * as repo from "../db/repo";
 import * as lrepo from "../db/lenderRepo";
 import { canAccessProjectFinance } from "./budgetProgress";
+import { parseIsoDate } from "./permits";
 import type {
   Project,
   ProjectCapability,
@@ -82,11 +83,33 @@ export function hasCapability(user: User, projectId: string, cap: ProjectCapabil
   return capabilitiesFor(user, projectId).has(cap);
 }
 
+/** True when the user holds at least one currently-effective membership on
+ *  the project. Used to extend (never restrict) project access: a granted
+ *  membership makes lender endpoints reachable even for roles that would
+ *  not pass the legacy finance-access check. */
+export function hasActiveMembership(user: User, projectId: string): boolean {
+  const now = new Date().toISOString();
+  return lrepo
+    .listMembershipsForUser(user.id)
+    .some((m) => m.projectId === projectId && membershipActive(m, now));
+}
+
+/** True when the project has ANY currently-effective membership rows.
+ *  This is the legacy-compatibility pivot (see capabilityGate). */
+export function projectHasMemberships(projectId: string): boolean {
+  const now = new Date().toISOString();
+  return lrepo.listMemberships(projectId).some((m) => membershipActive(m, now));
+}
+
 /** Tenant boundary: unrelated organizations receive the same 404 as a
- *  nonexistent record — existence is not disclosed. */
+ *  nonexistent record — existence is not disclosed. An active project
+ *  membership also grants access (additive), so an explicitly assigned
+ *  participant can reach the project even without a legacy finance role.
+ *  Users with neither remain indistinguishable from a missing record. */
 export function assertProjectAccess(user: User, projectId: string): Project {
   const project = repo.getProject(projectId);
-  if (!project || !canAccessProjectFinance(user, project)) {
+  if (!project) throw new LenderError("Project not found", 404);
+  if (!canAccessProjectFinance(user, project) && !hasActiveMembership(user, project.id)) {
     throw new LenderError("Project not found", 404);
   }
   return project;
@@ -96,6 +119,27 @@ export function assertCapability(user: User, projectId: string, cap: ProjectCapa
   if (!hasCapability(user, projectId, cap)) {
     throw new LenderError(`This action requires the ${cap} capability`, 403);
   }
+}
+
+/**
+ * Legacy-compatibility rule for integrating capabilities with the core
+ * draw/document/completion actions (documented transition rule):
+ *
+ *   - A project with NO active memberships keeps the existing legacy role
+ *     behavior unchanged — this call is a no-op and the caller's original
+ *     role checks remain the sole authority.
+ *   - Once ANY active membership exists on the project, capabilities become
+ *     authoritative for the gated actions: the actor must hold the required
+ *     capability (via membership or the conservative role fallback) or the
+ *     action is rejected with 403.
+ *
+ * Tenant boundary is unchanged: this helper never grants access to a
+ * project the caller cannot already see; unrelated projects still 404 at
+ * the access layer before any capability question is asked.
+ */
+export function capabilityGate(user: User, projectId: string, cap: ProjectCapability): void {
+  if (!projectHasMemberships(projectId)) return;
+  assertCapability(user, projectId, cap);
 }
 
 /** Explicit membership management — MANAGE_USERS or an org-admin fallback
@@ -130,6 +174,11 @@ export function assignMembership(
   for (const c of caps) {
     if (!allCaps.has(c)) throw new LenderError(`Unknown capability ${c}`, 400);
   }
+  const effectiveFrom = parseIsoDate(input.effectiveFrom, "effectiveFrom");
+  const effectiveTo = parseIsoDate(input.effectiveTo, "effectiveTo");
+  if (effectiveFrom && effectiveTo && effectiveTo < effectiveFrom) {
+    throw new LenderError("effectiveTo cannot be before effectiveFrom", 422);
+  }
   const now = new Date().toISOString();
   const membership: ProjectMembership = {
     id: lrepo.newId(),
@@ -137,8 +186,8 @@ export function assignMembership(
     userId: member.id,
     participantType: input.participantType,
     capabilitySet: caps,
-    effectiveFrom: input.effectiveFrom ?? null,
-    effectiveTo: input.effectiveTo ?? null,
+    effectiveFrom,
+    effectiveTo,
     active: true,
     assignedByUserId: user.id,
     createdAt: now,

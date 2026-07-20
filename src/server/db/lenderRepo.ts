@@ -525,6 +525,8 @@ function toDecision(r: Row): LenderDrawDecision {
     approvalRequestId: s(r.approval_request_id),
     supersedesDecisionId: s(r.supersedes_decision_id),
     supersededByDecisionId: s(r.superseded_by_decision_id),
+    verifiedAmountSource: s(r.verified_amount_source),
+    recommendedAmountSource: s(r.recommended_amount_source),
     createdAt: String(r.created_at), updatedAt: String(r.updated_at),
   };
 }
@@ -536,6 +538,7 @@ const DECISION_COLS = [
   "exceptions_accepted", "government_inspection_requirement",
   "lien_release_requirement", "funding_instructions", "notes",
   "approval_request_id", "supersedes_decision_id", "superseded_by_decision_id",
+  "verified_amount_source", "recommended_amount_source",
 ];
 
 export function insertLenderDecision(d: LenderDrawDecision): void {
@@ -945,4 +948,180 @@ export function listStageEvents(drawRequestId: string): DrawStageEvent[] {
 export function lastStageEvent(drawRequestId: string): DrawStageEvent | null {
   const events = listStageEvents(drawRequestId);
   return events.length > 0 ? events[events.length - 1] : null;
+}
+
+// ================= hardening: transactions, events, applications =================
+
+import type { DrawPolicyApplication, LenderConditionEvent } from "../../shared/types";
+
+/** Insert a decision, supersede priors (including any active PENDING), and
+ *  insert its conditions in ONE transaction. The partial unique index
+ *  idx_one_current_lender_decision turns concurrent races into a
+ *  controlled UNIQUE-constraint failure. */
+export function createDecisionTx(
+  decision: LenderDrawDecision,
+  conditions: LenderDecisionCondition[],
+  supersedeIds: string[]
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    // The supersede UPDATE points priors at the NEW decision id before that
+    // row is inserted (insert-first would instead trip the one-current
+    // partial unique index). Defer FK enforcement to COMMIT so the forward
+    // reference is validated once the whole transaction is consistent.
+    db.exec("PRAGMA defer_foreign_keys = ON");
+    for (const priorId of supersedeIds) {
+      const res = db
+        .prepare(
+          "UPDATE lender_draw_decisions SET superseded_by_decision_id = ?, updated_at = ? WHERE id = ? AND superseded_by_decision_id IS NULL"
+        )
+        .run(decision.id, decision.updatedAt, priorId);
+      if (res.changes !== 1) throw new Error("UNIQUE constraint: decision supersede conflict");
+    }
+    insertLenderDecision(decision);
+    for (const c of conditions) insertDecisionCondition(c);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+export function insertConditionEvent(e: LenderConditionEvent): void {
+  getDb()
+    .prepare(
+      "INSERT INTO lender_condition_events (id, condition_id, prior_status, new_status, reason, actor_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    .run(e.id, e.conditionId, e.priorStatus, e.newStatus, e.reason, e.actorUserId, e.createdAt);
+}
+
+export function listConditionEvents(conditionId: string): LenderConditionEvent[] {
+  return getDb()
+    .prepare("SELECT * FROM lender_condition_events WHERE condition_id = ? ORDER BY created_at")
+    .all(conditionId)
+    .map((r: Row) => ({
+      id: String(r.id), conditionId: String(r.condition_id),
+      priorStatus: s(r.prior_status), newStatus: String(r.new_status),
+      reason: s(r.reason), actorUserId: s(r.actor_user_id), createdAt: String(r.created_at),
+    }));
+}
+
+/** Reinspection: flag the prior and insert the child atomically. The
+ *  conditional UPDATE plus idx_draw_reinspection_single_child guarantee
+ *  one success / one controlled conflict under concurrency. */
+export function createDrawReinspectionTx(child: DrawInspection, priorId: string): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const res = db
+      .prepare(
+        `UPDATE draw_inspections SET status = 'REINSPECTION_REQUIRED', updated_at = ?
+         WHERE id = ? AND status IN ('FINALIZED', 'FAILED', 'CORRECTION_REQUIRED')`
+      )
+      .run(child.createdAt, priorId);
+    if (res.changes !== 1) throw new Error("UNIQUE constraint: prior inspection not eligible for reinspection");
+    insertDrawInspection(child);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** Ownership/servicing: append the event and move the pointer atomically. */
+export function recordLoanTransferTx(
+  kind: "ownership" | "servicing",
+  event: LoanOwnershipEvent | LoanServicingEvent,
+  loanAssetId: string,
+  newOrgId: string
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (kind === "ownership") insertLoanOwnershipEvent(event as LoanOwnershipEvent);
+    else insertLoanServicingEvent(event as LoanServicingEvent);
+    const col = kind === "ownership" ? "current_loan_owner_organization_id" : "current_servicer_organization_id";
+    db.prepare(`UPDATE loan_assets SET ${col} = ?, updated_at = ? WHERE id = ?`)
+      .run(newOrgId, event.createdAt, loanAssetId);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** Policy versioning: deactivate priors and insert the new version in one
+ *  transaction. */
+export function createPolicyVersionTx(policy: LenderDrawPolicy): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("UPDATE lender_draw_policies SET active = 0 WHERE organization_id = ? AND project_id IS ?")
+      .run(policy.organizationId, policy.projectId);
+    insertLenderPolicy(policy);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+export function insertPolicyApplication(a: DrawPolicyApplication): void {
+  getDb()
+    .prepare(
+      "INSERT INTO draw_policy_applications (id, draw_request_id, policy_id, policy_version, applied_at, source) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+    .run(a.id, a.drawRequestId, a.policyId, a.policyVersion, a.appliedAt, a.source);
+}
+
+export function getPolicyApplication(drawRequestId: string): DrawPolicyApplication | null {
+  const r = getDb()
+    .prepare("SELECT * FROM draw_policy_applications WHERE draw_request_id = ?")
+    .get(drawRequestId);
+  if (!r) return null;
+  const row = r as Row;
+  return {
+    id: String(row.id), drawRequestId: String(row.draw_request_id),
+    policyId: String(row.policy_id), policyVersion: Number(row.policy_version),
+    appliedAt: String(row.applied_at), source: String(row.source),
+  };
+}
+
+/** Cumulative non-reversed external disbursements for a draw (tx helper). */
+export function disbursedTotal(drawRequestId: string): number {
+  const r = getDb()
+    .prepare(
+      `SELECT COALESCE(SUM(amount_disbursed), 0) AS total
+       FROM external_funding_records
+       WHERE draw_request_id = ? AND status IN ('DISBURSED', 'CLOSED') AND reversed_at IS NULL`
+    )
+    .get(drawRequestId) as Row;
+  return Number(r.total);
+}
+
+/** Funding transition inside one transaction with the cumulative-cap check. */
+export function transitionFundingTx(
+  id: string,
+  patch: Partial<ExternalFundingRecord>,
+  cap: { approvedAmount: number | null; drawRequestId: string } | null
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (patch.status === "DISBURSED" && cap && cap.approvedAmount !== null) {
+      const already = disbursedTotal(cap.drawRequestId);
+      const amount = patch.amountDisbursed ?? 0;
+      if (already + amount > cap.approvedAmount) {
+        throw new Error(
+          `CAP: cumulative disbursements (${already + amount}) would exceed the lender-approved amount (${cap.approvedAmount})`
+        );
+      }
+    }
+    updateFundingRecord(id, patch);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 }

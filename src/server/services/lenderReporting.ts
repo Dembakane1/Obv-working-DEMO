@@ -19,7 +19,7 @@ function csv(header: string[], rows: unknown[][]): string {
   return [header.join(","), ...rows.map((r) => r.map(csvCell).join(","))].join("\n") + "\n";
 }
 import { deriveDrawStage } from "./drawWorkflow";
-import { policyForDraw } from "./loanProfile";
+import { appliedPolicyForDraw } from "./loanProfile";
 
 const NOT_RECORDED = "NOT RECORDED";
 
@@ -311,17 +311,28 @@ export function buildLenderFiles(
  *  the current derived stage and applicable policy version. */
 export function buildLenderDrawFiles(projectId: string, drawRequestId: string): LenderFile[] {
   const files = buildLenderFiles(projectId, drawRequestId, null);
-  const policy = policyForDraw(projectId);
+  // The APPLIED policy is the version frozen at the draw's first
+  // submission — never the currently active policy, which may have
+  // changed since. Legacy draws with no frozen record report NOT
+  // RECORDED; the package never silently substitutes the current policy.
+  const { application } = appliedPolicyForDraw(drawRequestId);
   files.push({
     name: "lender-policy-applied.json",
     content: JSON.stringify(
-      policy
-        ? { state: "RECORDED", policyId: policy.id, version: policy.version, scope: policy.projectId ? "project" : "organization" }
-        : { state: NOT_RECORDED, note: "No lender draw policy configured." },
+      application
+        ? {
+            state: "RECORDED",
+            policyId: application.policyId,
+            version: application.policyVersion,
+            appliedAt: application.appliedAt,
+            scope: application.source === "PROJECT_OVERRIDE" ? "project" : "organization",
+            frozenAt: "first draw submission",
+          }
+        : { state: NOT_RECORDED, note: "No policy application was recorded when this draw was submitted." },
       null,
       2
     ),
-    count: policy ? 1 : 0,
+    count: application ? 1 : 0,
   });
   files.push({
     name: "draw-workflow-stage.json",

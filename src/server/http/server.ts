@@ -2409,7 +2409,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const section = drawLenderApi[2];
     const body = method === "POST" ? await readParams() : {};
     const draw = repo.getDrawRequest(drawId);
-    if (!draw || !draws.canAccessDraw(user, draw)) {
+    // Access is the legacy draw-tenant check EXTENDED by explicit project
+    // membership: an active membership grants lender-endpoint access even
+    // for users outside the pilot org wiring. Users with neither still get
+    // the same 404 as a nonexistent draw (existence is not disclosed).
+    if (
+      !draw ||
+      (!draws.canAccessDraw(user, draw) && !lenderAccess.hasActiveMembership(user, draw.projectId))
+    ) {
       sendJson(res, { error: "Draw request not found" }, 404);
       return;
     }
@@ -2432,7 +2439,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       }
       const decision = lenderDecisions.currentDecision(drawId);
       sendJson(res, decision
-        ? { decision, conditions: lrepo.listDecisionConditions(decision.id), history: lrepo.listLenderDecisions(drawId) }
+        ? {
+            decision,
+            conditions: lrepo.listDecisionConditions(decision.id),
+            history: lrepo.listLenderDecisions(drawId),
+            // Funded state is DERIVED from external funding records — the
+            // decision row itself is never rewritten to FUNDED.
+            paymentStatus: lenderDecisions.derivedPaymentStatus(drawId),
+          }
         : { decision: null, state: "NOT RECORDED" });
       return;
     }
@@ -2638,6 +2652,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (action === "submit") {
       const draw = await draws.submitDraw(user, drawId);
+      // Freeze the applied lender policy at FIRST successful submission;
+      // resubmissions keep the original frozen version.
+      loanProfile.freezeAppliedPolicy(drawId);
       finishDrawPost(drawId, "review", { draw });
       return;
     }

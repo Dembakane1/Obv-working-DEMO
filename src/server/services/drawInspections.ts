@@ -14,6 +14,7 @@ import * as repo from "../db/repo";
 import * as lrepo from "../db/lenderRepo";
 import { teamsNotifier } from "./TeamsNotifier";
 import { LenderError, assertCapability, assertProjectAccess, hasCapability } from "./lenderAccess";
+import { parseIsoDate } from "./permits";
 import type {
   DrawInspection,
   DrawInspectionLine,
@@ -118,6 +119,11 @@ export function requestInspection(
   if (input.inspectionCompanyOrganizationId && !repo.getOrganization(input.inspectionCompanyOrganizationId)) {
     throw new LenderError("inspectionCompanyOrganizationId references an unknown organization", 422);
   }
+  const preferredStart = parseIsoDate(input.preferredInspectionStart, "preferredInspectionStart");
+  const preferredEnd = parseIsoDate(input.preferredInspectionEnd, "preferredInspectionEnd");
+  if (preferredStart && preferredEnd && preferredEnd < preferredStart) {
+    throw new LenderError("preferredInspectionEnd cannot be before preferredInspectionStart", 422);
+  }
   const now = new Date().toISOString();
   const inspection: DrawInspection = {
     id: lrepo.newId(),
@@ -134,8 +140,8 @@ export function requestInspection(
     requestedByUserId: user.id,
     scheduledAt: null,
     propertyAccessContact: input.propertyAccessContact?.trim() || null,
-    preferredInspectionStart: input.preferredInspectionStart?.trim() || null,
-    preferredInspectionEnd: input.preferredInspectionEnd?.trim() || null,
+    preferredInspectionStart: preferredStart,
+    preferredInspectionEnd: preferredEnd,
     completedAt: null,
     reportReceivedAt: null,
     finalizedAt: null,
@@ -167,7 +173,7 @@ export function scheduleInspection(
 ): DrawInspection {
   const inspection = getInspectionFor(user, inspectionId);
   assertCapability(user, inspection.projectId, "SCHEDULE_DRAW_INSPECTION");
-  const scheduledAt = (input.scheduledAt ?? "").trim();
+  const scheduledAt = parseIsoDate(input.scheduledAt, "scheduledAt");
   if (!scheduledAt) throw new LenderError("scheduledAt is required", 400);
   const updated = transition(user, inspection, "SCHEDULED", {
     scheduledAt,
@@ -200,7 +206,7 @@ export function completeInspection(user: User, inspectionId: string, completedAt
     throw new LenderError("Completing the site visit requires the assigned inspector", 403);
   }
   const updated = transition(user, inspection, "COMPLETED", {
-    completedAt: completedAt?.trim() || new Date().toISOString(),
+    completedAt: parseIsoDate(completedAt, "completedAt") || new Date().toISOString(),
   }, "Site visit completed");
   // Immediately note that the written report is outstanding.
   const pending = transition(user, updated, "REPORT_PENDING", {}, "Awaiting written inspection report");
@@ -224,10 +230,32 @@ export function recordLineFinding(
   if (["FINALIZED", "ACCEPTED", "CANCELLED", "FAILED"].includes(inspection.status)) {
     throw new LenderError("Findings cannot be added after the inspection is finalized", 409);
   }
+  // Relational integrity: every referenced record must belong to this
+  // inspection's own project/draw. Errors are 422 with generic wording so
+  // cross-tenant existence is never disclosed.
+  let drawLine = null;
   if (input.drawLineItemId) {
-    const line = repo.getDrawLine(input.drawLineItemId);
-    if (!line || line.drawRequestId !== inspection.drawRequestId) {
+    drawLine = repo.getDrawLine(input.drawLineItemId);
+    if (!drawLine || drawLine.drawRequestId !== inspection.drawRequestId) {
       throw new LenderError("drawLineItemId does not belong to this draw", 422);
+    }
+  }
+  if (input.budgetLineId) {
+    const budgetLine = repo.getBudgetLine(input.budgetLineId);
+    if (!budgetLine || budgetLine.projectId !== inspection.projectId) {
+      throw new LenderError("budgetLineId does not belong to this project", 422);
+    }
+    if (drawLine && drawLine.budgetLineId && drawLine.budgetLineId !== input.budgetLineId) {
+      throw new LenderError("budgetLineId is inconsistent with the referenced draw line", 422);
+    }
+  }
+  if (input.milestoneId) {
+    const milestone = repo.getMilestone(input.milestoneId);
+    if (!milestone || milestone.projectId !== inspection.projectId) {
+      throw new LenderError("milestoneId does not belong to this project", 422);
+    }
+    if (drawLine && drawLine.milestoneId && drawLine.milestoneId !== input.milestoneId) {
+      throw new LenderError("milestoneId is inconsistent with the referenced draw line", 422);
     }
   }
   const pct = input.percentCompleteReported === null || input.percentCompleteReported === undefined
@@ -256,7 +284,14 @@ export function recordLineFinding(
     createdAt: now,
     updatedAt: now,
   };
-  lrepo.insertInspectionLine(finding);
+  try {
+    lrepo.insertInspectionLine(finding);
+  } catch (err) {
+    if ((err as Error).message.includes("UNIQUE")) {
+      throw new LenderError("A finding for this draw line already exists on this inspection", 409);
+    }
+    throw err;
+  }
   event(inspection, "LINE_FINDING", `Inspector line finding recorded${pct !== null ? ` (${pct}% reported)` : ""}`, user);
   return finding;
 }
@@ -291,7 +326,7 @@ export function createReportDraft(
     drawInspectionId: inspection.id,
     version: versions.length > 0 ? Math.max(...versions.map((v) => v.version)) + 1 : 1,
     status: "DRAFT",
-    reportDate: input.reportDate?.trim() || null,
+    reportDate: parseIsoDate(input.reportDate, "reportDate"),
     summary: input.summary?.trim() || null,
     conclusion: input.conclusion?.trim() || null,
     preparedByUserId: user.id,
@@ -418,12 +453,26 @@ export function requestReinspection(user: User, inspectionId: string, reason: st
   if (!["FINALIZED", "FAILED", "CORRECTION_REQUIRED"].includes(prior.status)) {
     throw new LenderError("Reinspection is only available after a finalized, failed or correction-flagged inspection", 409);
   }
-  const flagged = prior.status === "CORRECTION_REQUIRED"
-    ? transition(user, prior, "REINSPECTION_REQUIRED", {}, reason.trim())
-    : transition(user, prior, "REINSPECTION_REQUIRED", {}, reason.trim());
+  // Chain integrity: walk the reinspection ancestry. Every ancestor must
+  // exist, belong to the SAME draw, and never repeat (no self-reference or
+  // circular chain) — a corrupted chain is refused rather than extended.
+  const seen = new Set<string>([prior.id]);
+  let cursorId = prior.reinspectionOfInspectionId;
+  while (cursorId) {
+    if (seen.has(cursorId)) {
+      throw new LenderError("Reinspection chain is circular — refusing to extend it", 409);
+    }
+    seen.add(cursorId);
+    const ancestor = lrepo.getDrawInspection(cursorId);
+    if (!ancestor) throw new LenderError("Reinspection chain references a missing inspection", 409);
+    if (ancestor.drawRequestId !== prior.drawRequestId) {
+      throw new LenderError("Reinspection chain crosses draw requests — refusing to extend it", 409);
+    }
+    cursorId = ancestor.reinspectionOfInspectionId;
+  }
   const now = new Date().toISOString();
   const next: DrawInspection = {
-    ...flagged,
+    ...prior,
     id: lrepo.newId(),
     status: "REQUESTED",
     requestedAt: now,
@@ -440,7 +489,20 @@ export function requestReinspection(user: User, inspectionId: string, reason: st
     createdAt: now,
     updatedAt: now,
   };
-  lrepo.insertDrawInspection(next);
+  // Atomic: flag the prior REINSPECTION_REQUIRED and insert the child in
+  // one transaction. The conditional UPDATE (status must still be
+  // reinspectable) plus idx_draw_reinspection_single_child guarantee that
+  // concurrent requests produce one success and one 409.
+  try {
+    lrepo.createDrawReinspectionTx(next, prior.id);
+  } catch (err) {
+    if ((err as Error).message.includes("UNIQUE")) {
+      throw new LenderError("A reinspection has already been opened for this inspection", 409);
+    }
+    throw err;
+  }
+  const flagged = lrepo.getDrawInspection(prior.id)!;
+  event(flagged, "REINSPECTION_REQUIRED", reason.trim(), user);
   event(next, "REQUESTED", `Reinspection of ${prior.id} requested: ${reason.trim()}`, user);
   void teamsNotifier.notify("DRAW_REINSPECTION_REQUIRED", "Draw reinspection required", { projectId: prior.projectId });
   return next;
