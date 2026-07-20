@@ -1527,6 +1527,21 @@ export function getDb(): DatabaseSync {
          ON draw_inspections(reinspection_of_inspection_id)
          WHERE reinspection_of_inspection_id IS NOT NULL`
     );
+    // At most one DRAFT report version per inspection (DB-enforced; the
+    // service check alone cannot exclude a concurrent duplicate draft).
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_one_draft_report_version
+         ON draw_inspection_report_versions(draw_inspection_id)
+         WHERE status = 'DRAFT'`
+    );
+    // At most one ACTIVE holder of a party role per project (DB-enforced;
+    // with a vacant role two concurrent assignments would otherwise both
+    // insert — the guarded-update replacement path alone cannot stop that).
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_party
+         ON project_party_assignments(project_id, party_type)
+         WHERE active = 1`
+    );
     // At most one in-flight external funding record per draw.
     db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_funding

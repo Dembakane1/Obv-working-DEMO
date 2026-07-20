@@ -955,13 +955,14 @@ export function lastStageEvent(drawRequestId: string): DrawStageEvent | null {
 import type { DrawPolicyApplication, LenderConditionEvent } from "../../shared/types";
 
 /** Insert a decision, supersede priors (including any active PENDING), and
- *  insert its conditions in ONE transaction. The partial unique index
- *  idx_one_current_lender_decision turns concurrent races into a
- *  controlled UNIQUE-constraint failure. */
+ *  insert its conditions AND their creation events in ONE transaction. The
+ *  partial unique index idx_one_current_lender_decision turns concurrent
+ *  races into a controlled UNIQUE-constraint failure. */
 export function createDecisionTx(
   decision: LenderDrawDecision,
   conditions: LenderDecisionCondition[],
-  supersedeIds: string[]
+  supersedeIds: string[],
+  conditionEvents: LenderConditionEvent[] = []
 ): void {
   const db = getDb();
   db.exec("BEGIN IMMEDIATE");
@@ -981,6 +982,282 @@ export function createDecisionTx(
     }
     insertLenderDecision(decision);
     for (const c of conditions) insertDecisionCondition(c);
+    for (const e of conditionEvents) insertConditionEvent(e);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** Condition state change + its history event in ONE transaction. The
+ *  guarded UPDATE (status must still be one of allowedPrior) makes a
+ *  concurrent transition a controlled CONFLICT instead of a lost update or
+ *  an event row that contradicts the stored state. */
+export function updateConditionTx(
+  conditionId: string,
+  patch: {
+    status: string;
+    waiverReason: string | null;
+    waivedByUserId: string | null;
+    satisfiedByUserId: string | null;
+    satisfiedAt: string | null;
+    supportingDocumentId: string | null;
+    updatedAt: string;
+  },
+  event: LenderConditionEvent,
+  allowedPrior: string[]
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const placeholders = allowedPrior.map(() => "?").join(", ");
+    const res = db
+      .prepare(
+        `UPDATE lender_decision_conditions
+         SET status = ?, waiver_reason = ?, waived_by_user_id = ?, satisfied_by_user_id = ?,
+             satisfied_at = ?, supporting_document_id = ?, updated_at = ?
+         WHERE id = ? AND status IN (${placeholders})`
+      )
+      .run(
+        patch.status, patch.waiverReason, patch.waivedByUserId, patch.satisfiedByUserId,
+        patch.satisfiedAt, patch.supportingDocumentId, patch.updatedAt,
+        conditionId, ...allowedPrior
+      );
+    if (res.changes !== 1) throw new Error("CONFLICT: condition state changed concurrently");
+    insertConditionEvent(event);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** Party replacement in ONE transaction: end the displaced active
+ *  assignment(s) with a guarded UPDATE (active must still be 1) and insert
+ *  the successor. Concurrency produces one success + one CONFLICT — never
+ *  two active holders or a silently dropped predecessor. */
+export function replacePartyAssignmentTx(
+  assignment: ProjectPartyAssignment,
+  endIds: string[],
+  endedAt: string
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const id of endIds) {
+      const res = db
+        .prepare("UPDATE project_party_assignments SET active = 0, effective_to = ? WHERE id = ? AND active = 1")
+        .run(endedAt, id);
+      if (res.changes !== 1) throw new Error("CONFLICT: party assignment changed concurrently");
+    }
+    insertPartyAssignment(assignment);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** One or more guarded inspection status transitions plus their events in
+ *  ONE transaction. Each step's UPDATE requires the CURRENT stored status
+ *  to be in step.from — a concurrent transition surfaces as CONFLICT, and
+ *  no event row is ever committed without its state change. */
+export function inspectionTransitionsTx(
+  inspectionId: string,
+  steps: Array<{ from: string[]; to: string; patch: Partial<DrawInspection> }>,
+  events: Array<{ id: string; drawInspectionId: string; type: string; detail: string; actorUserId: string | null; createdAt: string }>
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const step of steps) {
+      applyInspectionStep(db, inspectionId, step);
+    }
+    for (const e of events) {
+      db.prepare(
+        "INSERT INTO draw_inspection_events (id, draw_inspection_id, type, detail, actor_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(e.id, e.drawInspectionId, e.type, e.detail, e.actorUserId, e.createdAt);
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+const INSPECTION_PATCH_COLS: Record<string, string> = {
+  scheduledAt: "scheduled_at",
+  completedAt: "completed_at",
+  reportReceivedAt: "report_received_at",
+  finalizedAt: "finalized_at",
+  inspectorDisplayName: "inspector_display_name",
+  inspectorContact: "inspector_contact",
+  obvReviewStatus: "obv_review_status",
+  obvReviewedByUserId: "obv_reviewed_by_user_id",
+  lenderAcceptanceStatus: "lender_acceptance_status",
+  lenderAcceptedByUserId: "lender_accepted_by_user_id",
+  borrowerResponseStatus: "borrower_response_status",
+  borrowerResponseNote: "borrower_response_note",
+};
+
+function applyInspectionStep(
+  db: ReturnType<typeof getDb>,
+  inspectionId: string,
+  step: { from: string[]; to: string; patch: Partial<DrawInspection> }
+): void {
+  const sets: string[] = ["status = ?", "updated_at = ?"];
+  const now = new Date().toISOString();
+  const values: Array<string | null> = [step.to, now];
+  for (const [key, col] of Object.entries(INSPECTION_PATCH_COLS)) {
+    if (key in step.patch) {
+      sets.push(`${col} = ?`);
+      values.push((step.patch as Record<string, string | null>)[key] ?? null);
+    }
+  }
+  const placeholders = step.from.map(() => "?").join(", ");
+  const res = db
+    .prepare(`UPDATE draw_inspections SET ${sets.join(", ")} WHERE id = ? AND status IN (${placeholders})`)
+    .run(...values, inspectionId, ...step.from);
+  if (res.changes !== 1) {
+    throw new Error(`CONFLICT: inspection is no longer ${step.from.join("/")}`);
+  }
+}
+
+/** Report version creation + any inspection transitions + events in ONE
+ *  transaction. The partial unique index idx_one_draft_report_version
+ *  turns a concurrent duplicate draft into a UNIQUE-constraint failure
+ *  inside the same transaction. */
+export function createReportVersionTx(
+  version: DrawInspectionReportVersion,
+  steps: Array<{ from: string[]; to: string; patch: Partial<DrawInspection> }>,
+  events: Array<{ id: string; drawInspectionId: string; type: string; detail: string; actorUserId: string | null; createdAt: string }>
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    insertReportVersion(version);
+    for (const step of steps) applyInspectionStep(db, version.drawInspectionId, step);
+    for (const e of events) {
+      db.prepare(
+        "INSERT INTO draw_inspection_events (id, draw_inspection_id, type, detail, actor_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(e.id, e.drawInspectionId, e.type, e.detail, e.actorUserId, e.createdAt);
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** Report finalization + inspection transitions + events in ONE
+ *  transaction: prior FINALIZED versions become SUPERSEDED (immutable
+ *  history, chain intact), the guarded version UPDATE (must still be
+ *  DRAFT) flips the draft to FINALIZED, and the inspection state machine
+ *  plus the audit events commit or roll back with it as a unit. */
+export function finalizeReportLifecycleTx(
+  versionId: string,
+  finalizedByUserId: string,
+  finalizedAt: string,
+  inspectionId: string,
+  steps: Array<{ from: string[]; to: string; patch: Partial<DrawInspection> }>,
+  events: Array<{ id: string; drawInspectionId: string; type: string; detail: string; actorUserId: string | null; createdAt: string }>
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare(
+      `UPDATE draw_inspection_report_versions SET status = 'SUPERSEDED'
+       WHERE draw_inspection_id = ? AND status = 'FINALIZED'`
+    ).run(inspectionId);
+    const res = db
+      .prepare(
+        "UPDATE draw_inspection_report_versions SET status = 'FINALIZED', finalized_by_user_id = ?, finalized_at = ? WHERE id = ? AND status = 'DRAFT'"
+      )
+      .run(finalizedByUserId, finalizedAt, versionId);
+    if (res.changes !== 1) throw new Error("CONFLICT: only a draft version can be finalized");
+    for (const step of steps) applyInspectionStep(db, inspectionId, step);
+    for (const e of events) {
+      db.prepare(
+        "INSERT INTO draw_inspection_events (id, draw_inspection_id, type, detail, actor_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(e.id, e.drawInspectionId, e.type, e.detail, e.actorUserId, e.createdAt);
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** Inspection creation + its REQUESTED event in ONE transaction. */
+export function createDrawInspectionTx(
+  inspection: DrawInspection,
+  event: { id: string; drawInspectionId: string; type: string; detail: string; actorUserId: string | null; createdAt: string }
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    insertDrawInspection(inspection);
+    db.prepare(
+      "INSERT INTO draw_inspection_events (id, draw_inspection_id, type, detail, actor_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(event.id, event.drawInspectionId, event.type, event.detail, event.actorUserId, event.createdAt);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** Line finding + its event in ONE transaction (duplicate findings surface
+ *  as the UNIQUE failure of idx_inspection_line_unique inside the tx). */
+export function insertInspectionLineTx(
+  line: DrawInspectionLine,
+  event: { id: string; drawInspectionId: string; type: string; detail: string; actorUserId: string | null; createdAt: string }
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    insertInspectionLine(line);
+    db.prepare(
+      "INSERT INTO draw_inspection_events (id, draw_inspection_id, type, detail, actor_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(event.id, event.drawInspectionId, event.type, event.detail, event.actorUserId, event.createdAt);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** Non-status inspection field update + event in ONE transaction (e.g. an
+ *  OBV review outcome that does not move the status machine). */
+export function updateInspectionFieldsTx(
+  inspectionId: string,
+  patch: Partial<DrawInspection>,
+  event: { id: string; drawInspectionId: string; type: string; detail: string; actorUserId: string | null; createdAt: string },
+  allowedStatuses: string[]
+): void {
+  const db = getDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const sets: string[] = ["updated_at = ?"];
+    const values: Array<string | null> = [new Date().toISOString()];
+    for (const [key, col] of Object.entries(INSPECTION_PATCH_COLS)) {
+      if (key in patch) {
+        sets.push(`${col} = ?`);
+        values.push((patch as Record<string, string | null>)[key] ?? null);
+      }
+    }
+    // Guarded: the caller's status precondition is re-checked INSIDE the
+    // transaction so fields and their event can never contradict a
+    // concurrently-changed inspection state.
+    const placeholders = allowedStatuses.map(() => "?").join(", ");
+    const res = db
+      .prepare(`UPDATE draw_inspections SET ${sets.join(", ")} WHERE id = ? AND status IN (${placeholders})`)
+      .run(...values, inspectionId, ...allowedStatuses);
+    if (res.changes !== 1) throw new Error("CONFLICT: inspection state changed concurrently");
+    db.prepare(
+      "INSERT INTO draw_inspection_events (id, draw_inspection_id, type, detail, actor_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(event.id, event.drawInspectionId, event.type, event.detail, event.actorUserId, event.createdAt);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -1007,10 +1284,15 @@ export function listConditionEvents(conditionId: string): LenderConditionEvent[]
     }));
 }
 
-/** Reinspection: flag the prior and insert the child atomically. The
- *  conditional UPDATE plus idx_draw_reinspection_single_child guarantee
- *  one success / one controlled conflict under concurrency. */
-export function createDrawReinspectionTx(child: DrawInspection, priorId: string): void {
+/** Reinspection: flag the prior, insert the child AND both lifecycle
+ *  events atomically. The conditional UPDATE plus
+ *  idx_draw_reinspection_single_child guarantee one success / one
+ *  controlled conflict under concurrency. */
+export function createDrawReinspectionTx(
+  child: DrawInspection,
+  priorId: string,
+  events: Array<{ id: string; drawInspectionId: string; type: string; detail: string; actorUserId: string | null; createdAt: string }> = []
+): void {
   const db = getDb();
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -1022,6 +1304,11 @@ export function createDrawReinspectionTx(child: DrawInspection, priorId: string)
       .run(child.createdAt, priorId);
     if (res.changes !== 1) throw new Error("UNIQUE constraint: prior inspection not eligible for reinspection");
     insertDrawInspection(child);
+    for (const e of events) {
+      db.prepare(
+        "INSERT INTO draw_inspection_events (id, draw_inspection_id, type, detail, actor_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(e.id, e.drawInspectionId, e.type, e.detail, e.actorUserId, e.createdAt);
+    }
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -1100,15 +1387,25 @@ export function disbursedTotal(drawRequestId: string): number {
   return Number(r.total);
 }
 
-/** Funding transition inside one transaction with the cumulative-cap check. */
+/** Funding transition inside one transaction, guarded on the OBSERVED
+ *  prior status (optimistic concurrency: a concurrent transition surfaces
+ *  as CONFLICT — never a double-applied status or a lost update) and with
+ *  the cumulative-cap check for disbursements. */
 export function transitionFundingTx(
   id: string,
+  expectedStatus: string,
   patch: Partial<ExternalFundingRecord>,
   cap: { approvedAmount: number | null; drawRequestId: string } | null
 ): void {
   const db = getDb();
   db.exec("BEGIN IMMEDIATE");
   try {
+    const row = db.prepare("SELECT status FROM external_funding_records WHERE id = ?").get(id) as
+      | { status: string }
+      | undefined;
+    if (!row || row.status !== expectedStatus) {
+      throw new Error("CONFLICT: funding record transitioned concurrently");
+    }
     if (patch.status === "DISBURSED" && cap && cap.approvedAmount !== null) {
       const already = disbursedTotal(cap.drawRequestId);
       const amount = patch.amountDisbursed ?? 0;

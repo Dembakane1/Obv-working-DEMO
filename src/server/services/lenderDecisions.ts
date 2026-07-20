@@ -57,6 +57,19 @@ export function openConditions(decisionId: string): LenderDecisionCondition[] {
   );
 }
 
+/** STRICT normalized whole-currency validation, shared by decisions,
+ *  waivers and funding: the value is normalized with Number() and must be
+ *  a finite, non-negative INTEGER. Fractional or non-numeric amounts are
+ *  rejected with 400 — never silently rounded. */
+export function wholeAmount(raw: unknown, label: string): number | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const v = Number(raw);
+  if (!Number.isFinite(v) || v < 0 || !Number.isInteger(v)) {
+    throw new LenderError(`${label} must be a non-negative whole-currency amount (integer)`, 400);
+  }
+  return v;
+}
+
 // ------------------------------------------------------------ decisions
 
 export function recordLenderDecision(
@@ -99,22 +112,18 @@ export function recordLenderDecision(
     );
   }
   const requested = draw.requestedAmount;
-  const approved = input.approvedAmount ?? null;
-  const reduced = input.reducedAmount ?? null;
-  const rejected = input.rejectedAmount ?? null;
   const reason = (input.decisionReason ?? "").trim();
 
-  // Amount reconciliation per decision type. Every amount must be a finite
-  // non-negative integer (checked below); categories may never total more
-  // than the request.
-  const amt = (v: number | null, label: string): number | null => {
-    if (v === null || v === undefined) return null;
-    if (!Number.isFinite(v) || v < 0) throw new LenderError(`${label} must be a finite non-negative amount`, 400);
-    return Math.round(v);
-  };
-  const holdback = amt(input.holdbackAmount ?? null, "holdbackAmount");
-  const retainage = amt(input.retainageAmount ?? null, "retainageAmount");
-  amt(approved, "approvedAmount"); amt(reduced, "reducedAmount"); amt(rejected, "rejectedAmount");
+  // Amount reconciliation per decision type. STRICT whole-currency rule:
+  // every amount is normalized with Number() and must be a finite,
+  // non-negative INTEGER (whole currency units) — fractional amounts are
+  // rejected, never silently rounded. Categories may never total more than
+  // the request.
+  const holdback = wholeAmount(input.holdbackAmount ?? null, "holdbackAmount");
+  const retainage = wholeAmount(input.retainageAmount ?? null, "retainageAmount");
+  const approved = wholeAmount(input.approvedAmount ?? null, "approvedAmount");
+  const reduced = wholeAmount(input.reducedAmount ?? null, "reducedAmount");
+  const rejected = wholeAmount(input.rejectedAmount ?? null, "rejectedAmount");
   if ((approved ?? 0) + (reduced ?? 0) + (rejected ?? 0) > requested) {
     throw new LenderError("Approved + reduced + rejected amounts cannot exceed the requested amount", 400);
   }
@@ -237,13 +246,21 @@ export function recordLenderDecision(
 
   const now = new Date().toISOString();
   // Distinct amount provenance (never copied from one another):
-  //  - verifiedAmount: sum of reviewed line supportedAmount (authoritative
-  //    line/evidence assessment)
+  //  - verifiedAmount: derived from the COMPLETE line review — a SUPPORTED
+  //    line contributes its full currentRequested, a PARTIALLY_SUPPORTED
+  //    line contributes its reviewed supportedAmount, and EXCEPTION or
+  //    REJECTED lines contribute nothing. Null until every line carries a
+  //    review outcome (a partial review never masquerades as verified).
   //  - recommendedAmount: the finalized advisory recommendation
   //  - approvedAmount: the lender's formal business decision (input).
   const lines = repo.listDrawLines(draw.id);
-  const verifiedFromLines = lines.some((l) => l.supportedAmount !== null)
-    ? lines.reduce((sum, l) => sum + (l.supportedAmount ?? 0), 0)
+  const allLinesReviewed = lines.length > 0 && lines.every((l) => l.status !== "PENDING");
+  const verifiedFromLines = allLinesReviewed
+    ? lines.reduce((sum, l) => {
+        if (l.status === "SUPPORTED") return sum + l.currentRequested;
+        if (l.status === "PARTIALLY_SUPPORTED") return sum + (l.supportedAmount ?? 0);
+        return sum; // EXCEPTION / REJECTED contribute nothing
+      }, 0)
     : null;
   const decision: LenderDrawDecision = {
     id: lrepo.newId(),
@@ -253,7 +270,7 @@ export function recordLenderDecision(
     requestedAmount: requested,
     verifiedAmount: verifiedFromLines,
     verifiedAmountSource: verifiedFromLines !== null
-      ? "sum of reviewed draw-line supportedAmount (line/evidence assessment)"
+      ? "complete line review: SUPPORTED at currentRequested + PARTIALLY_SUPPORTED at supportedAmount (line/evidence assessment)"
       : null,
     recommendedAmount: draw.recommendedAmount ?? null,
     recommendedAmountSource: draw.recommendedAmount !== null && draw.recommendedAmount !== undefined
@@ -305,19 +322,19 @@ export function recordLenderDecision(
       updatedAt: now,
     };
   });
+  const creationEvents = conditionRows.map((c) => ({
+    id: lrepo.newId(), conditionId: c.id, priorStatus: null, newStatus: "OPEN",
+    reason: "Created with the lender decision", actorUserId: user.id, createdAt: now,
+  }));
   try {
-    lrepo.createDecisionTx(decision, conditionRows, supersedeIds);
+    // Decision + supersedes + conditions + their creation events commit or
+    // roll back as ONE unit — no condition can exist without its event.
+    lrepo.createDecisionTx(decision, conditionRows, supersedeIds, creationEvents);
   } catch (e) {
     if (e instanceof Error && /UNIQUE constraint/.test(e.message)) {
       throw new LenderError("Another current lender decision was recorded concurrently", 409);
     }
     throw e;
-  }
-  for (const c of conditionRows) {
-    lrepo.insertConditionEvent({
-      id: lrepo.newId(), conditionId: c.id, priorStatus: null, newStatus: "OPEN",
-      reason: "Created with the lender decision", actorUserId: user.id, createdAt: now,
-    });
   }
   void teamsNotifier.notify(
     input.decision === "CONDITIONALLY_APPROVED" ? "CONDITIONAL_APPROVAL_ISSUED" : "LENDER_DECISION_RECORDED",
@@ -351,23 +368,39 @@ export function updateCondition(
       throw new LenderError("supportingDocumentId does not belong to this draw", 422);
     }
   }
-  lrepo.updateDecisionCondition(conditionId, {
-    status: input.status,
-    waiverReason: input.status === "WAIVED" ? input.waiverReason!.trim() : condition.waiverReason,
-    waivedByUserId: input.status === "WAIVED" ? user.id : condition.waivedByUserId,
-    satisfiedByUserId: input.status === "SATISFIED" ? user.id : condition.satisfiedByUserId,
-    satisfiedAt: input.status === "SATISFIED" ? new Date().toISOString() : condition.satisfiedAt,
-    supportingDocumentId: input.supportingDocumentId ?? condition.supportingDocumentId,
-  });
-  lrepo.insertConditionEvent({
-    id: lrepo.newId(),
-    conditionId,
-    priorStatus: condition.status,
-    newStatus: input.status,
-    reason: input.status === "WAIVED" ? input.waiverReason!.trim() : null,
-    actorUserId: user.id,
-    createdAt: new Date().toISOString(),
-  });
+  const now = new Date().toISOString();
+  try {
+    // State change + history event commit as ONE unit; the guarded UPDATE
+    // (status must still be non-terminal) turns a concurrent transition
+    // into a controlled 409 instead of a lost update.
+    lrepo.updateConditionTx(
+      conditionId,
+      {
+        status: input.status,
+        waiverReason: input.status === "WAIVED" ? input.waiverReason!.trim() : condition.waiverReason,
+        waivedByUserId: input.status === "WAIVED" ? user.id : condition.waivedByUserId,
+        satisfiedByUserId: input.status === "SATISFIED" ? user.id : condition.satisfiedByUserId,
+        satisfiedAt: input.status === "SATISFIED" ? now : condition.satisfiedAt,
+        supportingDocumentId: input.supportingDocumentId ?? condition.supportingDocumentId,
+        updatedAt: now,
+      },
+      {
+        id: lrepo.newId(),
+        conditionId,
+        priorStatus: condition.status,
+        newStatus: input.status,
+        reason: input.status === "WAIVED" ? input.waiverReason!.trim() : null,
+        actorUserId: user.id,
+        createdAt: now,
+      },
+      ["OPEN", "IN_PROGRESS"]
+    );
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("CONFLICT")) {
+      throw new LenderError("This condition was transitioned concurrently — reload and retry", 409);
+    }
+    throw e;
+  }
   return lrepo.getDecisionCondition(conditionId)!;
 }
 
@@ -416,7 +449,7 @@ export function createLienWaiver(
     signingParty: input.signingParty?.trim() || null,
     waiverType: input.waiverType?.trim() || null,
     waiverScope: input.waiverScope?.trim() || null,
-    relatedAmount: input.relatedAmount ?? null,
+    relatedAmount: wholeAmount(input.relatedAmount ?? null, "relatedAmount"),
     coveredThrough: parseIsoDate(input.coveredThrough, "coveredThrough"),
     requestedAt: null,
     receivedAt: null,
@@ -536,9 +569,10 @@ export function scheduleFunding(
     );
   }
   const available = (decision.approvedAmount ?? 0) - lrepo.disbursedTotal(draw.id);
-  const scheduledAmount = input.amountScheduled ?? decision.approvedAmount;
-  if (scheduledAmount === null || !Number.isFinite(scheduledAmount) || scheduledAmount <= 0) {
-    throw new LenderError("amountScheduled must be a positive amount", 400);
+  const scheduledAmount = wholeAmount(input.amountScheduled ?? decision.approvedAmount, "amountScheduled");
+  const wireFee = wholeAmount(input.wireFee ?? null, "wireFee");
+  if (scheduledAmount === null || scheduledAmount <= 0) {
+    throw new LenderError("amountScheduled must be a positive whole-currency amount", 400);
   }
   if (scheduledAmount > available) {
     throw new LenderError(
@@ -559,7 +593,7 @@ export function scheduleFunding(
     fundedAt: null,
     amountScheduled: scheduledAmount,
     amountDisbursed: null,
-    wireFee: input.wireFee ?? null,
+    wireFee,
     transactionReference: null,
     confirmationDocumentId: null,
     status: "SCHEDULED",
@@ -626,12 +660,48 @@ export function transitionFunding(
   if (!FUNDING_TRANSITIONS[record.status].includes(input.status)) {
     throw new LenderError(`A ${record.status} funding record cannot become ${input.status}`, 409);
   }
+  // REVALIDATION at money-adjacent transitions: entering PROCESSING or
+  // DISBURSED re-checks the decision and its conditions AS OF NOW — a
+  // record scheduled while everything was valid must not proceed if the
+  // decision has since been superseded/withdrawn or a condition has
+  // regressed to a blocking state.
+  if (input.status === "PROCESSING" || input.status === "DISBURSED") {
+    const decisionNow = record.lenderDecisionId ? lrepo.getLenderDecision(record.lenderDecisionId) : null;
+    if (!decisionNow || decisionNow.supersededByDecisionId) {
+      throw new LenderError(
+        "The lender decision behind this funding record has been superseded — cancel and reschedule against the current decision",
+        409
+      );
+    }
+    if (!["APPROVED", "CONDITIONALLY_APPROVED", "REDUCED"].includes(decisionNow.decision)) {
+      throw new LenderError(`A ${decisionNow.decision} decision cannot be funded`, 409);
+    }
+    const blocking = blockingConditions(decisionNow.id);
+    if (blocking.length > 0) {
+      throw new LenderError(
+        `Funding cannot proceed while ${blocking.length} decision condition(s) are unsatisfied and unwaived`,
+        409
+      );
+    }
+    const pending = input.status === "DISBURSED"
+      ? wholeAmount(input.amountDisbursed ?? record.amountScheduled, "amountDisbursed")
+      : record.amountScheduled;
+    if (
+      decisionNow.approvedAmount !== null && pending !== null &&
+      lrepo.disbursedTotal(record.drawRequestId) + pending > decisionNow.approvedAmount
+    ) {
+      throw new LenderError(
+        "This transition would take cumulative disbursements past the lender-approved amount",
+        409
+      );
+    }
+  }
   const now = new Date().toISOString();
   const patch: Partial<ExternalFundingRecord> = { status: input.status };
   if (input.status === "DISBURSED") {
     const ref = (input.transactionReference ?? "").trim();
     if (!ref) throw new LenderError("DISBURSED requires a transactionReference", 400);
-    const amount = input.amountDisbursed ?? record.amountScheduled;
+    const amount = wholeAmount(input.amountDisbursed ?? record.amountScheduled, "amountDisbursed");
     if (amount === null || amount <= 0) throw new LenderError("DISBURSED requires a positive amountDisbursed", 400);
     patch.transactionReference = ref;
     patch.amountDisbursed = amount;
@@ -663,8 +733,11 @@ export function transitionFunding(
   // shown as workflow/payment status.
   const capDecision = record.lenderDecisionId ? lrepo.getLenderDecision(record.lenderDecisionId) : null;
   try {
+    // Guarded on the OBSERVED prior status: a concurrent transition of the
+    // same record is one success + one 409, never a double-applied status.
     lrepo.transitionFundingTx(
       fundingId,
+      record.status,
       patch,
       input.status === "DISBURSED" && capDecision
         ? { approvedAmount: capDecision.approvedAmount, drawRequestId: record.drawRequestId }
@@ -673,6 +746,9 @@ export function transitionFunding(
   } catch (e) {
     if (e instanceof Error && e.message.startsWith("CAP:")) {
       throw new LenderError(e.message.slice(5).trim(), 409);
+    }
+    if (e instanceof Error && e.message.startsWith("CONFLICT")) {
+      throw new LenderError("The funding record was transitioned concurrently — reload and retry", 409);
     }
     throw e;
   }

@@ -56,11 +56,16 @@ function assertUserRef(id: string | null | undefined, label: string): string | n
   return v;
 }
 
+/** STRICT normalized whole-currency validation: normalized with Number(),
+ *  must be a finite non-negative INTEGER. Fractional amounts are rejected,
+ *  never silently rounded. */
 const num = (v: unknown): number | null => {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
-  if (!Number.isFinite(n) || n < 0) throw new LenderError("Amounts must be non-negative numbers", 400);
-  return Math.round(n);
+  if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+    throw new LenderError("Amounts must be non-negative whole-currency amounts (integers)", 400);
+  }
+  return n;
 };
 
 // ------------------------------------------------------------ loan asset
@@ -307,12 +312,13 @@ export function assignParty(
   // History preserved: an existing active assignment of the same type for a
   // DIFFERENT organization is ended (not deleted); duplicates are rejected.
   const now = new Date().toISOString();
+  const displaced: string[] = [];
   for (const existing of lrepo.listPartyAssignments(project.id)) {
     if (!existing.active || existing.partyType !== input.partyType) continue;
     if (existing.partyOrganizationId === partyOrg) {
       throw new LenderError("This organization already holds this party role", 409);
     }
-    lrepo.endPartyAssignment(existing.id, now);
+    displaced.push(existing.id);
   }
   const assignment: ProjectPartyAssignment = {
     id: lrepo.newId(),
@@ -328,7 +334,22 @@ export function assignParty(
     createdByUserId: user.id,
     createdAt: now,
   };
-  lrepo.insertPartyAssignment(assignment);
+  try {
+    // Predecessor end + successor insert commit as ONE unit: there is no
+    // window with two active holders or with the role left vacant, and a
+    // concurrent replacement surfaces as a controlled 409.
+    lrepo.replacePartyAssignmentTx(assignment, displaced, now);
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("CONFLICT")) {
+      throw new LenderError("The party assignment changed concurrently — reload and retry", 409);
+    }
+    if (e instanceof Error && /UNIQUE constraint/.test(e.message)) {
+      // idx_one_active_party: a concurrent assignment of a vacant role won
+      // the race — one success, one controlled conflict.
+      throw new LenderError("Another active assignment for this party role was recorded concurrently", 409);
+    }
+    throw e;
+  }
   return assignment;
 }
 

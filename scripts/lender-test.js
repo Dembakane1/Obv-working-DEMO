@@ -826,6 +826,341 @@ function readZip(buf) {
     });
     assert(badMemberDates.status === 422, "a membership with effectiveTo before effectiveFrom is rejected");
 
+    // ================= PART P · final correction pass =================
+
+    // ---- P·1 capabilities truly authoritative in membership mode ----
+    await j("funder", "POST", `/api/projects/${P}/memberships`, {
+      userId: "user-field", participantType: "BORROWER",
+    }, 201);
+    const d8 = (await j("field", "POST", "/api/draws", {
+      projectId: P, requestedAmount: 50000, periodStart: "2026-07-01", periodEnd: "2026-07-31",
+    }, 201)).draw;
+    await j("field", "POST", `/api/draws/${d8.id}/lines`, {
+      description: "Site drainage cleanout", scheduledValue: 50000, currentRequested: 50000, percentCompleteClaimed: 40,
+    }, 201);
+    await j("field", "POST", `/api/draws/${d8.id}/submit`, undefined, 200);
+    pass("membership mode: a FIELD user granted SUBMIT_DRAW via BORROWER membership creates AND submits a draw (no contradictory legacy role gate)");
+
+    // ---- P·2 tenant-safe project access in createDraw ----
+    const xCreate = await api("tenantx", "POST", "/api/draws", {
+      projectId: P, requestedAmount: 10000, periodStart: "2026-07-01", periodEnd: "2026-07-31",
+    });
+    assert(xCreate.status === 404, "an unrelated tenant cannot create a draw on the project — 404, existence not disclosed");
+    const ghostCreate = await api("tenantx", "POST", "/api/draws", { projectId: "proj-nonexistent", requestedAmount: 1 });
+    assert(ghostCreate.status === 404, "a nonexistent project returns the SAME 404 shape as an unrelated one");
+
+    // ---- P·3 verifiedAmount: SUPPORTED contributes currentRequested ----
+    const d5 = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 100000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
+    const D5 = `/api/draws/${d5.id}`;
+    const L1 = (await j("pm", "POST", `${D5}/lines`, {
+      description: "Base course km 15–16", scheduledValue: 120000, currentRequested: 60000, percentCompleteClaimed: 50,
+    }, 201)).line;
+    const L2 = (await j("pm", "POST", `${D5}/lines`, {
+      description: "Guard rail installation", scheduledValue: 80000, currentRequested: 40000, percentCompleteClaimed: 50,
+    }, 201)).line;
+    await j("pm", "POST", `${D5}/submit`, undefined, 200);
+    const fieldReview = await api("field", "POST", `${D5}/lines/${L1.id}/review`, { decision: "SUPPORTED" });
+    assert(
+      fieldReview.status === 403 && /REVIEW_DRAW/.test(await fieldReview.text()),
+      "membership mode: review is refused for a member without REVIEW_DRAW via the capability (not the legacy role message)"
+    );
+    await j("compliance", "POST", `${D5}/lines/${L1.id}/review`, { decision: "SUPPORTED" }, 200);
+    const pending5 = (await j("funder", "POST", `${D5}/lender-decision`, { decision: "PENDING" }, 201)).decision;
+    assert(
+      pending5.verifiedAmount === null && pending5.verifiedAmountSource === null,
+      "verifiedAmount stays NULL while any line is unreviewed — a partial review never masquerades as verified"
+    );
+    await j("compliance", "POST", `${D5}/lines/${L2.id}/review`, {
+      decision: "PARTIALLY_SUPPORTED", supportedAmount: 30000, reason: "Rail anchors pending torque test",
+    }, 200);
+    const reqRows5 = q("SELECT id, title FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1", d5.id);
+    for (const r of reqRows5) {
+      const doc = (await j("pm", "POST", `${D5}/documents`, { requirementId: r.id, title: r.title }, 201)).document;
+      await j("compliance", "POST", `${D5}/documents/${doc.id}/review`, { decision: "ACCEPTED" }, 200);
+    }
+    await j("compliance", "POST", `${D5}/governance`, {}, 200);
+    const ap5 = q1("SELECT id FROM approval_requests WHERE draw_request_id = ?", d5.id).id;
+    await j("funder", "POST", `/api/approvals/${ap5}/decision`, { decision: "APPROVED" }, 200);
+    await j("compliance", "POST", `/api/approvals/${ap5}/decision`, { decision: "APPROVED" }, 200);
+    const dec5 = (await j("funder", "POST", `${D5}/lender-decision`, {
+      decision: "REDUCED", approvedAmount: 90000, reducedAmount: 10000,
+      decisionReason: "Guard-rail anchors not fully evidenced",
+    }, 201)).decision;
+    assert(
+      dec5.verifiedAmount === 90000 && /currentRequested/.test(dec5.verifiedAmountSource || ""),
+      "verifiedAmount = SUPPORTED line at FULL currentRequested (60000) + partial line at supportedAmount (30000) = 90000"
+    );
+
+    // ---- P·4 strict normalized whole-currency validation ----
+    const fracDecision = await api("funder", "POST", `${D5}/lender-decision`, {
+      decision: "REDUCED", approvedAmount: 90000.5, reducedAmount: 9999.5,
+      decisionReason: "fractional", supersedesDecisionId: dec5.id,
+    });
+    assert(fracDecision.status === 400 && /whole-currency/.test(await fracDecision.text()),
+      "a fractional decision amount is rejected 400 (whole-currency) — never silently rounded");
+    const fracFunding = await api("funder", "POST", `${D5}/funding`, { amountScheduled: 500.25 });
+    assert(fracFunding.status === 400, "a fractional funding amountScheduled is rejected 400");
+    const fracLoan = await api("funder", "POST", `/api/loans/${loan.id}`, { originalLoanAmount: 100.7 });
+    assert(fracLoan.status === 400, "a fractional loan amount is rejected 400");
+
+    // ---- P·6 funding revalidation at PROCESSING / DISBURSED ----
+    const f3 = (await j("funder", "POST", `${D5}/funding`, { amountScheduled: 90000 }, 201)).funding;
+    await j("funder", "POST", `${D5}/lender-decision`, {
+      decision: "REDUCED", approvedAmount: 90000, reducedAmount: 10000,
+      decisionReason: "Amendment: restated after anchor torque documentation", supersedesDecisionId: dec5.id,
+    }, 201);
+    const staleProcessing = await api("funder", "POST", `/api/funding/${f3.id}`, { status: "PROCESSING" });
+    assert(
+      staleProcessing.status === 409 && /superseded/.test(await staleProcessing.text()),
+      "PROCESSING revalidates the decision AS OF NOW — a superseded decision blocks the transition"
+    );
+    await j("funder", "POST", `/api/funding/${f3.id}`, { status: "CANCELLED" }, 200);
+    const f4 = (await j("funder", "POST", `${D5}/funding`, { amountScheduled: 90000 }, 201)).funding;
+    await j("funder", "POST", `/api/funding/${f4.id}`, { status: "PROCESSING" }, 200);
+    await j("funder", "POST", `/api/funding/${f4.id}`, { status: "DISBURSED", transactionReference: "WIRE-P6" }, 200);
+    pass("a funding record scheduled against the CURRENT decision revalidates cleanly through PROCESSING and DISBURSED");
+
+    // ---- P·5 atomic condition state + event transactions ----
+    const condEventsBefore = q1("SELECT COUNT(*) AS c FROM lender_condition_events WHERE condition_id = ?", cond3.id).c;
+    const terminalRetry = await api("funder", "POST", `/api/decision-conditions/${cond3.id}`, { status: "SATISFIED" });
+    const condEventsAfter = q1("SELECT COUNT(*) AS c FROM lender_condition_events WHERE condition_id = ?", cond3.id).c;
+    assert(
+      terminalRetry.status === 409 && condEventsAfter === condEventsBefore,
+      "a refused condition transition appends NO event — state change and event commit only together"
+    );
+
+    // ---- P·7 completion-gate-based government inspection stage ----
+    const msX = q1(
+      "SELECT id FROM milestones WHERE project_id = ? AND id != 'ms-3' AND account_status != 'RELEASED' LIMIT 1", P).id;
+    const d6 = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 70000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
+    const D6 = `/api/draws/${d6.id}`;
+    const L6 = (await j("pm", "POST", `${D6}/lines`, {
+      description: "Culvert headwall works", scheduledValue: 140000, currentRequested: 70000,
+      percentCompleteClaimed: 50, milestoneId: msX,
+    }, 201)).line;
+    await j("pm", "POST", `${D6}/submit`, undefined, 200);
+    await j("compliance", "POST", `${D6}/lines/${L6.id}/review`, { decision: "SUPPORTED" }, 200);
+    const reqRows6 = q("SELECT id, title FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1", d6.id);
+    for (const r of reqRows6) {
+      const doc = (await j("pm", "POST", `${D6}/documents`, { requirementId: r.id, title: r.title }, 201)).document;
+      await j("compliance", "POST", `${D6}/documents/${doc.id}/review`, { decision: "ACCEPTED" }, 200);
+    }
+    const stageUnknown = await j("funder", "GET", `${D6}/stage`, undefined, 200);
+    assert(
+      stageUnknown.stage === "FINANCIAL_DOCUMENTS_REVIEWED",
+      "an UNDETERMINED inspection requirement blocks GOVERNMENT_INSPECTION_CHECKED — UNKNOWN never behaves as NOT_REQUIRED"
+    );
+    await j("funder", "POST", `/api/milestones/${msX}/inspection-requirement`, {
+      requirement: "REQUIRED", requirementBasis: "District culvert works require a structures inspection",
+      inspectionType: "Structures inspection", mustPassBeforeDrawReview: true,
+    }, 200);
+    const stageRequired = await j("funder", "GET", `${D6}/stage`, undefined, 200);
+    assert(
+      stageRequired.stage === "FINANCIAL_DOCUMENTS_REVIEWED",
+      "a REQUIRED-but-unpassed jurisdictional inspection blocks the stage via the completion-gate reasons"
+    );
+    await j("pm", "POST", `/api/milestones/${msX}/inspections`, { scheduledAt: "2026-07-18T10:00:00.000Z" }, 201);
+    const jInspId = q1("SELECT id FROM jurisdictional_inspections WHERE milestone_id = ?", msX).id;
+    await j("compliance", "POST", `/api/inspections/${jInspId}/result`, {
+      result: "PASSED", governmentInspectorName: "Eng. T. Mhango (Mzimba District Council)",
+      inspectionReference: "MDC-INSP-2026-0412",
+    }, 200);
+    const stagePassed = await j("funder", "GET", `${D6}/stage`, undefined, 200);
+    assert(
+      stagePassed.stage === "GOVERNMENT_INSPECTION_CHECKED",
+      "a reviewed PASSED result through the completion gates derives GOVERNMENT_INSPECTION_CHECKED"
+    );
+
+    // ---- P·8 complete per-line evidence coverage ----
+    const verEv = q1(
+      `SELECT v.evidence_item_id AS e FROM verifications v
+       JOIN evidence_items ei ON ei.id = v.evidence_item_id
+       JOIN milestones m ON m.id = ei.milestone_id
+       WHERE v.verdict = 'VERIFIED' AND m.project_id = ? LIMIT 1`, P).e;
+    const rejEvRow = q1(
+      `SELECT v.evidence_item_id AS e FROM verifications v
+       JOIN evidence_items ei ON ei.id = v.evidence_item_id
+       JOIN milestones m ON m.id = ei.milestone_id
+       WHERE m.project_id = ? AND v.evidence_item_id != ? LIMIT 1`, P, verEv);
+    exec("UPDATE verifications SET verdict = 'REJECTED' WHERE evidence_item_id = ?", rejEvRow.e);
+    await j("pm", "POST", `${D6}/evidence`, { evidenceItemId: rejEvRow.e, lineItemId: L6.id }, 201);
+    const stageRejectedEv = await j("funder", "GET", `${D6}/stage`, undefined, 200);
+    assert(
+      stageRejectedEv.stage === "GOVERNMENT_INSPECTION_CHECKED",
+      "REJECTED evidence NEVER counts as line coverage — the evidence stage does not derive"
+    );
+    await j("pm", "POST", `${D6}/evidence`, { evidenceItemId: verEv, lineItemId: L6.id }, 201);
+    const stageVerifiedEv = await j("funder", "GET", `${D6}/stage`, undefined, 200);
+    assert(
+      stageVerifiedEv.stage === "EVIDENCE_REVIEW_COMPLETED",
+      "every line covered by VERIFIED evidence derives EVIDENCE_REVIEW_COMPLETED (per-line coverage)"
+    );
+
+    // ---- P·9 chronological membership effective dates ----
+    const today = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const memToday = (await j("funder", "POST", `/api/projects/${P}/memberships`, {
+      userId: "user-x", participantType: "OBV_REVIEWER", effectiveTo: today,
+    }, 201)).membership;
+    const xToday = await api("tenantx", "GET", `${D6}/stage`);
+    assert(
+      xToday.status === 200,
+      "a date-only effectiveTo of TODAY is active through end of day (chronological, never lexicographic)"
+    );
+    await j("funder", "POST", `/api/memberships/${memToday.id}/end`, { projectId: P }, 200);
+    const memFuture = (await j("funder", "POST", `/api/projects/${P}/memberships`, {
+      userId: "user-x", participantType: "OBV_REVIEWER", effectiveFrom: tomorrow,
+    }, 201)).membership;
+    const xFuture = await api("tenantx", "GET", `${D6}/stage`);
+    assert(xFuture.status === 404, "a membership effective FROM tomorrow grants nothing today");
+    await j("funder", "POST", `/api/memberships/${memFuture.id}/end`, { projectId: P }, 200);
+
+    // ---- P·10 transactional party replacement ----
+    await j("funder", "POST", `/api/projects/${P}/parties`, {
+      partyOrganizationId: "org-inspectco", partyType: "TITLE_COMPANY", reference: "T-3",
+    }, 201);
+    const titleState = q1(
+      `SELECT SUM(active) AS act, COUNT(*) AS total,
+              SUM(CASE WHEN active = 0 AND effective_to IS NULL THEN 1 ELSE 0 END) AS danglers
+       FROM project_party_assignments WHERE project_id = ? AND party_type = 'TITLE_COMPANY'`, P);
+    assert(
+      Number(titleState.act) === 1 && Number(titleState.total) === 3 && Number(titleState.danglers) === 0,
+      "party replacement is transactional: exactly one active holder; every displaced row carries its end date"
+    );
+
+    // ---- P·11 transactional inspection report/version/state/event lifecycle ----
+    await j("funder", "POST", `/api/draw-inspections/${re1.id}/schedule`, { scheduledAt: "2026-07-26T09:00:00Z" }, 200);
+    await j("field", "POST", `/api/draw-inspections/${re1.id}/complete`, {}, 200);
+    await j("field", "POST", `/api/draw-inspections/${re1.id}/report`, {
+      summary: "Reinspection site visit report", conclusion: "Bedding corrected",
+    }, 201);
+    const dupDraft = await api("field", "POST", `/api/draw-inspections/${re1.id}/report`, { summary: "dup" });
+    assert(dupDraft.status === 409, "a second DRAFT report version is refused (single-draft, DB-enforced)");
+    const re1Events = q(
+      "SELECT type FROM draw_inspection_events WHERE draw_inspection_id = ? ORDER BY created_at", re1.id);
+    const re1Chain = re1Events.map((e) => e.type).join(",");
+    assert(
+      re1Chain === "REQUESTED,SCHEDULED,COMPLETED,REPORT_PENDING,REPORT_RECEIVED,UNDER_OBV_REVIEW",
+      `every lifecycle state change carries exactly its event, atomically (${re1Chain})`
+    );
+
+    // ================= PART Q · adversarial-review fixes =================
+
+    // ---- Q·1 membership access never bypasses capabilities on mutations ----
+    const memInspX = (await j("funder", "POST", `/api/projects/${P}/memberships`, {
+      userId: "user-x", participantType: "INSPECTOR",
+    }, 201)).membership;
+    const xCancel = await api("tenantx", "POST", `/api/draws/${d6.id}/cancel`);
+    assert(
+      xCancel.status === 403 && /SUBMIT_DRAW/.test(await xCancel.text()),
+      "an INSPECTOR-scoped member can see the draw but CANNOT cancel it — every mutation carries its capability"
+    );
+    const xLine = await api("tenantx", "POST", `${D6}/lines`, { description: "x", currentRequested: 1 });
+    assert(xLine.status === 403, "an INSPECTOR-scoped member cannot add or edit draw lines (SUBMIT_DRAW required)");
+
+    // ---- Q·2 formal governance path is NEVER extended by membership ----
+    const d9 = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 30000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
+    const D9 = `/api/draws/${d9.id}`;
+    const L9 = (await j("pm", "POST", `${D9}/lines`, {
+      description: "Signage posts km 2–4", scheduledValue: 60000, currentRequested: 30000, percentCompleteClaimed: 40,
+    }, 201)).line;
+    await j("pm", "POST", `${D9}/submit`, undefined, 200);
+    await j("compliance", "POST", `${D9}/lines/${L9.id}/review`, { decision: "SUPPORTED" }, 200);
+
+    // ---- Q·4 editing a reviewed line resets its review (verifiedAmount integrity) ----
+    await j("funder", "POST", `${D9}/return`, { reason: "Post spacing revision requested" }, 200);
+    const editRes = await api("pm", "POST", `${D9}/lines/${L9.id}/update`, { currentRequested: 29000, scheduledValue: 58000 });
+    const l9After = q1("SELECT status, supported_amount AS sa, reviewed_by_user_id AS rb FROM draw_line_items WHERE id = ?", L9.id);
+    assert(
+      [200, 201].includes(editRes.status) && l9After.status === "PENDING" && l9After.sa === null && l9After.rb === null,
+      "changing a reviewed line's requested amount RESETS the review — a SUPPORTED verdict never carries to a new figure"
+    );
+    await api("pm", "POST", `${D9}/update`, { requestedAmount: 29000 });
+    await j("pm", "POST", `${D9}/submit`, undefined, 200);
+    await j("compliance", "POST", `${D9}/lines/${L9.id}/review`, { decision: "SUPPORTED" }, 200);
+    const reqRows9 = q("SELECT id, title FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1", d9.id);
+    for (const r of reqRows9) {
+      await j("pm", "POST", `${D9}/documents`, { requirementId: r.id, title: r.title }, 201);
+    }
+    await j("compliance", "POST", `${D9}/governance`, {}, 200);
+    const ap9 = q1("SELECT id FROM approval_requests WHERE draw_request_id = ?", d9.id).id;
+    const xApprove = await api("tenantx", "POST", `/api/approvals/${ap9}/decision`, { decision: "APPROVED" });
+    assert(
+      xApprove.status === 404,
+      "a cross-org member with a FUNDER_REP role still gets 404 on the FORMAL approval path — memberships never reach governance"
+    );
+    await j("funder", "POST", `/api/memberships/${memInspX.id}/end`, { projectId: P }, 200);
+
+    // ---- Q·3 membership mode: FIELD borrower manages the checklist ----
+    const fieldReq = await api("field", "POST", `/api/draws/${d8.id}/requirements`, {
+      docType: "OTHER", title: "Site drainage photos (before/after)", required: false,
+    });
+    assert(
+      fieldReq.status === 201,
+      "membership mode: a FIELD borrower with SUBMIT_DRAW adds a checklist requirement (legacy FIELD gate not consulted)"
+    );
+
+    // ---- Q·5 wireFee '' round-trips as NULL, never 0 ----
+    await j("compliance", "POST", `${D6}/governance`, {}, 200);
+    const ap6 = q1("SELECT id FROM approval_requests WHERE draw_request_id = ?", d6.id).id;
+    await j("funder", "POST", `/api/approvals/${ap6}/decision`, { decision: "APPROVED" }, 200);
+    await j("compliance", "POST", `/api/approvals/${ap6}/decision`, { decision: "APPROVED" }, 200);
+    await j("funder", "POST", `${D6}/lender-decision`, {
+      decision: "APPROVED", approvedAmount: 70000, decisionReason: "Culvert works fully evidenced",
+    }, 201);
+    const f6 = (await j("funder", "POST", `${D6}/funding`, { amountScheduled: 70000, wireFee: "" }, 201)).funding;
+    assert(
+      f6.wireFee === null && q1("SELECT wire_fee AS w FROM external_funding_records WHERE id = ?", f6.id).w === null,
+      "an empty wireFee is stored as NULL (normalized), never coerced to 0"
+    );
+
+    // ---- Q·6 party single-active holder is DB-enforced ----
+    let partyUnique = false;
+    try {
+      exec(
+        `INSERT INTO project_party_assignments (id, organization_id, project_id, party_organization_id, party_type, effective_from, active, created_by_user_id, created_at)
+         VALUES ('pa-dup-test', ?, ?, 'org-borrower', 'TITLE_COMPANY', '2026-07-20', 1, 'user-funder', '2026-07-20T00:00:00Z')`,
+        orgId, P
+      );
+    } catch (e) {
+      partyUnique = /UNIQUE/.test(String(e));
+    }
+    assert(partyUnique, "a second ACTIVE holder of a party role is impossible at the DATABASE level (partial unique index)");
+
+    // ---- Q·7 RELEASED milestones keep their inspection truth ----
+    const d10 = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 20000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
+    const D10 = `/api/draws/${d10.id}`;
+    const L10 = (await j("pm", "POST", `${D10}/lines`, {
+      description: "Retroactive base repairs (released milestone)", scheduledValue: 40000, currentRequested: 20000,
+      percentCompleteClaimed: 30, milestoneId: "ms-1",
+    }, 201)).line;
+    await j("pm", "POST", `${D10}/submit`, undefined, 200);
+    await j("compliance", "POST", `${D10}/lines/${L10.id}/review`, { decision: "SUPPORTED" }, 200);
+    const reqRows10 = q("SELECT id, title FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1", d10.id);
+    for (const r of reqRows10) {
+      const doc = (await j("pm", "POST", `${D10}/documents`, { requirementId: r.id, title: r.title }, 201)).document;
+      await j("compliance", "POST", `${D10}/documents/${doc.id}/review`, { decision: "ACCEPTED" }, 200);
+    }
+    const stageReleased = await j("funder", "GET", `${D10}/stage`, undefined, 200);
+    assert(
+      stageReleased.stage === "FINANCIAL_DOCUMENTS_REVIEWED" &&
+        q1("SELECT account_status AS a FROM milestones WHERE id = 'ms-1'").a === "RELEASED",
+      "a RELEASED milestone with an UNDETERMINED inspection requirement still BLOCKS the government stage (inspection truth survives release)"
+    );
+
+    // ---- Q·8 membership-granted contractor completion is exercisable cross-org ----
+    const memContrX = (await j("funder", "POST", `/api/projects/${P}/memberships`, {
+      userId: "user-x", participantType: "CONTRACTOR",
+    }, 201)).membership;
+    const xCompletion = await api("tenantx", "POST", `/api/milestones/${msX}/contractor-completion`, {
+      status: "IN_PROGRESS", notes: "Headwall shuttering under way",
+    });
+    assert(
+      xCompletion.status === 200,
+      "a cross-org CONTRACTOR member can exercise REPORT_CONTRACTOR_COMPLETION (membership access + capability authority)"
+    );
+    await j("funder", "POST", `/api/memberships/${memContrX.id}/end`, { projectId: P }, 200);
+
     console.log(`\nLENDER-PILOT DOMAIN TESTS PASSED — ${n} checkpoints.`);
   } finally {
     srv.kill();

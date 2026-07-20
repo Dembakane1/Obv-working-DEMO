@@ -22,7 +22,8 @@
  *     required role has approved.
  */
 import * as repo from "../db/repo";
-import { capabilityGate } from "./lenderAccess";
+import { hasActiveMembership, hasCapability, projectHasMemberships, requireAuthority, LenderError } from "./lenderAccess";
+import { canAccessProjectFinance } from "./budgetProgress";
 import { virtualAccountService } from "./VirtualAccountService";
 import { teamsNotifier } from "./TeamsNotifier";
 import { mirrorEvent, ensureDrawThread } from "./chat";
@@ -58,7 +59,10 @@ const money = (n: number) => "$" + n.toLocaleString("en-US");
 // it, and any organization wired into the project's pilot configuration.
 // Unrelated tenants get 404 — the record's existence is not disclosed.
 
-export function canAccessDraw(user: User, draw: DrawRequest): boolean {
+/** The ORGANIZATIONAL tenant wiring only — the pre-membership access rule.
+ *  Used verbatim by the formal governance path, which memberships never
+ *  extend. */
+function canAccessDrawByOrganization(user: User, draw: DrawRequest): boolean {
   if (user.organizationId === draw.organizationId) return true;
   if (draw.requestedByOrganizationId && user.organizationId === draw.requestedByOrganizationId) {
     return true;
@@ -73,32 +77,80 @@ export function canAccessDraw(user: User, draw: DrawRequest): boolean {
   ].some((orgId) => orgId && orgId === user.organizationId);
 }
 
+export function canAccessDraw(user: User, draw: DrawRequest): boolean {
+  if (canAccessDrawByOrganization(user, draw)) return true;
+  // An explicit active membership grants access (additive) even for users
+  // outside the org wiring above.
+  return hasActiveMembership(user, draw.projectId);
+}
+
 function assertAccess(user: User, draw: DrawRequest): void {
   if (!canAccessDraw(user, draw)) throw new DrawError("Draw request not found", 404);
 }
 
-/** Lender-side review authority. The draw submitter can never review
- *  their own draw, whatever role they hold (separation of duties). */
+/** Tenant-safe PROJECT access for draw creation: same-organization, pilot
+ *  org wiring, prior-requester organization (via canAccessProjectFinance)
+ *  or an explicit active membership. Unrelated tenants get the same 404 as
+ *  a nonexistent project — existence is not disclosed. */
+function canAccessProjectForDraws(user: User, project: Project): boolean {
+  return canAccessProjectFinance(user, project) || hasActiveMembership(user, project.id);
+}
+
+/** Wrap the LenderError thrown by capability checks as a DrawError so draw
+ *  routes surface one error family (status codes preserved). */
+function drawAuthority(user: User, projectId: string, cap: Parameters<typeof requireAuthority>[2], legacyCheck: () => void): void {
+  try {
+    requireAuthority(user, projectId, cap, legacyCheck);
+  } catch (err) {
+    if (err instanceof LenderError) throw new DrawError(err.message, err.statusCode);
+    throw err;
+  }
+}
+
+/** Membership-mode gate accepting ANY of several capabilities (e.g. either
+ *  side of the table may curate evidence links); legacy mode runs the
+ *  legacy check unchanged. */
+function drawAuthorityAny(
+  user: User,
+  projectId: string,
+  caps: Array<Parameters<typeof requireAuthority>[2]>,
+  legacyCheck: () => void
+): void {
+  if (!projectHasMemberships(projectId)) {
+    legacyCheck();
+    return;
+  }
+  if (!caps.some((cap) => hasCapability(user, projectId, cap))) {
+    throw new DrawError(`This action requires the ${caps.join(" or ")} capability`, 403);
+  }
+}
+
+/** Lender-side review authority. Separation of duties (the draw submitter
+ *  can never review their own draw) holds in BOTH authority modes. In
+ *  membership mode the REVIEW_DRAW capability is authoritative; in legacy
+ *  mode the legacy reviewer roles are. */
 export function canReviewDraw(user: User, draw: DrawRequest): boolean {
-  return (
-    canAccessDraw(user, draw) &&
-    (user.role === "FUNDER_REP" || user.role === "COMPLIANCE_REVIEWER") &&
-    user.id !== draw.requestedByUserId
-  );
+  if (!canAccessDraw(user, draw)) return false;
+  if (user.id === draw.requestedByUserId) return false; // SoD, both modes
+  if (projectHasMemberships(draw.projectId)) {
+    return hasCapability(user, draw.projectId, "REVIEW_DRAW");
+  }
+  return user.role === "FUNDER_REP" || user.role === "COMPLIANCE_REVIEWER";
 }
 
 function assertReviewer(user: User, draw: DrawRequest): void {
   assertAccess(user, draw);
+  if (user.id === draw.requestedByUserId) {
+    throw new DrawError("The draw submitter cannot review their own draw (separation of duties)", 403);
+  }
   if (!canReviewDraw(user, draw)) {
     throw new DrawError(
-      "Not authorized to review this draw (requires an unconflicted funder representative or compliance reviewer)",
+      projectHasMemberships(draw.projectId)
+        ? "This action requires the REVIEW_DRAW capability"
+        : "Not authorized to review this draw (requires an unconflicted funder representative or compliance reviewer)",
       403
     );
   }
-  // Once the project has active memberships, REVIEW_DRAW is additionally
-  // required (capabilities authoritative); separation of duties above is
-  // never relaxed by a capability grant.
-  capabilityGate(user, draw.projectId, "REVIEW_DRAW");
 }
 
 /** Statuses in which the requester may still edit the draw contents. */
@@ -165,14 +217,20 @@ export function createDraw(
     periodEnd?: string | null;
   }
 ): DrawRequest {
-  if (user.role === "FIELD") {
-    throw new DrawError("Field users cannot create draw requests", 403);
-  }
   const project = repo.getProject(input.projectId);
-  if (!project) throw new DrawError("Unknown project", 404);
-  // Legacy-compatibility rule: no active memberships → legacy role checks
-  // above stand alone; once memberships exist, SUBMIT_DRAW is required.
-  capabilityGate(user, project.id, "SUBMIT_DRAW");
+  // Tenant boundary FIRST: an unrelated tenant gets the same 404 as a
+  // nonexistent project, before any authority question is asked.
+  if (!project || !canAccessProjectForDraws(user, project)) {
+    throw new DrawError("Unknown project", 404);
+  }
+  // Authority mode: membership mode → SUBMIT_DRAW is authoritative (a
+  // FIELD user explicitly granted it may create); legacy mode → the
+  // legacy FIELD restriction applies.
+  drawAuthority(user, project.id, "SUBMIT_DRAW", () => {
+    if (user.role === "FIELD") {
+      throw new DrawError("Field users cannot create draw requests", 403);
+    }
+  });
   const drawNumber = input.drawNumber ?? repo.nextDrawNumber(project.id);
   if (repo.listDrawRequestsForProject(project.id).some((d) => d.drawNumber === drawNumber)) {
     throw new DrawError(`Draw #${drawNumber} already exists for this project`, 409);
@@ -233,6 +291,9 @@ export function updateDraft(
 ): DrawRequest {
   const draw = getDrawOr404(drawId);
   assertAccess(user, draw);
+  // Membership mode: request assembly requires SUBMIT_DRAW; legacy mode
+  // keeps the original access-only behavior.
+  drawAuthority(user, draw.projectId, "SUBMIT_DRAW", () => {});
   if (!EDITABLE.includes(draw.status)) {
     throw new DrawError(`Draw is ${draw.status} and can no longer be edited`, 409);
   }
@@ -254,6 +315,7 @@ export function updateDraft(
 export function cancelDraw(user: User, drawId: string): DrawRequest {
   const draw = getDrawOr404(drawId);
   assertAccess(user, draw);
+  drawAuthority(user, draw.projectId, "SUBMIT_DRAW", () => {});
   if (!["DRAFT", "SUBMITTED", "RETURNED", "CLARIFICATION_REQUIRED"].includes(draw.status)) {
     throw new DrawError(`A ${draw.status} draw cannot be cancelled`, 409);
   }
@@ -287,6 +349,7 @@ export function addLine(
 ): DrawLineItem {
   const draw = getDrawOr404(drawId);
   assertAccess(user, draw);
+  drawAuthority(user, draw.projectId, "SUBMIT_DRAW", () => {});
   if (!EDITABLE.includes(draw.status)) {
     throw new DrawError(`Draw is ${draw.status} — line items can no longer be changed`, 409);
   }
@@ -378,6 +441,7 @@ export function updateLine(
   if (!line) throw new DrawError("Line item not found", 404);
   const draw = getDrawOr404(line.drawRequestId);
   assertAccess(user, draw);
+  drawAuthority(user, draw.projectId, "SUBMIT_DRAW", () => {});
   if (!EDITABLE.includes(draw.status)) {
     throw new DrawError(`Draw is ${draw.status} — line items can no longer be changed`, 409);
   }
@@ -393,13 +457,29 @@ export function updateLine(
     if (!Number.isFinite(n) || n < 0) throw new DrawError(`${label} must be a non-negative number`);
     return n;
   };
+  // A reviewed line whose requested amount changes LOSES its review: the
+  // reviewer assessed the old figure, and a SUPPORTED verdict must never
+  // carry over to a larger currentRequested (verifiedAmount integrity).
+  const newRequested = num(patch.currentRequested, "currentRequested");
+  const invalidatesReview =
+    newRequested !== undefined && newRequested !== line.currentRequested && line.status !== "PENDING";
   repo.updateDrawLine(line.id, {
     description: patch.description?.trim() || undefined,
     budgetLineId: patch.budgetLineId !== undefined ? patch.budgetLineId?.trim() || null : undefined,
     milestoneId: patch.milestoneId !== undefined ? patch.milestoneId || null : undefined,
     scheduledValue: num(patch.scheduledValue, "scheduledValue"),
     previouslyPaid: num(patch.previouslyPaid, "previouslyPaid"),
-    currentRequested: num(patch.currentRequested, "currentRequested"),
+    currentRequested: newRequested,
+    ...(invalidatesReview
+      ? {
+          status: "PENDING" as DrawLineItemStatus,
+          supportedAmount: null,
+          percentCompleteVerified: null,
+          reviewedByUserId: null,
+          reviewedAt: null,
+          reviewNotes: null,
+        }
+      : {}),
     materialsStored:
       patch.materialsStored !== undefined
         ? patch.materialsStored != null
@@ -419,7 +499,15 @@ export function updateLine(
           : null
         : undefined,
   });
-  event(draw.id, "LINE_UPDATED", `Line "${line.description}" updated by ${user.name}.`, user.id);
+  event(
+    draw.id,
+    "LINE_UPDATED",
+    `Line "${line.description}" updated by ${user.name}.` +
+      (invalidatesReview
+        ? " The requested amount changed after review — the prior line review is reset and must be re-recorded."
+        : ""),
+    user.id
+  );
   return repo.getDrawLine(line.id)!;
 }
 
@@ -428,6 +516,7 @@ export function deleteLine(user: User, lineId: string): void {
   if (!line) throw new DrawError("Line item not found", 404);
   const draw = getDrawOr404(line.drawRequestId);
   assertAccess(user, draw);
+  drawAuthority(user, draw.projectId, "SUBMIT_DRAW", () => {});
   if (!EDITABLE.includes(draw.status)) {
     throw new DrawError(`Draw is ${draw.status} — line items can no longer be changed`, 409);
   }
@@ -444,7 +533,11 @@ export function addRequirement(
 ): DrawDocumentRequirement {
   const draw = getDrawOr404(drawId);
   assertAccess(user, draw);
-  if (user.role === "FIELD") throw new DrawError("Not authorized", 403);
+  // Membership mode: SUBMIT_DRAW is authoritative (a FIELD member with it
+  // may manage the checklist); legacy mode keeps the FIELD restriction.
+  drawAuthority(user, draw.projectId, "SUBMIT_DRAW", () => {
+    if (user.role === "FIELD") throw new DrawError("Not authorized", 403);
+  });
   const title = (input.title ?? "").trim();
   if (!title) throw new DrawError("Requirement title is required");
   const req: DrawDocumentRequirement = {
@@ -489,7 +582,9 @@ export function recordDocument(
 ): DrawDocument {
   const draw = getDrawOr404(drawId);
   assertAccess(user, draw);
-  capabilityGate(user, draw.projectId, "UPLOAD_DRAW_DOCUMENT");
+  // Membership mode: UPLOAD_DRAW_DOCUMENT authoritative; legacy mode: any
+  // access-holder may record documents (unchanged legacy behavior).
+  drawAuthority(user, draw.projectId, "UPLOAD_DRAW_DOCUMENT", () => {});
   if (!EDITABLE.includes(draw.status) && !REVIEWABLE.includes(draw.status)) {
     throw new DrawError(`Draw is ${draw.status} — documents can no longer be recorded`, 409);
   }
@@ -622,6 +717,8 @@ export function linkEvidence(
 ): DrawEvidenceLink {
   const draw = getDrawOr404(drawId);
   assertAccess(user, draw);
+  // Either side of the table may curate evidence links in membership mode.
+  drawAuthorityAny(user, draw.projectId, ["SUBMIT_DRAW", "UPLOAD_DRAW_DOCUMENT", "REVIEW_DRAW"], () => {});
   if (!EDITABLE.includes(draw.status) && !REVIEWABLE.includes(draw.status)) {
     throw new DrawError(`Draw is ${draw.status} — evidence links can no longer be changed`, 409);
   }
@@ -664,6 +761,7 @@ export function unlinkEvidence(user: User, linkId: string): void {
   if (!link) throw new DrawError("Evidence link not found", 404);
   const draw = getDrawOr404(link.drawRequestId);
   assertAccess(user, draw);
+  drawAuthorityAny(user, draw.projectId, ["SUBMIT_DRAW", "UPLOAD_DRAW_DOCUMENT", "REVIEW_DRAW"], () => {});
   if (!EDITABLE.includes(draw.status) && !REVIEWABLE.includes(draw.status)) {
     throw new DrawError(`Draw is ${draw.status} — evidence links can no longer be changed`, 409);
   }
@@ -745,7 +843,13 @@ export function completeness(drawRequestId: string): DrawCompleteness {
 export async function submitDraw(user: User, drawId: string): Promise<DrawRequest> {
   const draw = getDrawOr404(drawId);
   assertAccess(user, draw);
-  capabilityGate(user, draw.projectId, "SUBMIT_DRAW");
+  // Membership mode: SUBMIT_DRAW authoritative; legacy mode: access-holders
+  // other than FIELD may submit (unchanged legacy behavior).
+  drawAuthority(user, draw.projectId, "SUBMIT_DRAW", () => {
+    if (user.role === "FIELD") {
+      throw new DrawError("Field users cannot submit draw requests", 403);
+    }
+  });
   if (!EDITABLE.includes(draw.status)) {
     throw new DrawError(`A ${draw.status} draw cannot be submitted`, 409);
   }
@@ -859,6 +963,9 @@ export function requestClarification(user: User, drawId: string, question: strin
 export function resolveClarification(user: User, drawId: string, note: string): DrawRequest {
   const draw = getDrawOr404(drawId);
   assertAccess(user, draw);
+  // Answering a clarification is a requester-side act: SUBMIT_DRAW in
+  // membership mode; legacy behavior unchanged.
+  drawAuthority(user, draw.projectId, "SUBMIT_DRAW", () => {});
   if (draw.status !== "CLARIFICATION_REQUIRED") {
     throw new DrawError("No open clarification on this draw", 409);
   }
@@ -1178,7 +1285,13 @@ export async function processDrawApprovalDecision(
   const user = repo.getUser(userId);
   if (!user) throw new DrawError("Select a demo user first", 401);
   const draw = getDrawOr404(request.drawRequestId);
-  assertAccess(user, draw);
+  // FORMAL GOVERNANCE BOUNDARY: the approval matrix is reachable only via
+  // the ORGANIZATIONAL tenant wiring — a project membership (an
+  // administrative lender-layer grant) never extends into the formal
+  // approval path, so the pre-membership access rule is applied verbatim.
+  if (!canAccessDrawByOrganization(user, draw)) {
+    throw new DrawError("Draw request not found", 404);
+  }
   if (!request.requiredRoles.includes(user.role)) {
     throw new DrawError(
       `Role ${user.role} is not part of this approval (requires ${request.requiredRoles.join(", ")})`,

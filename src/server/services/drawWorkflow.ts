@@ -48,22 +48,25 @@
  *      furthest COMPLETED step, and each step also requires every earlier
  *      step, so a vacuously-true later check can never mask an unfinished
  *      earlier one:
- *      15. EVIDENCE_REVIEW_COMPLETED  — steps 17+16 hold AND ≥1 evidence
- *                                   link on the draw AND every linked
- *                                   evidence item has a
- *                                   VerificationAggregator verdict that is
- *                                   not NEEDS_REVIEW; NEVER inferred from
- *                                   an independent inspection report
+ *      15. EVIDENCE_REVIEW_COMPLETED  — steps 17+16 hold AND every draw
+ *                                   line is covered by ≥1 evidence link
+ *                                   whose VerificationAggregator verdict
+ *                                   is VERIFIED (line-scoped or
+ *                                   draw-level); REJECTED or NEEDS_REVIEW
+ *                                   evidence never counts as coverage and
+ *                                   nothing is inferred from an
+ *                                   independent inspection report
  *      16. GOVERNMENT_INSPECTION_CHECKED — step 17 holds AND every
- *                                   draw-line milestone with a REQUIRED
- *                                   jurisdictional inspection (mustPass
- *                                   gate) has a PASSED latest government
- *                                   inspection — from
- *                                   InspectionRequirement +
- *                                   JurisdictionalInspection records, the
- *                                   same sources the recommendation and
- *                                   completion gates use; NEVER inferred
- *                                   from draw-line review alone
+ *                                   draw-line milestone clears the FULL
+ *                                   completion-gate inspection surface
+ *                                   (inspectionSurfaceClean): no
+ *                                   inspection, reinspection, permit or
+ *                                   code-basis condition is outstanding,
+ *                                   an UNDETERMINED requirement never
+ *                                   behaves as NOT_REQUIRED, and a
+ *                                   RELEASED milestone keeps its
+ *                                   inspection truth; NEVER inferred from
+ *                                   draw-line review alone
  *      17. FINANCIAL_DOCUMENTS_REVIEWED — the required document checklist
  *                                   is complete AND every received
  *                                   document has a recorded review outcome
@@ -73,6 +76,7 @@
  */
 import * as repo from "../db/repo";
 import * as lrepo from "../db/lenderRepo";
+import * as completionGates from "./completionGates";
 import { missingRequiredDocuments } from "./draws";
 import { currentDecision } from "./lenderDecisions";
 import type { DrawRequest } from "../../shared/types";
@@ -184,38 +188,39 @@ function financialDocumentsReviewed(draw: DrawRequest): boolean {
   return docs.every((d) => d.status !== "RECEIVED");
 }
 
-/** Every draw-line milestone whose jurisdictional inspection is REQUIRED
- *  with a must-pass gate has a PASSED latest government inspection — the
- *  same InspectionRequirement + JurisdictionalInspection sources the
- *  recommendation and completion gates read. Draws whose lines carry no
- *  such requirement pass vacuously only when at least one line has been
- *  substantively reviewed (so the stage still reflects review work). */
+/** FULL completion-gate-based government inspection check: every draw-line
+ *  milestone is evaluated through completionGates.inspectionSurfaceClean —
+ *  the same gate primitives the six-gate machinery uses (jurisdictional
+ *  inspections, reinspections, permit activity and code-basis controls),
+ *  evaluated INDEPENDENTLY of tranche accountStatus so a RELEASED
+ *  milestone keeps its inspection truth (a FAILED inspection or an
+ *  UNDETERMINED requirement on a released milestone still blocks). An
+ *  UNDETERMINED requirement never behaves as NOT_REQUIRED. Lines without
+ *  a milestone contribute no inspection surface. */
 function governmentInspectionsChecked(draw: DrawRequest): boolean {
   const lines = repo.listDrawLines(draw.id);
   if (lines.length === 0 || lines.some((l) => l.status === "PENDING")) return false;
-  for (const l of lines) {
-    if (!l.milestoneId) continue;
-    const req = repo.getInspectionRequirement(l.milestoneId);
-    if (!req || req.requirement !== "REQUIRED") continue;
-    if (!req.mustPassBeforeDrawReview && !req.mustPassBeforeGovernance) continue;
-    const inspections = repo
-      .listInspectionsForMilestone(l.milestoneId)
-      .filter((i) => i.status !== "CANCELLED");
-    const latest = inspections.length ? inspections[inspections.length - 1] : null;
-    if (latest?.status !== "PASSED") return false;
-  }
-  return true;
+  const milestoneIds = [...new Set(lines.map((l) => l.milestoneId).filter((id): id is string => Boolean(id)))];
+  return milestoneIds.every((milestoneId) => completionGates.inspectionSurfaceClean(milestoneId));
 }
 
-/** ≥1 evidence link on the draw AND every linked evidence item has a
- *  VerificationAggregator verdict that is not NEEDS_REVIEW. */
+/** COMPLETE per-line evidence coverage: every draw line must be covered by
+ *  at least one evidence link whose VerificationAggregator verdict is
+ *  VERIFIED — a link scoped to that line, or a draw-level link (no
+ *  lineItemId). REJECTED or NEEDS_REVIEW evidence is NEVER counted as
+ *  coverage: rejected evidence does not complete anything. */
 function evidenceReviewCompleted(draw: DrawRequest): boolean {
+  const lines = repo.listDrawLines(draw.id);
   const links = repo.listDrawEvidenceLinks(draw.id);
-  if (links.length === 0) return false;
-  return links.every((link) => {
+  if (links.length === 0 || lines.length === 0) return false;
+  const linkVerified = (link: { evidenceItemId: string }): boolean => {
     const verification = repo.getVerificationForEvidence(link.evidenceItemId);
-    return verification !== null && verification.verdict !== "NEEDS_REVIEW";
-  });
+    return verification !== null && verification.verdict === "VERIFIED";
+  };
+  const drawLevelVerified = links.some((l) => !l.lineItemId && linkVerified(l));
+  return lines.every(
+    (line) => drawLevelVerified || links.some((l) => l.lineItemId === line.id && linkVerified(l))
+  );
 }
 
 /** Append an observation when the derived stage changed. Mutating actions

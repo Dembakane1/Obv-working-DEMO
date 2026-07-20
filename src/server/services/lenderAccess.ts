@@ -58,16 +58,32 @@ const ROLE_FALLBACK: Partial<Record<User["role"], ProjectParticipantType>> = {
   COMPLIANCE_REVIEWER: "OBV_REVIEWER",
 };
 
-function membershipActive(m: ProjectMembership, nowIso: string): boolean {
+/** Chronological instant for a stored effective date. Date-only values are
+ *  evaluated as calendar days in UTC: an effectiveFrom of 2026-08-01 takes
+ *  effect at 00:00:00Z that day; an effectiveTo of 2026-08-01 remains
+ *  effective THROUGH that day (23:59:59.999Z). Lexicographic string
+ *  comparison is never used — it mis-orders date-only values against full
+ *  timestamps. */
+function chronoMs(value: string | null | undefined, endOfDay: boolean): number | null {
+  const s = (value ?? "").trim();
+  if (!s) return null;
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(s) ? s + (endOfDay ? "T23:59:59.999Z" : "T00:00:00.000Z") : s;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function membershipActive(m: ProjectMembership, nowMs: number): boolean {
   if (!m.active) return false;
-  if (m.effectiveFrom && m.effectiveFrom > nowIso) return false;
-  if (m.effectiveTo && m.effectiveTo < nowIso) return false;
+  const from = chronoMs(m.effectiveFrom, false);
+  if (from !== null && from > nowMs) return false;
+  const to = chronoMs(m.effectiveTo, true);
+  if (to !== null && to < nowMs) return false;
   return true;
 }
 
 /** All capabilities the user holds on the project (memberships ∪ fallback). */
 export function capabilitiesFor(user: User, projectId: string): Set<ProjectCapability> {
-  const now = new Date().toISOString();
+  const now = Date.now();
   const caps = new Set<ProjectCapability>();
   for (const m of lrepo.listMembershipsForUser(user.id)) {
     if (m.projectId !== projectId || !membershipActive(m, now)) continue;
@@ -88,16 +104,19 @@ export function hasCapability(user: User, projectId: string, cap: ProjectCapabil
  *  membership makes lender endpoints reachable even for roles that would
  *  not pass the legacy finance-access check. */
 export function hasActiveMembership(user: User, projectId: string): boolean {
-  const now = new Date().toISOString();
+  const now = Date.now();
   return lrepo
     .listMembershipsForUser(user.id)
     .some((m) => m.projectId === projectId && membershipActive(m, now));
 }
 
 /** True when the project has ANY currently-effective membership rows.
- *  This is the legacy-compatibility pivot (see capabilityGate). */
+ *  This is the authority-mode pivot: with no active memberships the
+ *  project runs in LEGACY mode (role checks authoritative); once any
+ *  active membership exists it runs in MEMBERSHIP mode (capabilities
+ *  authoritative — legacy role gates are not consulted). */
 export function projectHasMemberships(projectId: string): boolean {
-  const now = new Date().toISOString();
+  const now = Date.now();
   return lrepo.listMemberships(projectId).some((m) => membershipActive(m, now));
 }
 
@@ -122,24 +141,34 @@ export function assertCapability(user: User, projectId: string, cap: ProjectCapa
 }
 
 /**
- * Legacy-compatibility rule for integrating capabilities with the core
- * draw/document/completion actions (documented transition rule):
+ * Authority-mode rule for the core draw/document/completion actions
+ * (documented transition rule):
  *
- *   - A project with NO active memberships keeps the existing legacy role
- *     behavior unchanged — this call is a no-op and the caller's original
- *     role checks remain the sole authority.
- *   - Once ANY active membership exists on the project, capabilities become
- *     authoritative for the gated actions: the actor must hold the required
- *     capability (via membership or the conservative role fallback) or the
- *     action is rejected with 403.
+ *   - LEGACY mode (no active memberships on the project): the caller's
+ *     original role checks are the sole authority — `legacyCheck` runs and
+ *     capabilities are not consulted.
+ *   - MEMBERSHIP mode (any active membership exists): capabilities are
+ *     TRULY authoritative — the actor must hold the required capability
+ *     (via membership or the conservative role fallback) and the legacy
+ *     role gate is NOT applied, so a role that would legacy-fail (e.g.
+ *     FIELD) can act when explicitly granted the capability, and a role
+ *     that would legacy-pass cannot act without it.
  *
- * Tenant boundary is unchanged: this helper never grants access to a
- * project the caller cannot already see; unrelated projects still 404 at
- * the access layer before any capability question is asked.
+ * Separation-of-duties checks are NOT legacy role gates — callers keep
+ * them in force in both modes. Tenant boundary is unchanged: this helper
+ * never grants access to a project the caller cannot already see.
  */
-export function capabilityGate(user: User, projectId: string, cap: ProjectCapability): void {
-  if (!projectHasMemberships(projectId)) return;
-  assertCapability(user, projectId, cap);
+export function requireAuthority(
+  user: User,
+  projectId: string,
+  cap: ProjectCapability,
+  legacyCheck: () => void
+): void {
+  if (projectHasMemberships(projectId)) {
+    assertCapability(user, projectId, cap);
+    return;
+  }
+  legacyCheck();
 }
 
 /** Explicit membership management — MANAGE_USERS or an org-admin fallback
@@ -176,8 +205,14 @@ export function assignMembership(
   }
   const effectiveFrom = parseIsoDate(input.effectiveFrom, "effectiveFrom");
   const effectiveTo = parseIsoDate(input.effectiveTo, "effectiveTo");
-  if (effectiveFrom && effectiveTo && effectiveTo < effectiveFrom) {
-    throw new LenderError("effectiveTo cannot be before effectiveFrom", 422);
+  {
+    // Chronological (never lexicographic) window validation, using the
+    // same day semantics as membershipActive.
+    const fromMs = chronoMs(effectiveFrom, false);
+    const toMs = chronoMs(effectiveTo, true);
+    if (fromMs !== null && toMs !== null && toMs < fromMs) {
+      throw new LenderError("effectiveTo cannot be before effectiveFrom", 422);
+    }
   }
   const now = new Date().toISOString();
   const membership: ProjectMembership = {

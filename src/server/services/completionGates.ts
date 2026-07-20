@@ -21,7 +21,7 @@
 import * as repo from "../db/repo";
 import { audit, snapshotProject } from "./pilot/onboarding";
 import { canAccessProjectFinance } from "./budgetProgress";
-import { capabilityGate } from "./lenderAccess";
+import { requireAuthority, hasActiveMembership, LenderError } from "./lenderAccess";
 import { effectiveStatus as permitEffectiveStatus, completeSourcesForInspection } from "./permits";
 import type {
   ContractorCompletionStatus, EvidenceReviewStatus, GateReason,
@@ -47,8 +47,14 @@ function projectFor(milestoneId: string): { milestone: Milestone; project: Proje
 
 function assertAccess(user: User, milestoneId: string): { milestone: Milestone; project: Project } {
   const ctx = projectFor(milestoneId);
-  // Tenant boundary: unrelated organizations get 404.
-  if (!canAccessProjectFinance(user, ctx.project)) throw new GateError("Milestone not found", 404);
+  // Tenant boundary: unrelated organizations get 404. An explicit active
+  // project membership grants access (additive — the same rule as draw
+  // and lender-record access), so a membership-granted capability like
+  // REPORT_CONTRACTOR_COMPLETION is actually exercisable cross-org.
+  // Authority stays with each action's own role/capability gate.
+  if (!canAccessProjectFinance(user, ctx.project) && !hasActiveMembership(user, ctx.project.id)) {
+    throw new GateError("Milestone not found", 404);
+  }
   return ctx;
 }
 
@@ -65,16 +71,18 @@ export function reportContractorCompletion(
   input: { status: ContractorCompletionStatus; notes?: string | null; linkedEvidenceIds?: string[] }
 ): Milestone {
   const { milestone, project } = assertAccess(user, milestoneId);
-  if (!CONTRACTOR_ROLES.has(user.role)) {
-    throw new GateError("Contractor completion is reported by the delivery side (project manager / field)", 403);
-  }
-  // Legacy-compatibility rule: with no active memberships the role check
-  // above is authoritative; once memberships exist on the project,
-  // REPORT_CONTRACTOR_COMPLETION is required in addition.
+  // Authority mode: membership mode → REPORT_CONTRACTOR_COMPLETION is
+  // authoritative (the legacy delivery-side role gate is not consulted);
+  // legacy mode → the delivery-side role check applies unchanged.
   try {
-    capabilityGate(user, project.id, "REPORT_CONTRACTOR_COMPLETION");
+    requireAuthority(user, project.id, "REPORT_CONTRACTOR_COMPLETION", () => {
+      if (!CONTRACTOR_ROLES.has(user.role)) {
+        throw new GateError("Contractor completion is reported by the delivery side (project manager / field)", 403);
+      }
+    });
   } catch (err) {
-    throw new GateError((err as Error).message, 403);
+    if (err instanceof LenderError) throw new GateError(err.message, err.statusCode);
+    throw err;
   }
   if (!["IN_PROGRESS", "REPORTED_COMPLETE", "WITHDRAWN"].includes(input.status)) {
     throw new GateError("status must be IN_PROGRESS, REPORTED_COMPLETE or WITHDRAWN");
@@ -932,6 +940,61 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
     codeBasisBlocksGovernance,
     computedAt,
   };
+}
+
+/**
+ * Inspection / permit / code-basis surface for the DERIVED draw stage —
+ * evaluated from the same gate primitives as evaluateDrawEligibility but
+ * INDEPENDENT of tranche accountStatus: a RELEASED milestone keeps its
+ * inspection truth (eligibility's RELEASED short-circuit is about release
+ * bookkeeping, not about whether the government-inspection dimension is
+ * clean). Rules mirror the eligibility reason codes exactly:
+ *   - an UNDETERMINED requirement is never clean (UNKNOWN ≠ NOT_REQUIRED);
+ *   - where the REQUIRED inspection gates draw review or governance, only
+ *     a PASSED (or NOT_APPLICABLE) gate state is clean, and a PASSED
+ *     result additionally needs its configured result document and
+ *     COMPLETE official source;
+ *   - configured permit-activity rules with outstanding permit issues,
+ *     and a configured-but-missing code basis, are never clean.
+ */
+export function inspectionSurfaceClean(milestoneId: string): boolean {
+  const milestone = repo.getMilestone(milestoneId);
+  if (!milestone) return false;
+  const req = repo.getInspectionRequirement(milestoneId);
+  const gate = inspectionGateState(milestoneId);
+  if (gate === "REQUIREMENT_UNKNOWN") return false;
+  const gated =
+    inspectionGates(milestone, req, "DRAW_REVIEW") || inspectionGates(milestone, req, "GOVERNANCE");
+  if (gated) {
+    if (gate !== "PASSED" && gate !== "NOT_APPLICABLE") return false;
+    if (gate === "PASSED") {
+      const head = activeInspection(milestoneId);
+      if (req?.resultDocumentRequired && !head?.supportingDocumentId) return false;
+      if (req?.officialSourceRequired && head && completeSourcesForInspection(head.id).length === 0) {
+        return false;
+      }
+    }
+  }
+  // Permit + code-basis readiness — same detection as evaluateDrawEligibility.
+  const linkedPermits = repo
+    .listPermitLinksForMilestone(milestoneId)
+    .map((l) => repo.getPermit(l.permitId))
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    .filter((x) => !req?.requiredPermitType || x.permitType === req.requiredPermitType);
+  if (req?.permitRequired && (req.permitMustBeActiveBeforeDrawReview || req.permitMustBeActiveBeforeGovernance)) {
+    if (linkedPermits.length === 0) return false;
+    for (const permit of linkedPermits) {
+      const effective = permitEffectiveStatus(permit);
+      if (effective !== "ISSUED" && effective !== "ACTIVE") return false;
+    }
+  }
+  if (
+    req?.codeBasisRequired &&
+    (linkedPermits.length === 0 || !linkedPermits.some((x) => x.applicableCodeEdition && x.codeBasis))
+  ) {
+    return false;
+  }
+  return true;
 }
 
 // ============================================ the six-gate assembly

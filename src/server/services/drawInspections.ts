@@ -48,15 +48,17 @@ const TRANSITIONS: Record<DrawInspectionStatus, DrawInspectionStatus[]> = {
   CANCELLED: [],
 };
 
-function event(inspection: DrawInspection, type: string, detail: string, actor: User | null): void {
-  lrepo.insertInspectionEvent({
+/** Build an inspection-lifecycle event row (inserted only inside the
+ *  repo transactions — never as a free-standing write). */
+function mkEvent(inspectionId: string, type: string, detail: string, actor: User | null) {
+  return {
     id: lrepo.newId(),
-    drawInspectionId: inspection.id,
+    drawInspectionId: inspectionId,
     type,
     detail,
     actorUserId: actor?.id ?? null,
     createdAt: new Date().toISOString(),
-  });
+  };
 }
 
 function getInspectionFor(user: User, inspectionId: string): DrawInspection {
@@ -66,6 +68,18 @@ function getInspectionFor(user: User, inspectionId: string): DrawInspection {
   return inspection;
 }
 
+/** Map the repo-level optimistic-concurrency CONFLICT to a 409. */
+function mapConflict(e: unknown): never {
+  if (e instanceof Error && e.message.startsWith("CONFLICT")) {
+    throw new LenderError("The inspection was transitioned concurrently — reload and retry", 409);
+  }
+  throw e;
+}
+
+/** Single guarded status transition + its event, committed as ONE unit.
+ *  The tx UPDATE requires the status we observed, so a concurrent
+ *  transition is a controlled 409 — never a lost update or an event row
+ *  that contradicts the stored state. */
 function transition(
   user: User,
   inspection: DrawInspection,
@@ -79,10 +93,16 @@ function transition(
       409
     );
   }
-  lrepo.updateDrawInspection(inspection.id, { ...patch, status: next });
-  const updated = lrepo.getDrawInspection(inspection.id)!;
-  event(updated, next, detail, user);
-  return updated;
+  try {
+    lrepo.inspectionTransitionsTx(
+      inspection.id,
+      [{ from: [inspection.status], to: next, patch }],
+      [mkEvent(inspection.id, next, detail, user)]
+    );
+  } catch (e) {
+    mapConflict(e);
+  }
+  return lrepo.getDrawInspection(inspection.id)!;
 }
 
 // ------------------------------------------------------------ lifecycle
@@ -156,8 +176,10 @@ export function requestInspection(
     createdAt: now,
     updatedAt: now,
   };
-  lrepo.insertDrawInspection(inspection);
-  event(inspection, "REQUESTED", `Independent draw inspection requested for Draw #${draw.drawNumber}`, user);
+  lrepo.createDrawInspectionTx(
+    inspection,
+    mkEvent(inspection.id, "REQUESTED", `Independent draw inspection requested for Draw #${draw.drawNumber}`, user)
+  );
   void teamsNotifier.notify(
     "DRAW_INSPECTION_REQUESTED",
     `Independent inspection requested for Draw #${draw.drawNumber}`,
@@ -205,15 +227,35 @@ export function completeInspection(user: User, inspectionId: string, completedAt
   if (!canRecordFindings(user, inspection)) {
     throw new LenderError("Completing the site visit requires the assigned inspector", 403);
   }
-  const updated = transition(user, inspection, "COMPLETED", {
-    completedAt: parseIsoDate(completedAt, "completedAt") || new Date().toISOString(),
-  }, "Site visit completed");
-  // Immediately note that the written report is outstanding.
-  const pending = transition(user, updated, "REPORT_PENDING", {}, "Awaiting written inspection report");
+  if (!TRANSITIONS[inspection.status].includes("COMPLETED")) {
+    throw new LenderError(`A ${inspection.status} draw inspection cannot become COMPLETED`, 409);
+  }
+  // COMPLETED → REPORT_PENDING is one lifecycle fact (site visit done,
+  // written report outstanding): both steps and both events commit as ONE
+  // transaction — no observer can see COMPLETED without its follow-up.
+  try {
+    lrepo.inspectionTransitionsTx(
+      inspection.id,
+      [
+        {
+          from: [inspection.status],
+          to: "COMPLETED",
+          patch: { completedAt: parseIsoDate(completedAt, "completedAt") || new Date().toISOString() },
+        },
+        { from: ["COMPLETED"], to: "REPORT_PENDING", patch: {} },
+      ],
+      [
+        mkEvent(inspection.id, "COMPLETED", "Site visit completed", user),
+        mkEvent(inspection.id, "REPORT_PENDING", "Awaiting written inspection report", user),
+      ]
+    );
+  } catch (e) {
+    mapConflict(e);
+  }
   void teamsNotifier.notify("DRAW_INSPECTION_COMPLETED", "Independent draw inspection site visit completed", {
     projectId: inspection.projectId,
   });
-  return pending;
+  return lrepo.getDrawInspection(inspection.id)!;
 }
 
 // ------------------------------------------------------------ line findings
@@ -285,14 +327,18 @@ export function recordLineFinding(
     updatedAt: now,
   };
   try {
-    lrepo.insertInspectionLine(finding);
+    // Finding + its event commit as ONE unit; duplicates surface as the
+    // partial-unique-index failure inside the same transaction.
+    lrepo.insertInspectionLineTx(
+      finding,
+      mkEvent(inspection.id, "LINE_FINDING", `Inspector line finding recorded${pct !== null ? ` (${pct}% reported)` : ""}`, user)
+    );
   } catch (err) {
     if ((err as Error).message.includes("UNIQUE")) {
       throw new LenderError("A finding for this draw line already exists on this inspection", 409);
     }
     throw err;
   }
-  event(inspection, "LINE_FINDING", `Inspector line finding recorded${pct !== null ? ` (${pct}% reported)` : ""}`, user);
   return finding;
 }
 
@@ -338,18 +384,38 @@ export function createReportDraft(
     documentPath: null,
     documentHash,
   };
-  lrepo.insertReportVersion(version);
-  // Receiving the first written report advances the inspection.
-  if (["COMPLETED", "REPORT_PENDING"].includes(inspection.status)) {
-    const received = transition(user, inspection, "REPORT_RECEIVED", {
-      reportReceivedAt: new Date().toISOString(),
-    }, `Report v${version.version} received (draft)`);
-    transition(user, received, "UNDER_OBV_REVIEW", {}, "Report under OBV completeness review");
+  // Version insert + inspection advancement + lifecycle events commit as
+  // ONE transaction. The first written report advances COMPLETED/
+  // REPORT_PENDING → REPORT_RECEIVED → UNDER_OBV_REVIEW atomically; a
+  // correction draft only appends its event. idx_one_draft_report_version
+  // turns a concurrent duplicate draft into a controlled 409.
+  const advancing = ["COMPLETED", "REPORT_PENDING"].includes(inspection.status);
+  try {
+    lrepo.createReportVersionTx(
+      version,
+      advancing
+        ? [
+            { from: [inspection.status], to: "REPORT_RECEIVED", patch: { reportReceivedAt: new Date().toISOString() } },
+            { from: ["REPORT_RECEIVED"], to: "UNDER_OBV_REVIEW", patch: {} },
+          ]
+        : [],
+      advancing
+        ? [
+            mkEvent(inspection.id, "REPORT_RECEIVED", `Report v${version.version} received (draft)`, user),
+            mkEvent(inspection.id, "UNDER_OBV_REVIEW", "Report under OBV completeness review", user),
+          ]
+        : [mkEvent(inspection.id, "REPORT_DRAFTED", `Correction draft v${version.version} created`, user)]
+    );
+  } catch (e) {
+    if (e instanceof Error && e.message.includes("UNIQUE")) {
+      throw new LenderError("A draft report version already exists — edit or finalize it first", 409);
+    }
+    mapConflict(e);
+  }
+  if (advancing) {
     void teamsNotifier.notify("DRAW_INSPECTION_REPORT_RECEIVED", `Inspection report v${version.version} received`, {
       projectId: inspection.projectId,
     });
-  } else {
-    event(inspection, "REPORT_DRAFTED", `Correction draft v${version.version} created`, user);
   }
   return version;
 }
@@ -377,13 +443,28 @@ export function finalizeReport(user: User, versionId: string): DrawInspectionRep
   if (!hasCapability(user, inspection.projectId, "FINALIZE_INSPECTION_REPORT") && inspection.inspectorUserId !== user.id) {
     throw new LenderError("Finalizing the report requires the FINALIZE_INSPECTION_REPORT capability", 403);
   }
-  const ok = lrepo.finalizeReportVersionTx(versionId, user.id, new Date().toISOString());
-  if (!ok) throw new LenderError("Only a draft version can be finalized", 409);
+  // Version finalization + inspection state machine + events commit as
+  // ONE transaction: the guarded version UPDATE (must still be DRAFT), the
+  // optional CORRECTION_REQUIRED → UNDER_OBV_REVIEW hop, the FINALIZED
+  // transition and every event either all land or none do.
+  const now = new Date().toISOString();
+  const steps: Array<{ from: DrawInspectionStatus[]; to: DrawInspectionStatus; patch: Partial<DrawInspection> }> = [];
+  const events: ReturnType<typeof mkEvent>[] = [];
+  if (inspection.status === "CORRECTION_REQUIRED") {
+    steps.push({ from: ["CORRECTION_REQUIRED"], to: "UNDER_OBV_REVIEW", patch: {} });
+    events.push(mkEvent(inspection.id, "UNDER_OBV_REVIEW", "Corrected report back under review", user));
+  }
   if (inspection.status === "UNDER_OBV_REVIEW" || inspection.status === "CORRECTION_REQUIRED") {
-    const path = inspection.status === "CORRECTION_REQUIRED"
-      ? transition(user, inspection, "UNDER_OBV_REVIEW", {}, "Corrected report back under review")
-      : inspection;
-    transition(user, path, "FINALIZED", { finalizedAt: new Date().toISOString() }, `Report v${version.version} finalized`);
+    steps.push({ from: ["UNDER_OBV_REVIEW"], to: "FINALIZED", patch: { finalizedAt: now } });
+    events.push(mkEvent(inspection.id, "FINALIZED", `Report v${version.version} finalized`, user));
+  }
+  try {
+    lrepo.finalizeReportLifecycleTx(versionId, user.id, now, inspection.id, steps, events);
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("CONFLICT: only a draft")) {
+      throw new LenderError("Only a draft version can be finalized", 409);
+    }
+    mapConflict(e);
   }
   return lrepo.getReportVersion(versionId)!;
 }
@@ -412,10 +493,20 @@ export function recordObvReview(
     });
     return updated;
   }
-  lrepo.updateDrawInspection(inspection.id, { obvReviewStatus: "REVIEWED", obvReviewedByUserId: user.id });
-  const updated = lrepo.getDrawInspection(inspection.id)!;
-  event(updated, "OBV_REVIEWED", input.note?.trim() || "OBV completeness review recorded", user);
-  return updated;
+  // Field update + event as ONE transaction, guarded on the status
+  // precondition so the review can never land on a concurrently-moved
+  // inspection.
+  try {
+    lrepo.updateInspectionFieldsTx(
+      inspection.id,
+      { obvReviewStatus: "REVIEWED", obvReviewedByUserId: user.id },
+      mkEvent(inspection.id, "OBV_REVIEWED", input.note?.trim() || "OBV completeness review recorded", user),
+      ["UNDER_OBV_REVIEW", "FINALIZED"]
+    );
+  } catch (e) {
+    mapConflict(e);
+  }
+  return lrepo.getDrawInspection(inspection.id)!;
 }
 
 /** Lender acceptance — the lender's own act; an uploaded report or an OBV
@@ -431,13 +522,17 @@ export function recordLenderAcceptance(user: User, inspectionId: string, accepte
     throw new LenderError("Only a finalized inspection report can be accepted", 409);
   }
   if (!accepted) {
-    lrepo.updateDrawInspection(inspection.id, {
-      lenderAcceptanceStatus: "NOT_ACCEPTED",
-      lenderAcceptedByUserId: user.id,
-    });
-    const updated = lrepo.getDrawInspection(inspection.id)!;
-    event(updated, "LENDER_NOT_ACCEPTED", note?.trim() || "Lender declined the inspection report", user);
-    return updated;
+    try {
+      lrepo.updateInspectionFieldsTx(
+        inspection.id,
+        { lenderAcceptanceStatus: "NOT_ACCEPTED", lenderAcceptedByUserId: user.id },
+        mkEvent(inspection.id, "LENDER_NOT_ACCEPTED", note?.trim() || "Lender declined the inspection report", user),
+        ["FINALIZED"]
+      );
+    } catch (e) {
+      mapConflict(e);
+    }
+    return lrepo.getDrawInspection(inspection.id)!;
   }
   const updated = transition(user, inspection, "ACCEPTED", {
     lenderAcceptanceStatus: "ACCEPTED",
@@ -489,21 +584,22 @@ export function requestReinspection(user: User, inspectionId: string, reason: st
     createdAt: now,
     updatedAt: now,
   };
-  // Atomic: flag the prior REINSPECTION_REQUIRED and insert the child in
-  // one transaction. The conditional UPDATE (status must still be
-  // reinspectable) plus idx_draw_reinspection_single_child guarantee that
-  // concurrent requests produce one success and one 409.
+  // Atomic: flag the prior REINSPECTION_REQUIRED, insert the child AND
+  // both lifecycle events in one transaction. The conditional UPDATE
+  // (status must still be reinspectable) plus
+  // idx_draw_reinspection_single_child guarantee that concurrent requests
+  // produce one success and one 409 — and no half-recorded chain.
   try {
-    lrepo.createDrawReinspectionTx(next, prior.id);
+    lrepo.createDrawReinspectionTx(next, prior.id, [
+      mkEvent(prior.id, "REINSPECTION_REQUIRED", reason.trim(), user),
+      mkEvent(next.id, "REQUESTED", `Reinspection of ${prior.id} requested: ${reason.trim()}`, user),
+    ]);
   } catch (err) {
     if ((err as Error).message.includes("UNIQUE")) {
       throw new LenderError("A reinspection has already been opened for this inspection", 409);
     }
     throw err;
   }
-  const flagged = lrepo.getDrawInspection(prior.id)!;
-  event(flagged, "REINSPECTION_REQUIRED", reason.trim(), user);
-  event(next, "REQUESTED", `Reinspection of ${prior.id} requested: ${reason.trim()}`, user);
   void teamsNotifier.notify("DRAW_REINSPECTION_REQUIRED", "Draw reinspection required", { projectId: prior.projectId });
   return next;
 }
