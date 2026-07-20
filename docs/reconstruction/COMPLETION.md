@@ -105,3 +105,41 @@ cards, `EmptyStateV2` (healthy / incomplete / unconfigured), `Methodology`,
 No backend endpoint, schema, service, calculation, or authoritative state changed.
 Filters added to GET routes are presentation-only (they narrow what is rendered).
 The ledger page's verification lookup is a read-only view join. No hidden mutations.
+
+---
+
+# v5 revision (after design rejection)
+
+Corrected commit: `943b92c` on `claude/obv-frontend-reconstruction`.
+Preview screenshots (banner-stamped with branch + commit, 8 routes ×
+390/768/1440): `docs/reconstruction/preview/`.
+
+## Colors removed → replacements
+- Canvas `#f4f5f8` (and legacy warm `#f5f4f0`, access gate) → `#F7F8FA`
+- Raised strip `#f9fafc` / inset `#f2f3f6` / warm `#faf9f6`, `#efede8`, `#f1efea`,
+  `#fbfbf9`, `#f3f2ee` → `#F3F5F8`
+- Borders `#e4e7ec`→`#E2E6EC`, `#cdd3dc`/warm `#cfccc2`, `#e3e0d8` → `#CBD2DC`/`#E2E6EC`
+- Text `#17202e`→`#151B26`, `#64707f`→`#556070`, `#949ca9`→`#7A8493`
+- Chrome `#0e1420`/`#0d1626`/`#0c1220` → `#0B1323`
+- Action `#2050d8`→`#2453D4`; success `#16603a`→`#24734A`;
+  warning `#8f5205`→`#A56512`; danger `#a92c21`→`#B63A32`
+- Warm chip `#fbf2e7`/`#ecd3b4` → semantic warn tokens
+
+## Project-card structural changes
+Old: `.asset` panel — header row + meta row + `a-figs` bordered metric grid
+(vertical border-left dividers; 2×2 bordered grid on mobile) + footer with a
+`View project` button. Removed entirely.
+New: `.proj-row` — desktop 4-column register row (identity+status / progress /
+capital / next action) with no internal vertical lines; mobile stacked zones
+separated by single horizontal rules; labelled progress bars (verified physical
+by value vs financial released); capital as spaced label/value rows; compact
+`View project →` text link. Metric strips app-wide became a single shared
+surface with spacing-only separation (no boxed metrics, no colored edges);
+financial bands and draw amount breakdowns lost their internal grid borders.
+
+## Preview deployment
+- Banner (branch + commit) renders only when `OBV_PREVIEW=1` or
+  `RENDER_GIT_BRANCH=claude/obv-frontend-reconstruction`; production never sets either.
+- `render.yaml` now defines `obv-frontend-preview` (Docker, free plan, pinned to the
+  reconstruction branch, `OBV_PREVIEW=1`). Creating the service requires a one-time
+  Render dashboard action (no Render API access from this environment).
