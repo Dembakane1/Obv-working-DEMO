@@ -87,9 +87,7 @@ export function recordLenderDecision(
   }
   // The decision must reference COMPLETED formal governance (except a
   // provisional PENDING placeholder or a WITHDRAWN closure).
-  const approval = repo
-    .listApprovalRequestsForProject(draw.projectId)
-    .find((a) => a.subjectType === "DRAW" && a.drawRequestId === draw.id);
+  const approval = repo.getApprovalRequestForDraw(draw.id);
   const requiresGovernance = ["APPROVED", "CONDITIONALLY_APPROVED", "REDUCED", "REJECTED"].includes(input.decision);
   if (requiresGovernance) {
     if (!approval || approval.status === "PENDING") {

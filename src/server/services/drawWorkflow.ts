@@ -65,9 +65,7 @@ export function deriveDrawStage(drawRequestId: string): DrawWorkflowStage | null
     return draw.status === "PARTIALLY_APPROVED" ? "LENDER_REVIEW_IN_PROGRESS" : decision ? "APPROVED" : "LENDER_REVIEW_IN_PROGRESS";
   }
   if (draw.status === "READY_FOR_GOVERNANCE") {
-    const approval = repo
-      .listApprovalRequestsForProject(draw.projectId)
-      .find((a) => a.subjectType === "DRAW" && a.drawRequestId === draw.id);
+    const approval = repo.getApprovalRequestForDraw(draw.id);
     const records = approval ? repo.listApprovalRecordsForRequest(approval.id) : [];
     return records.length > 0 ? "LENDER_REVIEW_IN_PROGRESS" : "ELIGIBLE_FOR_LENDER_REVIEW";
   }

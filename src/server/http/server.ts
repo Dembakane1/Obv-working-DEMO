@@ -2256,192 +2256,6 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   };
   const drawUser = (): User | null => currentUser(req);
 
-  if (method === "POST" && pathname === "/api/draws") {
-    const user = drawUser();
-    if (!user) {
-      sendJson(res, { error: "Select a demo user first" }, 401);
-      return;
-    }
-    const p = await readParams();
-    const draw = draws.createDraw(user, {
-      projectId: String(p.projectId ?? ""),
-      drawNumber: p.drawNumber ? Number(p.drawNumber) : undefined,
-      requestedAmount: p.requestedAmount !== undefined ? Number(p.requestedAmount) : 0,
-      currency: p.currency ? String(p.currency) : undefined,
-      periodStart: p.periodStart ? String(p.periodStart) : null,
-      periodEnd: p.periodEnd ? String(p.periodEnd) : null,
-    });
-    if (isFormPost(req)) {
-      redirect(res, `/draw/${draw.id}?tab=lines`);
-    } else {
-      sendJson(res, { draw }, 201);
-    }
-    return;
-  }
-
-  const drawApiMatch = /^\/api\/draws\/([^/]+)(?:\/(.+))?$/.exec(pathname);
-  if (method === "POST" && drawApiMatch) {
-    const user = drawUser();
-    if (!user) {
-      sendJson(res, { error: "Select a demo user first" }, 401);
-      return;
-    }
-    const drawId = drawApiMatch[1];
-    const action = drawApiMatch[2] ?? "";
-    const p = await readParams();
-
-    if (action === "update") {
-      const draw = draws.updateDraft(user, drawId, {
-        requestedAmount: p.requestedAmount !== undefined && p.requestedAmount !== "" ? Number(p.requestedAmount) : undefined,
-        periodStart: p.periodStart !== undefined ? String(p.periodStart) || null : undefined,
-        periodEnd: p.periodEnd !== undefined ? String(p.periodEnd) || null : undefined,
-        currency: p.currency ? String(p.currency) : undefined,
-      });
-      finishDrawPost(drawId, "overview", { draw });
-      return;
-    }
-    if (action === "submit") {
-      const draw = await draws.submitDraw(user, drawId);
-      finishDrawPost(drawId, "review", { draw });
-      return;
-    }
-    if (action === "cancel") {
-      const draw = draws.cancelDraw(user, drawId);
-      finishDrawPost(drawId, "overview", { draw });
-      return;
-    }
-    if (action === "return") {
-      const draw = draws.returnDraw(user, drawId, String(p.reason ?? ""));
-      finishDrawPost(drawId, "overview", { draw });
-      return;
-    }
-    if (action === "clarification") {
-      const draw = draws.requestClarification(user, drawId, String(p.question ?? ""));
-      finishDrawPost(drawId, "review", { draw });
-      return;
-    }
-    if (action === "clarification/resolve") {
-      const draw = draws.resolveClarification(user, drawId, String(p.note ?? ""));
-      finishDrawPost(drawId, "review", { draw });
-      return;
-    }
-    if (action === "governance") {
-      const result = await draws.sendToGovernance(user, drawId, p.summary ? String(p.summary) : null);
-      finishDrawPost(drawId, "governance", result);
-      return;
-    }
-    if (action === "lines") {
-      const line = draws.addLine(user, drawId, {
-        description: String(p.description ?? ""),
-        budgetLineId: p.budgetLineId ? String(p.budgetLineId) : null,
-        milestoneId: p.milestoneId ? String(p.milestoneId) : null,
-        changeOrderId: p.changeOrderId ? String(p.changeOrderId) : null,
-        exceptionAcknowledged: ["1", "true"].includes(String(p.exceptionAcknowledged)),
-        scheduledValue: p.scheduledValue !== undefined && p.scheduledValue !== "" ? Number(p.scheduledValue) : 0,
-        previouslyPaid: p.previouslyPaid !== undefined && p.previouslyPaid !== "" ? Number(p.previouslyPaid) : 0,
-        currentRequested: p.currentRequested !== undefined && p.currentRequested !== "" ? Number(p.currentRequested) : 0,
-        materialsStored: p.materialsStored !== undefined && p.materialsStored !== "" ? Number(p.materialsStored) : null,
-        retainageAmount: p.retainageAmount !== undefined && p.retainageAmount !== "" ? Number(p.retainageAmount) : null,
-        percentCompleteClaimed:
-          p.percentCompleteClaimed !== undefined && p.percentCompleteClaimed !== "" ? Number(p.percentCompleteClaimed) : null,
-      });
-      finishDrawPost(drawId, "lines", { line }, 201);
-      return;
-    }
-    const lineActionMatch = /^lines\/([^/]+)\/(review|delete|update)$/.exec(action);
-    if (lineActionMatch) {
-      const [, lineId, lineAction] = lineActionMatch;
-      if (lineAction === "review") {
-        const line = draws.reviewLine(user, lineId, {
-          decision: String(p.decision ?? "") as never,
-          reason: p.reason ? String(p.reason) : null,
-          supportedAmount: p.supportedAmount !== undefined && p.supportedAmount !== "" ? Number(p.supportedAmount) : null,
-          percentCompleteVerified:
-            p.percentCompleteVerified !== undefined && p.percentCompleteVerified !== "" ? Number(p.percentCompleteVerified) : null,
-        });
-        finishDrawPost(drawId, "lines", { line });
-        return;
-      }
-      if (lineAction === "delete") {
-        draws.deleteLine(user, lineId);
-        finishDrawPost(drawId, "lines", { ok: true });
-        return;
-      }
-      const line = draws.updateLine(user, lineId, p as never);
-      finishDrawPost(drawId, "lines", { line });
-      return;
-    }
-    if (action === "documents") {
-      const doc = draws.recordDocument(user, drawId, {
-        requirementId: p.requirementId ? String(p.requirementId) : null,
-        lineItemId: p.lineItemId ? String(p.lineItemId) : null,
-        docType: p.docType ? (String(p.docType) as never) : undefined,
-        title: String(p.title ?? ""),
-        note: p.note ? String(p.note) : null,
-        expiresAt: p.expiresAt ? String(p.expiresAt) : null,
-        vendor: p.vendor ? String(p.vendor) : null,
-        invoiceNumber: p.invoiceNumber ? String(p.invoiceNumber) : null,
-        amount: p.amount !== undefined && p.amount !== "" ? Number(p.amount) : null,
-        waiverKind: p.waiverKind ? String(p.waiverKind) : null,
-        waiverScope: p.waiverScope ? String(p.waiverScope) : null,
-        coveredThrough: p.coveredThrough ? String(p.coveredThrough) : null,
-        issuingAuthority: p.issuingAuthority ? String(p.issuingAuthority) : null,
-        referenceNumber: p.referenceNumber ? String(p.referenceNumber) : null,
-        inspectionDate: p.inspectionDate ? String(p.inspectionDate) : null,
-        inspectionResult: p.inspectionResult ? String(p.inspectionResult) : null,
-      });
-      finishDrawPost(drawId, "documents", { document: doc }, 201);
-      return;
-    }
-    const docReviewMatch = /^documents\/([^/]+)\/review$/.exec(action);
-    if (docReviewMatch) {
-      const decision = String(p.decision ?? "");
-      if (decision !== "ACCEPTED" && decision !== "REJECTED") {
-        sendJson(res, { error: "decision must be ACCEPTED or REJECTED" }, 400);
-        return;
-      }
-      const doc = draws.reviewDocument(user, docReviewMatch[1], decision, p.note ? String(p.note) : null);
-      finishDrawPost(drawId, "documents", { document: doc });
-      return;
-    }
-    if (action === "requirements") {
-      const requirement = draws.addRequirement(user, drawId, {
-        docType: (p.docType ? String(p.docType) : "OTHER") as never,
-        title: String(p.title ?? ""),
-        required: p.required === "1" || p.required === "true" || p.required === undefined,
-        notes: p.notes ? String(p.notes) : null,
-      });
-      finishDrawPost(drawId, "documents", { requirement }, 201);
-      return;
-    }
-    if (action === "evidence") {
-      const link = draws.linkEvidence(user, drawId, {
-        evidenceItemId: String(p.evidenceItemId ?? ""),
-        lineItemId: p.lineItemId ? String(p.lineItemId) : null,
-        note: p.note ? String(p.note) : null,
-      });
-      finishDrawPost(drawId, "evidence", { link }, 201);
-      return;
-    }
-    const unlinkMatch = /^evidence\/([^/]+)\/unlink$/.exec(action);
-    if (unlinkMatch) {
-      draws.unlinkEvidence(user, unlinkMatch[1]);
-      finishDrawPost(drawId, "evidence", { ok: true });
-      return;
-    }
-    if (action === "report") {
-      await generateDrawReport(req, res, user, drawId);
-      return;
-    }
-    if (action === "verification-package") {
-      await generateDrawVerificationPackage(req, res, user, drawId);
-      return;
-    }
-    sendJson(res, { error: `Unknown draw action: ${action}` }, 404);
-    return;
-  }
-
-
   // ===================== lender operating layer (API) =====================
   // Administrative lender records. All mutations sync the derived draw
   // stage; GET handlers never mutate. LenderError maps 400/403/404/409/413/422.
@@ -2776,6 +2590,194 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     sendJson(res, { funding });
     return;
   }
+
+
+  if (method === "POST" && pathname === "/api/draws") {
+    const user = drawUser();
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const p = await readParams();
+    const draw = draws.createDraw(user, {
+      projectId: String(p.projectId ?? ""),
+      drawNumber: p.drawNumber ? Number(p.drawNumber) : undefined,
+      requestedAmount: p.requestedAmount !== undefined ? Number(p.requestedAmount) : 0,
+      currency: p.currency ? String(p.currency) : undefined,
+      periodStart: p.periodStart ? String(p.periodStart) : null,
+      periodEnd: p.periodEnd ? String(p.periodEnd) : null,
+    });
+    if (isFormPost(req)) {
+      redirect(res, `/draw/${draw.id}?tab=lines`);
+    } else {
+      sendJson(res, { draw }, 201);
+    }
+    return;
+  }
+
+  const drawApiMatch = /^\/api\/draws\/([^/]+)(?:\/(.+))?$/.exec(pathname);
+  if (method === "POST" && drawApiMatch) {
+    const user = drawUser();
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const drawId = drawApiMatch[1];
+    const action = drawApiMatch[2] ?? "";
+    const p = await readParams();
+
+    if (action === "update") {
+      const draw = draws.updateDraft(user, drawId, {
+        requestedAmount: p.requestedAmount !== undefined && p.requestedAmount !== "" ? Number(p.requestedAmount) : undefined,
+        periodStart: p.periodStart !== undefined ? String(p.periodStart) || null : undefined,
+        periodEnd: p.periodEnd !== undefined ? String(p.periodEnd) || null : undefined,
+        currency: p.currency ? String(p.currency) : undefined,
+      });
+      finishDrawPost(drawId, "overview", { draw });
+      return;
+    }
+    if (action === "submit") {
+      const draw = await draws.submitDraw(user, drawId);
+      finishDrawPost(drawId, "review", { draw });
+      return;
+    }
+    if (action === "cancel") {
+      const draw = draws.cancelDraw(user, drawId);
+      finishDrawPost(drawId, "overview", { draw });
+      return;
+    }
+    if (action === "return") {
+      const draw = draws.returnDraw(user, drawId, String(p.reason ?? ""));
+      finishDrawPost(drawId, "overview", { draw });
+      return;
+    }
+    if (action === "clarification") {
+      const draw = draws.requestClarification(user, drawId, String(p.question ?? ""));
+      finishDrawPost(drawId, "review", { draw });
+      return;
+    }
+    if (action === "clarification/resolve") {
+      const draw = draws.resolveClarification(user, drawId, String(p.note ?? ""));
+      finishDrawPost(drawId, "review", { draw });
+      return;
+    }
+    if (action === "governance") {
+      const result = await draws.sendToGovernance(user, drawId, p.summary ? String(p.summary) : null);
+      finishDrawPost(drawId, "governance", result);
+      return;
+    }
+    if (action === "lines") {
+      const line = draws.addLine(user, drawId, {
+        description: String(p.description ?? ""),
+        budgetLineId: p.budgetLineId ? String(p.budgetLineId) : null,
+        milestoneId: p.milestoneId ? String(p.milestoneId) : null,
+        changeOrderId: p.changeOrderId ? String(p.changeOrderId) : null,
+        exceptionAcknowledged: ["1", "true"].includes(String(p.exceptionAcknowledged)),
+        scheduledValue: p.scheduledValue !== undefined && p.scheduledValue !== "" ? Number(p.scheduledValue) : 0,
+        previouslyPaid: p.previouslyPaid !== undefined && p.previouslyPaid !== "" ? Number(p.previouslyPaid) : 0,
+        currentRequested: p.currentRequested !== undefined && p.currentRequested !== "" ? Number(p.currentRequested) : 0,
+        materialsStored: p.materialsStored !== undefined && p.materialsStored !== "" ? Number(p.materialsStored) : null,
+        retainageAmount: p.retainageAmount !== undefined && p.retainageAmount !== "" ? Number(p.retainageAmount) : null,
+        percentCompleteClaimed:
+          p.percentCompleteClaimed !== undefined && p.percentCompleteClaimed !== "" ? Number(p.percentCompleteClaimed) : null,
+      });
+      finishDrawPost(drawId, "lines", { line }, 201);
+      return;
+    }
+    const lineActionMatch = /^lines\/([^/]+)\/(review|delete|update)$/.exec(action);
+    if (lineActionMatch) {
+      const [, lineId, lineAction] = lineActionMatch;
+      if (lineAction === "review") {
+        const line = draws.reviewLine(user, lineId, {
+          decision: String(p.decision ?? "") as never,
+          reason: p.reason ? String(p.reason) : null,
+          supportedAmount: p.supportedAmount !== undefined && p.supportedAmount !== "" ? Number(p.supportedAmount) : null,
+          percentCompleteVerified:
+            p.percentCompleteVerified !== undefined && p.percentCompleteVerified !== "" ? Number(p.percentCompleteVerified) : null,
+        });
+        finishDrawPost(drawId, "lines", { line });
+        return;
+      }
+      if (lineAction === "delete") {
+        draws.deleteLine(user, lineId);
+        finishDrawPost(drawId, "lines", { ok: true });
+        return;
+      }
+      const line = draws.updateLine(user, lineId, p as never);
+      finishDrawPost(drawId, "lines", { line });
+      return;
+    }
+    if (action === "documents") {
+      const doc = draws.recordDocument(user, drawId, {
+        requirementId: p.requirementId ? String(p.requirementId) : null,
+        lineItemId: p.lineItemId ? String(p.lineItemId) : null,
+        docType: p.docType ? (String(p.docType) as never) : undefined,
+        title: String(p.title ?? ""),
+        note: p.note ? String(p.note) : null,
+        expiresAt: p.expiresAt ? String(p.expiresAt) : null,
+        vendor: p.vendor ? String(p.vendor) : null,
+        invoiceNumber: p.invoiceNumber ? String(p.invoiceNumber) : null,
+        amount: p.amount !== undefined && p.amount !== "" ? Number(p.amount) : null,
+        waiverKind: p.waiverKind ? String(p.waiverKind) : null,
+        waiverScope: p.waiverScope ? String(p.waiverScope) : null,
+        coveredThrough: p.coveredThrough ? String(p.coveredThrough) : null,
+        issuingAuthority: p.issuingAuthority ? String(p.issuingAuthority) : null,
+        referenceNumber: p.referenceNumber ? String(p.referenceNumber) : null,
+        inspectionDate: p.inspectionDate ? String(p.inspectionDate) : null,
+        inspectionResult: p.inspectionResult ? String(p.inspectionResult) : null,
+      });
+      finishDrawPost(drawId, "documents", { document: doc }, 201);
+      return;
+    }
+    const docReviewMatch = /^documents\/([^/]+)\/review$/.exec(action);
+    if (docReviewMatch) {
+      const decision = String(p.decision ?? "");
+      if (decision !== "ACCEPTED" && decision !== "REJECTED") {
+        sendJson(res, { error: "decision must be ACCEPTED or REJECTED" }, 400);
+        return;
+      }
+      const doc = draws.reviewDocument(user, docReviewMatch[1], decision, p.note ? String(p.note) : null);
+      finishDrawPost(drawId, "documents", { document: doc });
+      return;
+    }
+    if (action === "requirements") {
+      const requirement = draws.addRequirement(user, drawId, {
+        docType: (p.docType ? String(p.docType) : "OTHER") as never,
+        title: String(p.title ?? ""),
+        required: p.required === "1" || p.required === "true" || p.required === undefined,
+        notes: p.notes ? String(p.notes) : null,
+      });
+      finishDrawPost(drawId, "documents", { requirement }, 201);
+      return;
+    }
+    if (action === "evidence") {
+      const link = draws.linkEvidence(user, drawId, {
+        evidenceItemId: String(p.evidenceItemId ?? ""),
+        lineItemId: p.lineItemId ? String(p.lineItemId) : null,
+        note: p.note ? String(p.note) : null,
+      });
+      finishDrawPost(drawId, "evidence", { link }, 201);
+      return;
+    }
+    const unlinkMatch = /^evidence\/([^/]+)\/unlink$/.exec(action);
+    if (unlinkMatch) {
+      draws.unlinkEvidence(user, unlinkMatch[1]);
+      finishDrawPost(drawId, "evidence", { ok: true });
+      return;
+    }
+    if (action === "report") {
+      await generateDrawReport(req, res, user, drawId);
+      return;
+    }
+    if (action === "verification-package") {
+      await generateDrawVerificationPackage(req, res, user, drawId);
+      return;
+    }
+    sendJson(res, { error: `Unknown draw action: ${action}` }, 404);
+    return;
+  }
+
+
 
   if (method === "GET" && drawApiMatch && drawApiMatch[2] === "recommendation") {
     const user = drawUser();
