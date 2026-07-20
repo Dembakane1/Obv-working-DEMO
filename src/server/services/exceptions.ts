@@ -22,6 +22,7 @@
  * never silently overturned by the sweep.
  */
 import * as repo from "../db/repo";
+import * as lrepo from "../db/lenderRepo";
 import { effectiveStatus as permitEffectiveStatus, completeSourcesForInspection } from "./permits";
 import { wormEvidenceStore } from "./WormEvidenceStore";
 import { audit } from "./pilot/onboarding";
@@ -287,6 +288,22 @@ export const RULES: Array<{ key: string; severity: string; rule: string }> = [
   { key: "permit-revoked", severity: "HIGH", rule: "A permit linked to an active milestone is revoked or suspended" },
   { key: "code-basis-missing", severity: "MEDIUM", rule: "Code basis is required by configuration but not recorded on any linked permit" },
   { key: "official-source-missing", severity: "MEDIUM", rule: "A PASSED inspection is missing its configured mandatory official source record" },
+  // ---- lender operating layer (independent inspections, decisions, liens, funding, loan) ----
+  { key: "lender-inspection-missing", severity: "MEDIUM", rule: "Lender policy requires an independent draw inspection but none exists for an active draw" },
+  { key: "lender-inspection-scheduling-overdue", severity: "MEDIUM", rule: "Independent inspection requested more than 5 days ago and still unscheduled" },
+  { key: "lender-inspection-access-failed", severity: "MEDIUM", rule: "Independent inspection recorded a property-access failure" },
+  { key: "lender-inspection-report-pending", severity: "MEDIUM", rule: "Independent inspection site visit completed more than 5 days ago with no written report" },
+  { key: "lender-inspection-correction", severity: "MEDIUM", rule: "Independent inspection report requires correction" },
+  { key: "lender-reinspection-required", severity: "HIGH", rule: "Independent draw reinspection required" },
+  { key: "lender-condition-overdue", severity: "HIGH", rule: "Lender decision condition is past its due date and still open" },
+  { key: "lien-waiver-missing", severity: "MEDIUM", rule: "A required lien waiver has not been received for an active or decided draw" },
+  { key: "lien-waiver-rejected", severity: "HIGH", rule: "A lien waiver was rejected on review" },
+  { key: "external-funding-mismatch", severity: "HIGH", rule: "External disbursement amount differs from the lender-approved amount" },
+  { key: "external-funding-failure", severity: "HIGH", rule: "External funding attempt failed" },
+  { key: "external-funding-reversal", severity: "CRITICAL", rule: "External disbursement was reversed" },
+  { key: "loan-maturity-approaching", severity: "MEDIUM", rule: "Loan maturity date within 60 days on an active loan" },
+  { key: "loan-reserve-insufficient", severity: "HIGH", rule: "Recorded construction reserve is below the value of open draw requests (both figures recorded)" },
+  { key: "loan-admin-incomplete", severity: "LOW", rule: "Loan profile is missing current servicer or current owner (servicing/ownership data incomplete)" },
 ];
 
 const ISSUE_CATEGORY: Record<FieldIssue["category"], ObvException["category"]> = {
@@ -715,6 +732,212 @@ async function activeConditions(): Promise<RuleCondition[]> {
             });
           }
         }
+      }
+    }
+  }
+
+  // ================= lender operating layer conditions =================
+  // Source truth stays with the lender-domain records; these seeds follow
+  // the same clear→auto-resolve / recur→reopen doctrine as every rule.
+  const lenderNowMs = Date.now();
+  for (const project of projects) {
+    const lenderPolicy = lrepo.getEffectivePolicy(project.organizationId, project.id);
+    const lenderDraws = repo.listDrawRequestsForProject(project.id);
+    for (const draw of lenderDraws) {
+      const inspections = lrepo.listDrawInspections(draw.id);
+      if (
+        lenderPolicy?.independentInspectionRequired &&
+        ACTIVE_DRAW_STATES.has(draw.status) &&
+        inspections.length === 0
+      ) {
+        out.push({ seed: {
+          projectId: project.id, drawRequestId: draw.id,
+          sourceType: "DRAW_INSPECTION", sourceId: draw.id,
+          sourceKey: `lender-inspection-missing:${draw.id}`,
+          category: "QUALITY", severity: "MEDIUM",
+          title: `Independent inspection missing — Draw #${draw.drawNumber}`,
+          description: "Lender policy requires an independent draw inspection; none has been requested.",
+        }});
+      }
+      for (const insp of inspections) {
+        if (
+          ["REQUESTED", "SCHEDULING"].includes(insp.status) &&
+          insp.requestedAt && lenderNowMs - Date.parse(insp.requestedAt) > 5 * 86400000
+        ) {
+          out.push({ seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "DRAW_INSPECTION", sourceId: insp.id,
+            sourceKey: `lender-inspection-scheduling-overdue:${insp.id}`,
+            category: "SCHEDULE", severity: "MEDIUM",
+            title: `Inspection scheduling overdue — Draw #${draw.drawNumber}`,
+            description: "The independent inspection was requested more than 5 days ago and is still unscheduled.",
+          }});
+        }
+        if (insp.status === "ACCESS_FAILED") {
+          out.push({ seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "DRAW_INSPECTION", sourceId: insp.id,
+            sourceKey: `lender-inspection-access-failed:${insp.id}`,
+            category: "SCHEDULE", severity: "MEDIUM",
+            title: `Property access failed — Draw #${draw.drawNumber}`,
+            description: "The independent inspector could not access the property.",
+          }});
+        }
+        if (
+          insp.status === "REPORT_PENDING" &&
+          insp.completedAt && lenderNowMs - Date.parse(insp.completedAt) > 5 * 86400000
+        ) {
+          out.push({ seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "DRAW_INSPECTION", sourceId: insp.id,
+            sourceKey: `lender-inspection-report-pending:${insp.id}`,
+            category: "DOCUMENT", severity: "MEDIUM",
+            title: `Inspection report outstanding — Draw #${draw.drawNumber}`,
+            description: "The site visit completed more than 5 days ago and no written report has been received.",
+          }});
+        }
+        if (insp.status === "CORRECTION_REQUIRED") {
+          out.push({ seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "DRAW_INSPECTION", sourceId: insp.id,
+            sourceKey: `lender-inspection-correction:${insp.id}`,
+            category: "QUALITY", severity: "MEDIUM",
+            title: `Inspection report correction required — Draw #${draw.drawNumber}`,
+            description: "OBV review flagged the inspection report for correction.",
+          }});
+        }
+        if (insp.status === "REINSPECTION_REQUIRED") {
+          const hasChild = inspections.some((i) => i.reinspectionOfInspectionId === insp.id);
+          if (!hasChild) {
+            out.push({ seed: {
+              projectId: project.id, drawRequestId: draw.id,
+              sourceType: "DRAW_INSPECTION", sourceId: insp.id,
+              sourceKey: `lender-reinspection-required:${insp.id}`,
+              category: "QUALITY", severity: "HIGH",
+              title: `Reinspection required — Draw #${draw.drawNumber}`,
+              description: "An independent reinspection is required and has not been requested.",
+            }});
+          }
+        }
+      }
+      for (const decision of lrepo.listLenderDecisions(draw.id)) {
+        if (decision.supersededByDecisionId) continue;
+        for (const condition of lrepo.listDecisionConditions(decision.id)) {
+          if (
+            ["OPEN", "IN_PROGRESS"].includes(condition.status) &&
+            condition.dueAt && Date.parse(condition.dueAt) < lenderNowMs
+          ) {
+            out.push({ seed: {
+              projectId: project.id, drawRequestId: draw.id,
+              sourceType: "LENDER_DECISION", sourceId: condition.id,
+              sourceKey: `lender-condition-overdue:${condition.id}`,
+              category: "APPROVAL", severity: "HIGH",
+              title: `Lender decision condition overdue — Draw #${draw.drawNumber}`,
+              description: `Condition "${condition.description.slice(0, 80)}" is past its due date.`,
+            }});
+          }
+        }
+      }
+      for (const waiver of lrepo.listLienWaivers(draw.id)) {
+        if (["REQUIRED", "REQUESTED"].includes(waiver.status)) {
+          out.push({ seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "LIEN_WAIVER", sourceId: waiver.id,
+            sourceKey: `lien-waiver-missing:${waiver.id}`,
+            category: "DOCUMENT", severity: "MEDIUM",
+            title: `Lien waiver outstanding — Draw #${draw.drawNumber}`,
+            description: "A required lien waiver has not been received.",
+          }});
+        }
+        if (waiver.status === "REJECTED") {
+          out.push({ seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "LIEN_WAIVER", sourceId: waiver.id,
+            sourceKey: `lien-waiver-rejected:${waiver.id}`,
+            category: "DOCUMENT", severity: "HIGH",
+            title: `Lien waiver rejected — Draw #${draw.drawNumber}`,
+            description: waiver.rejectionReason ?? "The lien waiver was rejected on review.",
+          }});
+        }
+      }
+      for (const funding of lrepo.listFundingRecords(draw.id)) {
+        const fundedDecision = funding.lenderDecisionId ? lrepo.getLenderDecision(funding.lenderDecisionId) : null;
+        if (
+          funding.status === "DISBURSED" &&
+          funding.amountDisbursed !== null &&
+          fundedDecision?.approvedAmount != null &&
+          funding.amountDisbursed !== fundedDecision.approvedAmount
+        ) {
+          out.push({ seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "EXTERNAL_FUNDING", sourceId: funding.id,
+            sourceKey: `external-funding-mismatch:${funding.id}`,
+            category: "COST", severity: "HIGH",
+            title: `Funding mismatch — Draw #${draw.drawNumber}`,
+            description: `External disbursement (${funding.amountDisbursed}) differs from the lender-approved amount (${fundedDecision.approvedAmount}).`,
+          }});
+        }
+        if (funding.status === "FAILED") {
+          out.push({ seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "EXTERNAL_FUNDING", sourceId: funding.id,
+            sourceKey: `external-funding-failure:${funding.id}`,
+            category: "COST", severity: "HIGH",
+            title: `External funding failed — Draw #${draw.drawNumber}`,
+            description: funding.failureReason ?? "The external funding attempt failed.",
+          }});
+        }
+        if (funding.status === "REVERSED") {
+          out.push({ seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "EXTERNAL_FUNDING", sourceId: funding.id,
+            sourceKey: `external-funding-reversal:${funding.id}`,
+            category: "COST", severity: "CRITICAL",
+            title: `External disbursement reversed — Draw #${draw.drawNumber}`,
+            description: `Reversal ${funding.reversalReference ?? ""} recorded against the original disbursement.`,
+          }});
+        }
+      }
+    }
+    const loan = lrepo.getLoanAssetForProject(project.id);
+    if (loan && loan.status === "ACTIVE") {
+      if (loan.currentMaturityDate) {
+        const maturity = Date.parse(`${loan.currentMaturityDate}T23:59:59.999Z`);
+        if (Number.isFinite(maturity) && maturity > lenderNowMs && maturity - lenderNowMs < 60 * 86400000) {
+          out.push({ seed: {
+            projectId: project.id,
+            sourceType: "LOAN_ASSET", sourceId: loan.id,
+            sourceKey: `loan-maturity-approaching:${loan.id}`,
+            category: "SCHEDULE", severity: "MEDIUM",
+            title: `Loan maturity approaching — ${loan.loanNumber}`,
+            description: `Current maturity ${loan.currentMaturityDate} is within 60 days.`,
+          }});
+        }
+      }
+      if (loan.currentConstructionReserve !== null) {
+        const openDrawValue = lenderDraws
+          .filter((d) => ACTIVE_DRAW_STATES.has(d.status))
+          .reduce((sum, d) => sum + d.requestedAmount, 0);
+        if (openDrawValue > loan.currentConstructionReserve) {
+          out.push({ seed: {
+            projectId: project.id,
+            sourceType: "LOAN_ASSET", sourceId: loan.id,
+            sourceKey: `loan-reserve-insufficient:${loan.id}`,
+            category: "COST", severity: "HIGH",
+            title: `Construction reserve below open draws — ${loan.loanNumber}`,
+            description: `Open draw requests total ${openDrawValue} against a recorded reserve of ${loan.currentConstructionReserve}.`,
+          }});
+        }
+      }
+      if (!loan.currentServicerOrganizationId || !loan.currentLoanOwnerOrganizationId) {
+        out.push({ seed: {
+          projectId: project.id,
+          sourceType: "LOAN_ASSET", sourceId: loan.id,
+          sourceKey: `loan-admin-incomplete:${loan.id}`,
+          category: "OTHER", severity: "LOW",
+          title: `Servicing/ownership data incomplete — ${loan.loanNumber}`,
+          description: "The loan profile is missing its current servicer or current owner.",
+        }});
       }
     }
   }
