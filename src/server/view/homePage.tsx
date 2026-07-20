@@ -207,7 +207,7 @@ export function renderHome(snap: HomeSnapshot | null): string {
         />
         <link rel="stylesheet" href={STYLESHEET_HREF} />
         <link rel="icon" href="/icons/icon-192.png" />
-        <meta name="theme-color" content="#0d1626" />
+        <meta name="theme-color" content="#0B1323" />
       </head>
       <body className="hp-body">
         <PreviewBanner />

@@ -188,75 +188,94 @@ function projectRisk(d: ProjectCardData): { tone: string; label: string } {
   return { tone: "ok", label: "On track" };
 }
 
-/** Dense portfolio asset row. */
-function ProjectAsset(props: { data: ProjectCardData; openIssues?: number }): VNode {
+/** Verified physical progress proxy from records already on the card:
+ *  share of controlled value whose milestone has verified evidence
+ *  (VERIFIED / APPROVED / RELEASED). Presentation math only. */
+function verifiedValuePct(d: ProjectCardData): number {
+  if (d.summary.totalBudget <= 0) return 0;
+  const verified = d.milestones
+    .filter((m) => ["VERIFIED", "APPROVED", "RELEASED"].includes(m.milestone.status))
+    .reduce((s, m) => s + m.milestone.trancheAmount, 0);
+  return Math.round((verified / d.summary.totalBudget) * 100);
+}
+
+/** Enterprise project record: identity → status → progress → capital →
+ *  next action. Spacing-led; one outer border; no internal vertical
+ *  dividers and no boxed metric cells. */
+function ProjectRow(props: { data: ProjectCardData; openIssues?: number }): VNode {
   const d = props.data;
-  const pct = projectProgressPct(d);
+  const finPct = projectProgressPct(d);
+  const physPct = verifiedValuePct(d);
   const next = nextMilestone(d);
   const risk = projectRisk(d);
   const openIssues = props.openIssues ?? 0;
+  const nextAction = next ? milestoneNextAction(next) : null;
+  const released = d.milestones.filter((m) => m.milestone.status === "RELEASED").length;
+  const bar = (pct: number) => (
+    <span className="pr-bar" aria-hidden="true"><span style={`width:${Math.max(0, Math.min(100, pct))}%`}></span></span>
+  );
   return (
-    <div className="panel asset">
-      <div className="a-head">
-        <h3><a href={`/project/${d.project.id}`}>{d.project.name}</a></h3>
-        <span className="flags">
-          {d.pendingApprovals > 0 ? (
-            <span className="status warn"><span className="g">●</span>{d.pendingApprovals} approval{d.pendingApprovals > 1 ? "s" : ""} pending</span>
-          ) : null}
-          {openIssues > 0 ? (
-            <span className="status warn"><span className="g">!</span>{openIssues} open issue{openIssues > 1 ? "s" : ""}</span>
-          ) : null}
-          <span className={`status ${risk.tone}`}><span className="g">●</span>{risk.label}</span>
+    <div className="proj-row">
+      <div className="pr-identity">
+        <a className="pr-name" href={`/project/${d.project.id}`}>{d.project.name}</a>
+        <span className="pr-meta">
+          <span className="mono">{d.project.id}</span>
+          <span>{d.project.location}</span>
+          <span>{enumLabel(d.project.projectType)}</span>
         </span>
-      </div>
-      <div className="a-meta">
-        <span>{icons.mapPin(13)} {d.project.location}</span>
-        <span>{d.project.projectType.replace(/_/g, " ")}</span>
-        <span>{icons.building(13)} {d.org?.name ?? "—"}</span>
-        {d.implementingOrg ? <span>Implementing: {d.implementingOrg.name}</span> : null}
-      </div>
-      <div className="a-figs">
-        <div className="a-fig">
-          <span className="l" style="display:block">Progress</span>
-          <span className="progress">
-            <span className="track"><span className="fill" style={`width:${pct}%`}></span></span>
-            <span className="pct">{pct}%</span>
+        {d.org || d.implementingOrg ? (
+          <span className="pr-orgs">
+            {d.org?.name ?? ""}
+            {d.implementingOrg ? ` · implemented by ${d.implementingOrg.name}` : ""}
           </span>
-        </div>
-        <div className="a-fig">
-          <span className="l" style="display:block">Budget</span>
-          <span className="v num" style="display:block">{money(d.summary.totalBudget)}</span>
-        </div>
-        <div className="a-fig">
-          <span className="l" style="display:block">Released</span>
-          <span className="v green num" style="display:block">{money(d.summary.released)}</span>
-        </div>
-        <div className="a-fig">
-          <span className="l" style="display:block">Held</span>
-          <span className="v amber num" style="display:block">{money(d.summary.held)}</span>
-        </div>
-        <div className="a-fig">
-          <span className="l" style="display:block">Next milestone</span>
-          <span className="v small" style="display:block">
-            {next ? `M${next.milestone.seq} · ${next.milestone.title}` : "All complete"}
-          </span>
-        </div>
+        ) : null}
+        <span className="pr-status">
+          <span className={`sev-dot ${risk.tone}`}>{risk.label}</span>
+          {next ? <span className="pr-ms">M{next.milestone.seq} · {MILESTONE_STATUS_LABEL[next.milestone.status] ?? enumLabel(next.milestone.status)}</span> : <span className="pr-ms">All milestones released</span>}
+          {d.pendingApprovals > 0 ? <span className="pr-flag warn">{d.pendingApprovals} approval{d.pendingApprovals > 1 ? "s" : ""} pending</span> : null}
+          {openIssues > 0 ? <span className="pr-flag warn">{openIssues} open issue{openIssues > 1 ? "s" : ""}</span> : null}
+        </span>
       </div>
-      <div className="a-foot">
-        <span>
-          {d.milestones.filter((m) => m.milestone.status === "RELEASED").length} of {d.milestones.length} milestones released
-          {next ? (() => {
-            const na = milestoneNextAction(next);
-            return na ? <span className="a-next"> · Next: <b>{na}</b></span> : null;
-          })() : null}
+      <div className="pr-progress">
+        <span className="pr-sec">Progress</span>
+        <span className="pr-line">
+          <span className="pr-l">Verified physical (by value)</span>
+          <span className="pr-v num">{physPct}%</span>
         </span>
-        <span className="cta">
-          <a className="btn sm" href={`/project/${d.project.id}`}>View project {icons.arrowRight(13)}</a>
+        {bar(physPct)}
+        <span className="pr-line">
+          <span className="pr-l">Financial (released)</span>
+          <span className="pr-v num">{finPct}%</span>
         </span>
+        {bar(finPct)}
+        <span className="pr-note">{released} of {d.milestones.length} milestones released</span>
+      </div>
+      <div className="pr-capital">
+        <span className="pr-sec">Capital</span>
+        <span className="pr-line"><span className="pr-l">Controlled value</span><span className="pr-v num">{money(d.summary.totalBudget)}</span></span>
+        <span className="pr-line"><span className="pr-l">Released</span><span className="pr-v num ok">{money(d.summary.released)}</span></span>
+        <span className="pr-line"><span className="pr-l">Currently held</span><span className="pr-v num warn">{money(d.summary.held)}</span></span>
+      </div>
+      <div className="pr-next">
+        {nextAction ? (
+          <span className="pr-na">Next: <b>{nextAction}</b></span>
+        ) : (
+          <span className="pr-na">No governed action outstanding</span>
+        )}
+        <a className="pr-open" href={`/project/${d.project.id}`}>View project <span aria-hidden="true">→</span></a>
       </div>
     </div>
   );
 }
+
+const MILESTONE_STATUS_LABEL: Record<string, string> = {
+  NOT_STARTED: "not started",
+  PENDING_EVIDENCE: "awaiting evidence",
+  UNDER_REVIEW: "under review",
+  VERIFIED: "verified",
+  APPROVED: "approved",
+  RELEASED: "released",
+};
 
 // --------------------------------------------------------------- auth
 
@@ -282,7 +301,7 @@ export function renderUserSwitcher(users: User[], orgs: Map<string, Organization
         <link rel="stylesheet" href={STYLESHEET_HREF} />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
-        <meta name="theme-color" content="#0d1626" />
+        <meta name="theme-color" content="#0B1323" />
       </head>
       <body>
         <div className="auth-wrap">
@@ -683,7 +702,18 @@ export function renderProjects(input: {
           />
         </div>
       ) : (
-        rows.map((p) => <ProjectAsset data={p} openIssues={input.openIssuesByProject?.get(p.project.id) ?? 0} />)
+        <div className="register">
+          <div className="reg-head">
+            <h3>Project register</h3>
+            <span className="hint">Identity, progress, capital state and next governed action</span>
+          </div>
+          {rows.map((p) => <ProjectRow data={p} openIssues={input.openIssuesByProject?.get(p.project.id) ?? 0} />)}
+          <div className="reg-foot">
+            Verified physical progress is the share of controlled value whose milestone has
+            verified evidence. Financial progress is the share released through governed
+            approval. The two are compared, never merged.
+          </div>
+        </div>
       )}
       <script src="/js/poll.js" defer></script>
     </AppShell>
@@ -3062,7 +3092,7 @@ export function renderFieldShell(user: User): string {
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
         <link rel="apple-touch-icon" href="/icons/icon-192.png" />
-        <meta name="theme-color" content="#0c1220" />
+        <meta name="theme-color" content="#0B1323" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
       </head>
@@ -4196,7 +4226,7 @@ export function renderIssues(input: {
               {rows.map((r) => {
                 const od = overdueBy(r.issue);
                 return (
-                  <a className="reco-card" href={`/issue/${r.issue.id}`}>
+                  <a className="rec-card" href={`/issue/${r.issue.id}`}>
                     <span className="rc-top">
                       <span className="rc-title">{r.issue.title}</span>
                       <span className="rc-side">{sevChipEl(r.issue.severity)}</span>

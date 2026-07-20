@@ -290,7 +290,7 @@ export function AppShell(props: {
         <link rel="stylesheet" href={STYLESHEET_HREF} />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
-        <meta name="theme-color" content="#0d1626" />
+        <meta name="theme-color" content="#0B1323" />
       </head>
       <body>
         <PreviewBanner />

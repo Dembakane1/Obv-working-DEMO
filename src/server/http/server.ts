@@ -819,7 +819,7 @@ function renderAccessGate(failed: boolean): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OBV — Access</title>
 </head>
-<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f4f0;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0d1626">
+<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#F7F8FA;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0d1626">
 <form method="POST" action="/api/access" style="width:min(340px,88vw);border:1px solid #d9d6cd;background:#fff;padding:28px 26px 26px">
   <div style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#5b6b7f;margin-bottom:6px">OpenBuild Verify · Demo environment</div>
   <div style="font-size:19px;font-weight:600;letter-spacing:-.01em;margin-bottom:14px">Enter access code</div>
