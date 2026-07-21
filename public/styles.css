@@ -3570,3 +3570,12 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
   .lender-form input, .lender-form select, .lender-form textarea { font-size: 16px; min-height: 44px; }
   .lender-form .btn, .lender-actions .btn { min-height: 44px; display: inline-flex; align-items: center; }
 }
+/* Lender forms: mobile ergonomics — full-width fields, comfortable targets */
+@media (max-width: 820px) {
+  .lender-form .row { flex-direction: column; align-items: stretch; }
+  .lender-form label { width: 100%; }
+  .lender-form .btn { width: 100%; justify-content: center; }
+  .li-head { flex-direction: column; align-items: flex-start; }
+}
+.lender-form label { min-width: 140px; flex: 1 1 160px; }
+.lender-form .row .btn { flex: 0 0 auto; }
