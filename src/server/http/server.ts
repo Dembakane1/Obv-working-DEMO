@@ -660,6 +660,14 @@ function assembleLenderTab(
   return {
     stage,
     stageHistory: drawWorkflow.stageHistory(draw.id),
+    packageReports: repo
+      .listReports()
+      .filter(
+        (r) =>
+          r.projectId === draw.projectId &&
+          r.reportType === "DRAW_VERIFICATION_PACKAGE" &&
+          r.filename.includes(`Draw-${draw.drawNumber}-`)
+      ),
     nextAction: lenderNextAction(draw, stage, approval, inspections, currentDecision, conditions, waivers, funding),
     loan,
     ownershipHistory: loan ? lrepo.listLoanOwnershipEvents(loan.id) : [],

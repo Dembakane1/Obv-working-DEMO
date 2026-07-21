@@ -7,7 +7,7 @@
  * recommendation advises, and only the formal approval workflow creates
  * release eligibility.
  */
-import { h, Fragment, VNode, renderDocument, raw } from "./jsx";
+import { h, Fragment, VNode, Child, renderDocument, raw } from "./jsx";
 import { icons } from "./icons";
 import {
   AppShell,
@@ -366,6 +366,9 @@ export interface LenderTabData {
     recordFunding: boolean;
   };
   orgs: Map<string, Organization>;
+  /** Existing generated verification packages for THIS draw (download via
+   *  the existing /reports/file/:id route — no second generator). */
+  packageReports: Report[];
   /** Post-redirect notice (?ok= / ?err=). */
   notice: { kind: "ok" | "err"; text: string } | null;
 }
@@ -1316,13 +1319,447 @@ function renderGovernanceTab(d: DrawDetailData): VNode {
   );
 }
 
-function renderLenderTab(d: DrawDetailData, L: LenderTabData): VNode {
-  // Read-only workspace lands in the next commit; the assembly is wired.
+const NOT_RECORDED = "Not recorded";
+
+function lenderChipTone(v: string): string {
+  if (["ACCEPTED", "PASSED", "APPROVED", "SATISFIED", "DISBURSED", "FINALIZED", "CLOSED", "REVIEWED"].includes(v)) return "chip ok";
+  if (["REJECTED", "FAILED", "REVERSED", "CANCELLED", "EXPIRED", "CORRECTION_REQUIRED", "REINSPECTION_REQUIRED", "NOT_ACCEPTED"].includes(v)) return "chip bad";
+  return "chip";
+}
+
+function LenderChip(props: { v: string | null | undefined }): VNode {
+  const v = props.v ?? null;
+  if (!v) return <span className="chip dim">{NOT_RECORDED}</span>;
+  return <span className={lenderChipTone(v)}>{enumLabel(v)}</span>;
+}
+
+function kvRow(k: string, v: Child): VNode {
   return (
-    <section className="card pad">
-      <SectionHead title="Lender review" hint="Decision workspace" />
-      <p className="muted">Derived stage: {L.stage ? enumLabel(L.stage) : "Not recorded"}</p>
+    <>
+      <dt>{k}</dt>
+      <dd>{v ?? NOT_RECORDED}</dd>
+    </>
+  );
+}
+
+function orgName(L: LenderTabData, id: string | null | undefined): string {
+  if (!id) return NOT_RECORDED;
+  return L.orgs.get(id)?.name ?? id;
+}
+
+function lenderDate(v: string | null | undefined): string {
+  return v ? fmtDate(v) : NOT_RECORDED;
+}
+
+/** Section A — decision summary metric strip (absent values recede). */
+function lenderMetricStrip(d: DrawDetailData, L: LenderTabData): VNode {
+  const latestInsp = L.inspections.length ? L.inspections[L.inspections.length - 1].inspection : null;
+  const openConds = L.conditions.filter((c) => !["SATISFIED", "WAIVED"].includes(c.status)).length;
+  const outstandingWaivers = L.waivers.filter((w) =>
+    ["REQUIRED", "REQUESTED", "RECEIVED", "UNDER_REVIEW", "REJECTED", "EXPIRED"].includes(w.status)
+  ).length;
+  const metrics: MetricData[] = [
+    { value: L.stage ? enumLabel(L.stage) : NOT_RECORDED, label: "Derived stage", dim: !L.stage },
+    { value: latestInsp ? enumLabel(latestInsp.status) : NOT_RECORDED, label: "Independent inspection", dim: !latestInsp },
+    { value: L.currentDecision ? enumLabel(L.currentDecision.decision) : NOT_RECORDED, label: "Lender decision", dim: !L.currentDecision },
+    { value: String(openConds), label: "Open conditions", dim: openConds === 0, tone: openConds > 0 ? "warn" : undefined },
+    {
+      value: L.waivers.length === 0 ? NOT_RECORDED : outstandingWaivers > 0 ? `${outstandingWaivers} outstanding` : "Settled",
+      label: "Lien waivers",
+      dim: L.waivers.length === 0,
+      tone: outstandingWaivers > 0 ? "warn" : undefined,
+    },
+    {
+      value: L.paymentStatus ? enumLabel(L.paymentStatus.status) : NOT_RECORDED,
+      label: "External funding",
+      dim: !L.paymentStatus,
+      sub: L.paymentStatus && L.paymentStatus.disbursedTotal > 0 ? `${money(L.paymentStatus.disbursedTotal)} disbursed` : undefined,
+    },
+  ];
+  return <MetricStrip metrics={metrics} />;
+}
+
+/** Section C — loan and project context. */
+function lenderContext(d: DrawDetailData, L: LenderTabData): VNode {
+  const loan = L.loan;
+  return (
+    <div className="lender-grid">
+      <section className="panel">
+        <div className="panel-head"><h3>Loan and asset</h3><span className="right">External servicing reference — the OBV project budget stays authoritative</span></div>
+        <div className="pad-sm">
+          {loan ? (
+            <dl className="kv">
+              {kvRow("Loan number", loan.loanNumber)}
+              {kvRow("Property", loan.propertyAddress ?? NOT_RECORDED)}
+              {kvRow("Original lender", orgName(L, loan.lenderOrganizationId))}
+              {kvRow("Current owner", orgName(L, loan.currentLoanOwnerOrganizationId))}
+              {kvRow("Servicer", orgName(L, loan.currentServicerOrganizationId))}
+              {kvRow("Maturity", loan.currentMaturityDate ?? loan.originalMaturityDate ?? NOT_RECORDED)}
+              {kvRow("Construction reserve", loan.currentConstructionReserve !== null ? money(loan.currentConstructionReserve) : NOT_RECORDED)}
+              {kvRow("Loan amount", loan.currentLoanAmount !== null ? money(loan.currentLoanAmount) : NOT_RECORDED)}
+            </dl>
+          ) : (
+            <p className="muted">{NOT_RECORDED} — no loan profile exists for this project.</p>
+          )}
+          {L.ownershipHistory.length > 0 ? (
+            <p className="sub">Ownership history: {L.ownershipHistory.map((e) => `${orgName(L, e.newOwnerOrganizationId)} (${e.effectiveAt})`).join(" → ")}</p>
+          ) : null}
+          {L.servicingHistory.length > 0 ? (
+            <p className="sub">Servicing history: {L.servicingHistory.map((e) => `${orgName(L, e.newServicerOrganizationId)} (${e.effectiveAt})`).join(" → ")}</p>
+          ) : null}
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-head"><h3>Parties, jurisdiction and policy</h3></div>
+        <div className="pad-sm">
+          {L.parties.length > 0 ? (
+            <dl className="kv">
+              {L.parties.filter((pa) => pa.active).map((pa) => kvRow(enumLabel(pa.partyType), orgName(L, pa.partyOrganizationId)))}
+            </dl>
+          ) : (
+            <p className="muted">Project parties: {NOT_RECORDED}.</p>
+          )}
+          <dl className="kv" style="margin-top:8px">
+            {kvRow("Jurisdiction", L.jurisdiction ? `${L.jurisdiction.jurisdictionName}${L.jurisdiction.permitAuthority ? ` · ${L.jurisdiction.permitAuthority}` : ""}` : NOT_RECORDED)}
+            {kvRow(
+              "Applied lender policy",
+              L.appliedPolicy.application
+                ? `Version ${L.appliedPolicy.application.policyVersion} · frozen at first submission (${fmtDate(L.appliedPolicy.application.appliedAt)})`
+                : NOT_RECORDED
+            )}
+          </dl>
+          <p className="sub">
+            The stored lender policy configures lender workflow preferences only. OBV integrity rules —
+            evidence verification, permits, formal governance, exactly-once release — are not
+            overridable by policy.
+          </p>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/** Section D — independent draw inspections. */
+function lenderInspections(d: DrawDetailData, L: LenderTabData): VNode {
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h3>Independent draw inspection</h3>
+        <span className="right">Lender-ordered — separate from government/jurisdictional inspections</span>
+      </div>
+      {L.inspections.length === 0 ? (
+        <div className="pad-sm"><p className="muted">{NOT_RECORDED} — no independent inspection has been ordered for this draw.</p></div>
+      ) : (
+        L.inspections.map(({ inspection: i, lines, versions }) => {
+          const finalized = versions.filter((v) => v.status === "FINALIZED");
+          const latestReport = finalized.length ? finalized[finalized.length - 1] : null;
+          return (
+            <div className="pad-sm lender-insp">
+              <div className="li-head">
+                <span className="li-title">
+                  {enumLabel(i.inspectionType)} · ordered {lenderDate(i.requestedAt)}
+                  {i.reinspectionOfInspectionId ? <span className="chip warn" style="margin-left:6px">Reinspection</span> : null}
+                </span>
+                <LenderChip v={i.status} />
+              </div>
+              <dl className="kv">
+                {kvRow("Inspector", i.inspectorDisplayName ?? (i.inspectorUserId ? d.users.get(i.inspectorUserId)?.name ?? i.inspectorUserId : NOT_RECORDED))}
+                {kvRow("Company", orgName(L, i.inspectionCompanyOrganizationId))}
+                {kvRow("Scheduled", lenderDate(i.scheduledAt))}
+                {kvRow("Site visit completed", lenderDate(i.completedAt))}
+                {kvRow("Access result", i.status === "ACCESS_FAILED" ? "Access failed" : i.completedAt ? "Access obtained" : NOT_RECORDED)}
+                {kvRow("Report version", latestReport ? `v${latestReport.version} · ${latestReport.documentHash ? shortHash(latestReport.documentHash) : "no document hash"}` : versions.length ? `v${versions[versions.length - 1].version} (draft)` : NOT_RECORDED)}
+                {kvRow("OBV review", <LenderChip v={i.obvReviewStatus === "PENDING" ? null : i.obvReviewStatus} />)}
+                {kvRow("Lender acceptance", <LenderChip v={i.lenderAcceptanceStatus === "PENDING" ? null : i.lenderAcceptanceStatus} />)}
+              </dl>
+              {lines.length > 0 ? (
+                <>
+                  <div className="desktop-only table-scroll">
+                    <table className="lender-table">
+                      <thead><tr><th>Line</th><th className="num">Claimed</th><th className="num">Observed</th><th className="num">Supported</th><th>Inspector note</th></tr></thead>
+                      <tbody>
+                        {lines.map((f) => {
+                          const dl = f.drawLineItemId ? d.lines.find((x) => x.id === f.drawLineItemId) : null;
+                          return (
+                            <tr>
+                              <td>{dl ? dl.description : "Unlinked finding"}</td>
+                              <td className="num">{dl?.percentCompleteClaimed != null ? `${dl.percentCompleteClaimed}%` : "—"}</td>
+                              <td className="num">{f.percentCompleteReported != null ? `${f.percentCompleteReported}%` : "—"}</td>
+                              <td className="num">{dl?.supportedAmount != null ? money(dl.supportedAmount) : dl?.status === "SUPPORTED" ? money(dl.currentRequested) : "—"}</td>
+                              <td>{f.inspectorNote ?? "—"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="mobile-only">
+                    {lines.map((f) => {
+                      const dl = f.drawLineItemId ? d.lines.find((x) => x.id === f.drawLineItemId) : null;
+                      return (
+                        <div className="rec-card">
+                          <span className="rc-top"><span className="rc-title">{dl ? dl.description : "Unlinked finding"}</span></span>
+                          <span className="rc-kv">
+                            <span className="k">Claimed</span><span className="v num">{dl?.percentCompleteClaimed != null ? `${dl.percentCompleteClaimed}%` : "—"}</span>
+                            <span className="k">Observed</span><span className="v num">{f.percentCompleteReported != null ? `${f.percentCompleteReported}%` : "—"}</span>
+                            <span className="k">Supported</span><span className="v num">{dl?.supportedAmount != null ? money(dl.supportedAmount) : dl?.status === "SUPPORTED" ? money(dl.currentRequested) : "—"}</span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : (
+                <p className="sub">Line findings: {NOT_RECORDED}.</p>
+              )}
+            </div>
+          );
+        })
+      )}
     </section>
+  );
+}
+
+/** Section E — lender decision and conditions. */
+function lenderDecisionSection(d: DrawDetailData, L: LenderTabData): VNode {
+  const cur = L.currentDecision;
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h3>Lender decision</h3>
+        <span className="right">A lender business decision — recorded after, and never a substitute for, formal governance approval</span>
+      </div>
+      <div className="pad-sm">
+        {cur ? (
+          <>
+            <div className="li-head">
+              <span className="li-title">{enumLabel(cur.decision)} · {cur.decisionAt ? fmtDate(cur.decisionAt) : "pending"} · {d.users.get(cur.reviewerUserId)?.name ?? cur.reviewerUserId}</span>
+              <LenderChip v={cur.decision} />
+            </div>
+            <dl className="kv">
+              {kvRow("Requested (snapshot)", money(cur.requestedAmount))}
+              {kvRow("Verified (line review)", cur.verifiedAmount !== null ? money(cur.verifiedAmount) : NOT_RECORDED)}
+              {kvRow("Recommended (advisory)", cur.recommendedAmount !== null ? money(cur.recommendedAmount) : NOT_RECORDED)}
+              {kvRow("Approved", cur.approvedAmount !== null ? money(cur.approvedAmount) : NOT_RECORDED)}
+              {kvRow(
+                "Reconciliation",
+                (() => {
+                  const parts: string[] = [];
+                  if (cur.reducedAmount) parts.push(`${money(cur.reducedAmount)} reduced`);
+                  if (cur.rejectedAmount) parts.push(`${money(cur.rejectedAmount)} rejected`);
+                  if (cur.holdbackAmount) parts.push(`${money(cur.holdbackAmount)} holdback`);
+                  const disposed = (cur.approvedAmount ?? 0) + (cur.reducedAmount ?? 0) + (cur.rejectedAmount ?? 0);
+                  return parts.length ? parts.join(" · ") : disposed === cur.requestedAmount ? "Fully disposed" : "—";
+                })()
+              )}
+              {kvRow("Reason", cur.decisionReason ?? NOT_RECORDED)}
+              {kvRow("Governance reference", cur.approvalRequestId ? `Approval ${cur.approvalRequestId.slice(0, 8)}…` : NOT_RECORDED)}
+            </dl>
+            {L.decisions.length > 1 ? (
+              <p className="sub">
+                Decision chain:{" "}
+                {L.decisions.map((x) => `${enumLabel(x.decision)}${x.supersededByDecisionId ? " (superseded)" : " (current)"}`).join(" ← ")}
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p className="muted">{NOT_RECORDED} — no lender business decision has been recorded for this draw.</p>
+        )}
+        {L.conditions.length > 0 ? (
+          <>
+            <h4 className="lender-sub">Decision conditions</h4>
+            <div className="desktop-only table-scroll">
+              <table className="lender-table">
+                <thead><tr><th>Condition</th><th>Due</th><th>Responsible</th><th>Status</th><th>Resolution</th></tr></thead>
+                <tbody>
+                  {L.conditions.map((c) => (
+                    <tr>
+                      <td>{c.description}</td>
+                      <td>{c.dueAt ?? "—"}</td>
+                      <td>{c.responsiblePartyOrganizationId ? orgName(L, c.responsiblePartyOrganizationId) : "—"}</td>
+                      <td><LenderChip v={c.status} /></td>
+                      <td>{c.status === "SATISFIED" ? `Satisfied ${c.satisfiedAt ? fmtDate(c.satisfiedAt) : ""}` : c.status === "WAIVED" ? `Waived — ${c.waiverReason ?? ""}` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mobile-only">
+              {L.conditions.map((c) => (
+                <div className="rec-card">
+                  <span className="rc-top"><span className="rc-title">{c.description}</span><span className="rc-side"><LenderChip v={c.status} /></span></span>
+                  <span className="rc-kv">
+                    <span className="k">Due</span><span className="v">{c.dueAt ?? "—"}</span>
+                    <span className="k">Responsible</span><span className="v">{c.responsiblePartyOrganizationId ? orgName(L, c.responsiblePartyOrganizationId) : "—"}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+/** Section F — lien waivers. */
+function lenderWaivers(d: DrawDetailData, L: LenderTabData): VNode {
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h3>Lien waivers</h3>
+        <span className="right">An uploaded document is not an accepted waiver — acceptance is a reviewed act</span>
+      </div>
+      {L.waivers.length === 0 ? (
+        <div className="pad-sm"><p className="muted">{NOT_RECORDED} — no lien-waiver records for this draw.</p></div>
+      ) : (
+        <>
+          <div className="desktop-only table-scroll pad-sm">
+            <table className="lender-table">
+              <thead><tr><th>Vendor / signer</th><th>Kind · scope</th><th className="num">Amount</th><th>Covered through</th><th>Document</th><th>Status</th><th>Outcome</th></tr></thead>
+              <tbody>
+                {L.waivers.map((w) => (
+                  <tr>
+                    <td>{w.contractorOrSupplierOrganizationId ? orgName(L, w.contractorOrSupplierOrganizationId) : w.signingParty ?? NOT_RECORDED}</td>
+                    <td>{[w.waiverType, w.waiverScope].filter(Boolean).map((x) => enumLabel(x!)).join(" · ") || "—"}</td>
+                    <td className="num">{w.relatedAmount !== null ? money(w.relatedAmount) : "—"}</td>
+                    <td>{w.coveredThrough ?? "—"}</td>
+                    <td>{w.drawDocumentId ? "Linked" : "—"}</td>
+                    <td><LenderChip v={w.status} /></td>
+                    <td>{w.status === "ACCEPTED" ? `Accepted ${w.acceptedAt ? fmtDate(w.acceptedAt) : ""}` : w.status === "REJECTED" ? `Rejected — ${w.rejectionReason ?? ""}` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mobile-only">
+            {L.waivers.map((w) => (
+              <div className="rec-card">
+                <span className="rc-top">
+                  <span className="rc-title">{w.contractorOrSupplierOrganizationId ? orgName(L, w.contractorOrSupplierOrganizationId) : w.signingParty ?? NOT_RECORDED}</span>
+                  <span className="rc-side"><LenderChip v={w.status} /></span>
+                </span>
+                <span className="rc-kv">
+                  <span className="k">Kind</span><span className="v">{[w.waiverType, w.waiverScope].filter(Boolean).map((x) => enumLabel(x!)).join(" · ") || "—"}</span>
+                  <span className="k">Amount</span><span className="v num">{w.relatedAmount !== null ? money(w.relatedAmount) : "—"}</span>
+                  <span className="k">Covered</span><span className="v">{w.coveredThrough ?? "—"}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Section G — external funding (administrative reconciliation only). */
+function lenderFunding(d: DrawDetailData, L: LenderTabData): VNode {
+  return (
+    <section className="panel">
+      <div className="panel-head"><h3>External funding</h3><span className="right">Administrative reconciliation only</span></div>
+      {L.funding.length === 0 ? (
+        <div className="pad-sm"><p className="muted">{NOT_RECORDED} — no external funding records for this draw.</p></div>
+      ) : (
+        <>
+          <div className="desktop-only table-scroll pad-sm">
+            <table className="lender-table">
+              <thead><tr><th>Reference</th><th className="num">Scheduled</th><th className="num">Disbursed</th><th>Status</th><th>Scheduled at</th><th>Funded at</th><th>Reversal / failure</th></tr></thead>
+              <tbody>
+                {L.funding.map((f) => (
+                  <tr>
+                    <td>{f.transactionReference ?? f.fundingMethod ?? "—"}</td>
+                    <td className="num">{f.amountScheduled !== null ? money(f.amountScheduled) : "—"}</td>
+                    <td className="num">{f.amountDisbursed !== null ? money(f.amountDisbursed) : "—"}</td>
+                    <td><LenderChip v={f.status} /></td>
+                    <td>{lenderDate(f.scheduledAt)}</td>
+                    <td>{lenderDate(f.fundedAt)}</td>
+                    <td>{f.reversedAt ? `Reversed ${fmtDate(f.reversedAt)} (${f.reversalReference ?? "—"})` : f.failureReason ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mobile-only">
+            {L.funding.map((f) => (
+              <div className="rec-card">
+                <span className="rc-top"><span className="rc-title">{f.transactionReference ?? f.fundingMethod ?? "Funding record"}</span><span className="rc-side"><LenderChip v={f.status} /></span></span>
+                <span className="rc-kv">
+                  <span className="k">Scheduled</span><span className="v num">{f.amountScheduled !== null ? money(f.amountScheduled) : "—"}</span>
+                  <span className="k">Disbursed</span><span className="v num">{f.amountDisbursed !== null ? money(f.amountDisbursed) : "—"}</span>
+                  {f.reversedAt ? <><span className="k">Reversed</span><span className="v">{fmtDate(f.reversedAt)}</span></> : null}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      <div className="pad-sm">
+        <p className="sub lender-trust">
+          External funding records do not move money and do not call VirtualAccountService. They
+          mirror actions the lender takes in its own systems; OBV's governed release remains the
+          only financial state machine.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/** Section H — packages (existing routes only). */
+function lenderPackages(d: DrawDetailData, L: LenderTabData): VNode {
+  return (
+    <section className="panel">
+      <div className="panel-head"><h3>Verification package</h3><span className="right">Assembled from authoritative registers with manifest hashing</span></div>
+      <div className="pad-sm">
+        <p className="lender-actions">
+          <a className="btn sm" href={`/draw/${d.draw.id}/verification-package/preview`}>Printable preview</a>
+          {d.reports.map((r) => (
+            <a className="btn sm ghost" href={`/reports/file/${r.id}`}>Draw report · {fmtDate(r.generatedAt)}</a>
+          ))}
+          {L.packageReports.map((r) => (
+            <a className="btn sm ghost" href={`/reports/file/${r.id}`}>Package · {fmtDate(r.generatedAt)}</a>
+          ))}
+        </p>
+        {L.packageReports.length === 0 ? (
+          <p className="sub">No generated package yet — generate one from the printable preview or the API; downloads appear here.</p>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function renderLenderTab(d: DrawDetailData, L: LenderTabData): VNode {
+  return (
+    <>
+      {L.notice ? (
+        <div className={`attn ${L.notice.kind === "ok" ? "info" : "bad"}`} role="status">
+          <span className="a-body"><span className="a-t">{L.notice.kind === "ok" ? "Recorded" : "Not recorded"}</span><span className="a-s">{L.notice.text}</span></span>
+        </div>
+      ) : null}
+      {lenderMetricStrip(d, L)}
+      <AttentionBanner tone="info" title={L.nextAction.title} detail={L.nextAction.detail} />
+      {lenderContext(d, L)}
+      {lenderInspections(d, L)}
+      {lenderDecisionSection(d, L)}
+      {lenderWaivers(d, L)}
+      {lenderFunding(d, L)}
+      {lenderPackages(d, L)}
+      {L.stageHistory.length > 0 ? (
+        <section className="panel">
+          <div className="panel-head"><h3>Stage history</h3><span className="right">Append-only observations; the stage itself is derived on every read</span></div>
+          <div className="pad-sm">
+            <ol className="lender-stagelog">
+              {L.stageHistory.map((e) => (
+                <li>
+                  <span className="num">{fmtDate(e.createdAt)}</span> — {e.priorStage ? `${enumLabel(e.priorStage)} → ` : ""}{enumLabel(e.newStage)}
+                  {e.reason ? <span className="muted"> · {e.reason}</span> : null}
+                </li>
+              ))}
+            </ol>
+          </div>
+        </section>
+      ) : null}
+    </>
   );
 }
 
