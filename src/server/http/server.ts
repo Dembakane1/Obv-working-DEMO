@@ -127,6 +127,7 @@ import {
   DrawEvidenceRow,
   DrawRegisterRow,
   DrawTab,
+  LenderTabData,
   renderDrawDetail,
   renderDrawNew,
   renderDrawRegister,
@@ -524,7 +525,8 @@ function drawEvidenceRows(drawId: string): DrawEvidenceRow[] {
 function assembleDrawDetail(
   user: User,
   draw: import("../../shared/types").DrawRequest,
-  tab: DrawTab
+  tab: DrawTab,
+  notice: { kind: "ok" | "err"; text: string } | null = null
 ): DrawDetailData {
   const project = repo.getProject(draw.projectId)!;
   const summary = draws.drawHeaderSummary(draw.id);
@@ -600,7 +602,174 @@ function assembleDrawDetail(
     ),
     alreadyDecided,
     isSubmitter,
+    lender: tab === "lender" ? assembleLenderTab(user, draw, isSubmitter, summary.approval, notice) : null,
   };
+}
+
+/**
+ * Lender Review workspace assembly — every value is read from the
+ * authoritative services/repositories for THIS draw and project. Nothing
+ * is synthesized: absent lender-domain records surface as nulls / empty
+ * arrays and the view renders them as "Not recorded". The one derived
+ * value (nextAction) is a presentation mapping of drawWorkflow's derived
+ * stage plus stored record states — never a second workflow.
+ */
+function assembleLenderTab(
+  user: User,
+  draw: import("../../shared/types").DrawRequest,
+  isSubmitter: boolean,
+  approval: import("../../shared/types").ApprovalRequest | null,
+  notice: { kind: "ok" | "err"; text: string } | null
+): LenderTabData {
+  const stage = drawWorkflow.deriveDrawStage(draw.id);
+  const loan = lrepo.getLoanAssetForProject(draw.projectId);
+  const inspections = lrepo.listDrawInspections(draw.id).map((inspection) => ({
+    inspection,
+    lines: lrepo.listInspectionLines(inspection.id),
+    versions: lrepo.listReportVersions(inspection.id),
+    events: lrepo.listInspectionEvents(inspection.id),
+  }));
+  const decisions = [...lrepo.listLenderDecisions(draw.id)].reverse();
+  const currentDecision = lenderDecisions.currentDecision(draw.id);
+  const conditions = currentDecision ? lrepo.listDecisionConditions(currentDecision.id) : [];
+  const waivers = lrepo.listLienWaivers(draw.id);
+  const funding = lrepo.listFundingRecords(draw.id);
+  const caps = lenderAccess.capabilitiesFor(user, draw.projectId);
+  const assignedInspector = inspections.some((i) => i.inspection.inspectorUserId === user.id);
+  const parties = lrepo.listPartyAssignments(draw.projectId);
+  const orgs = new Map<string, import("../../shared/types").Organization>();
+  const addOrg = (id: string | null | undefined) => {
+    if (id && !orgs.has(id)) {
+      const o = repo.getOrganization(id);
+      if (o) orgs.set(id, o);
+    }
+  };
+  for (const pa of parties) addOrg(pa.partyOrganizationId);
+  for (const w of waivers) addOrg(w.contractorOrSupplierOrganizationId);
+  for (const i of inspections) addOrg(i.inspection.inspectionCompanyOrganizationId);
+  for (const c of conditions) addOrg(c.responsiblePartyOrganizationId);
+  if (loan) {
+    for (const id of [
+      loan.borrowerOrganizationId, loan.primaryContractorOrganizationId, loan.lenderOrganizationId,
+      loan.currentServicerOrganizationId, loan.currentLoanOwnerOrganizationId,
+      loan.warehouseLenderOrganizationId, loan.secondaryMarketPurchaserOrganizationId,
+    ]) addOrg(id);
+    for (const e of lrepo.listLoanOwnershipEvents(loan.id)) { addOrg(e.priorOwnerOrganizationId); addOrg(e.newOwnerOrganizationId); }
+    for (const e of lrepo.listLoanServicingEvents(loan.id)) { addOrg(e.priorServicerOrganizationId); addOrg(e.newServicerOrganizationId); }
+  }
+  return {
+    stage,
+    stageHistory: drawWorkflow.stageHistory(draw.id),
+    nextAction: lenderNextAction(draw, stage, approval, inspections, currentDecision, conditions, waivers, funding),
+    loan,
+    ownershipHistory: loan ? lrepo.listLoanOwnershipEvents(loan.id) : [],
+    servicingHistory: loan ? lrepo.listLoanServicingEvents(loan.id) : [],
+    parties,
+    jurisdiction: lrepo.getJurisdictionProfile(draw.projectId),
+    appliedPolicy: loanProfile.appliedPolicyForDraw(draw.id),
+    inspections,
+    decisions,
+    currentDecision,
+    conditions,
+    waivers,
+    funding,
+    paymentStatus: funding.length > 0 ? lenderDecisions.derivedPaymentStatus(draw.id) : null,
+    caps: {
+      scheduleInspection: caps.has("SCHEDULE_DRAW_INSPECTION"),
+      recordFindings: caps.has("RECORD_INSPECTION_FINDINGS") || assignedInspector,
+      finalizeReport: caps.has("FINALIZE_INSPECTION_REPORT") || assignedInspector,
+      reviewDraw: caps.has("REVIEW_DRAW"),
+      lenderDecision: caps.has("RECORD_LENDER_DECISION") && !isSubmitter,
+      recordFunding: caps.has("RECORD_EXTERNAL_FUNDING"),
+    },
+    orgs,
+    notice,
+  };
+}
+
+/** One deterministic next action, mapped from the derived stage and the
+ *  stored lender records. Presentation only — it never computes a second
+ *  workflow, never authorizes anything, and never invents state. */
+function lenderNextAction(
+  draw: import("../../shared/types").DrawRequest,
+  stage: import("../../shared/types").DrawWorkflowStage | null,
+  approval: import("../../shared/types").ApprovalRequest | null,
+  inspections: LenderTabData["inspections"],
+  decision: import("../../shared/types").LenderDrawDecision | null,
+  conditions: import("../../shared/types").LenderDecisionCondition[],
+  waivers: import("../../shared/types").LienWaiverRecord[],
+  funding: import("../../shared/types").ExternalFundingRecord[]
+): { title: string; detail: string } {
+  const latest = inspections.length > 0 ? inspections[inspections.length - 1] : null;
+  const draftVersion = latest?.versions.find((v) => v.status === "DRAFT") ?? null;
+  const blockingConds = conditions.filter((c) => !["SATISFIED", "WAIVED"].includes(c.status));
+  const outstandingWaivers = waivers.filter((w) =>
+    ["REQUIRED", "REQUESTED", "RECEIVED", "UNDER_REVIEW", "REJECTED", "EXPIRED"].includes(w.status)
+  );
+  if (!stage) return { title: "Draft not submitted", detail: "The lender workflow begins at submission." };
+  switch (stage) {
+    case "DRAW_CLOSED":
+      return { title: "Draw closed", detail: "The verification package remains available below." };
+    case "FUNDS_DISBURSED":
+      return { title: "Verification package ready", detail: "External funding is recorded; download the complete package below." };
+    case "FUNDS_SCHEDULED":
+      return { title: "Record or reconcile external funding", detail: "A funding record is in flight — record the disbursement outcome when the lender's own systems complete it." };
+    case "LIEN_RELEASE_REQUESTED":
+      return { title: "Accept required lien waivers", detail: "Waivers are in review; acceptance is an explicit reviewed act." };
+    case "LIEN_RELEASE_COMPLETED":
+      return { title: "Record or reconcile external funding", detail: "Waivers are settled; external funding is the remaining administrative record." };
+    case "REJECTED":
+      return { title: "Decision recorded: rejected", detail: "Record an amendment only if formal governance later changes." };
+    case "APPROVED":
+    case "REDUCED":
+    case "CONDITIONALLY_APPROVED":
+      if (blockingConds.length > 0) {
+        return { title: "Resolve decision conditions", detail: `${blockingConds.length} condition(s) must be satisfied or formally waived before funding.` };
+      }
+      if (outstandingWaivers.length > 0) {
+        return { title: "Accept required lien waivers", detail: `${outstandingWaivers.length} waiver(s) are not yet accepted.` };
+      }
+      return { title: "Record or reconcile external funding", detail: "The decision is fundable; external funding records are administrative only." };
+    case "LENDER_REVIEW_IN_PROGRESS":
+      return approval && approval.status === "APPROVED"
+        ? { title: "Record lender decision", detail: "Formal governance is complete; the lender business decision is outstanding." }
+        : { title: "Await formal governance", detail: "Role decisions are being recorded through the formal approval matrix." };
+    case "ELIGIBLE_FOR_LENDER_REVIEW":
+      return { title: "Await formal governance", detail: "Governance is ready; no role decisions are recorded yet. Eligibility is never automatic approval." };
+    case "CORRECTIONS_REQUESTED":
+      if (latest?.inspection.status === "CORRECTION_REQUIRED") {
+        return { title: "Prepare corrected inspection report", detail: "OBV review flagged the report; create and finalize a correction version." };
+      }
+      if (latest?.inspection.status === "REINSPECTION_REQUIRED") {
+        return { title: "Schedule reinspection", detail: "The reinspection record is open; schedule the site visit." };
+      }
+      return { title: "Awaiting requester corrections", detail: "The draw was returned to the requester." };
+    case "MISSING_INFORMATION_REQUESTED":
+      return { title: "Awaiting requester clarification", detail: "A clarification question is open with the requester." };
+    case "EXCEPTIONS_IDENTIFIED":
+      return { title: "Resolve open draw exceptions", detail: "Open exceptions on this draw block the review pipeline." };
+    case "INSPECTION_REQUESTED":
+      return latest?.inspection.status === "ACCESS_FAILED"
+        ? { title: "Reschedule after property-access failure", detail: "The recorded access failure needs a new scheduled visit (or a failed-inspection outcome)." }
+        : { title: "Schedule independent inspection", detail: "The ordered inspection has no scheduled site visit yet." };
+    case "INSPECTION_SCHEDULED":
+      return { title: "Complete site visit", detail: "Record completion — or record a property-access failure if the visit could not proceed." };
+    case "PHYSICAL_INSPECTION_COMPLETED":
+      if (draftVersion) return { title: "Finalize inspection report", detail: "A draft report version exists; finalized versions are immutable." };
+      if (latest && ["COMPLETED", "REPORT_PENDING"].includes(latest.inspection.status)) {
+        return { title: "Add inspection line findings", detail: "Record what the inspector observed by line, then prepare the written report." };
+      }
+      return { title: "Record OBV review", detail: "The report is under OBV completeness review." };
+    default: {
+      if (latest && latest.inspection.status === "FINALIZED" && latest.inspection.lenderAcceptanceStatus === "PENDING") {
+        return { title: "Record lender acceptance or request reinspection", detail: "The finalized inspection report awaits the lender's own acceptance decision." };
+      }
+      if (inspections.length === 0) {
+        return { title: "Schedule independent inspection", detail: "No independent draw inspection has been ordered for this draw." };
+      }
+      return { title: "Continue OBV review", detail: "Documents, government inspections and evidence are reviewed in sequence before governance." };
+    }
+  }
 }
 
 async function assembleDrawReportData(
@@ -4415,11 +4584,17 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     const tabParam = (url.searchParams.get("tab") ?? "overview") as DrawTab;
     const tab: DrawTab = ([
-      "overview", "lines", "evidence", "documents", "exceptions", "review", "governance", "activity",
+      "overview", "lines", "evidence", "documents", "exceptions", "review", "governance", "activity", "lender",
     ] as DrawTab[]).includes(tabParam)
       ? tabParam
       : "overview";
-    sendHtml(res, renderDrawDetail(assembleDrawDetail(user!, draw, tab)));
+    const noticeErr = url.searchParams.get("err");
+    const notice = noticeErr
+      ? ({ kind: "err", text: noticeErr.slice(0, 300) } as const)
+      : url.searchParams.get("ok")
+        ? ({ kind: "ok", text: "Recorded." } as const)
+        : null;
+    sendHtml(res, renderDrawDetail(assembleDrawDetail(user!, draw, tab, notice)));
     return;
   }
 

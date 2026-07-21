@@ -18,8 +18,14 @@ import {
   money,
   roleLabel,
   Metric,
+  MetricStrip,
+  MetricData,
+  AttentionBanner,
+  SectionHead,
   EmptyStateV2,
   Methodology,
+  enumLabel,
+  shortHash,
 } from "./components";
 import type {
   ApprovalRecord,
@@ -48,6 +54,12 @@ import type {
   DrawHeaderSummary,
 } from "../services/draws";
 import type { DrawLineComparison } from "../services/budgetProgress";
+import type {
+  DrawInspection, DrawInspectionEvent, DrawInspectionLine, DrawInspectionReportVersion,
+  DrawPolicyApplication, DrawStageEvent, DrawWorkflowStage, ExternalFundingRecord,
+  JurisdictionProfile, LenderDecisionCondition, LenderDrawDecision, LenderDrawPolicy,
+  LienWaiverRecord, LoanAsset, LoanOwnershipEvent, LoanServicingEvent, ProjectPartyAssignment,
+} from "../../shared/types";
 import { VarianceTag, ProgressCompareBars, VARIANCE_META } from "./budgetPages";
 import type { FinancialProgress, PhysicalProgressAssessment } from "../../shared/types";
 
@@ -308,7 +320,55 @@ export function renderDrawNew(input: {
 
 export type DrawTab =
   | "overview" | "lines" | "evidence" | "documents" | "exceptions"
-  | "review" | "governance" | "activity";
+  | "review" | "governance" | "activity" | "lender";
+
+/**
+ * Lender Review workspace data — assembled entirely on the server from
+ * authoritative stored records (services + lender repository). The view
+ * never derives lender facts: anything absent renders as "Not recorded".
+ */
+export interface LenderTabData {
+  /** drawWorkflow.deriveDrawStage — the single derived stage. */
+  stage: DrawWorkflowStage | null;
+  stageHistory: DrawStageEvent[];
+  /** One deterministic next action label + detail, mapped server-side
+   *  from the derived stage and stored records (no second workflow). */
+  nextAction: { title: string; detail: string };
+  loan: LoanAsset | null;
+  ownershipHistory: LoanOwnershipEvent[];
+  servicingHistory: LoanServicingEvent[];
+  parties: ProjectPartyAssignment[];
+  jurisdiction: JurisdictionProfile | null;
+  appliedPolicy: { application: DrawPolicyApplication | null; policy: LenderDrawPolicy | null };
+  inspections: Array<{
+    inspection: DrawInspection;
+    lines: DrawInspectionLine[];
+    versions: DrawInspectionReportVersion[];
+    events: DrawInspectionEvent[];
+  }>;
+  /** Full decision chain, newest first; superseded rows stay visible. */
+  decisions: LenderDrawDecision[];
+  currentDecision: LenderDrawDecision | null;
+  /** Conditions of the CURRENT decision. */
+  conditions: LenderDecisionCondition[];
+  waivers: LienWaiverRecord[];
+  funding: ExternalFundingRecord[];
+  /** Derived payment status — never a mutation of the decision. */
+  paymentStatus: { status: string; disbursedTotal: number } | null;
+  /** Server-enforced capability flags for rendering action controls.
+   *  Convenience only: every POST re-authorizes in the service layer. */
+  caps: {
+    scheduleInspection: boolean;
+    recordFindings: boolean;
+    finalizeReport: boolean;
+    reviewDraw: boolean;
+    lenderDecision: boolean;
+    recordFunding: boolean;
+  };
+  orgs: Map<string, Organization>;
+  /** Post-redirect notice (?ok= / ?err=). */
+  notice: { kind: "ok" | "err"; text: string } | null;
+}
 
 export interface DrawEvidenceRow {
   link: DrawEvidenceLink;
@@ -358,6 +418,8 @@ export interface DrawDetailData {
   canDecide: boolean;
   alreadyDecided: boolean;
   isSubmitter: boolean;
+  /** Lender Review workspace data (assembled only for tab === "lender"). */
+  lender: LenderTabData | null;
 }
 
 const TABS: Array<{ key: DrawTab; label: string }> = [
@@ -368,6 +430,7 @@ const TABS: Array<{ key: DrawTab; label: string }> = [
   { key: "exceptions", label: "Exceptions" },
   { key: "review", label: "Review" },
   { key: "governance", label: "Governance" },
+  { key: "lender", label: "Lender Review" },
   { key: "activity", label: "Activity" },
 ];
 
@@ -435,6 +498,7 @@ export function renderDrawDetail(d: DrawDetailData): string {
       {d.tab === "exceptions" ? renderExceptionsTab(d, exceptions) : null}
       {d.tab === "review" ? renderReviewTab(d, reviewOpen) : null}
       {d.tab === "governance" ? renderGovernanceTab(d) : null}
+      {d.tab === "lender" && d.lender ? renderLenderTab(d, d.lender) : null}
       {d.tab === "activity" ? renderActivityTab(d) : null}
       <script src="/js/poll.js" defer></script>
     </AppShell>
@@ -1249,6 +1313,16 @@ function renderGovernanceTab(d: DrawDetailData): VNode {
         </div>
       </div>
     </>
+  );
+}
+
+function renderLenderTab(d: DrawDetailData, L: LenderTabData): VNode {
+  // Read-only workspace lands in the next commit; the assembly is wired.
+  return (
+    <section className="card pad">
+      <SectionHead title="Lender review" hint="Decision workspace" />
+      <p className="muted">Derived stage: {L.stage ? enumLabel(L.stage) : "Not recorded"}</p>
+    </section>
   );
 }
 
