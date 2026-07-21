@@ -24,6 +24,7 @@
 import * as repo from "../db/repo";
 import { hasActiveMembership, hasCapability, projectHasMemberships, requireAuthority, LenderError } from "./lenderAccess";
 import { canAccessProjectFinance } from "./budgetProgress";
+import { makeWholeCurrency } from "./money";
 import { virtualAccountService } from "./VirtualAccountService";
 import { teamsNotifier } from "./TeamsNotifier";
 import { mirrorEvent, ensureDrawThread } from "./chat";
@@ -52,6 +53,12 @@ export class DrawError extends Error {
 }
 
 const money = (n: number) => "$" + n.toLocaleString("en-US");
+
+/** THE shared whole-currency validator (services/money.ts) bound to
+ *  DrawError: fractional, NaN, infinite, negative and unsafe amounts are
+ *  rejected with 400 — never silently Math.round-ed. Percentages do NOT
+ *  go through this validator. */
+const wholeMoney = makeWholeCurrency((m) => new DrawError(m, 400));
 
 // ------------------------------------------------------------ access
 // Tenant boundary: a draw is visible to the lender/governing organization
@@ -235,10 +242,7 @@ export function createDraw(
   if (repo.listDrawRequestsForProject(project.id).some((d) => d.drawNumber === drawNumber)) {
     throw new DrawError(`Draw #${drawNumber} already exists for this project`, 409);
   }
-  const requestedAmount = Math.round(Number(input.requestedAmount ?? 0));
-  if (!Number.isFinite(requestedAmount) || requestedAmount < 0) {
-    throw new DrawError("requestedAmount must be a non-negative number");
-  }
+  const requestedAmount = wholeMoney(input.requestedAmount ?? 0, "requestedAmount") ?? 0;
   const now = new Date().toISOString();
   const draw: DrawRequest = {
     id: repo.newId(),
@@ -298,10 +302,9 @@ export function updateDraft(
     throw new DrawError(`Draw is ${draw.status} and can no longer be edited`, 409);
   }
   const requestedAmount =
-    patch.requestedAmount !== undefined ? Math.round(Number(patch.requestedAmount)) : undefined;
-  if (requestedAmount !== undefined && (!Number.isFinite(requestedAmount) || requestedAmount < 0)) {
-    throw new DrawError("requestedAmount must be a non-negative number");
-  }
+    patch.requestedAmount !== undefined
+      ? wholeMoney(patch.requestedAmount, "requestedAmount") ?? 0
+      : undefined;
   repo.updateDrawRequest(draw.id, {
     requestedAmount,
     periodStart: patch.periodStart,
@@ -374,11 +377,8 @@ export function addLine(
       );
     }
   }
-  const num = (v: unknown, label: string, min = 0): number => {
-    const n = Math.round(Number(v ?? 0));
-    if (!Number.isFinite(n) || n < min) throw new DrawError(`${label} must be a number >= ${min}`);
-    return n;
-  };
+  const num = (v: unknown, label: string): number =>
+    wholeMoney(v ?? 0, label) ?? 0;
   const line: DrawLineItem = {
     id: repo.newId(),
     drawRequestId: draw.id,
@@ -453,9 +453,8 @@ export function updateLine(
   }
   const num = (v: unknown, label: string): number | undefined => {
     if (v === undefined) return undefined;
-    const n = Math.round(Number(v));
-    if (!Number.isFinite(n) || n < 0) throw new DrawError(`${label} must be a non-negative number`);
-    return n;
+    const n = wholeMoney(v, label);
+    return n === null ? undefined : n;
   };
   // A reviewed line whose requested amount changes LOSES its review: the
   // reviewer assessed the old figure, and a SUPPORTED verdict must never
@@ -614,10 +613,7 @@ export function recordDocument(
     note: input.note?.trim() || null,
     vendor: input.vendor?.trim() || null,
     invoiceNumber: input.invoiceNumber?.trim() || null,
-    amount:
-      input.amount !== undefined && input.amount !== null && String(input.amount) !== ""
-        ? Math.round(Number(input.amount))
-        : null,
+    amount: wholeMoney(input.amount ?? null, "amount"),
     waiverKind: input.waiverKind?.trim() || null,
     waiverScope: input.waiverScope?.trim() || null,
     coveredThrough: input.coveredThrough?.trim() || null,
@@ -910,8 +906,8 @@ export function reviewLine(
   }
   let supportedAmount: number | null = null;
   if (decision === "PARTIALLY_SUPPORTED") {
-    supportedAmount = Math.round(Number(input.supportedAmount));
-    if (!Number.isFinite(supportedAmount) || supportedAmount <= 0 || supportedAmount >= line.currentRequested) {
+    supportedAmount = wholeMoney(input.supportedAmount ?? null, "supportedAmount");
+    if (supportedAmount === null || supportedAmount <= 0 || supportedAmount >= line.currentRequested) {
       throw new DrawError("supportedAmount must be between 0 and the requested line amount (exclusive)");
     }
   }

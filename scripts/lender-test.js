@@ -81,6 +81,29 @@ function financialState() {
   );
 }
 
+/** Governed-evidence fixture: an evidence item on a milestone with an
+ *  optional verification verdict (VERIFIED / NEEDS_REVIEW / REJECTED /
+ *  null = no final verdict yet). */
+function seedEvidence(id, milestoneId, verdict) {
+  exec(
+    `INSERT INTO evidence_items (id, milestone_id, user_id, photo_path, latitude, longitude,
+       captured_at, uploaded_at, device_metadata, hash, previous_hash, is_demo_fallback, submission_key)
+     VALUES (?, ?, 'user-field', '/uploads/demo-fallback.jpg', -11.85, 33.6,
+       '2026-07-10T10:00:00.000Z', '2026-07-10T10:05:00.000Z', '{}', ?, NULL, 0, NULL)`,
+    id, milestoneId, "fixture-" + id
+  );
+  if (verdict) {
+    exec(
+      `INSERT INTO verifications (id, evidence_item_id, verdict, confidence, checks, reasoning, created_at, source, policy_version)
+       VALUES (?, ?, ?, 0.9, '[]', 'test fixture', '2026-07-10T10:06:00.000Z', 'MOCK_DEFAULT', NULL)`,
+      "vf-" + id, id, verdict
+    );
+  }
+}
+function linkIdFor(evidenceId, drawId) {
+  return q1("SELECT id FROM draw_evidence_links WHERE evidence_item_id = ? AND draw_request_id = ?", evidenceId, drawId).id;
+}
+
 /** Minimal in-test ZIP central-directory reader (stored + deflate). */
 function readZip(buf) {
   const files = {};
@@ -677,8 +700,8 @@ function readZip(buf) {
     }
     const stagePostDocReview = await j("funder", "GET", `${D4}/stage`, undefined, 200);
     assert(
-      ["FINANCIAL_DOCUMENTS_REVIEWED", "GOVERNMENT_INSPECTION_CHECKED"].includes(stagePostDocReview.stage),
-      `reviewed documents ground the derived stage (${stagePostDocReview.stage})`
+      stagePostDocReview.stage === "FINANCIAL_DOCUMENTS_REVIEWED",
+      "reviewed documents ground the stage AND an unmapped line blocks GOVERNMENT_INSPECTION_CHECKED (all lines missing milestone mapping)"
     );
     await j("compliance", "POST", `${D4}/governance`, {}, 200);
     const ap4 = q1("SELECT id FROM approval_requests WHERE draw_request_id = ?", d4.id).id;
@@ -972,29 +995,23 @@ function readZip(buf) {
     );
 
     // ---- P·8 complete per-line evidence coverage ----
-    const verEv = q1(
-      `SELECT v.evidence_item_id AS e FROM verifications v
-       JOIN evidence_items ei ON ei.id = v.evidence_item_id
-       JOIN milestones m ON m.id = ei.milestone_id
-       WHERE v.verdict = 'VERIFIED' AND m.project_id = ? LIMIT 1`, P).e;
-    const rejEvRow = q1(
-      `SELECT v.evidence_item_id AS e FROM verifications v
-       JOIN evidence_items ei ON ei.id = v.evidence_item_id
-       JOIN milestones m ON m.id = ei.milestone_id
-       WHERE m.project_id = ? AND v.evidence_item_id != ? LIMIT 1`, P, verEv);
-    exec("UPDATE verifications SET verdict = 'REJECTED' WHERE evidence_item_id = ?", rejEvRow.e);
-    await j("pm", "POST", `${D6}/evidence`, { evidenceItemId: rejEvRow.e, lineItemId: L6.id }, 201);
-    const stageRejectedEv = await j("funder", "GET", `${D6}/stage`, undefined, 200);
-    assert(
-      stageRejectedEv.stage === "GOVERNMENT_INSPECTION_CHECKED",
-      "REJECTED evidence NEVER counts as line coverage — the evidence stage does not derive"
-    );
-    await j("pm", "POST", `${D6}/evidence`, { evidenceItemId: verEv, lineItemId: L6.id }, 201);
+    // Fixture evidence in the LINE'S OWN mapped milestone (msX) — the
+    // evidence→milestone relationship model is what scopes coverage.
+    seedEvidence("ev-fx-msx-ok", msX, "VERIFIED");
+    seedEvidence("ev-fx-msx-rej", msX, "REJECTED");
+    await j("pm", "POST", `${D6}/evidence`, { evidenceItemId: "ev-fx-msx-ok", lineItemId: L6.id }, 201);
     const stageVerifiedEv = await j("funder", "GET", `${D6}/stage`, undefined, 200);
     assert(
       stageVerifiedEv.stage === "EVIDENCE_REVIEW_COMPLETED",
-      "every line covered by VERIFIED evidence derives EVIDENCE_REVIEW_COMPLETED (per-line coverage)"
+      "every line covered by VERIFIED evidence from its own milestone derives EVIDENCE_REVIEW_COMPLETED (per-line coverage)"
     );
+    await j("pm", "POST", `${D6}/evidence`, { evidenceItemId: "ev-fx-msx-rej", lineItemId: L6.id }, 201);
+    const stageRejectedEv = await j("funder", "GET", `${D6}/stage`, undefined, 200);
+    assert(
+      stageRejectedEv.stage === "GOVERNMENT_INSPECTION_CHECKED",
+      "REJECTED evidence NEVER counts — verified plus REJECTED on the same relevant line does not complete"
+    );
+    await j("pm", "POST", `${D6}/evidence/${linkIdFor("ev-fx-msx-rej", d6.id)}/unlink`, {}, 200);
 
     // ---- P·9 chronological membership effective dates ----
     const today = new Date().toISOString().slice(0, 10);
@@ -1160,6 +1177,311 @@ function readZip(buf) {
       "a cross-org CONTRACTOR member can exercise REPORT_CONTRACTOR_COMPLETION (membership access + capability authority)"
     );
     await j("funder", "POST", `/api/memberships/${memContrX.id}/end`, { projectId: P }, 200);
+
+    // ================= PART S · merge-readiness micro-patch =================
+
+    /** Full fixture flow: pm-authored draw through governance to a lender
+     *  decision, returning ids. Lines carry no milestone (funding tests do
+     *  not exercise the inspection surface). */
+    async function fundableDraw(amount, decisionInput) {
+      const d = (await j("pm", "POST", "/api/draws", {
+        projectId: P, requestedAmount: amount, periodStart: "2026-07-01", periodEnd: "2026-07-31",
+      }, 201)).draw;
+      const D_ = `/api/draws/${d.id}`;
+      const l = (await j("pm", "POST", `${D_}/lines`, {
+        description: "Fixture works package", scheduledValue: amount * 2, currentRequested: amount, percentCompleteClaimed: 50,
+      }, 201)).line;
+      await j("pm", "POST", `${D_}/submit`, undefined, 200);
+      await j("compliance", "POST", `${D_}/lines/${l.id}/review`, { decision: "SUPPORTED" }, 200);
+      for (const r of q("SELECT id, title FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1", d.id)) {
+        await j("pm", "POST", `${D_}/documents`, { requirementId: r.id, title: r.title }, 201);
+      }
+      await j("compliance", "POST", `${D_}/governance`, {}, 200);
+      const ap = q1("SELECT id FROM approval_requests WHERE draw_request_id = ?", d.id).id;
+      await j("funder", "POST", `/api/approvals/${ap}/decision`, { decision: "APPROVED" }, 200);
+      await j("compliance", "POST", `/api/approvals/${ap}/decision`, { decision: "APPROVED" }, 200);
+      const decision = (await j("funder", "POST", `${D_}/lender-decision`, decisionInput, 201)).decision;
+      return { d, D: D_, l, decision };
+    }
+    const fundingRow = (id) =>
+      q1("SELECT status, funded_at AS fa, amount_disbursed AS ad FROM external_funding_records WHERE id = ?", id);
+
+    // ---- S·1 funding revalidation is ATOMIC and authoritative ----
+    const F1 = await fundableDraw(50000, {
+      decision: "CONDITIONALLY_APPROVED", approvedAmount: 50000,
+      decisionReason: "Fixture conditional approval",
+      conditions: [{ conditionType: "DOCUMENT", description: "Deliver as-built drawings" }],
+    });
+    const c1 = (await j("funder", "GET", `${F1.D}/lender-decision`, undefined, 200)).conditions[0];
+    await j("funder", "POST", `/api/decision-conditions/${c1.id}`, { status: "SATISFIED" }, 200);
+    const fF = (await j("funder", "POST", `${F1.D}/funding`, { amountScheduled: 50000 }, 201)).funding;
+    await j("funder", "POST", `${F1.D}/lender-decision`, {
+      decision: "CONDITIONALLY_APPROVED", approvedAmount: 50000,
+      decisionReason: "Amendment: restated conditions", supersedesDecisionId: F1.decision.id,
+      conditions: [{ conditionType: "DOCUMENT", description: "Deliver as-built drawings (rev B)" }],
+    }, 201);
+    const staleFF = await api("funder", "POST", `/api/funding/${fF.id}`, { status: "PROCESSING" });
+    const fFRow = fundingRow(fF.id);
+    assert(
+      staleFF.status === 409 && /superseded/.test(await staleFF.text()) &&
+        fFRow.status === "SCHEDULED" && fFRow.fa === null && fFRow.ad === null,
+      "decision superseded after scheduling but before PROCESSING blocks funding — and the failed revalidation mutates NOTHING"
+    );
+    await j("funder", "POST", `/api/funding/${fF.id}`, { status: "CANCELLED" }, 200);
+    const c2 = (await j("funder", "GET", `${F1.D}/lender-decision`, undefined, 200)).conditions[0];
+    await j("funder", "POST", `/api/decision-conditions/${c2.id}`, { status: "SATISFIED" }, 200);
+    const fF2 = (await j("funder", "POST", `${F1.D}/funding`, { amountScheduled: 50000 }, 201)).funding;
+    // Simulate the exact interleaving the transaction must observe: the
+    // condition regresses in the database AFTER scheduling, BEFORE the
+    // transition acquires its write lock.
+    exec("UPDATE lender_decision_conditions SET status = 'FAILED' WHERE id = ?", c2.id);
+    const failedCond = await api("funder", "POST", `/api/funding/${fF2.id}`, { status: "PROCESSING" });
+    assert(
+      failedCond.status === 409 && fundingRow(fF2.id).status === "SCHEDULED",
+      "a condition changed to FAILED after scheduling but before PROCESSING blocks funding (re-read inside the transaction)"
+    );
+    exec("UPDATE lender_decision_conditions SET status = 'SATISFIED' WHERE id = ?", c2.id);
+    await j("funder", "POST", `/api/funding/${fF2.id}`, { status: "PROCESSING" }, 200);
+    exec("UPDATE lender_decision_conditions SET status = 'FAILED' WHERE id = ?", c2.id);
+    const failedBetween = await api("funder", "POST", `/api/funding/${fF2.id}`, {
+      status: "DISBURSED", transactionReference: "WIRE-S1",
+    });
+    const fF2Row = fundingRow(fF2.id);
+    assert(
+      failedBetween.status === 409 && fF2Row.status === "PROCESSING" && fF2Row.ad === null && fF2Row.fa === null,
+      "a condition changed BETWEEN PROCESSING and DISBURSED blocks disbursement with no funding mutation"
+    );
+    exec("UPDATE lender_decision_conditions SET status = 'SATISFIED' WHERE id = ?", c2.id);
+    await j("funder", "POST", `/api/funding/${fF2.id}`, { status: "DISBURSED", transactionReference: "WIRE-S1" }, 200);
+    pass("with every check clean again the same transition commits (the revalidation is the only gate)");
+
+    const H = await fundableDraw(50000, {
+      decision: "APPROVED", approvedAmount: 50000, decisionReason: "Fixture full approval",
+    });
+    const fH = (await j("funder", "POST", `${H.D}/funding`, { amountScheduled: 50000 }, 201)).funding;
+    const [amendRes, procRes] = await Promise.all([
+      api("funder", "POST", `${H.D}/lender-decision`, {
+        decision: "REDUCED", approvedAmount: 40000, reducedAmount: 10000,
+        decisionReason: "Concurrent amendment", supersedesDecisionId: H.decision.id,
+      }),
+      api("funder", "POST", `/api/funding/${fH.id}`, { status: "PROCESSING" }),
+    ]);
+    const fHRow = fundingRow(fH.id);
+    const procOk = procRes.status === 200;
+    assert(
+      amendRes.status === 201 &&
+        ((procOk && fHRow.status === "PROCESSING") || (!procOk && procRes.status === 409 && fHRow.status === "SCHEDULED")) &&
+        fHRow.ad === null,
+      `concurrent decision + funding transitions serialize to one consistent outcome (funding ${fHRow.status}, no disbursement)`
+    );
+    const hDisb = await api("funder", "POST", `/api/funding/${fH.id}`, {
+      status: "DISBURSED", transactionReference: "WIRE-S2",
+    });
+    assert(
+      hDisb.status === 409 && fundingRow(fH.id).ad === null,
+      "after the concurrent supersede, disbursement is blocked either way — the superseded decision is always observed"
+    );
+    // FAILED → SCHEDULED rescheduling stays controlled against the
+    // one-active-record index.
+    await j("funder", "POST", `/api/funding/${fH.id}`, { status: "FAILED", failureReason: "Wire recalled by bank" }, 200);
+    const fH2 = (await j("funder", "POST", `${H.D}/funding`, { amountScheduled: 40000 }, 201)).funding;
+    const rescheduleClash = await api("funder", "POST", `/api/funding/${fH.id}`, { status: "SCHEDULED" });
+    assert(
+      rescheduleClash.status === 409 && fundingRow(fH.id).status === "FAILED",
+      "rescheduling a FAILED record while another is in flight is a controlled 409 (one active record, DB-enforced)"
+    );
+    await j("funder", "POST", `/api/funding/${fH2.id}`, { status: "FAILED", failureReason: "Beneficiary account closed" }, 200);
+    await j("funder", "POST", `/api/funding/${fH.id}`, { status: "SCHEDULED" }, 200);
+    pass("with no record in flight the FAILED record reschedules cleanly");
+
+    // ---- S·2 line-specific evidence coverage ----
+    for (const [ms, basis] of [["ms-3", "Base-course works"], ["ms-5", "Surfacing works"]]) {
+      await j("funder", "POST", `/api/milestones/${ms}/inspection-requirement`, {
+        requirement: "NOT_REQUIRED", requirementBasis: `${basis}: no jurisdictional inspection applies (district determination)`,
+      }, 200);
+    }
+    const dE = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 90000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
+    const DE = `/api/draws/${dE.id}`;
+    const lineOn = async (ms, amount, desc) =>
+      (await j("pm", "POST", `${DE}/lines`, {
+        description: desc, scheduledValue: amount * 2, currentRequested: amount, percentCompleteClaimed: 50, milestoneId: ms,
+      }, 201)).line;
+    const lE3 = await lineOn("ms-3", 30000, "Base course section");
+    const lE4 = await lineOn(msX, 30000, "Culvert headwall section");
+    const lE5 = await lineOn("ms-5", 30000, "Surfacing section");
+    await j("pm", "POST", `${DE}/submit`, undefined, 200);
+    for (const l of [lE3, lE4, lE5]) {
+      await j("compliance", "POST", `${DE}/lines/${l.id}/review`, { decision: "SUPPORTED" }, 200);
+    }
+    for (const r of q("SELECT id, title FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1", dE.id)) {
+      const doc = (await j("pm", "POST", `${DE}/documents`, { requirementId: r.id, title: r.title }, 201)).document;
+      await j("compliance", "POST", `${DE}/documents/${doc.id}/review`, { decision: "ACCEPTED" }, 200);
+    }
+    assert(
+      (await j("funder", "GET", `${DE}/stage`, undefined, 200)).stage === "GOVERNMENT_INSPECTION_CHECKED",
+      "every line mapped, with attributable NOT_REQUIRED determinations and one PASSED required inspection, satisfies the government stage"
+    );
+    seedEvidence("ev-s2-ms3", "ms-3", "VERIFIED");
+    seedEvidence("ev-s2-ms4", msX, "VERIFIED");
+    seedEvidence("ev-s2-ms5", "ms-5", "VERIFIED");
+    seedEvidence("ev-s2-ms5-needs", "ms-5", "NEEDS_REVIEW");
+    seedEvidence("ev-s2-ms5-rej", "ms-5", "REJECTED");
+    seedEvidence("ev-s2-ms5-unverified", "ms-5", null);
+    await j("pm", "POST", `${DE}/evidence`, { evidenceItemId: "ev-s2-ms3" }, 201); // draw-level
+    assert(
+      (await j("funder", "GET", `${DE}/stage`, undefined, 200)).stage === "GOVERNMENT_INSPECTION_CHECKED",
+      "ONE draw-level verified item with three lines does not complete coverage (it reaches only its own milestone's line)"
+    );
+    await j("pm", "POST", `${DE}/evidence`, { evidenceItemId: "ev-s2-ms4", lineItemId: lE4.id }, 201);
+    assert(
+      (await j("funder", "GET", `${DE}/stage`, undefined, 200)).stage === "GOVERNMENT_INSPECTION_CHECKED",
+      "two of three lines covered does not complete the evidence stage"
+    );
+    await j("pm", "POST", `${DE}/evidence`, { evidenceItemId: "ev-s2-ms3", lineItemId: lE5.id }, 201);
+    assert(
+      (await j("funder", "GET", `${DE}/stage`, undefined, 200)).stage === "GOVERNMENT_INSPECTION_CHECKED",
+      "evidence from an UNRELATED milestone cannot cover the line (supplemental only)"
+    );
+    await j("pm", "POST", `${DE}/evidence`, { evidenceItemId: "ev-s2-ms5", lineItemId: lE5.id }, 201);
+    assert(
+      (await j("funder", "GET", `${DE}/stage`, undefined, 200)).stage === "EVIDENCE_REVIEW_COMPLETED",
+      "each line directly covered (or via its own milestone's draw-level evidence) completes the evidence stage"
+    );
+    await j("pm", "POST", `${DE}/evidence`, { evidenceItemId: "ev-s2-ms5-needs", lineItemId: lE5.id }, 201);
+    assert(
+      (await j("funder", "GET", `${DE}/stage`, undefined, 200)).stage === "GOVERNMENT_INSPECTION_CHECKED",
+      "verified plus NEEDS_REVIEW on the same relevant line does not complete"
+    );
+    await j("pm", "POST", `${DE}/evidence/${linkIdFor("ev-s2-ms5-needs", dE.id)}/unlink`, {}, 200);
+    await j("pm", "POST", `${DE}/evidence`, { evidenceItemId: "ev-s2-ms5-rej", lineItemId: lE5.id }, 201);
+    assert(
+      (await j("funder", "GET", `${DE}/stage`, undefined, 200)).stage === "GOVERNMENT_INSPECTION_CHECKED",
+      "verified plus REJECTED on the same relevant line does not complete (exception/correction path applies)"
+    );
+    await j("pm", "POST", `${DE}/evidence/${linkIdFor("ev-s2-ms5-rej", dE.id)}/unlink`, {}, 200);
+    await j("pm", "POST", `${DE}/evidence`, { evidenceItemId: "ev-s2-ms5-unverified", lineItemId: lE5.id }, 201);
+    assert(
+      (await j("funder", "GET", `${DE}/stage`, undefined, 200)).stage === "GOVERNMENT_INSPECTION_CHECKED",
+      "a relevant link with NO final verdict blocks completion"
+    );
+    await j("pm", "POST", `${DE}/evidence/${linkIdFor("ev-s2-ms5-unverified", dE.id)}/unlink`, {}, 200);
+
+    // ---- S·3 milestone mapping required for the government stage ----
+    const dP2 = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 40000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
+    const DP2 = `/api/draws/${dP2.id}`;
+    const lM = (await j("pm", "POST", `${DP2}/lines`, {
+      description: "Mapped section", scheduledValue: 40000, currentRequested: 20000, percentCompleteClaimed: 50, milestoneId: "ms-3",
+    }, 201)).line;
+    const lU = (await j("pm", "POST", `${DP2}/lines`, {
+      description: "Unmapped section", scheduledValue: 40000, currentRequested: 20000, percentCompleteClaimed: 50,
+    }, 201)).line;
+    await j("pm", "POST", `${DP2}/submit`, undefined, 200);
+    await j("compliance", "POST", `${DP2}/lines/${lM.id}/review`, { decision: "SUPPORTED" }, 200);
+    await j("compliance", "POST", `${DP2}/lines/${lU.id}/review`, { decision: "SUPPORTED" }, 200);
+    for (const r of q("SELECT id, title FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1", dP2.id)) {
+      const doc = (await j("pm", "POST", `${DP2}/documents`, { requirementId: r.id, title: r.title }, 201)).document;
+      await j("compliance", "POST", `${DP2}/documents/${doc.id}/review`, { decision: "ACCEPTED" }, 200);
+    }
+    assert(
+      (await j("funder", "GET", `${DP2}/stage`, undefined, 200)).stage === "FINANCIAL_DOCUMENTS_REVIEWED",
+      "ONE of several lines missing its milestone mapping blocks the government stage (data incomplete, never filtered away)"
+    );
+
+    // ---- S·4 lien-waiver TRANSITION dates are strictly validated ----
+    const wS = (await j("funder", "POST", `${DE}/lien-waivers`, {
+      signingParty: "Fixture Contractor Ltd", waiverType: "CONDITIONAL", waiverScope: "PARTIAL",
+    }, 201)).waiver;
+    for (const bad of ["07/20/2026", "2026-02-30", "2026-07-20T10:00:00", "not-a-date"]) {
+      const res = await api("funder", "POST", `/api/lien-waivers/${wS.id}`, { status: "RECEIVED", signatureDate: bad });
+      if (res.status !== 400) fail(`lien-waiver transition accepted invalid signatureDate ${bad} (status ${res.status})`);
+    }
+    assert(
+      q1("SELECT status FROM lien_waiver_records WHERE id = ?", wS.id).status === "REQUIRED",
+      "locale-formatted, impossible, timezone-less and malformed transition dates are ALL rejected with no state change"
+    );
+    const wRecv = await j("funder", "POST", `/api/lien-waivers/${wS.id}`, { status: "RECEIVED", signatureDate: "2026-07-19" }, 200);
+    assert(wRecv.waiver.signatureDate === "2026-07-19", "a valid ISO transition signatureDate is stored");
+    const wReview = await j("funder", "POST", `/api/lien-waivers/${wS.id}`, { status: "UNDER_REVIEW" }, 200);
+    assert(wReview.waiver.signatureDate === "2026-07-19", "a transition without a signatureDate preserves the stored date (null/no-change behavior)");
+
+    // ---- S·5 membership termination is project-scoped ----
+    const projCols = q("PRAGMA table_info(projects)").map((c) => c.name);
+    exec(
+      `INSERT INTO projects SELECT ${projCols
+        .map((c) => (c === "id" ? "'proj-x2'" : c === "organization_id" ? "'org-x'" : c === "name" ? "'Second Tenant Project'" : c))
+        .join(", ")} FROM projects WHERE id = '${P}'`
+    );
+    await j("tenantx", "POST", "/api/projects/proj-x2/memberships", {
+      userId: "user-x", participantType: "ADMINISTRATOR",
+    }, 201);
+    const memF2 = (await j("tenantx", "POST", "/api/projects/proj-x2/memberships", {
+      userId: "user-field", participantType: "INSPECTOR",
+    }, 201)).membership;
+    const crossEnd = await api("funder", "POST", `/api/memberships/${memF2.id}/end`, { projectId: P });
+    assert(
+      crossEnd.status === 404 && q1("SELECT active FROM project_memberships WHERE id = ?", memF2.id).active === 1,
+      "an administrator of project A cannot terminate project B's membership — same 404 as a missing membership, row untouched"
+    );
+    const noAccessEnd = await api("funder", "POST", `/api/memberships/${memF2.id}/end`, { projectId: "proj-x2" });
+    assert(noAccessEnd.status === 404, "without access to project B the same call is an indistinguishable 404");
+    const pmMembershipOnP = q1(
+      "SELECT id FROM project_memberships WHERE project_id = ? AND user_id = 'user-pm' AND active = 1", P).id;
+    const reverseCross = await api("tenantx", "POST", `/api/memberships/${pmMembershipOnP}/end`, { projectId: "proj-x2" });
+    assert(
+      reverseCross.status === 404 && q1("SELECT active FROM project_memberships WHERE id = ?", pmMembershipOnP).active === 1,
+      "the other direction holds too: project B's administrator cannot terminate project A's membership"
+    );
+    const ghostEnd = await api("funder", "POST", "/api/memberships/mem-nonexistent/end", { projectId: P });
+    assert(ghostEnd.status === 404, "a nonexistent membership id returns the identical 404");
+    await j("tenantx", "POST", `/api/memberships/${memF2.id}/end`, { projectId: "proj-x2" }, 200);
+    const reEnd = await api("tenantx", "POST", `/api/memberships/${memF2.id}/end`, { projectId: "proj-x2" });
+    assert(reEnd.status === 409, "re-terminating an ended membership is a controlled conflict (guarded update)");
+
+    // ---- S·6 whole-currency validation on core draw records ----
+    const fracCreate = await api("pm", "POST", "/api/draws", {
+      projectId: P, requestedAmount: 100.5, periodStart: "2026-07-01", periodEnd: "2026-07-31",
+    });
+    assert(fracCreate.status === 400 && /whole-currency/.test(await fracCreate.text()),
+      "a fractional DrawRequest.requestedAmount is rejected 400 — never silently rounded");
+    const dW = (await j("pm", "POST", "/api/draws", {
+      projectId: P, requestedAmount: 1000, periodStart: "2026-07-01", periodEnd: "2026-07-31",
+    }, 201)).draw;
+    const DW = `/api/draws/${dW.id}`;
+    assert((await api("pm", "POST", `${DW}/update`, { requestedAmount: 999.9 })).status === 400,
+      "a fractional draft-update requestedAmount is rejected 400");
+    assert((await api("pm", "POST", `${DW}/lines`, { description: "x", scheduledValue: 10.5, currentRequested: 5 })).status === 400,
+      "a fractional line scheduledValue is rejected 400");
+    assert((await api("pm", "POST", `${DW}/lines`, { description: "x", scheduledValue: 10, previouslyPaid: 7.7, currentRequested: 5 })).status === 400,
+      "a fractional line previouslyPaid is rejected 400");
+    assert((await api("pm", "POST", `${DW}/lines`, { description: "x", scheduledValue: 10, currentRequested: 3.3 })).status === 400,
+      "a fractional line currentRequested is rejected 400");
+    assert((await api("pm", "POST", `${DW}/lines`, { description: "x", scheduledValue: 10, currentRequested: 5, materialsStored: 2.5 })).status === 400,
+      "a fractional line materialsStored is rejected 400");
+    assert((await api("pm", "POST", `${DW}/lines`, { description: "x", scheduledValue: 10, currentRequested: 5, retainageAmount: 1.1 })).status === 400,
+      "a fractional line retainageAmount is rejected 400");
+    const okLine = (await j("pm", "POST", `${DW}/lines`, {
+      description: "Whole-currency line", scheduledValue: 2000, currentRequested: 1000, percentCompleteClaimed: 33.3,
+    }, 201)).line;
+    assert(
+      okLine.percentCompleteClaimed === 33.3,
+      "percentages are NOT currency — a fractional percentCompleteClaimed is accepted unchanged"
+    );
+    assert((await api("pm", "POST", `${DW}/lines/${okLine.id}/update`, { previouslyPaid: 5.5 })).status === 400,
+      "a fractional line-update amount is rejected 400");
+    assert((await api("pm", "POST", `${DW}/documents`, { title: "Invoice", amount: 99.99 })).status === 400,
+      "a fractional DrawDocument.amount is rejected 400");
+    const fracReview = await api("compliance", "POST", `${DP2}/lines/${lM.id}/review`, {
+      decision: "PARTIALLY_SUPPORTED", supportedAmount: 10.5, reason: "partial",
+    });
+    assert(fracReview.status === 400, "a fractional review supportedAmount is rejected 400");
+    assert((await api("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 9007199254740993 })).status === 400,
+      "an unsafe integer amount is rejected 400");
+    assert((await api("pm", "POST", "/api/draws", { projectId: P, requestedAmount: "abc" })).status === 400,
+      "a NaN amount is rejected 400");
+    assert((await api("pm", "POST", "/api/draws", { projectId: P, requestedAmount: "Infinity" })).status === 400,
+      "an infinite amount is rejected 400");
+    assert((await api("pm", "POST", "/api/draws", { projectId: P, requestedAmount: -5 })).status === 400,
+      "a negative amount is rejected 400");
 
     console.log(`\nLENDER-PILOT DOMAIN TESTS PASSED — ${n} checkpoints.`);
   } finally {

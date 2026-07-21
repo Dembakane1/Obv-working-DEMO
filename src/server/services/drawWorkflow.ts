@@ -49,15 +49,23 @@
  *      step, so a vacuously-true later check can never mask an unfinished
  *      earlier one:
  *      15. EVIDENCE_REVIEW_COMPLETED  — steps 17+16 hold AND every draw
- *                                   line is covered by ≥1 evidence link
- *                                   whose VerificationAggregator verdict
- *                                   is VERIFIED (line-scoped or
- *                                   draw-level); REJECTED or NEEDS_REVIEW
- *                                   evidence never counts as coverage and
- *                                   nothing is inferred from an
- *                                   independent inspection report
- *      16. GOVERNMENT_INSPECTION_CHECKED — step 17 holds AND every
- *                                   draw-line milestone clears the FULL
+ *                                   line has ≥1 RELEVANT VERIFIED link
+ *                                   (line-scoped, or draw-level evidence
+ *                                   belonging to the line's mapped
+ *                                   milestone) and every relevant link
+ *                                   has a final verdict; a draw-level
+ *                                   link never blanket-covers all lines,
+ *                                   unrelated-milestone evidence never
+ *                                   covers a line, NEEDS_REVIEW and
+ *                                   REJECTED block, and nothing is
+ *                                   inferred from an independent
+ *                                   inspection report
+ *      16. GOVERNMENT_INSPECTION_CHECKED — step 17 holds AND every draw
+ *                                   line MAPS TO A MILESTONE (an
+ *                                   unmapped line is incomplete data and
+ *                                   blocks — never filtered into a
+ *                                   vacuous pass) AND every mapped
+ *                                   milestone clears the FULL
  *                                   completion-gate inspection surface
  *                                   (inspectionSurfaceClean): no
  *                                   inspection, reinspection, permit or
@@ -195,32 +203,65 @@ function financialDocumentsReviewed(draw: DrawRequest): boolean {
  *  evaluated INDEPENDENTLY of tranche accountStatus so a RELEASED
  *  milestone keeps its inspection truth (a FAILED inspection or an
  *  UNDETERMINED requirement on a released milestone still blocks). An
- *  UNDETERMINED requirement never behaves as NOT_REQUIRED. Lines without
- *  a milestone contribute no inspection surface. */
+ *  UNDETERMINED requirement never behaves as NOT_REQUIRED, and every draw
+ *  line MUST map to a milestone — an unmapped line is incomplete data and
+ *  blocks the stage (never filtered into a vacuous pass). */
 function governmentInspectionsChecked(draw: DrawRequest): boolean {
   const lines = repo.listDrawLines(draw.id);
   if (lines.length === 0 || lines.some((l) => l.status === "PENDING")) return false;
-  const milestoneIds = [...new Set(lines.map((l) => l.milestoneId).filter((id): id is string => Boolean(id)))];
+  // DATA COMPLETENESS: every draw line must map to a milestone — an
+  // unmapped line means the government-inspection surface CANNOT be
+  // evaluated for that work, so the stage is incomplete. Unmapped lines
+  // are never filtered away into a vacuous pass.
+  if (lines.some((l) => !l.milestoneId)) return false;
+  const milestoneIds = [...new Set(lines.map((l) => l.milestoneId as string))];
+  // Explicit guard: an empty milestone set must never satisfy the stage
+  // through empty-array .every() (unreachable given the check above, but
+  // the invariant is stated in code, not implied).
+  if (milestoneIds.length === 0) return false;
   return milestoneIds.every((milestoneId) => completionGates.inspectionSurfaceClean(milestoneId));
 }
 
-/** COMPLETE per-line evidence coverage: every draw line must be covered by
- *  at least one evidence link whose VerificationAggregator verdict is
- *  VERIFIED — a link scoped to that line, or a draw-level link (no
- *  lineItemId). REJECTED or NEEDS_REVIEW evidence is NEVER counted as
- *  coverage: rejected evidence does not complete anything. */
+/**
+ * LINE-SPECIFIC evidence coverage. A single draw-level link never
+ * blanket-covers all lines. For every draw line, the RELEVANT links are:
+ *   - links scoped to that line whose evidence belongs to the line's
+ *     mapped milestone (or the line has no milestone) — evidence from an
+ *     unrelated milestone can never cover the line's work scope; and
+ *   - draw-level links (no lineItemId) whose evidence belongs to the
+ *     line's mapped milestone — the existing evidence→milestone
+ *     relationship model is the explicit work-scope association.
+ * Any other link is SUPPLEMENTAL: it neither covers nor completes.
+ * The stage completes only when every line has ≥1 relevant VERIFIED link
+ * and EVERY relevant link carries a final verdict — a missing verdict or
+ * NEEDS_REVIEW blocks completion, and REJECTED blocks completion until
+ * the applicable exception/correction path replaces or removes it. */
 function evidenceReviewCompleted(draw: DrawRequest): boolean {
   const lines = repo.listDrawLines(draw.id);
   const links = repo.listDrawEvidenceLinks(draw.id);
   if (links.length === 0 || lines.length === 0) return false;
-  const linkVerified = (link: { evidenceItemId: string }): boolean => {
-    const verification = repo.getVerificationForEvidence(link.evidenceItemId);
-    return verification !== null && verification.verdict === "VERIFIED";
-  };
-  const drawLevelVerified = links.some((l) => !l.lineItemId && linkVerified(l));
-  return lines.every(
-    (line) => drawLevelVerified || links.some((l) => l.lineItemId === line.id && linkVerified(l))
-  );
+  const evidenceMilestone = (evidenceItemId: string): string | null =>
+    repo.getEvidence(evidenceItemId)?.milestoneId ?? null;
+  return lines.every((line) => {
+    const relevant = links.filter((l) => {
+      const scope = evidenceMilestone(l.evidenceItemId);
+      if (l.lineItemId === line.id) {
+        return line.milestoneId === null || scope === line.milestoneId;
+      }
+      if (l.lineItemId) return false; // scoped to a different line
+      return line.milestoneId !== null && scope === line.milestoneId;
+    });
+    if (relevant.length === 0) return false;
+    let covered = false;
+    for (const l of relevant) {
+      const verification = repo.getVerificationForEvidence(l.evidenceItemId);
+      if (!verification) return false; // no final verdict yet
+      if (verification.verdict === "NEEDS_REVIEW") return false;
+      if (verification.verdict === "REJECTED") return false;
+      if (verification.verdict === "VERIFIED") covered = true;
+    }
+    return covered;
+  });
 }
 
 /** Append an observation when the derived stage changed. Mutating actions

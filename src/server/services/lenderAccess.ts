@@ -234,5 +234,18 @@ export function assignMembership(
 export function endMembership(user: User, projectId: string, membershipId: string): void {
   const project = assertProjectAccess(user, projectId);
   assertCapability(user, project.id, "MANAGE_USERS");
-  lrepo.deactivateMembership(membershipId, new Date().toISOString());
+  // Termination scope: the membership must EXIST and belong to the SAME
+  // project the caller was authorized against. A missing membership and a
+  // membership of another project return the identical 404 — MANAGE_USERS
+  // on one project can never reach another project's memberships, and
+  // nothing about other projects' rows is disclosed.
+  const membership = lrepo.getMembership(membershipId);
+  if (!membership || membership.projectId !== project.id) {
+    throw new LenderError("Membership not found", 404);
+  }
+  // Guarded update (id + project + still-active): a concurrent or repeated
+  // termination is a controlled 409, never a silent double-apply.
+  if (!lrepo.deactivateMembershipGuarded(membershipId, project.id, new Date().toISOString())) {
+    throw new LenderError("The membership was already ended (or ended concurrently)", 409);
+  }
 }

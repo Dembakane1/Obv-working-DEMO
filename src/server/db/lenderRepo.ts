@@ -822,6 +822,25 @@ export function deactivateMembership(id: string, effectiveTo: string): void {
     .run(effectiveTo, id);
 }
 
+export function getMembership(id: string): ProjectMembership | null {
+  const r = getDb().prepare("SELECT * FROM project_memberships WHERE id = ?").get(id);
+  return r ? toMembership(r as Row) : null;
+}
+
+/** Project-scoped, guarded termination: the UPDATE requires the membership
+ *  to belong to the supplied project AND still be active, so a concurrent
+ *  (or repeated) termination is a controlled zero-change result — never a
+ *  cross-project or double-applied deactivation. Returns true when exactly
+ *  one row changed. */
+export function deactivateMembershipGuarded(id: string, projectId: string, effectiveTo: string): boolean {
+  const res = getDb()
+    .prepare(
+      "UPDATE project_memberships SET active = 0, effective_to = ? WHERE id = ? AND project_id = ? AND active = 1"
+    )
+    .run(effectiveTo, id, projectId);
+  return res.changes === 1;
+}
+
 // -------------------------------------------------- lender policy
 
 function toPolicy(r: Row): LenderDrawPolicy {
@@ -1391,28 +1410,98 @@ export function disbursedTotal(drawRequestId: string): number {
  *  prior status (optimistic concurrency: a concurrent transition surfaces
  *  as CONFLICT — never a double-applied status or a lost update) and with
  *  the cumulative-cap check for disbursements. */
+/**
+ * Funding transition inside ONE BEGIN IMMEDIATE transaction that is the
+ * AUTHORITATIVE revalidation point. After the write lock is obtained,
+ * everything is re-read from the database — so a lender-decision
+ * supersede or a condition transition committed before this transaction
+ * acquired its lock is always observed and blocks funding:
+ *
+ *   - the funding record must still hold the OBSERVED prior status
+ *     (optimistic concurrency → CONFLICT, one success + one 409);
+ *   - for PROCESSING / DISBURSED (the money-adjacent transitions):
+ *       · the record's lenderDecisionId must reference an existing
+ *         decision of the SAME draw;
+ *       · that decision must not be superseded;
+ *       · its type must be APPROVED, REDUCED or CONDITIONALLY_APPROVED;
+ *       · every decision condition must be SATISFIED or WAIVED;
+ *       · the pending amount must fit the remaining approved balance —
+ *         cumulative non-reversed disbursements never exceed
+ *         approvedAmount;
+ *       · a confirmationDocumentId in the patch must belong to the same
+ *         draw.
+ *
+ * The transition commits only when every check passes; any failure rolls
+ * back with NO mutation of the funding record.
+ */
 export function transitionFundingTx(
   id: string,
   expectedStatus: string,
-  patch: Partial<ExternalFundingRecord>,
-  cap: { approvedAmount: number | null; drawRequestId: string } | null
+  patch: Partial<ExternalFundingRecord>
 ): void {
   const db = getDb();
   db.exec("BEGIN IMMEDIATE");
   try {
-    const row = db.prepare("SELECT status FROM external_funding_records WHERE id = ?").get(id) as
-      | { status: string }
+    const row = db
+      .prepare(
+        "SELECT status, draw_request_id, lender_decision_id, amount_scheduled FROM external_funding_records WHERE id = ?"
+      )
+      .get(id) as
+      | { status: string; draw_request_id: string; lender_decision_id: string | null; amount_scheduled: number | null }
       | undefined;
     if (!row || row.status !== expectedStatus) {
       throw new Error("CONFLICT: funding record transitioned concurrently");
     }
-    if (patch.status === "DISBURSED" && cap && cap.approvedAmount !== null) {
-      const already = disbursedTotal(cap.drawRequestId);
-      const amount = patch.amountDisbursed ?? 0;
-      if (already + amount > cap.approvedAmount) {
+    if (patch.status === "PROCESSING" || patch.status === "DISBURSED") {
+      const decision = row.lender_decision_id
+        ? (db
+            .prepare(
+              "SELECT draw_request_id, superseded_by_decision_id, decision, approved_amount FROM lender_draw_decisions WHERE id = ?"
+            )
+            .get(row.lender_decision_id) as
+            | { draw_request_id: string; superseded_by_decision_id: string | null; decision: string; approved_amount: number | null }
+            | undefined)
+        : undefined;
+      if (!decision || decision.draw_request_id !== row.draw_request_id) {
+        throw new Error("REVALIDATION: Funding requires the lender decision it executes");
+      }
+      if (decision.superseded_by_decision_id !== null) {
         throw new Error(
-          `CAP: cumulative disbursements (${already + amount}) would exceed the lender-approved amount (${cap.approvedAmount})`
+          "REVALIDATION: The lender decision behind this funding record has been superseded — cancel and reschedule against the current decision"
         );
+      }
+      if (!["APPROVED", "REDUCED", "CONDITIONALLY_APPROVED"].includes(decision.decision)) {
+        throw new Error(`REVALIDATION: A ${decision.decision} decision cannot be funded`);
+      }
+      const blocking = db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM lender_decision_conditions WHERE lender_decision_id = ? AND status NOT IN ('SATISFIED', 'WAIVED')"
+        )
+        .get(row.lender_decision_id) as { c: number };
+      if (Number(blocking.c) > 0) {
+        throw new Error(
+          `REVALIDATION: Funding cannot proceed while ${blocking.c} decision condition(s) are unsatisfied and unwaived`
+        );
+      }
+      if (decision.approved_amount !== null) {
+        const pending =
+          patch.status === "DISBURSED"
+            ? patch.amountDisbursed ?? row.amount_scheduled ?? 0
+            : row.amount_scheduled ?? 0;
+        const already = disbursedTotal(row.draw_request_id);
+        if (already + pending > decision.approved_amount) {
+          throw new Error(
+            `CAP: cumulative disbursements (${already + pending}) would exceed the lender-approved amount (${decision.approved_amount})`
+          );
+        }
+      }
+      if (patch.confirmationDocumentId) {
+        const doc = db
+          .prepare("SELECT draw_request_id FROM draw_documents WHERE id = ?")
+          .get(patch.confirmationDocumentId) as { draw_request_id: string } | undefined;
+        if (!doc || doc.draw_request_id !== row.draw_request_id) {
+          throw new Error("REVALIDATION: confirmationDocumentId does not belong to this draw");
+        }
       }
     }
     updateFundingRecord(id, patch);

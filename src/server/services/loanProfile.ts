@@ -13,6 +13,7 @@ import * as repo from "../db/repo";
 import * as lrepo from "../db/lenderRepo";
 import { audit, snapshotProject } from "./pilot/onboarding";
 import { parseIsoDate } from "./permits";
+import { makeWholeCurrency } from "./money";
 import {
   LenderError,
   assertCapability,
@@ -56,17 +57,10 @@ function assertUserRef(id: string | null | undefined, label: string): string | n
   return v;
 }
 
-/** STRICT normalized whole-currency validation: normalized with Number(),
- *  must be a finite non-negative INTEGER. Fractional amounts are rejected,
- *  never silently rounded. */
-const num = (v: unknown): number | null => {
-  if (v === null || v === undefined || v === "") return null;
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
-    throw new LenderError("Amounts must be non-negative whole-currency amounts (integers)", 400);
-  }
-  return n;
-};
+/** STRICT normalized whole-currency validation via the ONE shared
+ *  validator (services/money.ts), bound to LenderError. */
+const wholeCurrency = makeWholeCurrency((m) => new LenderError(m, 400));
+const num = (v: unknown): number | null => wholeCurrency(v, "Amount");
 
 // ------------------------------------------------------------ loan asset
 

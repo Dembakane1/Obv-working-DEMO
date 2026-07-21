@@ -15,6 +15,7 @@ import * as lrepo from "../db/lenderRepo";
 import { teamsNotifier } from "./TeamsNotifier";
 import { LenderError, assertCapability, assertProjectAccess } from "./lenderAccess";
 import { parseIsoDate, PermitError } from "./permits";
+import { makeWholeCurrency } from "./money";
 import type {
   DrawRequest,
   ExternalFundingRecord,
@@ -58,17 +59,10 @@ export function openConditions(decisionId: string): LenderDecisionCondition[] {
 }
 
 /** STRICT normalized whole-currency validation, shared by decisions,
- *  waivers and funding: the value is normalized with Number() and must be
- *  a finite, non-negative INTEGER. Fractional or non-numeric amounts are
- *  rejected with 400 — never silently rounded. */
-export function wholeAmount(raw: unknown, label: string): number | null {
-  if (raw === null || raw === undefined || raw === "") return null;
-  const v = Number(raw);
-  if (!Number.isFinite(v) || v < 0 || !Number.isInteger(v)) {
-    throw new LenderError(`${label} must be a non-negative whole-currency amount (integer)`, 400);
-  }
-  return v;
-}
+ *  waivers and funding — the ONE shared validator (services/money.ts)
+ *  bound to LenderError: fractional, NaN, infinite, negative and unsafe
+ *  values are rejected with 400, never silently rounded. */
+export const wholeAmount = makeWholeCurrency((m) => new LenderError(m, 400));
 
 // ------------------------------------------------------------ decisions
 
@@ -513,7 +507,10 @@ export function transitionLienWaiver(
     reviewedByUserId: ["UNDER_REVIEW", "ACCEPTED", "REJECTED"].includes(input.status) ? user.id : waiver.reviewedByUserId,
     rejectionReason: input.status === "REJECTED" ? input.rejectionReason!.trim() : waiver.rejectionReason,
     drawDocumentId: input.drawDocumentId ?? waiver.drawDocumentId,
-    signatureDate: input.signatureDate?.trim() || waiver.signatureDate,
+    // Strict permit-module date validation on the TRANSITION path too:
+    // locale-formatted, impossible, timezone-less or malformed dates are
+    // rejected; an absent/empty value preserves the stored date.
+    signatureDate: parseIsoDate(input.signatureDate, "signatureDate") ?? waiver.signatureDate,
   });
   const updated = lrepo.getLienWaiver(waiverId)!;
   if (input.status === "ACCEPTED") {
@@ -726,29 +723,32 @@ export function transitionFunding(
     patch.reversedAt = now;
   }
   if (input.status === "CLOSED") patch.closedAt = now;
-  // Transactional write with the cumulative-disbursement cap: total
-  // non-reversed external disbursements can never exceed the lender-
-  // approved amount. The FINALIZED lender decision itself is NEVER
-  // mutated — funded state is DERIVED from ExternalFundingRecord and
-  // shown as workflow/payment status.
-  const capDecision = record.lenderDecisionId ? lrepo.getLenderDecision(record.lenderDecisionId) : null;
+  // AUTHORITATIVE revalidation happens INSIDE transitionFundingTx, after
+  // its BEGIN IMMEDIATE write lock: prior status, current decision (same
+  // draw, not superseded, fundable type), every condition SATISFIED or
+  // WAIVED, the cumulative-disbursement cap and the confirmation-document
+  // ownership are all re-read from the database in the same transaction —
+  // a supersede or condition change committed before the lock is always
+  // observed and blocks funding with NO mutation. The service checks above
+  // are an early-exit courtesy only. The FINALIZED lender decision itself
+  // is NEVER mutated — funded state is DERIVED from ExternalFundingRecord.
   try {
-    // Guarded on the OBSERVED prior status: a concurrent transition of the
-    // same record is one success + one 409, never a double-applied status.
-    lrepo.transitionFundingTx(
-      fundingId,
-      record.status,
-      patch,
-      input.status === "DISBURSED" && capDecision
-        ? { approvedAmount: capDecision.approvedAmount, drawRequestId: record.drawRequestId }
-        : null
-    );
+    lrepo.transitionFundingTx(fundingId, record.status, patch);
   } catch (e) {
     if (e instanceof Error && e.message.startsWith("CAP:")) {
       throw new LenderError(e.message.slice(5).trim(), 409);
     }
+    if (e instanceof Error && e.message.startsWith("REVALIDATION:")) {
+      throw new LenderError(e.message.slice("REVALIDATION:".length).trim(), 409);
+    }
     if (e instanceof Error && e.message.startsWith("CONFLICT")) {
       throw new LenderError("The funding record was transitioned concurrently — reload and retry", 409);
+    }
+    if (e instanceof Error && /UNIQUE constraint/.test(e.message)) {
+      // FAILED → SCHEDULED reschedule while another record is already
+      // in flight: the one-active partial unique index refuses inside the
+      // transaction — same controlled 409 the scheduling path gives.
+      throw new LenderError("An active external funding record already exists for this draw", 409);
     }
     throw e;
   }
