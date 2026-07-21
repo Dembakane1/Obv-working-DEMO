@@ -25,7 +25,7 @@ services:
     name: obv-demo
     runtime: docker
     plan: free
-    branch: claude/obv-demo-repo-structure-t0hjsc
+    branch: main
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:

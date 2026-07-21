@@ -24,6 +24,24 @@ let pass = 0;
 let fail = 0;
 const cookies = new Map();
 
+// ---- deployment configuration assertion (runs before any network) ----
+// Production MUST deploy from main. If render.yaml stops tracking main,
+// deploy-check fails regardless of what the deployed instance answers.
+{
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const renderYaml = fs.readFileSync(path.join(__dirname, "..", "render.yaml"), "utf8");
+  const prodBlock = renderYaml.slice(renderYaml.indexOf("name: obv-demo"), renderYaml.indexOf("obv-frontend-preview"));
+  const m = /branch:\s*(\S+)/.exec(prodBlock);
+  if (m && m[1] === "main") {
+    pass += 1;
+    console.log("  ✓ render.yaml production service (obv-demo) deploys from main");
+  } else {
+    fail += 1;
+    console.error(`  ✗ render.yaml production service tracks '${m ? m[1] : "(none)"}' — must be 'main'`);
+  }
+}
+
 function cookieHeader() {
   return [...cookies.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
 }
