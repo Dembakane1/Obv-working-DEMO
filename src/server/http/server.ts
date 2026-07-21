@@ -102,6 +102,13 @@ import { PermitError } from "../services/permits";
 import { renderPermitRegister } from "../view/permitPages";
 import { renderDrawVerificationDoc } from "../view/drawVerificationDoc";
 import { AuditPackageError } from "../services/auditPackage";
+import * as lrepo from "../db/lenderRepo";
+import * as lenderAccess from "../services/lenderAccess";
+import { LenderError } from "../services/lenderAccess";
+import * as loanProfile from "../services/loanProfile";
+import * as drawInspections from "../services/drawInspections";
+import * as lenderDecisions from "../services/lenderDecisions";
+import * as drawWorkflow from "../services/drawWorkflow";
 import { renderAuditCover } from "../view/auditCover";
 import { CoDetailData, renderCoDetail, renderCoNew, renderCoRegister } from "../view/coPages";
 import {
@@ -2239,6 +2246,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return text ? JSON.parse(text) : {};
   };
   const finishDrawPost = (drawId: string, tab: DrawTab, json: unknown, status = 200): void => {
+    // Derived-stage observation: every draw mutation funnels through here.
+    try { drawWorkflow.syncDrawStage(drawId, currentUser(req)); } catch { /* stage log must never break the action */ }
     if (isFormPost(req)) {
       redirect(res, `/draw/${drawId}?tab=${tab}`);
     } else {
@@ -2246,6 +2255,356 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
   };
   const drawUser = (): User | null => currentUser(req);
+
+  // ===================== lender operating layer (API) =====================
+  // Administrative lender records. All mutations sync the derived draw
+  // stage; GET handlers never mutate. LenderError maps 400/403/404/409/413/422.
+
+  const lenderUser = (): User => {
+    const u = currentUser(req);
+    if (!u) throw new LenderError("Select a demo user first", 401);
+    return u;
+  };
+  const loanApi = /^\/api\/projects\/([^/]+)\/(loan|parties|jurisdiction|memberships|lender-policy)$/.exec(pathname);
+  if (loanApi) {
+    const user = lenderUser();
+    const projectId = loanApi[1];
+    const section = loanApi[2];
+    const body = method === "POST" ? await readParams() : {};
+    if (section === "loan") {
+      if (method === "POST") {
+        const loan = loanProfile.createLoanAsset(user, { ...(body as object), projectId } as never);
+        sendJson(res, { loan }, 201);
+        return;
+      }
+      if (method === "GET") {
+        const project = lenderAccess.assertProjectAccess(user, projectId);
+        const loan = lrepo.getLoanAssetForProject(projectId);
+        if (!loan) {
+          sendJson(res, { loan: null, state: "NOT RECORDED" });
+          return;
+        }
+        sendJson(res, {
+          loan,
+          ownershipHistory: lrepo.listLoanOwnershipEvents(loan.id),
+          servicingHistory: lrepo.listLoanServicingEvents(loan.id),
+          reconciliation: loanProfile.reconcileLoanBudget(loan, project),
+        });
+        return;
+      }
+    }
+    if (section === "parties") {
+      if (method === "POST") {
+        const party = loanProfile.assignParty(user, { ...(body as object), projectId } as never);
+        sendJson(res, { party }, 201);
+        return;
+      }
+      if (method === "GET") {
+        lenderAccess.assertProjectAccess(user, projectId);
+        sendJson(res, { parties: lrepo.listPartyAssignments(projectId) });
+        return;
+      }
+    }
+    if (section === "jurisdiction") {
+      if (method === "POST") {
+        const profile = loanProfile.configureJurisdiction(user, { ...(body as object), projectId } as never);
+        sendJson(res, { profile }, 201);
+        return;
+      }
+      if (method === "GET") {
+        lenderAccess.assertProjectAccess(user, projectId);
+        const profile = lrepo.getJurisdictionProfile(projectId);
+        sendJson(res, profile ? { profile } : { profile: null, state: "NOT RECORDED" });
+        return;
+      }
+    }
+    if (section === "memberships") {
+      if (method === "POST") {
+        const membership = lenderAccess.assignMembership(user, { ...(body as object), projectId } as never);
+        sendJson(res, { membership }, 201);
+        return;
+      }
+      if (method === "GET") {
+        lenderAccess.assertProjectAccess(user, projectId);
+        sendJson(res, {
+          memberships: lrepo.listMemberships(projectId),
+          capabilities: [...lenderAccess.capabilitiesFor(user, projectId)],
+        });
+        return;
+      }
+    }
+    if (section === "lender-policy") {
+      if (method === "POST") {
+        const policy = loanProfile.configureLenderPolicy(user, { ...(body as object), projectId } as never);
+        sendJson(res, { policy }, 201);
+        return;
+      }
+      if (method === "GET") {
+        lenderAccess.assertProjectAccess(user, projectId);
+        const policy = loanProfile.policyForDraw(projectId);
+        sendJson(res, policy ? { policy } : { policy: null, state: "NOT RECORDED" });
+        return;
+      }
+    }
+    sendJson(res, { error: "Unsupported method" }, 405);
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/lender-policy") {
+    const user = lenderUser();
+    const body = await readParams();
+    const policy = loanProfile.configureLenderPolicy(user, { ...(body as object), projectId: null } as never);
+    sendJson(res, { policy }, 201);
+    return;
+  }
+
+  const loanActionApi = /^\/api\/loans\/([^/]+)(?:\/(.+))?$/.exec(pathname);
+  if (loanActionApi && method === "POST") {
+    const user = lenderUser();
+    const loanId = loanActionApi[1];
+    const action = loanActionApi[2];
+    const body = await readParams();
+    if (!action) {
+      const loan = loanProfile.updateLoanAsset(user, loanId, body as never);
+      sendJson(res, { loan });
+      return;
+    }
+    if (action === "ownership-transfer") {
+      const event = loanProfile.recordOwnershipTransfer(user, loanId, body as never);
+      sendJson(res, { event }, 201);
+      return;
+    }
+    if (action === "servicing-transfer") {
+      const event = loanProfile.recordServicingTransfer(user, loanId, body as never);
+      sendJson(res, { event }, 201);
+      return;
+    }
+    sendJson(res, { error: `Unknown loan action: ${action}` }, 404);
+    return;
+  }
+
+  if (method === "POST" && /^\/api\/parties\/[^/]+\/end$/.test(pathname)) {
+    const user = lenderUser();
+    const partyId = pathname.split("/")[3];
+    const body = (await readParams()) as { projectId?: string };
+    loanProfile.endParty(user, String(body.projectId ?? ""), partyId);
+    sendJson(res, { ok: true });
+    return;
+  }
+
+  if (method === "POST" && /^\/api\/memberships\/[^/]+\/end$/.test(pathname)) {
+    const user = lenderUser();
+    const membershipId = pathname.split("/")[3];
+    const body = (await readParams()) as { projectId?: string };
+    lenderAccess.endMembership(user, String(body.projectId ?? ""), membershipId);
+    sendJson(res, { ok: true });
+    return;
+  }
+
+  // ---- draw-scoped lender records ----
+  const drawLenderApi = /^\/api\/draws\/([^/]+)\/(inspections|lender-decision|lien-waivers|funding|stage)$/.exec(pathname);
+  if (drawLenderApi) {
+    const user = lenderUser();
+    const drawId = drawLenderApi[1];
+    const section = drawLenderApi[2];
+    const body = method === "POST" ? await readParams() : {};
+    const draw = repo.getDrawRequest(drawId);
+    // Access is the legacy draw-tenant check EXTENDED by explicit project
+    // membership: an active membership grants lender-endpoint access even
+    // for users outside the pilot org wiring. Users with neither still get
+    // the same 404 as a nonexistent draw (existence is not disclosed).
+    if (
+      !draw ||
+      (!draws.canAccessDraw(user, draw) && !lenderAccess.hasActiveMembership(user, draw.projectId))
+    ) {
+      sendJson(res, { error: "Draw request not found" }, 404);
+      return;
+    }
+    if (section === "inspections") {
+      if (method === "POST") {
+        const inspection = drawInspections.requestInspection(user, { ...(body as object), drawRequestId: drawId } as never);
+        drawWorkflow.syncDrawStage(drawId, user, "Independent inspection requested", inspection.id);
+        sendJson(res, { inspection }, 201);
+        return;
+      }
+      sendJson(res, { inspections: lrepo.listDrawInspections(drawId) });
+      return;
+    }
+    if (section === "lender-decision") {
+      if (method === "POST") {
+        const decision = lenderDecisions.recordLenderDecision(user, { ...(body as object), drawRequestId: drawId } as never);
+        drawWorkflow.syncDrawStage(drawId, user, `Lender decision ${decision.decision}`, decision.id);
+        sendJson(res, { decision, conditions: lrepo.listDecisionConditions(decision.id) }, 201);
+        return;
+      }
+      const decision = lenderDecisions.currentDecision(drawId);
+      sendJson(res, decision
+        ? {
+            decision,
+            conditions: lrepo.listDecisionConditions(decision.id),
+            history: lrepo.listLenderDecisions(drawId),
+            // Funded state is DERIVED from external funding records — the
+            // decision row itself is never rewritten to FUNDED.
+            paymentStatus: lenderDecisions.derivedPaymentStatus(drawId),
+          }
+        : { decision: null, state: "NOT RECORDED" });
+      return;
+    }
+    if (section === "lien-waivers") {
+      if (method === "POST") {
+        const waiver = lenderDecisions.createLienWaiver(user, { ...(body as object), drawRequestId: drawId } as never);
+        drawWorkflow.syncDrawStage(drawId, user, "Lien waiver required", waiver.id);
+        sendJson(res, { waiver }, 201);
+        return;
+      }
+      sendJson(res, { waivers: lrepo.listLienWaivers(drawId) });
+      return;
+    }
+    if (section === "funding") {
+      if (method === "POST") {
+        const funding = lenderDecisions.scheduleFunding(user, { ...(body as object), drawRequestId: drawId } as never);
+        drawWorkflow.syncDrawStage(drawId, user, "External funding scheduled", funding.id);
+        sendJson(res, { funding }, 201);
+        return;
+      }
+      sendJson(res, { funding: lrepo.listFundingRecords(drawId) });
+      return;
+    }
+    if (section === "stage") {
+      // Read-only: derives without writing.
+      sendJson(res, {
+        stage: drawWorkflow.deriveDrawStage(drawId),
+        history: drawWorkflow.stageHistory(drawId),
+      });
+      return;
+    }
+  }
+
+  const inspectionApi = /^\/api\/draw-inspections\/([^/]+)(?:\/(.+))?$/.exec(pathname);
+  if (inspectionApi) {
+    const user = lenderUser();
+    const inspectionId = inspectionApi[1];
+    const action = inspectionApi[2];
+    const body = method === "POST" ? (await readParams()) as Record<string, unknown> : {};
+    if (method === "GET" && !action) {
+      sendJson(res, drawInspections.inspectionDetail(user, inspectionId));
+      return;
+    }
+    if (method !== "POST") {
+      sendJson(res, { error: "Unsupported method" }, 405);
+      return;
+    }
+    const sync = (detail: string) => {
+      const insp = lrepo.getDrawInspection(inspectionId);
+      if (insp) drawWorkflow.syncDrawStage(insp.drawRequestId, user, detail, inspectionId);
+    };
+    if (action === "schedule") {
+      const inspection = drawInspections.scheduleInspection(user, inspectionId, body as never);
+      sync("Inspection scheduled");
+      sendJson(res, { inspection });
+      return;
+    }
+    if (action === "access-failed") {
+      const inspection = drawInspections.recordAccessFailure(user, inspectionId, String(body.note ?? ""));
+      sync("Property access failed");
+      sendJson(res, { inspection });
+      return;
+    }
+    if (action === "complete") {
+      const inspection = drawInspections.completeInspection(user, inspectionId, body.completedAt as never);
+      sync("Site visit completed");
+      sendJson(res, { inspection });
+      return;
+    }
+    if (action === "lines") {
+      const line = drawInspections.recordLineFinding(user, inspectionId, body as never);
+      sendJson(res, { line }, 201);
+      return;
+    }
+    if (action === "report") {
+      const version = drawInspections.createReportDraft(user, inspectionId, body as never);
+      sync("Inspection report received");
+      sendJson(res, { version }, 201);
+      return;
+    }
+    if (action === "obv-review") {
+      const inspection = drawInspections.recordObvReview(user, inspectionId, body as never);
+      sync("OBV review recorded");
+      sendJson(res, { inspection });
+      return;
+    }
+    if (action === "accept") {
+      const inspection = drawInspections.recordLenderAcceptance(
+        user, inspectionId, body.accepted !== false && body.accepted !== "false", body.note as never
+      );
+      sync("Lender acceptance recorded");
+      sendJson(res, { inspection });
+      return;
+    }
+    if (action === "reinspection") {
+      const inspection = drawInspections.requestReinspection(user, inspectionId, String(body.reason ?? ""));
+      sync("Reinspection requested");
+      sendJson(res, { inspection }, 201);
+      return;
+    }
+    if (action === "cancel") {
+      const inspection = drawInspections.cancelInspection(user, inspectionId, body.reason as never);
+      sync("Inspection cancelled");
+      sendJson(res, { inspection });
+      return;
+    }
+    sendJson(res, { error: `Unknown inspection action: ${action}` }, 404);
+    return;
+  }
+
+  const reportVersionApi = /^\/api\/inspection-reports\/([^/]+)(?:\/(finalize))?$/.exec(pathname);
+  if (reportVersionApi && method === "POST") {
+    const user = lenderUser();
+    const versionId = reportVersionApi[1];
+    const body = (await readParams()) as Record<string, unknown>;
+    if (reportVersionApi[2] === "finalize") {
+      const version = drawInspections.finalizeReport(user, versionId);
+      const insp = lrepo.getDrawInspection(version.drawInspectionId);
+      if (insp) drawWorkflow.syncDrawStage(insp.drawRequestId, user, "Inspection report finalized", version.id);
+      sendJson(res, { version });
+      return;
+    }
+    const version = drawInspections.updateReportDraft(user, versionId, body as never);
+    sendJson(res, { version });
+    return;
+  }
+
+  if (method === "POST" && /^\/api\/decision-conditions\/[^/]+$/.test(pathname)) {
+    const user = lenderUser();
+    const conditionId = pathname.split("/")[3];
+    const body = await readParams();
+    const condition = lenderDecisions.updateCondition(user, conditionId, body as never);
+    const decision = lrepo.getLenderDecision(condition.lenderDecisionId);
+    if (decision) drawWorkflow.syncDrawStage(decision.drawRequestId, user, `Condition ${condition.status}`, condition.id);
+    sendJson(res, { condition });
+    return;
+  }
+
+  if (method === "POST" && /^\/api\/lien-waivers\/[^/]+$/.test(pathname)) {
+    const user = lenderUser();
+    const waiverId = pathname.split("/")[3];
+    const body = await readParams();
+    const waiver = lenderDecisions.transitionLienWaiver(user, waiverId, body as never);
+    drawWorkflow.syncDrawStage(waiver.drawRequestId, user, `Lien waiver ${waiver.status}`, waiver.id);
+    sendJson(res, { waiver });
+    return;
+  }
+
+  if (method === "POST" && /^\/api\/funding\/[^/]+$/.test(pathname)) {
+    const user = lenderUser();
+    const fundingId = pathname.split("/")[3];
+    const body = await readParams();
+    const funding = lenderDecisions.transitionFunding(user, fundingId, body as never);
+    drawWorkflow.syncDrawStage(funding.drawRequestId, user, `External funding ${funding.status}`, funding.id);
+    sendJson(res, { funding });
+    return;
+  }
+
 
   if (method === "POST" && pathname === "/api/draws") {
     const user = drawUser();
@@ -2293,6 +2652,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (action === "submit") {
       const draw = await draws.submitDraw(user, drawId);
+      // Freeze the applied lender policy at FIRST successful submission;
+      // resubmissions keep the original frozen version.
+      loanProfile.freezeAppliedPolicy(drawId);
       finishDrawPost(drawId, "review", { draw });
       return;
     }
@@ -2431,6 +2793,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     sendJson(res, { error: `Unknown draw action: ${action}` }, 404);
     return;
   }
+
+
 
   if (method === "GET" && drawApiMatch && drawApiMatch[2] === "recommendation") {
     const user = drawUser();
@@ -4645,7 +5009,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";
