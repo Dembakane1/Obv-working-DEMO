@@ -1439,6 +1439,114 @@ function lenderContext(d: DrawDetailData, L: LenderTabData): VNode {
   );
 }
 
+/** Governed action forms. Rendered only when the signed-in user holds the
+ *  relevant server-enforced capability AND the record state allows the
+ *  action; the browser controls are convenience only — every POST
+ *  re-authorizes in the service layer. */
+function inspectionForms(d: DrawDetailData, L: LenderTabData, x: LenderTabData["inspections"][number]): VNode | null {
+  const i = x.inspection;
+  const api = (a: string) => `/api/draw-inspections/${i.id}/${a}`;
+  const draft = x.versions.find((v) => v.status === "DRAFT") ?? null;
+  const forms: VNode[] = [];
+  if (L.caps.scheduleInspection && ["REQUESTED", "SCHEDULING", "ACCESS_FAILED"].includes(i.status)) {
+    forms.push(
+      <form method="POST" action={api("schedule")} className="lender-form">
+        <div className="row">
+          <label>Site visit date<input type="date" name="scheduledAt" required /></label>
+          <button className="btn sm" type="submit">Schedule site visit</button>
+        </div>
+      </form>
+    );
+  }
+  if (L.caps.recordFindings && i.status === "SCHEDULED") {
+    forms.push(
+      <form method="POST" action={api("complete")} className="lender-form">
+        <div className="row"><button className="btn sm" type="submit">Complete site visit</button></div>
+      </form>
+    );
+    forms.push(
+      <form method="POST" action={api("access-failed")} className="lender-form">
+        <div className="row">
+          <label>Access failure note<input type="text" name="note" placeholder="Gate locked, no contact on site" /></label>
+          <button className="btn sm ghost" type="submit">Record access failure</button>
+        </div>
+      </form>
+    );
+  }
+  if (L.caps.recordFindings && ["COMPLETED", "REPORT_PENDING"].includes(i.status)) {
+    forms.push(
+      <form method="POST" action={api("lines")} className="lender-form">
+        <div className="row">
+          <label>Draw line
+            <select name="drawLineItemId">
+              {d.lines.map((l) => <option value={l.id}>{l.description.slice(0, 48)}</option>)}
+            </select>
+          </label>
+          <label>Observed complete %<input type="number" name="percentCompleteReported" min="0" max="100" step="1" /></label>
+          <label>Inspector note<input type="text" name="inspectorNote" /></label>
+          <button className="btn sm" type="submit">Record line finding</button>
+        </div>
+      </form>
+    );
+  }
+  if (L.caps.recordFindings && !draft && ["COMPLETED", "REPORT_PENDING", "CORRECTION_REQUIRED"].includes(i.status)) {
+    forms.push(
+      <form method="POST" action={api("report")} className="lender-form">
+        <div className="row">
+          <label>Report summary<input type="text" name="summary" required /></label>
+          <label>Conclusion<input type="text" name="conclusion" /></label>
+          {i.status === "CORRECTION_REQUIRED" ? <label>Correction reason<input type="text" name="correctionReason" required /></label> : null}
+          <button className="btn sm" type="submit">Create report draft</button>
+        </div>
+      </form>
+    );
+  }
+  if (L.caps.finalizeReport && draft) {
+    forms.push(
+      <form method="POST" action={`/api/inspection-reports/${draft.id}/finalize`} className="lender-form">
+        <div className="row"><button className="btn sm" type="submit">Finalize report v{draft.version}</button>
+        <span className="sub">Finalized versions are immutable; corrections create a new version.</span></div>
+      </form>
+    );
+  }
+  if (L.caps.reviewDraw && i.status === "UNDER_OBV_REVIEW") {
+    forms.push(
+      <form method="POST" action={api("obv-review")} className="lender-form">
+        <div className="row">
+          <label>OBV completeness review
+            <select name="outcome"><option value="REVIEWED">Reviewed</option><option value="CORRECTION_REQUIRED">Correction required</option></select>
+          </label>
+          <label>Note<input type="text" name="note" /></label>
+          <button className="btn sm" type="submit">Record OBV review</button>
+        </div>
+      </form>
+    );
+  }
+  if (L.caps.lenderDecision && i.status === "FINALIZED" && i.lenderAcceptanceStatus === "PENDING") {
+    forms.push(
+      <form method="POST" action={api("accept")} className="lender-form">
+        <div className="row">
+          <label>Note<input type="text" name="note" /></label>
+          <button className="btn sm" type="submit" name="accepted" value="true">Accept report</button>
+          <button className="btn sm ghost" type="submit" name="accepted" value="false">Decline report</button>
+        </div>
+      </form>
+    );
+  }
+  if (L.caps.scheduleInspection && ["FINALIZED", "FAILED", "CORRECTION_REQUIRED"].includes(i.status)) {
+    forms.push(
+      <form method="POST" action={api("reinspection")} className="lender-form">
+        <div className="row">
+          <label>Reinspection reason<input type="text" name="reason" required /></label>
+          <button className="btn sm ghost" type="submit">Request reinspection</button>
+        </div>
+      </form>
+    );
+  }
+  if (forms.length === 0) return null;
+  return <>{forms}</>;
+}
+
 /** Section D — independent draw inspections. */
 function lenderInspections(d: DrawDetailData, L: LenderTabData): VNode {
   return (
@@ -1448,7 +1556,17 @@ function lenderInspections(d: DrawDetailData, L: LenderTabData): VNode {
         <span className="right">Lender-ordered — separate from government/jurisdictional inspections</span>
       </div>
       {L.inspections.length === 0 ? (
-        <div className="pad-sm"><p className="muted">{NOT_RECORDED} — no independent inspection has been ordered for this draw.</p></div>
+        <div className="pad-sm">
+          <p className="muted">{NOT_RECORDED} — no independent inspection has been ordered for this draw.</p>
+          {L.caps.scheduleInspection && !["CANCELLED", "RETURNED", "DRAFT"].includes(d.draw.status) ? (
+            <form method="POST" action={`/api/draws/${d.draw.id}/inspections`} className="lender-form">
+              <div className="row">
+                <label>Inspector name<input type="text" name="inspectorDisplayName" placeholder="Site inspector" /></label>
+                <button className="btn sm" type="submit">Order independent inspection</button>
+              </div>
+            </form>
+          ) : null}
+        </div>
       ) : (
         L.inspections.map(({ inspection: i, lines, versions }) => {
           const finalized = versions.filter((v) => v.status === "FINALIZED");
@@ -1512,6 +1630,7 @@ function lenderInspections(d: DrawDetailData, L: LenderTabData): VNode {
               ) : (
                 <p className="sub">Line findings: {NOT_RECORDED}.</p>
               )}
+              {inspectionForms(d, L, { inspection: i, lines, versions, events: [] })}
             </div>
           );
         })
@@ -1565,6 +1684,34 @@ function lenderDecisionSection(d: DrawDetailData, L: LenderTabData): VNode {
         ) : (
           <p className="muted">{NOT_RECORDED} — no lender business decision has been recorded for this draw.</p>
         )}
+        {L.caps.lenderDecision && (!cur || cur.decision === "PENDING") ? (
+          <form method="POST" action={`/api/draws/${d.draw.id}/lender-decision`} className="lender-form">
+            <div className="row">
+              <label>Decision
+                <select name="decision">
+                  <option value="APPROVED">Approved</option>
+                  <option value="REDUCED">Reduced</option>
+                  <option value="CONDITIONALLY_APPROVED">Conditionally approved</option>
+                  <option value="REJECTED">Rejected</option>
+                  <option value="PENDING">Pending placeholder</option>
+                </select>
+              </label>
+              <label>Approved amount<input type="number" name="approvedAmount" step="1" min="0" /></label>
+              <label>Reduced amount<input type="number" name="reducedAmount" step="1" min="0" /></label>
+              <label>Holdback amount<input type="number" name="holdbackAmount" step="1" min="0" /></label>
+            </div>
+            <div className="row">
+              <label>Reason<input type="text" name="decisionReason" /></label>
+              <label>Condition (optional)<input type="text" name="conditionDescription" placeholder="Required for conditional approval" /></label>
+              <label>Condition due<input type="date" name="conditionDueAt" /></label>
+              <button className="btn sm" type="submit">Record lender decision</button>
+            </div>
+            <p className="sub">
+              Recorded only after the formal approval matrix completes; it is the lender's business
+              decision and never a substitute for governance approval or a release of funds.
+            </p>
+          </form>
+        ) : null}
         {L.conditions.length > 0 ? (
           <>
             <h4 className="lender-sub">Decision conditions</h4>
@@ -1595,6 +1742,27 @@ function lenderDecisionSection(d: DrawDetailData, L: LenderTabData): VNode {
                 </div>
               ))}
             </div>
+            {L.caps.lenderDecision
+              ? L.conditions
+                  .filter((c) => ["OPEN", "IN_PROGRESS"].includes(c.status))
+                  .map((c) => (
+                    <form method="POST" action={`/api/decision-conditions/${c.id}`} className="lender-form">
+                      <div className="row">
+                        <span className="sub" style="align-self:center">{c.description.slice(0, 60)}</span>
+                        <label>New status
+                          <select name="status">
+                            <option value="SATISFIED">Satisfied</option>
+                            <option value="IN_PROGRESS">In progress</option>
+                            <option value="WAIVED">Waived</option>
+                            <option value="FAILED">Failed</option>
+                          </select>
+                        </label>
+                        <label>Waiver reason<input type="text" name="waiverReason" placeholder="Required when waiving" /></label>
+                        <button className="btn sm" type="submit">Update condition</button>
+                      </div>
+                    </form>
+                  ))
+              : null}
           </>
         ) : null}
       </div>
@@ -1647,8 +1815,50 @@ function lenderWaivers(d: DrawDetailData, L: LenderTabData): VNode {
               </div>
             ))}
           </div>
+          {L.caps.reviewDraw
+            ? L.waivers
+                .filter((w) => !["ACCEPTED", "SUPERSEDED", "NOT_REQUIRED"].includes(w.status))
+                .map((w) => (
+                  <div className="pad-sm">
+                    <form method="POST" action={`/api/lien-waivers/${w.id}`} className="lender-form" style="border-top:0;padding-top:0;margin-top:0">
+                      <div className="row">
+                        <span className="sub" style="align-self:center">{(w.signingParty ?? "Waiver").slice(0, 40)} · {enumLabel(w.status)}</span>
+                        <label>Transition
+                          <select name="status">
+                            {w.status === "REQUIRED" ? <><option value="REQUESTED">Requested</option><option value="RECEIVED">Received</option></> : null}
+                            {w.status === "REQUESTED" ? <option value="RECEIVED">Received</option> : null}
+                            {w.status === "RECEIVED" ? <option value="UNDER_REVIEW">Under review</option> : null}
+                            {w.status === "UNDER_REVIEW" ? <><option value="ACCEPTED">Accepted</option><option value="REJECTED">Rejected</option></> : null}
+                            {["REJECTED", "EXPIRED"].includes(w.status) ? <option value="REQUESTED">Re-requested</option> : null}
+                          </select>
+                        </label>
+                        <label>Signature date<input type="date" name="signatureDate" /></label>
+                        <label>Rejection reason<input type="text" name="rejectionReason" /></label>
+                        <button className="btn sm" type="submit">Record transition</button>
+                      </div>
+                    </form>
+                  </div>
+                ))
+            : null}
         </>
       )}
+      {L.caps.reviewDraw && !["CANCELLED", "DRAFT"].includes(d.draw.status) ? (
+        <div className="pad-sm">
+          <form method="POST" action={`/api/draws/${d.draw.id}/lien-waivers`} className="lender-form" style="border-top:0;padding-top:0;margin-top:0">
+            <div className="row">
+              <label>Signing party<input type="text" name="signingParty" placeholder="Contractor or supplier" required /></label>
+              <label>Kind
+                <select name="waiverType"><option value="CONDITIONAL">Conditional</option><option value="UNCONDITIONAL">Unconditional</option></select>
+              </label>
+              <label>Scope
+                <select name="waiverScope"><option value="PARTIAL">Partial</option><option value="FINAL">Final</option></select>
+              </label>
+              <label>Covered through<input type="date" name="coveredThrough" /></label>
+              <button className="btn sm ghost" type="submit">Require lien waiver</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -1694,6 +1904,43 @@ function lenderFunding(d: DrawDetailData, L: LenderTabData): VNode {
           </div>
         </>
       )}
+      {L.caps.recordFunding && L.currentDecision && ["APPROVED", "CONDITIONALLY_APPROVED", "REDUCED"].includes(L.currentDecision.decision) && !L.funding.some((f) => ["SCHEDULED", "PROCESSING"].includes(f.status)) ? (
+        <div className="pad-sm">
+          <form method="POST" action={`/api/draws/${d.draw.id}/funding`} className="lender-form" style="border-top:0;padding-top:0;margin-top:0">
+            <div className="row">
+              <label>Amount to schedule<input type="number" name="amountScheduled" step="1" min="1" /></label>
+              <label>Method<input type="text" name="fundingMethod" placeholder="Wire" /></label>
+              <button className="btn sm" type="submit">Record scheduled funding</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+      {L.caps.recordFunding
+        ? L.funding
+            .filter((f) => ["SCHEDULED", "PROCESSING", "DISBURSED", "FAILED"].includes(f.status))
+            .map((f) => (
+              <div className="pad-sm">
+                <form method="POST" action={`/api/funding/${f.id}`} className="lender-form" style="border-top:0;padding-top:0;margin-top:0">
+                  <div className="row">
+                    <span className="sub" style="align-self:center">{f.transactionReference ?? f.fundingMethod ?? "Record"} · {enumLabel(f.status)}</span>
+                    <label>Transition
+                      <select name="status">
+                        {f.status === "SCHEDULED" ? <><option value="PROCESSING">Processing</option><option value="DISBURSED">Disbursed</option><option value="FAILED">Failed</option><option value="CANCELLED">Cancelled</option></> : null}
+                        {f.status === "PROCESSING" ? <><option value="DISBURSED">Disbursed</option><option value="FAILED">Failed</option></> : null}
+                        {f.status === "DISBURSED" ? <><option value="REVERSED">Reversed</option><option value="CLOSED">Closed</option></> : null}
+                        {f.status === "FAILED" ? <><option value="SCHEDULED">Rescheduled</option><option value="CANCELLED">Cancelled</option></> : null}
+                      </select>
+                    </label>
+                    <label>Reference<input type="text" name="transactionReference" placeholder="Wire reference" /></label>
+                    <label>Disbursed amount<input type="number" name="amountDisbursed" step="1" min="1" /></label>
+                    <label>Failure reason<input type="text" name="failureReason" /></label>
+                    <label>Reversal reference<input type="text" name="reversalReference" /></label>
+                    <button className="btn sm" type="submit">Record transition</button>
+                  </div>
+                </form>
+              </div>
+            ))
+        : null}
       <div className="pad-sm">
         <p className="sub lender-trust">
           External funding records do not move money and do not call VirtualAccountService. They

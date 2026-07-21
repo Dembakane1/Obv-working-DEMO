@@ -2442,6 +2442,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (!u) throw new LenderError("Select a demo user first", 401);
     return u;
   };
+  /** Content negotiation for lender mutations: browser forms bounce back
+   *  to the Lender Review tab; JSON clients keep the existing responses.
+   *  Authorization always ran in the service before this is reached. */
+  const finishLenderPost = (drawId: string | null, json: unknown, status = 200): void => {
+    if (isFormPost(req) && drawId) {
+      redirect(res, `/draw/${drawId}?tab=lender&ok=1`);
+    } else {
+      sendJson(res, json, status);
+    }
+  };
   const loanApi = /^\/api\/projects\/([^/]+)\/(loan|parties|jurisdiction|memberships|lender-policy)$/.exec(pathname);
   if (loanApi) {
     const user = lenderUser();
@@ -2601,7 +2611,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       if (method === "POST") {
         const inspection = drawInspections.requestInspection(user, { ...(body as object), drawRequestId: drawId } as never);
         drawWorkflow.syncDrawStage(drawId, user, "Independent inspection requested", inspection.id);
-        sendJson(res, { inspection }, 201);
+        finishLenderPost(drawId, { inspection }, 201);
         return;
       }
       sendJson(res, { inspections: lrepo.listDrawInspections(drawId) });
@@ -2609,9 +2619,26 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (section === "lender-decision") {
       if (method === "POST") {
-        const decision = lenderDecisions.recordLenderDecision(user, { ...(body as object), drawRequestId: drawId } as never);
+        // Browser forms carry at most one condition as flat fields; map
+        // them into the service's conditions array (input adaptation only).
+        const decisionBody = { ...(body as Record<string, unknown>) };
+        if (isFormPost(req)) {
+          const desc = String(decisionBody.conditionDescription ?? "").trim();
+          if (desc) {
+            decisionBody.conditions = [{
+              conditionType: String(decisionBody.conditionType ?? "OTHER"),
+              description: desc,
+              dueAt: String(decisionBody.conditionDueAt ?? "").trim() || null,
+            }];
+          }
+          for (const k of ["approvedAmount", "reducedAmount", "rejectedAmount", "holdbackAmount", "retainageAmount"]) {
+            if (decisionBody[k] === "") delete decisionBody[k];
+            else if (decisionBody[k] !== undefined) decisionBody[k] = Number(decisionBody[k]);
+          }
+        }
+        const decision = lenderDecisions.recordLenderDecision(user, { ...decisionBody, drawRequestId: drawId } as never);
         drawWorkflow.syncDrawStage(drawId, user, `Lender decision ${decision.decision}`, decision.id);
-        sendJson(res, { decision, conditions: lrepo.listDecisionConditions(decision.id) }, 201);
+        finishLenderPost(drawId, { decision, conditions: lrepo.listDecisionConditions(decision.id) }, 201);
         return;
       }
       const decision = lenderDecisions.currentDecision(drawId);
@@ -2629,9 +2656,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (section === "lien-waivers") {
       if (method === "POST") {
-        const waiver = lenderDecisions.createLienWaiver(user, { ...(body as object), drawRequestId: drawId } as never);
+        const waiverBody = { ...(body as Record<string, unknown>) };
+        if (isFormPost(req) && waiverBody.relatedAmount !== undefined) {
+          if (waiverBody.relatedAmount === "") delete waiverBody.relatedAmount;
+          else waiverBody.relatedAmount = Number(waiverBody.relatedAmount);
+        }
+        const waiver = lenderDecisions.createLienWaiver(user, { ...waiverBody, drawRequestId: drawId } as never);
         drawWorkflow.syncDrawStage(drawId, user, "Lien waiver required", waiver.id);
-        sendJson(res, { waiver }, 201);
+        finishLenderPost(drawId, { waiver }, 201);
         return;
       }
       sendJson(res, { waivers: lrepo.listLienWaivers(drawId) });
@@ -2639,9 +2671,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (section === "funding") {
       if (method === "POST") {
-        const funding = lenderDecisions.scheduleFunding(user, { ...(body as object), drawRequestId: drawId } as never);
+        const fundingBody = { ...(body as Record<string, unknown>) };
+        if (isFormPost(req)) {
+          for (const k of ["amountScheduled", "wireFee"]) {
+            if (fundingBody[k] === "") delete fundingBody[k];
+            else if (fundingBody[k] !== undefined) fundingBody[k] = Number(fundingBody[k]);
+          }
+        }
+        const funding = lenderDecisions.scheduleFunding(user, { ...fundingBody, drawRequestId: drawId } as never);
         drawWorkflow.syncDrawStage(drawId, user, "External funding scheduled", funding.id);
-        sendJson(res, { funding }, 201);
+        finishLenderPost(drawId, { funding }, 201);
         return;
       }
       sendJson(res, { funding: lrepo.listFundingRecords(drawId) });
@@ -2675,39 +2714,45 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const insp = lrepo.getDrawInspection(inspectionId);
       if (insp) drawWorkflow.syncDrawStage(insp.drawRequestId, user, detail, inspectionId);
     };
+    const inspDrawId = (): string | null => lrepo.getDrawInspection(inspectionId)?.drawRequestId ?? null;
     if (action === "schedule") {
       const inspection = drawInspections.scheduleInspection(user, inspectionId, body as never);
       sync("Inspection scheduled");
-      sendJson(res, { inspection });
+      finishLenderPost(inspDrawId(), { inspection });
       return;
     }
     if (action === "access-failed") {
       const inspection = drawInspections.recordAccessFailure(user, inspectionId, String(body.note ?? ""));
       sync("Property access failed");
-      sendJson(res, { inspection });
+      finishLenderPost(inspDrawId(), { inspection });
       return;
     }
     if (action === "complete") {
       const inspection = drawInspections.completeInspection(user, inspectionId, body.completedAt as never);
       sync("Site visit completed");
-      sendJson(res, { inspection });
+      finishLenderPost(inspDrawId(), { inspection });
       return;
     }
     if (action === "lines") {
-      const line = drawInspections.recordLineFinding(user, inspectionId, body as never);
-      sendJson(res, { line }, 201);
+      const lineBody = { ...(body as Record<string, unknown>) };
+      if (isFormPost(req) && lineBody.percentCompleteReported !== undefined) {
+        if (lineBody.percentCompleteReported === "") delete lineBody.percentCompleteReported;
+        else lineBody.percentCompleteReported = Number(lineBody.percentCompleteReported);
+      }
+      const line = drawInspections.recordLineFinding(user, inspectionId, lineBody as never);
+      finishLenderPost(inspDrawId(), { line }, 201);
       return;
     }
     if (action === "report") {
       const version = drawInspections.createReportDraft(user, inspectionId, body as never);
       sync("Inspection report received");
-      sendJson(res, { version }, 201);
+      finishLenderPost(inspDrawId(), { version }, 201);
       return;
     }
     if (action === "obv-review") {
       const inspection = drawInspections.recordObvReview(user, inspectionId, body as never);
       sync("OBV review recorded");
-      sendJson(res, { inspection });
+      finishLenderPost(inspDrawId(), { inspection });
       return;
     }
     if (action === "accept") {
@@ -2715,19 +2760,19 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         user, inspectionId, body.accepted !== false && body.accepted !== "false", body.note as never
       );
       sync("Lender acceptance recorded");
-      sendJson(res, { inspection });
+      finishLenderPost(inspDrawId(), { inspection });
       return;
     }
     if (action === "reinspection") {
       const inspection = drawInspections.requestReinspection(user, inspectionId, String(body.reason ?? ""));
       sync("Reinspection requested");
-      sendJson(res, { inspection }, 201);
+      finishLenderPost(inspDrawId(), { inspection }, 201);
       return;
     }
     if (action === "cancel") {
       const inspection = drawInspections.cancelInspection(user, inspectionId, body.reason as never);
       sync("Inspection cancelled");
-      sendJson(res, { inspection });
+      finishLenderPost(inspDrawId(), { inspection });
       return;
     }
     sendJson(res, { error: `Unknown inspection action: ${action}` }, 404);
@@ -2743,11 +2788,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const version = drawInspections.finalizeReport(user, versionId);
       const insp = lrepo.getDrawInspection(version.drawInspectionId);
       if (insp) drawWorkflow.syncDrawStage(insp.drawRequestId, user, "Inspection report finalized", version.id);
-      sendJson(res, { version });
+      finishLenderPost(insp?.drawRequestId ?? null, { version });
       return;
     }
     const version = drawInspections.updateReportDraft(user, versionId, body as never);
-    sendJson(res, { version });
+    finishLenderPost(lrepo.getDrawInspection(version.drawInspectionId)?.drawRequestId ?? null, { version });
     return;
   }
 
@@ -2758,7 +2803,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const condition = lenderDecisions.updateCondition(user, conditionId, body as never);
     const decision = lrepo.getLenderDecision(condition.lenderDecisionId);
     if (decision) drawWorkflow.syncDrawStage(decision.drawRequestId, user, `Condition ${condition.status}`, condition.id);
-    sendJson(res, { condition });
+    finishLenderPost(decision?.drawRequestId ?? null, { condition });
     return;
   }
 
@@ -2768,7 +2813,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const body = await readParams();
     const waiver = lenderDecisions.transitionLienWaiver(user, waiverId, body as never);
     drawWorkflow.syncDrawStage(waiver.drawRequestId, user, `Lien waiver ${waiver.status}`, waiver.id);
-    sendJson(res, { waiver });
+    finishLenderPost(waiver.drawRequestId, { waiver });
     return;
   }
 
@@ -2776,9 +2821,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const user = lenderUser();
     const fundingId = pathname.split("/")[3];
     const body = await readParams();
-    const funding = lenderDecisions.transitionFunding(user, fundingId, body as never);
+    const fundingTBody = { ...(body as Record<string, unknown>) };
+    if (isFormPost(req) && fundingTBody.amountDisbursed !== undefined) {
+      if (fundingTBody.amountDisbursed === "") delete fundingTBody.amountDisbursed;
+      else fundingTBody.amountDisbursed = Number(fundingTBody.amountDisbursed);
+    }
+    const funding = lenderDecisions.transitionFunding(user, fundingId, fundingTBody as never);
     drawWorkflow.syncDrawStage(funding.drawRequestId, user, `External funding ${funding.status}`, funding.id);
-    sendJson(res, { funding });
+    finishLenderPost(funding.drawRequestId, { funding });
     return;
   }
 
@@ -5201,6 +5251,16 @@ const server = http.createServer((req, res) => {
       return;
     }
     if ((req.headers.accept ?? "").includes("text/html")) {
+      // Lender Review tab forms bounce back to the workspace with the
+      // error preserved; every other browser navigation keeps the
+      // existing styled error page.
+      const ref = String(req.headers.referer ?? "");
+      const refDraw = /\/draw\/([^/?#]+)[^"]*tab=lender/.exec(ref);
+      if (known && req.method === "POST" && refDraw) {
+        res.writeHead(303, { Location: `/draw/${refDraw[1]}?tab=lender&err=${encodeURIComponent(message).slice(0, 400)}` });
+        res.end();
+        return;
+      }
       // Browser navigation (form post) — styled error page, never raw JSON.
       sendHtml(res, renderError(null, "Something went wrong", message), status);
     } else {
