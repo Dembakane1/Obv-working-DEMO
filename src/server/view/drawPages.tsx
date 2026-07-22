@@ -59,6 +59,7 @@ import type {
   DrawPolicyApplication, DrawStageEvent, DrawWorkflowStage, ExternalFundingRecord,
   JurisdictionProfile, LenderDecisionCondition, LenderDrawDecision, LenderDrawPolicy,
   LienWaiverRecord, LoanAsset, LoanOwnershipEvent, LoanServicingEvent, ProjectPartyAssignment,
+  BankTransaction, PaymentInstruction, ProjectAccountHold, ProjectVirtualAccount,
 } from "../../shared/types";
 import { VarianceTag, ProgressCompareBars, VARIANCE_META } from "./budgetPages";
 import type { FinancialProgress, PhysicalProgressAssessment } from "../../shared/types";
@@ -369,6 +370,17 @@ export interface LenderTabData {
   /** Existing generated verification packages for THIS draw (download via
    *  the existing /reports/file/:id route — no second generator). */
   packageReports: Report[];
+  /** Read-only VAM summary: linked project virtual account, active holds,
+   *  this draw's latest payment instruction and bank-reported transaction,
+   *  reconciliation state. Never an action surface — lender-review forms
+   *  cannot settle or transfer money; the workspace link is the way in. */
+  banking: {
+    account: ProjectVirtualAccount | null;
+    activeHolds: ProjectAccountHold[];
+    latestInstruction: PaymentInstruction | null;
+    latestTransaction: BankTransaction | null;
+    reconciliationState: string | null;
+  };
   /** Post-redirect notice (?ok= / ?err=). */
   notice: { kind: "ok" | "err"; text: string } | null;
 }
@@ -1975,6 +1987,52 @@ function lenderPackages(d: DrawDetailData, L: LenderTabData): VNode {
   );
 }
 
+/** Read-only VAM summary inside the Lender Review tab. No forms here by
+ *  design — lender-review forms can never settle or transfer money; all
+ *  banking actions live in the capability-gated Project Account
+ *  workspace, linked below. */
+function lenderBankingSummary(d: DrawDetailData, L: LenderTabData): VNode {
+  const B = L.banking;
+  const a = B.account;
+  const holdsTotal = B.activeHolds.reduce((sum, hold) => sum + hold.amount, 0);
+  const i = B.latestInstruction;
+  const t = B.latestTransaction;
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h3>Project account</h3>
+        <span className="right lender-sub">Read-only summary — a payment instruction is not proof of payment</span>
+      </div>
+      <div className="pad-sm">
+        <dl className="kv">
+          {kvRow("Virtual account", a ? `${a.virtualAccountNumberMasked} (masked; subledger identity)` : NOT_RECORDED)}
+          {kvRow("Release-eligible balance", a ? money(a.releaseEligibleBalance) : NOT_RECORDED)}
+          {kvRow(
+            "Active holds",
+            a
+              ? B.activeHolds.length > 0
+                ? `${B.activeHolds.length} hold(s) totalling ${money(holdsTotal)}`
+                : "None"
+              : NOT_RECORDED
+          )}
+          {kvRow(
+            "Latest payment instruction (this draw)",
+            i ? `${money(i.amount)} to ${i.recipientName} — ${enumLabel(i.status)}` : NOT_RECORDED
+          )}
+          {kvRow(
+            "Latest bank-reported transaction",
+            t ? `${enumLabel(t.direction)} ${money(t.amount)} — ${enumLabel(t.status)} (${t.providerTransactionReference})` : NOT_RECORDED
+          )}
+          {kvRow("Reconciliation state", B.reconciliationState ? enumLabel(B.reconciliationState) : NOT_RECORDED)}
+        </dl>
+        <p className="sub" style="margin-top:8px">
+          <a className="btn sm ghost" href={`/project/${d.draw.projectId}/account`}>Open the Project Account workspace</a>
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function renderLenderTab(d: DrawDetailData, L: LenderTabData): VNode {
   return (
     <>
@@ -1990,6 +2048,7 @@ function renderLenderTab(d: DrawDetailData, L: LenderTabData): VNode {
       {lenderDecisionSection(d, L)}
       {lenderWaivers(d, L)}
       {lenderFunding(d, L)}
+      {lenderBankingSummary(d, L)}
       {lenderPackages(d, L)}
       {L.stageHistory.length > 0 ? (
         <section className="panel">
