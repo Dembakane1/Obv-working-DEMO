@@ -105,6 +105,10 @@ import { AuditPackageError } from "../services/auditPackage";
 import * as lrepo from "../db/lenderRepo";
 import * as lenderAccess from "../services/lenderAccess";
 import { LenderError } from "../services/lenderAccess";
+import { BankingError } from "../services/banking/bankingAccess";
+import { BankingProviderError } from "../services/banking/provider";
+import { resolveBankingProvider } from "../services/banking/registry";
+import { handleBankingRoutes } from "./bankingRoutes";
 import * as loanProfile from "../services/loanProfile";
 import * as drawInspections from "../services/drawInspections";
 import * as lenderDecisions from "../services/lenderDecisions";
@@ -2463,6 +2467,29 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sendJson(res, json, status);
     }
   };
+
+  // ==================== VAM banking layer (API) ====================
+  // Modular routes: authorization, tenancy, dual control and demo
+  // gating live in the banking services; no direct SQLite writes here.
+  if (
+    await handleBankingRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      getUser: () => {
+        const u = currentUser(req);
+        if (!u) throw new BankingError("Select a demo user first", 401);
+        return u;
+      },
+      readParams,
+      isForm: () => isFormPost(req),
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+    })
+  ) {
+    return;
+  }
   const loanApi = /^\/api\/projects\/([^/]+)\/(loan|parties|jurisdiction|memberships|lender-policy)$/.exec(pathname);
   if (loanApi) {
     const user = lenderUser();
@@ -5253,7 +5280,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";
@@ -5272,6 +5299,13 @@ const server = http.createServer((req, res) => {
         res.end();
         return;
       }
+      // Project Account workspace forms bounce back the same way.
+      const refAccount = /\/project\/([^/?#]+)\/account/.exec(ref);
+      if (known && req.method === "POST" && refAccount) {
+        res.writeHead(303, { Location: `/project/${refAccount[1]}/account?err=${encodeURIComponent(message).slice(0, 400)}` });
+        res.end();
+        return;
+      }
       // Browser navigation (form post) — styled error page, never raw JSON.
       sendHtml(res, renderError(null, "Something went wrong", message), status);
     } else {
@@ -5281,6 +5315,7 @@ const server = http.createServer((req, res) => {
 });
 
 getDb(); // fail fast if the database cannot be opened
+resolveBankingProvider(); // refuse to start a misconfigured banking provider
 server.listen(PORT, () => {
   console.log(`OBV running at http://localhost:${PORT}`);
   console.log(`Demo sign-in: http://localhost:${PORT}/  (pick a seeded role)`);
