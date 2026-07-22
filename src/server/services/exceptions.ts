@@ -1221,6 +1221,13 @@ export function sourceContext(e: ObvException): {
         latitude: null,
         longitude: null,
       };
+    case "BANKING_RECONCILIATION":
+      return {
+        label: "Banking reconciliation run",
+        href: `/project/${e.projectId}/account`,
+        latitude: null,
+        longitude: null,
+      };
     case "DRAW_INSPECTION":
       return {
         label: "Independent draw inspection",

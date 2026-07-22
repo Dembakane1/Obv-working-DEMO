@@ -26,6 +26,7 @@ import type {
   ProjectParticipantType,
   User,
 } from "../../shared/types";
+import { BANKING_CAPABILITIES } from "../../shared/types";
 
 export class LenderError extends Error {
   statusCode: number;
@@ -199,7 +200,13 @@ export function assignMembership(
     throw new LenderError(`participantType must be one of ${valid.join(", ")}`, 400);
   }
   const caps = input.capabilitySet ?? [];
-  const allCaps = new Set(Object.values(PARTICIPANT_CAPABILITIES).flat());
+  // Banking capabilities are assignable via membership capabilitySet but
+  // are never part of any participant-type default — banking authority is
+  // always an explicit grant.
+  const allCaps = new Set<ProjectCapability>([
+    ...Object.values(PARTICIPANT_CAPABILITIES).flat(),
+    ...BANKING_CAPABILITIES,
+  ]);
   for (const c of caps) {
     if (!allCaps.has(c)) throw new LenderError(`Unknown capability ${c}`, 400);
   }

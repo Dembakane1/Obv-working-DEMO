@@ -1356,6 +1356,158 @@ CREATE TABLE IF NOT EXISTS draw_stage_events (
   source_record_id TEXT,
   created_at TEXT NOT NULL
 );
+
+-- ==================== VAM foundation (banking layer) ====================
+-- Provider-neutral bookkeeping about an external partner bank. Amounts are
+-- whole-currency INTEGER. Only MASKED account identifiers are stored; no
+-- credentials, full account numbers or raw provider payloads ever land in
+-- these tables. banking_events is append-only (no UPDATE/DELETE path).
+
+CREATE TABLE IF NOT EXISTS banking_programs (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  provider TEXT NOT NULL,
+  provider_program_reference TEXT,
+  partner_bank_name TEXT NOT NULL,
+  account_structure TEXT NOT NULL,
+  status TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  activated_at TEXT,
+  suspended_at TEXT,
+  metadata TEXT,
+  created_by_user_id TEXT NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS project_virtual_accounts (
+  id TEXT PRIMARY KEY,
+  banking_program_id TEXT NOT NULL REFERENCES banking_programs(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  provider_account_reference TEXT,
+  virtual_account_number_masked TEXT NOT NULL,
+  routing_number_masked TEXT,
+  currency TEXT NOT NULL,
+  status TEXT NOT NULL,
+  available_balance INTEGER NOT NULL DEFAULT 0,
+  held_balance INTEGER NOT NULL DEFAULT 0,
+  release_eligible_balance INTEGER NOT NULL DEFAULT 0,
+  pending_outbound_amount INTEGER NOT NULL DEFAULT 0,
+  settled_outbound_amount INTEGER NOT NULL DEFAULT 0,
+  returned_amount INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  activated_at TEXT,
+  suspended_at TEXT,
+  closed_at TEXT,
+  last_reconciled_at TEXT
+);
+-- One non-closed account per project (a closed account may be replaced).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pva_open_project
+  ON project_virtual_accounts(project_id) WHERE status != 'CLOSED';
+
+CREATE TABLE IF NOT EXISTS project_account_holds (
+  id TEXT PRIMARY KEY,
+  project_virtual_account_id TEXT NOT NULL REFERENCES project_virtual_accounts(id),
+  draw_request_id TEXT REFERENCES draw_requests(id),
+  amount INTEGER NOT NULL,
+  reason_code TEXT NOT NULL,
+  reason TEXT,
+  status TEXT NOT NULL,
+  placed_at TEXT NOT NULL,
+  released_at TEXT,
+  placed_by_user_id TEXT NOT NULL REFERENCES users(id),
+  released_by_user_id TEXT REFERENCES users(id),
+  provider_reference TEXT
+);
+
+CREATE TABLE IF NOT EXISTS payment_instructions (
+  id TEXT PRIMARY KEY,
+  project_virtual_account_id TEXT NOT NULL REFERENCES project_virtual_accounts(id),
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  lender_decision_id TEXT NOT NULL REFERENCES lender_draw_decisions(id),
+  approval_request_id TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  recipient_name TEXT NOT NULL,
+  recipient_reference TEXT,
+  payment_method TEXT NOT NULL,
+  status TEXT NOT NULL,
+  requested_by_user_id TEXT NOT NULL REFERENCES users(id),
+  approved_by_user_id TEXT REFERENCES users(id),
+  requested_at TEXT NOT NULL,
+  approved_at TEXT,
+  submitted_at TEXT,
+  settled_at TEXT,
+  failed_at TEXT,
+  cancelled_at TEXT,
+  provider_reference TEXT,
+  failure_code TEXT,
+  failure_reason TEXT,
+  idempotency_key TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS bank_transactions (
+  id TEXT PRIMARY KEY,
+  project_virtual_account_id TEXT NOT NULL REFERENCES project_virtual_accounts(id),
+  payment_instruction_id TEXT REFERENCES payment_instructions(id),
+  provider_transaction_reference TEXT NOT NULL UNIQUE,
+  direction TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  status TEXT NOT NULL,
+  transaction_type TEXT NOT NULL,
+  initiated_at TEXT NOT NULL,
+  posted_at TEXT,
+  settled_at TEXT,
+  returned_at TEXT,
+  description TEXT,
+  raw_event_hash TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reconciliation_runs (
+  id TEXT PRIMARY KEY,
+  banking_program_id TEXT NOT NULL REFERENCES banking_programs(id),
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  status TEXT NOT NULL,
+  bank_reported_balance INTEGER,
+  ledger_calculated_balance INTEGER,
+  difference_amount INTEGER,
+  project_account_count INTEGER,
+  transaction_count INTEGER,
+  findings TEXT,
+  initiated_by TEXT NOT NULL,
+  previous_successful_run_id TEXT REFERENCES reconciliation_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS banking_events (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  banking_program_id TEXT REFERENCES banking_programs(id),
+  project_virtual_account_id TEXT REFERENCES project_virtual_accounts(id),
+  draw_request_id TEXT REFERENCES draw_requests(id),
+  payment_instruction_id TEXT REFERENCES payment_instructions(id),
+  bank_transaction_id TEXT REFERENCES bank_transactions(id),
+  type TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+-- Provider-side simulation ledger for the deterministic mock provider.
+-- This table plays the BANK's book of record in demo mode; reconciliation
+-- compares it against OBV's project_virtual_accounts ledger. A real
+-- provider adapter would replace reads of this table with provider API
+-- reports — OBV's own ledger tables above stay identical.
+CREATE TABLE IF NOT EXISTS mock_provider_ledger (
+  id TEXT PRIMARY KEY,
+  banking_program_id TEXT NOT NULL REFERENCES banking_programs(id),
+  entry_type TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  reference TEXT,
+  created_at TEXT NOT NULL
+);
 `;
 
 export function getDb(): DatabaseSync {
