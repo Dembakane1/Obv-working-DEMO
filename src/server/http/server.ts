@@ -731,6 +731,17 @@ function lenderNextAction(
     case "APPROVED":
     case "REDUCED":
     case "CONDITIONALLY_APPROVED":
+      // A released/approved draw derives this stage even when the current
+      // lender decision was later withdrawn or restarted as pending — the
+      // banner must reflect the stored decision, not assume it is fundable.
+      if (!decision || !["APPROVED", "CONDITIONALLY_APPROVED", "REDUCED", "FUNDED"].includes(decision.decision)) {
+        return {
+          title: "Record lender decision",
+          detail: decision
+            ? `Formal governance is complete; the current lender decision is ${decision.decision.toLowerCase().replace(/_/g, " ")}.`
+            : "Formal governance is complete; the lender business decision is outstanding.",
+        };
+      }
       if (blockingConds.length > 0) {
         return { title: "Resolve decision conditions", detail: `${blockingConds.length} condition(s) must be satisfied or formally waived before funding.` };
       }
