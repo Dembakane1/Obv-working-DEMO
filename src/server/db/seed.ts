@@ -13,6 +13,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { AUDIT_PACKAGES_DIR, getDb, resetDb } from "./index";
 import * as repo from "./repo";
+import * as lrepo from "./lenderRepo";
+import * as brepo from "./bankingRepo";
 import { COMM_MEDIA_DIR } from "../services/whatsappSync/provider";
 import { runVerificationPipeline } from "../services/verification/index";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
@@ -657,6 +659,13 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
   // verified physical progress (30%) — a comparison, not an accusation.
   seedDemoBudget();
 
+  // ---- seeded VAM banking layer (mock provider; demo simulation only) ----
+  // A completed, governance-approved historical draw plus a lender-
+  // controlled banking program with one settled payment, one hold and a
+  // payment instruction awaiting its second approval. Every value is a
+  // stored record — no money exists or moves.
+  seedDemoBanking();
+
   // ---- retainage policy (10%, default closeout conditions) ----
   repo.upsertRetainagePolicy({
     projectId: "proj-r47",
@@ -914,7 +923,7 @@ function purgeDemoScopedRows(): void {
   db.exec("PRAGMA foreign_keys = OFF;");
   const DEMO_PROJECT = "proj-r47";
   const DEMO_ORGS = ["org-cdfc", "org-crra"];
-  const DEMO_USERS = ["user-pm", "user-field", "user-funder", "user-compliance"];
+  const DEMO_USERS = ["user-pm", "user-field", "user-funder", "user-compliance", "user-lender2"];
   const inList = (ids: string[]) => ids.map(() => "?").join(",");
 
   const threadIds = db
@@ -991,7 +1000,36 @@ function purgeDemoScopedRows(): void {
     db.prepare(`DELETE FROM draw_documents WHERE draw_request_id IN (${dph})`).run(...drawIds);
     db.prepare(`DELETE FROM draw_document_requirements WHERE draw_request_id IN (${dph})`).run(...drawIds);
     db.prepare(`DELETE FROM draw_line_items WHERE draw_request_id IN (${dph})`).run(...drawIds);
+    // Lender decisions/conditions attached to demo draws (seeded or
+    // created during a demo session) — cleaned so fixed seed ids can be
+    // re-inserted.
+    db.prepare(
+      `DELETE FROM lender_condition_events WHERE condition_id IN
+         (SELECT id FROM lender_decision_conditions WHERE lender_decision_id IN
+            (SELECT id FROM lender_draw_decisions WHERE draw_request_id IN (${dph})))`
+    ).run(...drawIds);
+    db.prepare(
+      `DELETE FROM lender_decision_conditions WHERE lender_decision_id IN
+         (SELECT id FROM lender_draw_decisions WHERE draw_request_id IN (${dph}))`
+    ).run(...drawIds);
+    db.prepare(`DELETE FROM lender_draw_decisions WHERE draw_request_id IN (${dph})`).run(...drawIds);
     db.prepare(`DELETE FROM draw_requests WHERE id IN (${dph})`).run(...drawIds);
+
+  // ---- VAM banking layer (project + demo-org scoped) ----
+  db.prepare("DELETE FROM banking_events WHERE project_id = ?").run(DEMO_PROJECT);
+  db.prepare(
+    "DELETE FROM bank_transactions WHERE project_virtual_account_id IN (SELECT id FROM project_virtual_accounts WHERE project_id = ?)"
+  ).run(DEMO_PROJECT);
+  db.prepare(
+    "DELETE FROM payment_instructions WHERE project_virtual_account_id IN (SELECT id FROM project_virtual_accounts WHERE project_id = ?)"
+  ).run(DEMO_PROJECT);
+  db.prepare(
+    "DELETE FROM project_account_holds WHERE project_virtual_account_id IN (SELECT id FROM project_virtual_accounts WHERE project_id = ?)"
+  ).run(DEMO_PROJECT);
+  db.prepare("DELETE FROM project_virtual_accounts WHERE project_id = ?").run(DEMO_PROJECT);
+  db.prepare(`DELETE FROM reconciliation_runs WHERE banking_program_id IN (SELECT id FROM banking_programs WHERE organization_id IN (${inList(DEMO_ORGS)}))`).run(...DEMO_ORGS);
+  db.prepare(`DELETE FROM mock_provider_ledger WHERE banking_program_id IN (SELECT id FROM banking_programs WHERE organization_id IN (${inList(DEMO_ORGS)}))`).run(...DEMO_ORGS);
+  db.prepare(`DELETE FROM banking_programs WHERE organization_id IN (${inList(DEMO_ORGS)})`).run(...DEMO_ORGS);
   }
   // Change orders + retainage rows for the demo project.
   const coIds = db
@@ -1063,6 +1101,355 @@ function purgeDemoScopedRows(): void {
   db.prepare(`DELETE FROM users WHERE id IN (${inList(DEMO_USERS)})`).run(...DEMO_USERS);
   db.prepare(`DELETE FROM organizations WHERE id IN (${inList(DEMO_ORGS)})`).run(...DEMO_ORGS);
   db.exec("PRAGMA foreign_keys = ON;");
+}
+
+function seedDemoBanking(): void {
+  const t = (s: string) => `2026-07-${s}`;
+
+  // Second lender officer: dual control needs a second authorized user
+  // who is neither the instruction creator nor the draw submitter.
+  repo.insertUser({
+    id: "user-lender2",
+    organizationId: "org-cdfc",
+    name: "Elena Vargas",
+    role: "FUNDER_REP",
+    title: "Lender Operations Officer",
+  });
+
+  // Attributable inspection-requirement determination for the milestone
+  // the historical draw bills. The payment-eligibility boundary consults
+  // the existing completion-gate machinery, and an UNDETERMINED
+  // requirement honestly blocks payment — this is the reviewed
+  // NOT_REQUIRED determination that makes the seeded draw payable.
+  repo.upsertInspectionRequirement({
+    id: "insreq-ms-2",
+    projectId: "proj-r47",
+    milestoneId: "ms-2",
+    requirement: "NOT_REQUIRED",
+    requirementBasis:
+      "Drainage-structure tranche below the district permit threshold; reviewed determination for the rehabilitation scope.",
+    determinedBy: "user-compliance",
+    determinedAt: t("01T09:00:00.000Z"),
+    jurisdiction: null,
+    inspectionType: null,
+    issuingAuthority: null,
+    mustPassBeforeDrawReview: false,
+    mustPassBeforeGovernance: true,
+    finalCompletionOnly: false,
+    resultDocumentRequired: false,
+    permitRequired: false,
+    requiredPermitType: null,
+    officialSourceRequired: false,
+    codeBasisRequired: false,
+    permitMustBeActiveBeforeDrawReview: false,
+    permitMustBeActiveBeforeGovernance: false,
+    configurationVersion: 1,
+    createdAt: t("01T09:00:00.000Z"),
+    updatedAt: t("01T09:00:00.000Z"),
+  });
+
+  // ---- historical governance-approved draw (basis for payments) ----
+  repo.insertDrawRequest({
+    id: "draw-vam",
+    organizationId: "org-cdfc",
+    projectId: "proj-r47",
+    drawNumber: 2,
+    requestedByUserId: "user-pm",
+    requestedByOrganizationId: "org-crra",
+    submittedAt: t("02T09:00:00.000Z"),
+    requestedAmount: 200_000,
+    approvedAmount: 200_000,
+    recommendedAmount: 200_000,
+    currency: "USD",
+    periodStart: "2026-05-01",
+    periodEnd: "2026-05-31",
+    retainageRate: 10,
+    retainageWithheld: 20_000,
+    status: "APPROVED",
+    reviewRecommendation: null,
+    reviewSummary: "Historical draw — governance approved before the VAM demo window.",
+    createdAt: t("01T15:00:00.000Z"),
+    updatedAt: t("03T11:00:00.000Z"),
+  });
+  repo.insertDrawLine({
+    id: "dline-vam-1",
+    drawRequestId: "draw-vam",
+    sort: 0,
+    budgetLineId: "02-300",
+    milestoneId: "ms-2",
+    description: "Drainage structures — May completion tranche",
+    scheduledValue: 200_000,
+    previouslyPaid: 0,
+    currentRequested: 200_000,
+    materialsStored: null,
+    retainageAmount: 20_000,
+    percentCompleteClaimed: 100,
+    percentCompleteVerified: 100,
+    supportedAmount: 200_000,
+    status: "SUPPORTED",
+    reviewNotes: null,
+    reviewedByUserId: "user-compliance",
+    reviewedAt: t("02T16:00:00.000Z"),
+    totalCompletedAndStored: 0,
+    balanceToFinish: 0,
+    varianceAmount: null,
+    variancePercent: null,
+  });
+  repo.insertApprovalRequest({
+    id: "appr-draw-vam",
+    milestoneId: null,
+    drawRequestId: "draw-vam",
+    subjectType: "DRAW",
+    status: "APPROVED",
+    requiredRoles: ["FUNDER_REP", "COMPLIANCE_REVIEWER"],
+    createdAt: t("03T09:00:00.000Z"),
+  });
+  repo.insertApprovalRecord({
+    id: "apprec-vam-1", approvalRequestId: "appr-draw-vam", userId: "user-funder",
+    role: "FUNDER_REP", decision: "APPROVED", createdAt: t("03T10:00:00.000Z"),
+  });
+  repo.insertApprovalRecord({
+    id: "apprec-vam-2", approvalRequestId: "appr-draw-vam", userId: "user-compliance",
+    role: "COMPLIANCE_REVIEWER", decision: "APPROVED", createdAt: t("03T10:30:00.000Z"),
+  });
+  lrepo.insertLenderDecision({
+    id: "ldec-vam",
+    organizationId: "org-cdfc",
+    projectId: "proj-r47",
+    drawRequestId: "draw-vam",
+    requestedAmount: 200_000,
+    verifiedAmount: 200_000,
+    recommendedAmount: 200_000,
+    approvedAmount: 200_000,
+    reducedAmount: null,
+    rejectedAmount: null,
+    decision: "APPROVED",
+    reviewerUserId: "user-funder",
+    decisionAt: t("03T11:00:00.000Z"),
+    decisionReason: "Verified line support equals the requested amount; governance approval appr-draw-vam is complete.",
+    holdbackAmount: null,
+    retainageAmount: 20_000,
+    exceptionsAccepted: null,
+    governmentInspectionRequirement: null,
+    lienReleaseRequirement: null,
+    fundingInstructions: null,
+    notes: null,
+    approvalRequestId: "appr-draw-vam",
+    supersedesDecisionId: null,
+    supersededByDecisionId: null,
+    verifiedAmountSource: "SUPPORTED_LINE_TOTAL",
+    recommendedAmountSource: "REVIEW",
+    createdAt: t("03T11:00:00.000Z"),
+    updatedAt: t("03T11:00:00.000Z"),
+  });
+
+  // ---- banking program + project virtual account (mock provider) ----
+  brepo.insertProgram({
+    id: "bank-prog-1",
+    organizationId: "org-cdfc",
+    provider: "MOCK",
+    providerProgramReference: "MOCK-PRG-SEED0001",
+    partnerBankName: "First Community Bank, N.A.",
+    accountStructure: "LENDER_CONTROLLED",
+    status: "ACTIVE",
+    currency: "USD",
+    createdAt: t("04T09:00:00.000Z"),
+    updatedAt: t("04T09:00:00.000Z"),
+    activatedAt: t("04T09:00:00.000Z"),
+    suspendedAt: null,
+    metadata: null,
+    createdByUserId: "user-funder",
+  });
+  brepo.insertAccount({
+    id: "pva-r47",
+    bankingProgramId: "bank-prog-1",
+    projectId: "proj-r47",
+    providerAccountReference: "MOCK-VA-SEED0001",
+    virtualAccountNumberMasked: "\u2022\u2022\u2022\u20224207",
+    routingNumberMasked: "\u2022\u2022\u2022\u20220031",
+    currency: "USD",
+    status: "ACTIVE",
+    // End state of: +500,000 demo credit, 50,000 retainage hold,
+    // 80,000 settled payment, 120,000 instruction awaiting approval
+    // (earmarked out of release-eligible only).
+    availableBalance: 370_000,
+    heldBalance: 50_000,
+    releaseEligibleBalance: 250_000,
+    pendingOutboundAmount: 0,
+    settledOutboundAmount: 80_000,
+    returnedAmount: 0,
+    createdAt: t("04T09:05:00.000Z"),
+    activatedAt: t("04T09:05:00.000Z"),
+    suspendedAt: null,
+    closedAt: null,
+    lastReconciledAt: t("06T08:00:00.000Z"),
+  });
+
+  // ---- the mock bank's own book (independent of OBV's ledger) ----
+  brepo.insertMockLedgerEntry({
+    id: "mockled-1", bankingProgramId: "bank-prog-1", entryType: "DEMO_DEPOSIT",
+    amount: 500_000, reference: "MOCK-DEP-SEED0001", createdAt: t("04T09:10:00.000Z"),
+  });
+  brepo.insertMockLedgerEntry({
+    id: "mockled-2", bankingProgramId: "bank-prog-1", entryType: "PAYMENT_SETTLED",
+    amount: -80_000, reference: "EVT:seed-settle-1", createdAt: t("05T14:00:00.000Z"),
+  });
+
+  // ---- bank transactions (bank-reported truth, mirrored) ----
+  brepo.insertTransaction({
+    id: "btx-credit-1",
+    projectVirtualAccountId: "pva-r47",
+    paymentInstructionId: null,
+    providerTransactionReference: "MOCK-DEP-SEED0001",
+    direction: "CREDIT",
+    amount: 500_000,
+    currency: "USD",
+    status: "SETTLED",
+    transactionType: "DEMO_DEPOSIT",
+    initiatedAt: t("04T09:10:00.000Z"),
+    postedAt: t("04T09:10:00.000Z"),
+    settledAt: t("04T09:10:00.000Z"),
+    returnedAt: null,
+    description: "Construction reserve deposit (demo simulation)",
+    rawEventHash: brepo.sha256Hex("seed-credit-1"),
+  });
+
+  // ---- settled historical payment (dual-controlled, provider-settled) ----
+  brepo.insertInstruction({
+    id: "pi-settled-1",
+    projectVirtualAccountId: "pva-r47",
+    drawRequestId: "draw-vam",
+    lenderDecisionId: "ldec-vam",
+    approvalRequestId: "appr-draw-vam",
+    amount: 80_000,
+    currency: "USD",
+    recipientName: "Lakeshore Rehab Contractors LLC",
+    recipientReference: "PAY-APP-2026-05",
+    paymentMethod: "ACH_SIMULATED",
+    status: "SETTLED",
+    requestedByUserId: "user-funder",
+    approvedByUserId: "user-lender2",
+    requestedAt: t("05T09:00:00.000Z"),
+    approvedAt: t("05T10:00:00.000Z"),
+    submittedAt: t("05T11:00:00.000Z"),
+    settledAt: t("05T14:00:00.000Z"),
+    failedAt: null,
+    cancelledAt: null,
+    providerReference: "MOCK-PAY-SEED0001",
+    failureCode: null,
+    failureReason: null,
+    idempotencyKey: "seed-pi-settled-1",
+  });
+  brepo.insertTransaction({
+    id: "btx-pay-1",
+    projectVirtualAccountId: "pva-r47",
+    paymentInstructionId: "pi-settled-1",
+    providerTransactionReference: "MOCK-TXN-SEED0001",
+    direction: "DEBIT",
+    amount: 80_000,
+    currency: "USD",
+    status: "SETTLED",
+    transactionType: "ACH_SIMULATED",
+    initiatedAt: t("05T11:00:00.000Z"),
+    postedAt: t("05T12:00:00.000Z"),
+    settledAt: t("05T14:00:00.000Z"),
+    returnedAt: null,
+    description: "Payment to Lakeshore Rehab Contractors LLC",
+    rawEventHash: brepo.sha256Hex("seed-settle-1"),
+  });
+
+  // ---- active retainage-protection hold ----
+  brepo.insertHold({
+    id: "hold-1",
+    projectVirtualAccountId: "pva-r47",
+    drawRequestId: "draw-vam",
+    amount: 50_000,
+    reasonCode: "RETAINAGE_PROTECTION",
+    reason: "Retainage protection pending closeout conditions",
+    status: "ACTIVE",
+    placedAt: t("04T10:00:00.000Z"),
+    releasedAt: null,
+    placedByUserId: "user-funder",
+    releasedByUserId: null,
+    providerReference: "MOCK-HOLD-SEED0001",
+  });
+
+  // ---- payment instruction awaiting its second approval ----
+  brepo.insertInstruction({
+    id: "pi-pending-1",
+    projectVirtualAccountId: "pva-r47",
+    drawRequestId: "draw-vam",
+    lenderDecisionId: "ldec-vam",
+    approvalRequestId: "appr-draw-vam",
+    amount: 120_000,
+    currency: "USD",
+    recipientName: "Lakeshore Rehab Contractors LLC",
+    recipientReference: "PAY-APP-2026-05-FINAL",
+    paymentMethod: "ACH_SIMULATED",
+    status: "PENDING_APPROVAL",
+    requestedByUserId: "user-funder",
+    approvedByUserId: null,
+    requestedAt: t("06T09:00:00.000Z"),
+    approvedAt: null,
+    submittedAt: null,
+    settledAt: null,
+    failedAt: null,
+    cancelledAt: null,
+    providerReference: null,
+    failureCode: null,
+    failureReason: null,
+    idempotencyKey: "seed-pi-pending-1",
+  });
+
+  // ---- successful reconciliation: bank 420,000 = 370,000 + 50,000 + 0 ----
+  brepo.insertReconciliationRun({
+    id: "recon-1",
+    bankingProgramId: "bank-prog-1",
+    startedAt: t("06T08:00:00.000Z"),
+    completedAt: t("06T08:00:05.000Z"),
+    status: "MATCHED",
+    bankReportedBalance: 420_000,
+    ledgerCalculatedBalance: 420_000,
+    differenceAmount: 0,
+    projectAccountCount: 1,
+    transactionCount: 2,
+    findings: JSON.stringify({
+      formula: "bankReported = sum(available + held + pendingOutbound) + suspense",
+      suspenseBalance: 0,
+    }),
+    initiatedBy: "user-funder",
+    previousSuccessfulRunId: null,
+  });
+
+  // ---- append-only, attributable banking events ----
+  const ev = (
+    id: string, type: string, detail: string, actor: string | null, createdAt: string,
+    extra: Partial<{ drawRequestId: string; paymentInstructionId: string; bankTransactionId: string }> = {}
+  ) =>
+    brepo.insertBankingEvent({
+      id,
+      organizationId: "org-cdfc",
+      projectId: "proj-r47",
+      bankingProgramId: "bank-prog-1",
+      projectVirtualAccountId: id === "bev-1" ? null : "pva-r47",
+      drawRequestId: extra.drawRequestId ?? null,
+      paymentInstructionId: extra.paymentInstructionId ?? null,
+      bankTransactionId: extra.bankTransactionId ?? null,
+      type: type as never,
+      detail,
+      actorUserId: actor,
+      createdAt,
+    });
+  ev("bev-1", "PROGRAM_CREATED", "Banking program created at First Community Bank, N.A. (LENDER_CONTROLLED, MOCK provider).", "user-funder", t("04T09:00:00.000Z"));
+  ev("bev-2", "ACCOUNT_CREATED", "Project virtual account \u2022\u2022\u2022\u20224207 created (subledger identity).", "user-funder", t("04T09:05:00.000Z"));
+  ev("bev-3", "DEMO_CREDIT_POSTED", "Demo simulation only: construction reserve deposit (+500000 USD).", "user-funder", t("04T09:10:00.000Z"), { bankTransactionId: "btx-credit-1" });
+  ev("bev-4", "HOLD_PLACED", "Hold of 50000 USD placed (RETAINAGE_PROTECTION).", "user-funder", t("04T10:00:00.000Z"), { drawRequestId: "draw-vam" });
+  ev("bev-5", "INSTRUCTION_CREATED", "Payment instruction of 80000 USD to Lakeshore Rehab Contractors LLC created; awaiting approval by a second authorized user.", "user-funder", t("05T09:00:00.000Z"), { drawRequestId: "draw-vam", paymentInstructionId: "pi-settled-1" });
+  ev("bev-6", "INSTRUCTION_APPROVED", "Second-user approval recorded. Approval does NOT settle the payment.", "user-lender2", t("05T10:00:00.000Z"), { drawRequestId: "draw-vam", paymentInstructionId: "pi-settled-1" });
+  ev("bev-7", "PROVIDER_SUBMISSION_SIMULATED", "Demo simulation only: instruction submitted to the MOCK provider; bank transaction opened PENDING.", "user-funder", t("05T11:00:00.000Z"), { drawRequestId: "draw-vam", paymentInstructionId: "pi-settled-1", bankTransactionId: "btx-pay-1" });
+  ev("bev-8", "SETTLEMENT_RECORDED", "Provider-confirmed settlement of 80000 USD. This event — not any OBV approval — is the only settlement truth.", "user-funder", t("05T14:00:00.000Z"), { drawRequestId: "draw-vam", paymentInstructionId: "pi-settled-1", bankTransactionId: "btx-pay-1" });
+  ev("bev-9", "INSTRUCTION_CREATED", "Payment instruction of 120000 USD to Lakeshore Rehab Contractors LLC created; awaiting approval by a second authorized user.", "user-funder", t("06T09:00:00.000Z"), { drawRequestId: "draw-vam", paymentInstructionId: "pi-pending-1" });
+  ev("bev-10", "RECONCILIATION_MATCHED", "Reconciliation matched: bank 420000 = ledger 420000.", "user-funder", t("06T08:00:05.000Z"));
 }
 
 if (require.main === module) {

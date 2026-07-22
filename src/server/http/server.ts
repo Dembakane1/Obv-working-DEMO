@@ -105,6 +105,16 @@ import { AuditPackageError } from "../services/auditPackage";
 import * as lrepo from "../db/lenderRepo";
 import * as lenderAccess from "../services/lenderAccess";
 import { LenderError } from "../services/lenderAccess";
+import { BankingError } from "../services/banking/bankingAccess";
+import * as bankingAccessSvc from "../services/banking/bankingAccess";
+import * as bankingProjectAccounts from "../services/banking/projectAccounts";
+import * as bankingPaymentInstructions from "../services/banking/paymentInstructions";
+import * as bankingReconciliation from "../services/banking/reconciliation";
+import * as brepo from "../db/bankingRepo";
+import { BankingProviderError } from "../services/banking/provider";
+import { resolveBankingProvider, isDemoBankingMode } from "../services/banking/registry";
+import { handleBankingRoutes } from "./bankingRoutes";
+import { renderProjectAccountPage } from "../view/bankingPages";
 import * as loanProfile from "../services/loanProfile";
 import * as drawInspections from "../services/drawInspections";
 import * as lenderDecisions from "../services/lenderDecisions";
@@ -691,6 +701,32 @@ function assembleLenderTab(
       recordFunding: caps.has("RECORD_EXTERNAL_FUNDING"),
     },
     orgs,
+    banking: (() => {
+      // Read-only VAM summary: stored records or Not recorded — nothing
+      // is synthesized, and no action path exists from this tab. The
+      // banking capability boundary applies HERE too: a draw participant
+      // without VIEW_PROJECT_ACCOUNT sees no banking data at all (the
+      // same rule the workspace and banking API enforce with 403).
+      if (!bankingAccessSvc.hasBankingCapability(user, draw.projectId, "VIEW_PROJECT_ACCOUNT")) {
+        return null;
+      }
+      const account = brepo.getOpenAccountForProject(draw.projectId);
+      const activeHolds = account
+        ? brepo.listHoldsForAccount(account.id).filter((hold) => hold.status === "ACTIVE")
+        : [];
+      const drawInstructions = brepo.listInstructionsForDraw(draw.id);
+      const latestInstruction = drawInstructions.length > 0 ? drawInstructions[drawInstructions.length - 1] : null;
+      const drawTxns = drawInstructions.flatMap((i) => brepo.listTransactionsForInstruction(i.id));
+      const latestTransaction = drawTxns.length > 0 ? drawTxns[drawTxns.length - 1] : null;
+      const latestRun = account ? brepo.latestCompletedRun(account.bankingProgramId) : null;
+      return {
+        account,
+        activeHolds,
+        latestInstruction,
+        latestTransaction,
+        reconciliationState: latestRun?.status ?? null,
+      };
+    })(),
     notice,
   };
 }
@@ -2463,6 +2499,29 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sendJson(res, json, status);
     }
   };
+
+  // ==================== VAM banking layer (API) ====================
+  // Modular routes: authorization, tenancy, dual control and demo
+  // gating live in the banking services; no direct SQLite writes here.
+  if (
+    await handleBankingRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      getUser: () => {
+        const u = currentUser(req);
+        if (!u) throw new BankingError("Select a demo user first", 401);
+        return u;
+      },
+      readParams,
+      isForm: () => isFormPost(req),
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+    })
+  ) {
+    return;
+  }
   const loanApi = /^\/api\/projects\/([^/]+)\/(loan|parties|jurisdiction|memberships|lender-policy)$/.exec(pathname);
   if (loanApi) {
     const user = lenderUser();
@@ -4330,6 +4389,67 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  const projectAccountMatch = /^\/project\/([^/]+)\/account$/.exec(pathname);
+  if (method === "GET" && projectAccountMatch) {
+    let project;
+    let account;
+    try {
+      // Tenant boundary + VIEW_PROJECT_ACCOUNT + attributable access log.
+      account = bankingProjectAccounts.accountForProjectView(user!, projectAccountMatch[1]);
+      project = repo.getProject(projectAccountMatch[1])!;
+    } catch (e) {
+      if (e instanceof BankingError && e.statusCode === 404) {
+        sendHtml(res, renderError(navFor(user!, "projects"), "Project not found", "No project exists at this address."), 404);
+        return;
+      }
+      if (e instanceof BankingError && e.statusCode === 403) {
+        sendHtml(res, renderError(navFor(user!, "projects"), "Not authorized", "Viewing the project account requires the VIEW_PROJECT_ACCOUNT capability."), 403);
+        return;
+      }
+      throw e;
+    }
+    const program = bankingProjectAccounts.programForProject(project.id);
+    const draws = repo.listDrawRequestsForProject(project.id);
+    const eligibility = new Map<string, { label: string; blocker: string | null }>();
+    for (const draw of draws) {
+      const result = bankingPaymentInstructions.paymentEligibility(draw, account, null);
+      eligibility.set(draw.id, {
+        label: result.eligible ? "Eligible for payment instruction" : "Not eligible for payment instruction",
+        blocker: result.blockers[0] ?? null,
+      });
+    }
+    const runs = account ? brepo.listReconciliationRuns(account.bankingProgramId) : [];
+    const noticeErr = url.searchParams.get("err");
+    sendHtml(
+      res,
+      renderProjectAccountPage({
+        nav: navFor(user!, "projects"),
+        project,
+        program,
+        account,
+        holds: account ? brepo.listHoldsForAccount(account.id) : [],
+        instructions: account ? brepo.listInstructionsForAccount(account.id) : [],
+        transactions: account ? brepo.listTransactionsForAccount(account.id) : [],
+        runs,
+        latestRun: account ? brepo.latestCompletedRun(account.bankingProgramId) : null,
+        lastSuccessfulRun: account ? brepo.latestSuccessfulRun(account.bankingProgramId) : null,
+        reconciliationBlocked: account ? bankingReconciliation.reconciliationBlocked(account.bankingProgramId) : false,
+        caps: bankingAccessSvc.bankingCapabilityFlags(user!, project.id),
+        demoMode: isDemoBankingMode(),
+        users: usersById(),
+        draws,
+        eligibility,
+        notice: noticeErr
+          ? { kind: "err", text: noticeErr.slice(0, 300) }
+          : url.searchParams.get("ok")
+            ? { kind: "ok", text: "Recorded." }
+            : null,
+      })
+    );
+    return;
+  }
+
+
 
   if (method === "GET" && pathname.startsWith("/project/")) {
     const data = await projectCardData(pathname.slice("/project/".length));
@@ -5253,7 +5373,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";
@@ -5272,6 +5392,13 @@ const server = http.createServer((req, res) => {
         res.end();
         return;
       }
+      // Project Account workspace forms bounce back the same way.
+      const refAccount = /\/project\/([^/?#]+)\/account/.exec(ref);
+      if (known && req.method === "POST" && refAccount) {
+        res.writeHead(303, { Location: `/project/${refAccount[1]}/account?err=${encodeURIComponent(message).slice(0, 400)}` });
+        res.end();
+        return;
+      }
       // Browser navigation (form post) — styled error page, never raw JSON.
       sendHtml(res, renderError(null, "Something went wrong", message), status);
     } else {
@@ -5281,6 +5408,7 @@ const server = http.createServer((req, res) => {
 });
 
 getDb(); // fail fast if the database cannot be opened
+resolveBankingProvider(); // refuse to start a misconfigured banking provider
 server.listen(PORT, () => {
   console.log(`OBV running at http://localhost:${PORT}`);
   console.log(`Demo sign-in: http://localhost:${PORT}/  (pick a seeded role)`);

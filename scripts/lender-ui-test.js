@@ -140,11 +140,18 @@ const financialState = () =>
     assert(xTab.status === 404, "an unrelated tenant receives 404 for the lender tab (existence not disclosed)");
 
     // ---- 3. legacy draws show Not recorded, nothing fabricated ----
-    const lenderRows = ["loan_assets", "lender_draw_decisions", "lien_waiver_records", "external_funding_records", "draw_inspections"]
-      .reduce((s, t) => s + q1(`SELECT COUNT(*) c FROM ${t}`).c, 0);
+    // Scoped to draw-1: the seed now carries a HISTORICAL lender-decided
+    // draw (draw-vam) for the VAM demo, but the legacy draw itself must
+    // have zero lender-domain rows and render Not recorded values.
+    const lenderRows =
+      q1(`SELECT COUNT(*) c FROM lender_draw_decisions WHERE draw_request_id = 'draw-1'`).c +
+      q1(`SELECT COUNT(*) c FROM lien_waiver_records WHERE draw_request_id = 'draw-1'`).c +
+      q1(`SELECT COUNT(*) c FROM external_funding_records WHERE draw_request_id = 'draw-1'`).c +
+      q1(`SELECT COUNT(*) c FROM draw_inspections WHERE draw_request_id = 'draw-1'`).c +
+      q1(`SELECT COUNT(*) c FROM payment_instructions WHERE draw_request_id = 'draw-1'`).c;
     const notRecorded = (legacy.html.match(/Not recorded/g) || []).length;
     assert(lenderRows === 0 && notRecorded >= 5,
-      `legacy draw renders "Not recorded" (${notRecorded}×) with zero lender rows in the database`);
+      `legacy draw renders "Not recorded" (${notRecorded}×) with zero lender rows for draw-1`);
 
     // ---- 4. displayed stage equals deriveDrawStage() ----
     const stageApi = (await j("funder", "GET", "/api/draws/draw-1/stage", undefined, 200)).stage;

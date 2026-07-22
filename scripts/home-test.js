@@ -174,10 +174,12 @@ const assert = (c, m) => (c ? pass(m) : fail(m));
     );
 
     // ---- 12. no backend mutation from the public pages ----
+    // Five seeded roles since the VAM demo added the second lender
+    // officer (dual control needs a distinct approver).
     assert(
       !homeHtml.match(/method="POST"/i) &&
-        (demoHtml.match(/action="\/api\/session"/g) ?? []).length === 4,
-      "homepage has no mutating forms; /demo keeps exactly the four existing session forms"
+        (demoHtml.match(/action="\/api\/session"/g) ?? []).length === 5,
+      "homepage has no mutating forms; /demo keeps exactly the five seeded session forms"
     );
 
     // ---- 13. mobile rendering (Playwright when available) ----

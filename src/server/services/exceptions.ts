@@ -23,6 +23,7 @@
  */
 import * as repo from "../db/repo";
 import * as lrepo from "../db/lenderRepo";
+import * as brepo from "../db/bankingRepo";
 import { effectiveStatus as permitEffectiveStatus, completeSourcesForInspection } from "./permits";
 import { wormEvidenceStore } from "./WormEvidenceStore";
 import { audit } from "./pilot/onboarding";
@@ -942,6 +943,31 @@ async function activeConditions(): Promise<RuleCondition[]> {
     }
   }
 
+  // ================= banking reconciliation integrity ===================
+  // Source truth is the reconciliation_runs table: while a program's most
+  // recent COMPLETED run is a MISMATCH (or FAILED), a CRITICAL exception
+  // holds for every project account in the program. A later MATCHED run
+  // clears the condition (auto-resolve) — the mismatch run itself is
+  // never deleted or adjusted, so the history stays intact.
+  for (const project of projects) {
+    const account = brepo.getOpenAccountForProject(project.id);
+    if (!account) continue;
+    const latest = brepo.latestCompletedRun(account.bankingProgramId);
+    if (!latest || latest.status === "MATCHED") continue;
+    const desc =
+      latest.status === "FAILED"
+        ? "The most recent reconciliation run failed to complete."
+        : `Bank-reported balance ${latest.bankReportedBalance} differs from the ledger-calculated balance ${latest.ledgerCalculatedBalance} by ${latest.differenceAmount}.`;
+    out.push({ seed: {
+      projectId: project.id,
+      sourceType: "BANKING_RECONCILIATION", sourceId: latest.id,
+      sourceKey: `banking-reconciliation-mismatch:${account.bankingProgramId}:${project.id}`,
+      category: "INTEGRITY", severity: "CRITICAL",
+      title: "Banking reconciliation mismatch — payments blocked",
+      description: `${desc} New payment submissions for the program are blocked until an attributable resolution and a later successful reconciliation.`,
+    }});
+  }
+
   return out;
 }
 
@@ -1218,6 +1244,13 @@ export function sourceContext(e: ObvException): {
       return {
         label: "Official source record",
         href: e.milestoneId ? `/milestone/${e.milestoneId}` : `/project/${e.projectId}`,
+        latitude: null,
+        longitude: null,
+      };
+    case "BANKING_RECONCILIATION":
+      return {
+        label: "Banking reconciliation run",
+        href: `/project/${e.projectId}/account`,
         latitude: null,
         longitude: null,
       };

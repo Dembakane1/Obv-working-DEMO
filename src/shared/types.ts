@@ -1172,6 +1172,7 @@ export type ExceptionSourceType =
   | "LOAN_ASSET"
   | "PERMIT"
   | "OFFICIAL_SOURCE"
+  | "BANKING_RECONCILIATION"
   | "MANUAL";
 
 export type ExceptionCategory =
@@ -2055,7 +2056,8 @@ export type ProjectCapability =
   | "SCHEDULE_DRAW_INSPECTION" | "RECORD_INSPECTION_FINDINGS"
   | "FINALIZE_INSPECTION_REPORT" | "REVIEW_EVIDENCE" | "REVIEW_DRAW"
   | "RECORD_LENDER_DECISION" | "ACCEPT_EXCEPTION" | "MANAGE_PROJECT_CONFIGURATION"
-  | "MANAGE_USERS" | "RECORD_EXTERNAL_FUNDING";
+  | "MANAGE_USERS" | "RECORD_EXTERNAL_FUNDING"
+  | BankingCapability;
 
 export interface ProjectMembership {
   id: string;
@@ -2125,3 +2127,230 @@ export interface DrawStageEvent {
   sourceRecordId: string | null;
   createdAt: string;
 }
+
+// ============================================================================
+// Virtual Account Management (VAM) foundation — provider-neutral banking
+// layer. OBV is a construction verification, workflow, authorization and
+// financial-ledger technology provider. It is NOT a bank, escrow company,
+// money transmitter, fiduciary, insurer or licensed financial institution.
+// The partner bank (or its licensed provider) holds funds, enforces holds
+// and executes payments. Every record below is bookkeeping about that
+// external reality — none of it moves money.
+// ============================================================================
+
+export type BankingProviderKind = "MOCK" | "UNIT" | "TREASURY_PRIME" | "QOLO";
+
+/** How the sponsored program titles funds at the partner bank. OBV never
+ *  claims to be a licensed escrow agent — ESCROW_PARTNER means a licensed
+ *  third-party escrow provider participates in the structure. */
+export type BankingAccountStructure =
+  | "LENDER_CONTROLLED"
+  | "FBO"
+  | "CUSTODIAL"
+  | "ESCROW_PARTNER"
+  | "SEPARATE_PROJECT_ACCOUNTS";
+
+export type BankingProgramStatus = "PENDING" | "ACTIVE" | "SUSPENDED" | "CLOSED";
+
+export interface BankingProgram {
+  id: string;
+  organizationId: string;
+  provider: BankingProviderKind;
+  providerProgramReference: string | null;
+  partnerBankName: string;
+  accountStructure: BankingAccountStructure;
+  status: BankingProgramStatus;
+  currency: string;
+  createdAt: string;
+  updatedAt: string;
+  activatedAt: string | null;
+  suspendedAt: string | null;
+  metadata: string | null;
+  createdByUserId: string;
+}
+
+export type ProjectVirtualAccountStatus = "PENDING" | "ACTIVE" | "SUSPENDED" | "CLOSED";
+
+/** Project-level financial ledger identity. May be a SUBLEDGER balance
+ *  within a program's bank account rather than a legally separate bank
+ *  deposit account — the UI must present this distinction. Only masked
+ *  identifiers are ever stored. All amounts are whole-currency integers. */
+export interface ProjectVirtualAccount {
+  id: string;
+  bankingProgramId: string;
+  projectId: string;
+  providerAccountReference: string | null;
+  virtualAccountNumberMasked: string;
+  routingNumberMasked: string | null;
+  currency: string;
+  status: ProjectVirtualAccountStatus;
+  availableBalance: number;
+  heldBalance: number;
+  releaseEligibleBalance: number;
+  pendingOutboundAmount: number;
+  settledOutboundAmount: number;
+  returnedAmount: number;
+  createdAt: string;
+  activatedAt: string | null;
+  suspendedAt: string | null;
+  closedAt: string | null;
+  lastReconciledAt: string | null;
+}
+
+export type AccountHoldStatus = "ACTIVE" | "RELEASED" | "CANCELLED" | "EXPIRED";
+
+export interface ProjectAccountHold {
+  id: string;
+  projectVirtualAccountId: string;
+  drawRequestId: string | null;
+  amount: number;
+  reasonCode: string;
+  reason: string | null;
+  status: AccountHoldStatus;
+  placedAt: string;
+  releasedAt: string | null;
+  placedByUserId: string;
+  releasedByUserId: string | null;
+  providerReference: string | null;
+}
+
+export type PaymentInstructionStatus =
+  | "DRAFT"
+  | "PENDING_APPROVAL"
+  | "APPROVED_FOR_SUBMISSION"
+  | "SUBMITTED_TO_PROVIDER"
+  | "PROCESSING"
+  | "SETTLED"
+  | "FAILED"
+  | "RETURNED"
+  | "CANCELLED";
+
+/** A payment instruction is NOT a completed payment. It becomes SETTLED
+ *  only through a provider-confirmed bank transaction event — never
+ *  because an OBV user approved it. */
+export interface PaymentInstruction {
+  id: string;
+  projectVirtualAccountId: string;
+  drawRequestId: string;
+  lenderDecisionId: string;
+  approvalRequestId: string;
+  amount: number;
+  currency: string;
+  recipientName: string;
+  recipientReference: string | null;
+  paymentMethod: string;
+  status: PaymentInstructionStatus;
+  requestedByUserId: string;
+  approvedByUserId: string | null;
+  requestedAt: string;
+  approvedAt: string | null;
+  submittedAt: string | null;
+  settledAt: string | null;
+  failedAt: string | null;
+  cancelledAt: string | null;
+  providerReference: string | null;
+  failureCode: string | null;
+  failureReason: string | null;
+  idempotencyKey: string;
+}
+
+export type BankTransactionDirection = "CREDIT" | "DEBIT";
+
+export type BankTransactionStatus = "PENDING" | "POSTED" | "SETTLED" | "FAILED" | "RETURNED" | "REVERSED";
+
+/** Bank-reported movement. The provider (mock in this phase) is the only
+ *  writer of settlement truth; OBV mirrors what the bank reports. */
+export interface BankTransaction {
+  id: string;
+  projectVirtualAccountId: string;
+  paymentInstructionId: string | null;
+  providerTransactionReference: string;
+  direction: BankTransactionDirection;
+  amount: number;
+  currency: string;
+  status: BankTransactionStatus;
+  transactionType: string;
+  initiatedAt: string;
+  postedAt: string | null;
+  settledAt: string | null;
+  returnedAt: string | null;
+  description: string | null;
+  /** SHA-256 of the raw provider event payload — the payload itself is
+   *  never retained in application records. */
+  rawEventHash: string | null;
+}
+
+export type ReconciliationRunStatus = "RUNNING" | "MATCHED" | "MISMATCH" | "FAILED";
+
+export interface ReconciliationRun {
+  id: string;
+  bankingProgramId: string;
+  startedAt: string;
+  completedAt: string | null;
+  status: ReconciliationRunStatus;
+  bankReportedBalance: number | null;
+  ledgerCalculatedBalance: number | null;
+  differenceAmount: number | null;
+  projectAccountCount: number | null;
+  transactionCount: number | null;
+  findings: string | null;
+  initiatedBy: string;
+  previousSuccessfulRunId: string | null;
+}
+
+export type BankingEventType =
+  | "PROGRAM_CREATED"
+  | "ACCOUNT_CREATED"
+  | "ACCOUNT_ACCESSED"
+  | "DEMO_CREDIT_POSTED"
+  | "HOLD_PLACED"
+  | "HOLD_RELEASED"
+  | "INSTRUCTION_CREATED"
+  | "INSTRUCTION_APPROVED"
+  | "INSTRUCTION_CANCELLED"
+  | "PROVIDER_SUBMISSION_SIMULATED"
+  | "PROVIDER_EVENT_PROCESSED"
+  | "TRANSACTION_POSTED"
+  | "SETTLEMENT_RECORDED"
+  | "PAYMENT_FAILED"
+  | "PAYMENT_RETURNED"
+  | "PAYMENT_REVERSED"
+  | "RECONCILIATION_MATCHED"
+  | "RECONCILIATION_MISMATCH"
+  | "ACCOUNT_SUSPENDED"
+  | "ACCOUNT_CLOSED";
+
+/** Append-only, attributable banking audit event. No update or delete
+ *  path exists for these records. */
+export interface BankingEvent {
+  id: string;
+  organizationId: string;
+  projectId: string | null;
+  bankingProgramId: string | null;
+  projectVirtualAccountId: string | null;
+  drawRequestId: string | null;
+  paymentInstructionId: string | null;
+  bankTransactionId: string | null;
+  type: BankingEventType;
+  detail: string;
+  actorUserId: string | null;
+  createdAt: string;
+}
+
+/** Banking-layer capabilities. Additive to ProjectCapability so they ride
+ *  the existing membership capabilitySet machinery; they are deliberately
+ *  NOT added to any PARTICIPANT_CAPABILITIES default set — banking
+ *  authority is granted explicitly (or via the conservative legacy role
+ *  fallback in bankingAccess). */
+export const BANKING_CAPABILITIES = [
+  "VIEW_PROJECT_ACCOUNT",
+  "MANAGE_PROJECT_ACCOUNT",
+  "CREATE_PAYMENT_INSTRUCTION",
+  "APPROVE_PAYMENT_INSTRUCTION",
+  "CANCEL_PAYMENT_INSTRUCTION",
+  "VIEW_RECONCILIATION",
+  "RUN_RECONCILIATION",
+  "MANAGE_BANKING_PROGRAM",
+] as const;
+
+export type BankingCapability = (typeof BANKING_CAPABILITIES)[number];
