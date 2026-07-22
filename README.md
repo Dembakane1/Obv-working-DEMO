@@ -40,6 +40,31 @@ npm run build   # tsc (server TSX + client TS) + generate PWA icons
 npm run seed    # drop & recreate data/obv.db with the seeded project
 ```
 
+### Test everything with one command
+
+```bash
+npm test        # build + every suite + deployment checks (unified runner)
+```
+
+`scripts/run-all-tests.js` builds once, runs every standalone suite
+(including the 87-checkpoint VAM suite and the 50-checkpoint VAM
+adversarial suite), boots one temp-seeded server for the server-based
+suites and the deployment checks, fails fast with the failing suite
+named, and prints a suite + checkpoint summary. Flags: `--continue`,
+`--verbose`, `--skip-build`. The browser checkpoints need Playwright
+resolvable via `node_modules` or `NODE_PATH`.
+
+GitHub Actions runs the same complete validation (`.github/workflows/
+ci.yml`, required check name `ci`) on every pull request into `main`
+and every push to `main`, pinned to the mock banking provider in demo
+mode. Branch-protection setup: `docs/REPOSITORY_PROTECTION.md`.
+
+**The financial layer is a demo simulation.** `OBV_BANKING_PROVIDER=mock`
+and `OBV_BANKING_MODE=demo` are the defaults; no real bank account
+exists and no real money moves anywhere in this application. See
+`docs/vam/` for the architecture, security model, reconciliation rules
+and post-merge audit.
+
 ### Demo users (no passwords — demo user switcher)
 
 | User | Role | Lands on |
