@@ -128,19 +128,32 @@ export class MockBankingProvider implements BankingProvider {
       failureReason,
     };
     // Idempotent event processing ON THE BANK'S OWN BOOK: the mock bank
-    // records each monetary event exactly once, keyed by eventId. A
-    // replayed event is reported as a duplicate and changes nothing.
-    // (OBV-side guarded transitions in the services are the second wall.)
+    // records each event exactly once, keyed by eventId. An identical
+    // replay (same eventId, same event type, same transaction) is
+    // reported as a duplicate and changes nothing. A CONFLICTING reuse —
+    // the same eventId pointed at a different transaction or carrying a
+    // different event type — is an explicit rejection, never a silent
+    // success. (OBV-side guarded transitions are the second wall.)
     if (txn) {
       const program = brepo.getAccount(txn.projectVirtualAccountId)
         ? brepo.getProgram(brepo.getAccount(txn.projectVirtualAccountId)!.bankingProgramId)
         : null;
       if (program) {
         const marker = `EVT:${eventId}`;
+        const normalizedType = input.eventType.toUpperCase().replace(/\./g, "_");
+        // Conflict-detection payload: what this eventId was ORIGINALLY
+        // recorded for. entry_type carries type + transaction reference.
+        const identity = `${normalizedType}:${input.providerTransactionReference}`;
         const seen = brepo
           .listMockLedgerEntries(program.id)
-          .some((e) => e.reference === marker);
+          .find((e) => e.reference === marker);
         if (seen) {
+          if (seen.entryType !== identity) {
+            throw new BankingProviderError(
+              `Provider event ${eventId} was already processed for a different transaction or event type`,
+              409
+            );
+          }
           result.duplicate = true;
           return result;
         }
@@ -152,7 +165,7 @@ export class MockBankingProvider implements BankingProvider {
         brepo.insertMockLedgerEntry({
           id: brepo.newId(),
           bankingProgramId: program.id,
-          entryType: input.eventType.toUpperCase().replace(/\./g, "_"),
+          entryType: identity,
           amount: bankDelta,
           reference: marker,
           createdAt: new Date().toISOString(),

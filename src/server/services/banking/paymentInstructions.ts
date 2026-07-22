@@ -218,41 +218,48 @@ export function createPaymentInstruction(
 
   // Idempotency: an already-processed key returns the original record
   // when the request is identical after normalization, and refuses
-  // otherwise. It never creates a second instruction.
+  // otherwise. It never creates a second instruction. Evaluated INSIDE
+  // the write lock below (and backstopped by the UNIQUE(idempotency_key)
+  // constraint) so a concurrent same-key request cannot race past a
+  // pre-lock read.
   const normalizedReference = (input.recipientReference ?? "").toString().trim().slice(0, 100) || null;
-  const existingByKey = brepo.getInstructionByIdempotencyKey(idempotencyKey);
-  if (existingByKey) {
-    if (
-      existingByKey.drawRequestId === draw.id &&
-      existingByKey.amount === amount &&
-      existingByKey.recipientName === recipientName &&
-      existingByKey.paymentMethod === paymentMethod &&
-      existingByKey.recipientReference === normalizedReference
-    ) {
-      return existingByKey;
-    }
+  const matchesRequest = (i: PaymentInstruction): boolean =>
+    i.drawRequestId === draw.id &&
+    i.amount === amount &&
+    i.recipientName === recipientName &&
+    i.paymentMethod === paymentMethod &&
+    i.recipientReference === normalizedReference;
+  const resolveExistingKey = (): PaymentInstruction | null => {
+    const existing = brepo.getInstructionByIdempotencyKey(idempotencyKey);
+    if (!existing) return null;
+    if (matchesRequest(existing)) return existing;
     throw new BankingError("The idempotency key was already processed with different parameters", 409);
-  }
-
-  // Duplicate protection independent of the key: an equivalent
-  // instruction that is still consuming the approved amount blocks a
-  // second one.
-  const duplicate = brepo
-    .listInstructionsForDraw(draw.id)
-    .find(
-      (i) =>
-        CAP_CONSUMING.includes(i.status) &&
-        i.status !== "SETTLED" &&
-        i.amount === amount &&
-        i.recipientName.toLowerCase() === recipientName.toLowerCase()
-    );
-  if (duplicate) {
-    throw new BankingError("An equivalent payment instruction is already in progress for this draw", 409);
-  }
+  };
 
   const now = new Date().toISOString();
   let created: PaymentInstruction | null = null;
   brepo.withBankingTx(() => {
+    // Idempotency + duplicate protection INSIDE the write lock.
+    const replay = resolveExistingKey();
+    if (replay) {
+      created = replay;
+      return;
+    }
+    // Duplicate protection independent of the key: an equivalent
+    // instruction that is still consuming the approved amount blocks a
+    // second one.
+    const duplicate = brepo
+      .listInstructionsForDraw(draw.id)
+      .find(
+        (i) =>
+          CAP_CONSUMING.includes(i.status) &&
+          i.status !== "SETTLED" &&
+          i.amount === amount &&
+          i.recipientName.toLowerCase() === recipientName.toLowerCase()
+      );
+    if (duplicate) {
+      throw new BankingError("An equivalent payment instruction is already in progress for this draw", 409);
+    }
     // Full boundary INSIDE the write lock: governance, decision,
     // conditions, waivers, inspections, gates, exceptions,
     // reconciliation, cap and balance are all re-read here.
@@ -287,7 +294,17 @@ export function createPaymentInstruction(
     if (!brepo.adjustAccountBalances(account.id, { release_eligible_balance: -amount })) {
       throw new BankingError("Insufficient release-eligible balance for this instruction", 409);
     }
-    brepo.insertInstruction(instruction);
+    try {
+      brepo.insertInstruction(instruction);
+    } catch (e) {
+      // UNIQUE(idempotency_key) is the database-level backstop for the
+      // in-lock replay check above; surface it as the same controlled
+      // conflict rather than a raw constraint error.
+      if (e instanceof Error && /UNIQUE constraint/.test(e.message)) {
+        throw new BankingError("The idempotency key was already processed with different parameters", 409);
+      }
+      throw e;
+    }
     const project = repo.getProject(draw.projectId)!;
     logBankingEvent({
       organizationId: project.organizationId,
@@ -577,16 +594,23 @@ export function processProviderEvent(
           rawEventHash: webhook.rawEventHash,
         });
         if (applied) {
-          brepo.transitionInstructionGuarded(
-            instruction.id,
-            ["SUBMITTED_TO_PROVIDER", "PROCESSING"],
-            "FAILED",
-            {
-              failedAt: now,
-              failureCode: webhook.failureCode ?? "PROVIDER_FAILURE",
-              failureReason: webhook.failureReason ?? "The provider reported the payment as failed.",
-            }
-          );
+          // Instruction and transaction move in LOCKSTEP: if the
+          // instruction cannot make the matching transition the whole
+          // event rolls back — the two records can never diverge.
+          if (
+            !brepo.transitionInstructionGuarded(
+              instruction.id,
+              ["SUBMITTED_TO_PROVIDER", "PROCESSING"],
+              "FAILED",
+              {
+                failedAt: now,
+                failureCode: webhook.failureCode ?? "PROVIDER_FAILURE",
+                failureReason: webhook.failureReason ?? "The provider reported the payment as failed.",
+              }
+            )
+          ) {
+            throw new BankingError("The instruction is not in a failable state", 409);
+          }
           // In-flight funds never left the bank: back to spendable.
           if (
             !brepo.adjustAccountBalances(account.id, {
@@ -614,10 +638,16 @@ export function processProviderEvent(
           rawEventHash: webhook.rawEventHash,
         });
         if (applied) {
-          brepo.transitionInstructionGuarded(instruction.id, ["SETTLED"], "RETURNED", {
-            failureCode: webhook.failureCode ?? "RETURNED",
-            failureReason: webhook.failureReason ?? "The provider returned the settled payment.",
-          });
+          // Lockstep: a return that cannot move the instruction rolls
+          // the whole event back (no txn/instruction divergence).
+          if (
+            !brepo.transitionInstructionGuarded(instruction.id, ["SETTLED"], "RETURNED", {
+              failureCode: webhook.failureCode ?? "RETURNED",
+              failureReason: webhook.failureReason ?? "The provider returned the settled payment.",
+            })
+          ) {
+            throw new BankingError("The instruction is not in a returnable state", 409);
+          }
           if (
             !brepo.adjustAccountBalances(account.id, {
               available_balance: amount,
@@ -644,10 +674,16 @@ export function processProviderEvent(
           rawEventHash: webhook.rawEventHash,
         });
         if (applied) {
-          brepo.transitionInstructionGuarded(instruction.id, ["SETTLED"], "RETURNED", {
-            failureCode: webhook.failureCode ?? "REVERSED",
-            failureReason: webhook.failureReason ?? "The provider reversed the settled transaction.",
-          });
+          // Lockstep: a reversal that cannot move the instruction rolls
+          // the whole event back (no txn/instruction divergence).
+          if (
+            !brepo.transitionInstructionGuarded(instruction.id, ["SETTLED"], "RETURNED", {
+              failureCode: webhook.failureCode ?? "REVERSED",
+              failureReason: webhook.failureReason ?? "The provider reversed the settled transaction.",
+            })
+          ) {
+            throw new BankingError("The instruction is not in a reversible state", 409);
+          }
           if (
             !brepo.adjustAccountBalances(account.id, {
               available_balance: amount,

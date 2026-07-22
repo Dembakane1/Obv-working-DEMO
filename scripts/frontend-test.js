@@ -74,7 +74,12 @@ async function chipsInside(page) {
 
 (async () => {
   console.log("Frontend visual/responsive tests — " + BASE);
-  const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+  // Pinned sandbox Chromium when present; Playwright's own resolution
+  // everywhere else (CI installs browsers into its default cache).
+  const pinned = "/opt/pw-browsers/chromium";
+  const browser = await chromium.launch(
+    require("node:fs").existsSync(pinned) ? { executablePath: pinned } : {}
+  );
 
   const makeCtx = async (viewport) => {
     const ctx = await browser.newContext({ viewport });

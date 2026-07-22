@@ -8,7 +8,11 @@
     "seed": "node dist/server/db/seed.js --reset",
     "start": "node dist/server/http/server.js",
     "setup": "npm run build && npm run seed",
-    "dev": "npm run build && node dist/server/http/server.js"
+    "dev": "npm run build && node dist/server/http/server.js",
+    "test": "node scripts/run-all-tests.js",
+    "test:vam": "node scripts/vam-test.js",
+    "test:vam-adversarial": "node scripts/vam-adversarial-test.js",
+    "check": "node scripts/run-all-tests.js"
   },
   "engines": {
     "node": ">=22.5"

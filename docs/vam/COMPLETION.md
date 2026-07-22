@@ -1,5 +1,13 @@
 # VAM foundation — completion report
 
+> **Post-merge addendum (2026-07-22):** the merged implementation was
+> independently audited and hardened — see
+> `docs/vam/POST_MERGE_AUDIT.md` for the confirmed baseline, state
+> machines, accounting identities, three fixed defects (event-path
+> lockstep transitions, conflicting provider-event rejection,
+> in-lock idempotency), the 50-checkpoint adversarial suite, the
+> unified `npm test` runner and the `ci` GitHub Actions workflow.
+
 Branch `claude/obv-vam-foundation` from main `7303d03`. This phase adds
 the production-safe Virtual Account Management foundation with **no real
 money movement**: a provider-neutral banking boundary, a deterministic
