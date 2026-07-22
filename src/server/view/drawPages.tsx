@@ -373,14 +373,16 @@ export interface LenderTabData {
   /** Read-only VAM summary: linked project virtual account, active holds,
    *  this draw's latest payment instruction and bank-reported transaction,
    *  reconciliation state. Never an action surface — lender-review forms
-   *  cannot settle or transfer money; the workspace link is the way in. */
+   *  cannot settle or transfer money; the workspace link is the way in.
+   *  NULL when the viewer lacks VIEW_PROJECT_ACCOUNT: banking data keeps
+   *  its own capability boundary even inside the lender tab. */
   banking: {
     account: ProjectVirtualAccount | null;
     activeHolds: ProjectAccountHold[];
     latestInstruction: PaymentInstruction | null;
     latestTransaction: BankTransaction | null;
     reconciliationState: string | null;
-  };
+  } | null;
   /** Post-redirect notice (?ok= / ?err=). */
   notice: { kind: "ok" | "err"; text: string } | null;
 }
@@ -1993,6 +1995,9 @@ function lenderPackages(d: DrawDetailData, L: LenderTabData): VNode {
  *  workspace, linked below. */
 function lenderBankingSummary(d: DrawDetailData, L: LenderTabData): VNode {
   const B = L.banking;
+  // Banking data keeps its own capability boundary: without
+  // VIEW_PROJECT_ACCOUNT the section simply does not exist.
+  if (!B) return <></>;
   const a = B.account;
   const holdsTotal = B.activeHolds.reduce((sum, hold) => sum + hold.amount, 0);
   const i = B.latestInstruction;

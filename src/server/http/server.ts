@@ -703,7 +703,13 @@ function assembleLenderTab(
     orgs,
     banking: (() => {
       // Read-only VAM summary: stored records or Not recorded — nothing
-      // is synthesized, and no action path exists from this tab.
+      // is synthesized, and no action path exists from this tab. The
+      // banking capability boundary applies HERE too: a draw participant
+      // without VIEW_PROJECT_ACCOUNT sees no banking data at all (the
+      // same rule the workspace and banking API enforce with 403).
+      if (!bankingAccessSvc.hasBankingCapability(user, draw.projectId, "VIEW_PROJECT_ACCOUNT")) {
+        return null;
+      }
       const account = brepo.getOpenAccountForProject(draw.projectId);
       const activeHolds = account
         ? brepo.listHoldsForAccount(account.id).filter((hold) => hold.status === "ACTIVE")

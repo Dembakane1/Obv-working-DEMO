@@ -108,7 +108,10 @@ export function paymentEligibility(
   if (policy?.independentInspectionRequired) {
     const inspections = lrepo.listDrawInspections(draw.id);
     const latest = inspections.length > 0 ? inspections[inspections.length - 1] : null;
-    if (!latest || latest.status !== "FINALIZED" || latest.lenderAcceptanceStatus !== "ACCEPTED") {
+    // ACCEPTED is the terminal state recordLenderAcceptance reaches
+    // atomically together with lenderAcceptanceStatus=ACCEPTED — the
+    // inspection is never simultaneously FINALIZED and lender-accepted.
+    if (!latest || latest.status !== "ACCEPTED" || latest.lenderAcceptanceStatus !== "ACCEPTED") {
       blockers.push("The required independent draw inspection is not finalized and lender-accepted.");
     }
   }
@@ -214,14 +217,17 @@ export function createPaymentInstruction(
   const idempotencyKey = (input.idempotencyKey ?? "").trim() || brepo.newId();
 
   // Idempotency: an already-processed key returns the original record
-  // when the request is byte-identical, and refuses otherwise. It never
-  // creates a second instruction.
+  // when the request is identical after normalization, and refuses
+  // otherwise. It never creates a second instruction.
+  const normalizedReference = (input.recipientReference ?? "").toString().trim().slice(0, 100) || null;
   const existingByKey = brepo.getInstructionByIdempotencyKey(idempotencyKey);
   if (existingByKey) {
     if (
       existingByKey.drawRequestId === draw.id &&
       existingByKey.amount === amount &&
-      existingByKey.recipientName === recipientName
+      existingByKey.recipientName === recipientName &&
+      existingByKey.paymentMethod === paymentMethod &&
+      existingByKey.recipientReference === normalizedReference
     ) {
       return existingByKey;
     }
@@ -261,7 +267,7 @@ export function createPaymentInstruction(
       amount,
       currency: account.currency,
       recipientName,
-      recipientReference: (input.recipientReference ?? "").toString().trim().slice(0, 100) || null,
+      recipientReference: normalizedReference,
       paymentMethod,
       status: "PENDING_APPROVAL",
       requestedByUserId: user.id,

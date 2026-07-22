@@ -314,6 +314,28 @@ async function main() {
     assert(waiverBlocked.status === 409, "an outstanding required lien waiver blocks payment instructions");
     exec("DELETE FROM lien_waiver_records WHERE id = 'lw-x'");
 
+    // independent-inspection policy: an active policy requiring an
+    // independent inspection blocks payment until the inspection reaches
+    // the terminal lender-ACCEPTED state (the state recordLenderAcceptance
+    // actually produces).
+    exec(`INSERT INTO lender_draw_policies (id, organization_id, version, independent_inspection_required, active, configured_by_user_id, created_at)
+          VALUES ('pol-x', 'org-cdfc', 99, 1, 1, 'user-funder', '2026-07-06T00:00:00.000Z')`);
+    const inspRequired = await j("funder", "GET", "/api/draws/draw-vam/payment-eligibility", undefined, 200);
+    assert(
+      inspRequired.label === "Not eligible for payment instruction" &&
+        inspRequired.blockers.some((b) => /independent draw inspection/.test(b)),
+      "a policy requiring an independent inspection blocks payment until one is lender-accepted"
+    );
+    exec(`INSERT INTO draw_inspections (id, organization_id, project_id, draw_request_id, status, lender_acceptance_status, created_at, updated_at)
+          VALUES ('insp-x', 'org-cdfc', 'proj-r47', 'draw-vam', 'ACCEPTED', 'ACCEPTED', '2026-07-06T00:00:00.000Z', '2026-07-06T00:00:00.000Z')`);
+    const inspAccepted = await j("funder", "GET", "/api/draws/draw-vam/payment-eligibility", undefined, 200);
+    assert(
+      !inspAccepted.blockers.some((b) => /independent draw inspection/.test(b)),
+      "a lender-ACCEPTED independent inspection satisfies the policy requirement (the gate is satisfiable)"
+    );
+    exec("DELETE FROM draw_inspections WHERE id = 'insp-x'");
+    exec("DELETE FROM lender_draw_policies WHERE id = 'pol-x'");
+
     // approved-amount cap: 200k approved − 80k settled − 120k pending = 0
     const capBlocked = await api("funder", "POST", "/api/draws/draw-vam/payment-instructions", {
       amount: 1, recipientName: "Anyone",
@@ -413,6 +435,14 @@ async function main() {
       amount: 20_000, recipientName: "Lakeshore Rehab Contractors LLC",
     });
     assert(dup.status === 409, "an equivalent in-progress instruction (same draw, amount, recipient) is a duplicate 409");
+    const methodClash = await api("funder", "POST", "/api/draws/draw-vam/payment-instructions", {
+      amount: 20_000, recipientName: "Lakeshore Rehab Contractors LLC", idempotencyKey: "vam-test-pi3",
+      paymentMethod: "WIRE_SIMULATED",
+    });
+    assert(
+      methodClash.status === 409,
+      "the same idempotency key with a different payment method is refused — never silently coalesced"
+    );
 
     await j("lender2", "POST", `/api/payment-instructions/${pi3.instruction.id}/approve`, {}, 200);
     await j("funder", "POST", `/api/payment-instructions/${pi3.instruction.id}/simulate/submit`, {}, 200);
@@ -532,6 +562,13 @@ async function main() {
     assert(
       legacyTab.html.includes("Latest payment instruction (this draw)") && legacyTab.html.includes("Not recorded"),
       "a draw with no instructions shows Not recorded in the lender-tab banking summary"
+    );
+    const pmLenderTab = await page("pm", "/draw/draw-vam?tab=lender");
+    assert(
+      pmLenderTab.status === 200 &&
+        !pmLenderTab.html.includes("••••4207") &&
+        !pmLenderTab.html.includes("Latest payment instruction (this draw)"),
+      "a draw participant WITHOUT the banking view capability sees no banking data on the lender tab"
     );
 
     // ---- 17. packages carry the banking registers ----
