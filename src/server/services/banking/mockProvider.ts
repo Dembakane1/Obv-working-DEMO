@@ -118,15 +118,48 @@ export class MockBankingProvider implements BankingProvider {
     const failureReason = input.failureReason
       ? String(input.failureReason).replace(/[\r\n]+/g, " ").slice(0, 300)
       : null;
-    return {
+    const result: BankingWebhookResult = {
       eventId,
-      duplicate: false, // duplicate detection is applied by the service via guarded transitions
+      duplicate: false,
       providerTransactionReference: input.providerTransactionReference,
       eventType: input.eventType,
       rawEventHash: brepo.sha256Hex(input.rawPayload ?? ""),
       failureCode: input.failureCode ? String(input.failureCode).slice(0, 40) : null,
       failureReason,
     };
+    // Idempotent event processing ON THE BANK'S OWN BOOK: the mock bank
+    // records each monetary event exactly once, keyed by eventId. A
+    // replayed event is reported as a duplicate and changes nothing.
+    // (OBV-side guarded transitions in the services are the second wall.)
+    if (txn) {
+      const program = brepo.getAccount(txn.projectVirtualAccountId)
+        ? brepo.getProgram(brepo.getAccount(txn.projectVirtualAccountId)!.bankingProgramId)
+        : null;
+      if (program) {
+        const marker = `EVT:${eventId}`;
+        const seen = brepo
+          .listMockLedgerEntries(program.id)
+          .some((e) => e.reference === marker);
+        if (seen) {
+          result.duplicate = true;
+          return result;
+        }
+        const bankDelta =
+          input.eventType === "payment.settled" ? -txn.amount
+          : input.eventType === "payment.returned" ? txn.amount
+          : input.eventType === "payment.reversed" ? txn.amount
+          : 0;
+        brepo.insertMockLedgerEntry({
+          id: brepo.newId(),
+          bankingProgramId: program.id,
+          entryType: input.eventType.toUpperCase().replace(/\./g, "_"),
+          amount: bankDelta,
+          reference: marker,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
+    return result;
   }
 
   reconcileProgram(input: ReconcileProgramInput): ProviderReconciliationReport {

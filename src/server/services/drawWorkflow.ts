@@ -206,7 +206,7 @@ function financialDocumentsReviewed(draw: DrawRequest): boolean {
  *  UNDETERMINED requirement never behaves as NOT_REQUIRED, and every draw
  *  line MUST map to a milestone — an unmapped line is incomplete data and
  *  blocks the stage (never filtered into a vacuous pass). */
-function governmentInspectionsChecked(draw: DrawRequest): boolean {
+export function governmentInspectionsChecked(draw: DrawRequest): boolean {
   const lines = repo.listDrawLines(draw.id);
   if (lines.length === 0 || lines.some((l) => l.status === "PENDING")) return false;
   // DATA COMPLETENESS: every draw line must map to a milestone — an
