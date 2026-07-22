@@ -32,6 +32,7 @@ import { retainageSummary } from "./retainage";
 import { audit } from "./pilot/onboarding";
 import * as drawPackage from "./drawPackage";
 import * as completionGates from "./completionGates";
+import { bankingRegisterFiles } from "./banking/packageRegisters";
 import type {
   ApprovalRequest, AuditPackage, Project, User,
 } from "../../shared/types";
@@ -1159,6 +1160,22 @@ function buildRegisters(
       "09_change_orders",
       changeOrders.length
     );
+  }
+
+  // ---- 10_banking (VAM registers; as-of filtered, masked identifiers,
+  //      ledger state and bank-reported state kept distinct; legacy
+  //      projects get an explicit Not recorded summary)
+  {
+    const banking = bankingRegisterFiles({
+      projectId: project.id,
+      drawRequestId: null,
+      asOf,
+      prefix: "10_banking/",
+      users,
+    });
+    for (const bf of banking.files) {
+      add(bf.name, bf.data, "10_banking", banking.counts[bf.name]);
+    }
   }
 
   // ---- 11_reports

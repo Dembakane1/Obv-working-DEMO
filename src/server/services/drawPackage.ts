@@ -19,6 +19,7 @@ import { retainageSummary } from "./retainage";
 import { wormEvidenceStore } from "./WormEvidenceStore";
 import { buildZip, csv, PackageFile } from "./auditPackage";
 import { buildLenderDrawFiles } from "./lenderReporting";
+import { bankingRegisterFiles } from "./banking/packageRegisters";
 import { createHash } from "node:crypto";
 import type {
   ApprovalRecord, ApprovalRequest, DrawAccountEvent, DrawDocument,
@@ -1182,6 +1183,19 @@ export function buildDrawPackageFiles(d: DrawPackageData): {
   // ---- lender operating layer registers (additive) ----
   for (const lf of buildLenderDrawFiles(d.project.id, d.draw.id)) {
     add(lf.name, lf.content, lf.count);
+  }
+
+  // ---- VAM banking registers (additive; as-of = generation time) ----
+  const banking = bankingRegisterFiles({
+    projectId: d.project.id,
+    drawRequestId: d.draw.id,
+    asOf: d.generatedAt,
+    prefix: "",
+    users: d.users,
+  });
+  for (const bf of banking.files) {
+    files.push(bf);
+    counts[bf.name] = banking.counts[bf.name];
   }
 
   return { files, counts };
