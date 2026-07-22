@@ -40,6 +40,19 @@ const cookies = new Map();
     fail += 1;
     console.error(`  ✗ render.yaml production service tracks '${m ? m[1] : "(none)"}' — must be 'main'`);
   }
+  // The banking layer must stay mock/demo in deployment configuration:
+  // no non-mock provider, no production-enable flag, no credentials.
+  if (
+    !/OBV_BANKING_PROVIDER[\s\S]{0,80}?value:\s*(?!["']?mock)/.test(renderYaml) &&
+    !/OBV_BANKING_PRODUCTION_ENABLE/.test(renderYaml) &&
+    !/OBV_BANKING_MODE[\s\S]{0,80}?value:\s*["']?production/.test(renderYaml)
+  ) {
+    pass += 1;
+    console.log("  ✓ render.yaml configures no non-mock banking provider, production mode or enable flag");
+  } else {
+    fail += 1;
+    console.error("  ✗ render.yaml sets a non-mock banking provider, production banking mode or the production-enable flag");
+  }
 }
 
 function cookieHeader() {

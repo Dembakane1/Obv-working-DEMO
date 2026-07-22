@@ -652,6 +652,11 @@ export function renderProjectAccountPage(d: ProjectAccountPageData): string {
             detail="The most recent reconciliation run did not match. New payment instructions, approvals and submissions for this program are refused until an attributable resolution and a later successful run."
           />
         ) : null}
+        <AttentionBanner
+          tone="info"
+          title="Demo financial simulation"
+          detail="No real bank account exists and no real money moves. Every balance, hold, payment instruction and transaction on this page is a mock-provider simulation."
+        />
         {metricStrip(d)}
         <p className="lender-trust">{TRUST_NOTE}</p>
         {summarySection(d)}
