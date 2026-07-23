@@ -192,7 +192,11 @@ const assert = (c, m) => (c ? pass(m) : fail(m));
       } catch {}
     }
     if (pw) {
-      const browser = await pw.chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+      // Pinned sandbox Chromium when present (version-mismatch-proof in
+      // the dev sandbox); Playwright's own resolution everywhere else
+      // (CI installs browsers into its default cache).
+      const pinned = "/opt/pw-browsers/chromium";
+      const browser = await pw.chromium.launch(fs.existsSync(pinned) ? { executablePath: pinned } : {});
       for (const [url, w] of [["/", 390], ["/", 375], ["/demo", 390]]) {
         const ctx = await browser.newContext({ viewport: { width: w, height: 844 } });
         const page = await ctx.newPage();
