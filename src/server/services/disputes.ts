@@ -968,7 +968,7 @@ export function setLegalHold(
   const reason = (input.reason ?? "").trim();
   if (!reason) throw new DisputeError("A recorded reason is required", 400);
   if (!input.active) {
-    // ELEVATED removal authorization: a compliance reviewer, or a user
+    // Removal is ELEVATED — only a compliance reviewer, or a user
     // holding MANAGE_LEGAL_HOLD through an explicit membership grant.
     const viaMembership = lenderAccess.capabilitiesFor(user, dispute.projectId).has("MANAGE_LEGAL_HOLD");
     if (user.role !== "COMPLIANCE_REVIEWER" && !viaMembership) {
