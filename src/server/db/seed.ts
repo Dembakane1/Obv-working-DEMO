@@ -15,6 +15,7 @@ import { AUDIT_PACKAGES_DIR, getDb, resetDb } from "./index";
 import * as repo from "./repo";
 import * as lrepo from "./lenderRepo";
 import * as brepo from "./bankingRepo";
+import * as drepo from "./disputeRepo";
 import { COMM_MEDIA_DIR } from "../services/whatsappSync/provider";
 import { runVerificationPipeline } from "../services/verification/index";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
@@ -666,6 +667,13 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
   // stored record — no money exists or moves.
   seedDemoBanking();
 
+  // ---- seeded dispute (complete historical lifecycle; no live hold) ----
+  // A closed dispute on the approved drainage tranche demonstrates the
+  // full record: contractor response, cure, re-inspection, advisory
+  // recommendation and the authorized release decision. Terminal status
+  // means no seeded draw is release-held out of the box.
+  seedDemoDispute();
+
   // ---- retainage policy (10%, default closeout conditions) ----
   repo.upsertRetainagePolicy({
     projectId: "proj-r47",
@@ -1031,6 +1039,18 @@ function purgeDemoScopedRows(): void {
   db.prepare(`DELETE FROM mock_provider_ledger WHERE banking_program_id IN (SELECT id FROM banking_programs WHERE organization_id IN (${inList(DEMO_ORGS)}))`).run(...DEMO_ORGS);
   db.prepare(`DELETE FROM banking_programs WHERE organization_id IN (${inList(DEMO_ORGS)})`).run(...DEMO_ORGS);
   }
+  // ---- dispute layer (demo project scoped; children first) ----
+  db.prepare(
+    `DELETE FROM dispute_cure_extensions WHERE cure_item_id IN
+       (SELECT id FROM dispute_cure_items WHERE dispute_id IN (SELECT id FROM disputes WHERE project_id = ?))`
+  ).run(DEMO_PROJECT);
+  for (const table of [
+    "dispute_cure_items", "dispute_events", "dispute_responses", "dispute_evidence_records",
+    "dispute_inspection_requests", "dispute_recommendations", "dispute_escalations",
+  ]) {
+    db.prepare(`DELETE FROM ${table} WHERE dispute_id IN (SELECT id FROM disputes WHERE project_id = ?)`).run(DEMO_PROJECT);
+  }
+  db.prepare("DELETE FROM disputes WHERE project_id = ?").run(DEMO_PROJECT);
   // Change orders + retainage rows for the demo project.
   const coIds = db
     .prepare("SELECT id FROM change_orders WHERE project_id = ?")
@@ -1450,6 +1470,173 @@ function seedDemoBanking(): void {
   ev("bev-8", "SETTLEMENT_RECORDED", "Provider-confirmed settlement of 80000 USD. This event — not any OBV approval — is the only settlement truth.", "user-funder", t("05T14:00:00.000Z"), { drawRequestId: "draw-vam", paymentInstructionId: "pi-settled-1", bankTransactionId: "btx-pay-1" });
   ev("bev-9", "INSTRUCTION_CREATED", "Payment instruction of 120000 USD to Lakeshore Rehab Contractors LLC created; awaiting approval by a second authorized user.", "user-funder", t("06T09:00:00.000Z"), { drawRequestId: "draw-vam", paymentInstructionId: "pi-pending-1" });
   ev("bev-10", "RECONCILIATION_MATCHED", "Reconciliation matched: bank 420000 = ledger 420000.", "user-funder", t("06T08:00:05.000Z"));
+}
+
+function seedDemoDispute(): void {
+  const t = (s: string) => `2026-07-${s}`;
+
+  // Fully completed historical dispute on the drainage tranche of the
+  // approved draw (draw-vam): opened by the lender over a headwall crack,
+  // answered by the contractor, cured, re-inspected, given a human
+  // advisory recommendation and finally resolved by the authorized
+  // funder as a full release — then closed. Terminal on purpose: the
+  // demo shows the complete lifecycle without holding any live draw.
+  drepo.insertDispute({
+    id: "disp-demo-1",
+    organizationId: "org-cdfc",
+    projectId: "proj-r47",
+    subjectType: "DRAW_LINE_ITEM",
+    subjectId: "dline-vam-1",
+    drawRequestId: "draw-vam",
+    milestoneId: "ms-2",
+    paymentInstructionId: null,
+    disputedAmount: 30_000,
+    undisputedAmount: 170_000,
+    affectedScope: "Drainage structures — headwall crack at culvert C-4",
+    affectedLineIds: JSON.stringify(["dline-vam-1"]),
+    reason:
+      "Site walk on 4 July found a vertical crack in the C-4 culvert headwall within the May drainage tranche. " +
+      "Release eligibility for the affected work is paused until the defect is cured and re-inspected.",
+    status: "CLOSED",
+    openedByUserId: "user-funder",
+    openedByOrganizationId: "org-cdfc",
+    openedAt: t("04T11:00:00.000Z"),
+    responsibleReviewerUserId: "user-compliance",
+    legalHold: false,
+    legalHoldByUserId: null,
+    legalHoldReason: null,
+    legalHoldAt: null,
+    resolutionType: "AUTHORIZE_FULL_RELEASE",
+    resolutionAmount: 200_000,
+    resolutionReasoning:
+      "Cure accepted and re-inspection passed; the recorded defect is repaired. The lender authorizes full release eligibility for the tranche.",
+    resolutionConditions: null,
+    resolutionEvidenceIds: JSON.stringify(["dev-demo-1"]),
+    resolutionExternalReference: null,
+    resolvedByUserId: "user-funder",
+    resolvedByRole: "FUNDER_REP",
+    resolvedByOrganizationId: "org-cdfc",
+    resolvedAt: t("06T15:00:00.000Z"),
+    closedAt: t("06T16:00:00.000Z"),
+    createdAt: t("04T11:00:00.000Z"),
+    updatedAt: t("06T16:00:00.000Z"),
+  });
+
+  drepo.insertDisputeResponse({
+    id: "dresp-demo-1",
+    disputeId: "disp-demo-1",
+    version: 1,
+    kind: "RESPONSE",
+    body:
+      "The crack is superficial shrinkage in the headwall wing wall, not structural. We will rout and seal it and " +
+      "provide photos plus the repair method statement within three working days.",
+    submittedByUserId: "user-pm",
+    submittedByOrganizationId: "org-crra",
+    supersedesResponseId: null,
+    createdAt: t("04T15:30:00.000Z"),
+  });
+
+  drepo.insertDisputeEvidence({
+    id: "dev-demo-1",
+    disputeId: "disp-demo-1",
+    evidenceType: "REPAIR_RECORD",
+    title: "C-4 headwall repair — method statement and post-repair photos",
+    description: "Rout-and-seal repair completed 5 July; photo set and method statement reference.",
+    linkedType: "NONE",
+    linkedId: null,
+    externalReference: "CRRA-QA-2026-071",
+    documentHash: drepo.sha256Hex("disp-demo-1|REPAIR_RECORD|C-4 headwall repair — method statement and post-repair photos|CRRA-QA-2026-071"),
+    version: 1,
+    supersedesEvidenceId: null,
+    submittedByUserId: "user-pm",
+    submittedByOrganizationId: "org-crra",
+    reviewStatus: "ACCEPTED",
+    reviewedByUserId: "user-compliance",
+    reviewedAt: t("05T17:00:00.000Z"),
+    reviewerNotes: "Repair record complete; consistent with the re-inspection result.",
+    createdAt: t("05T16:00:00.000Z"),
+  });
+
+  drepo.insertCureItem({
+    id: "dcure-demo-1",
+    disputeId: "disp-demo-1",
+    title: "Repair C-4 headwall crack and submit repair record",
+    description: "Rout and seal the crack per the approved method statement; submit photos and QA sign-off.",
+    responsiblePartyUserId: "user-pm",
+    responsibleOrganizationId: "org-crra",
+    dueAt: t("08T00:00:00.000Z"),
+    evidenceRequired: "Post-repair photos and QA method statement",
+    affectedScope: "Culvert C-4 headwall",
+    affectedAmount: 30_000,
+    priority: "HIGH",
+    status: "ACCEPTED",
+    completionNote: "Repair completed 5 July; record CRRA-QA-2026-071 submitted.",
+    completionEvidenceId: "dev-demo-1",
+    submittedAt: t("05T16:30:00.000Z"),
+    reviewedByUserId: "user-compliance",
+    reviewedAt: t("06T09:00:00.000Z"),
+    reviewDecisionNote: "Repair verified against the re-inspection outcome.",
+    waiverReason: null,
+    createdByUserId: "user-compliance",
+    createdAt: t("04T16:00:00.000Z"),
+    updatedAt: t("06T09:00:00.000Z"),
+  });
+
+  drepo.insertDisputeInspection({
+    id: "dinsp-demo-1",
+    disputeId: "disp-demo-1",
+    inspectionType: "DEFECT_REINSPECTION",
+    requestedAt: t("04T16:10:00.000Z"),
+    requestedByUserId: "user-compliance",
+    assignedInspectorUserId: "user-field",
+    scheduledAt: t("06T08:00:00.000Z"),
+    completedAt: t("06T10:00:00.000Z"),
+    locationScope: "Culvert C-4, ch. 6+150",
+    result: "PASSED",
+    notes: "Crack routed and sealed; no structural displacement. Repair conforms to the method statement.",
+    status: "COMPLETED",
+    followUp: null,
+    createdAt: t("04T16:10:00.000Z"),
+    updatedAt: t("06T10:00:00.000Z"),
+  });
+
+  drepo.insertRecommendation({
+    id: "drec-demo-1",
+    disputeId: "disp-demo-1",
+    kind: "RECOMMEND_FULL_RELEASE",
+    summary:
+      "Cure accepted, repair evidence on record and the re-inspection passed — recommend restoring full release eligibility for the tranche.",
+    basis: "dev-demo-1 (repair record), dinsp-demo-1 (re-inspection PASSED), dcure-demo-1 (cure ACCEPTED)",
+    aiGenerated: false,
+    official: true,
+    createdByUserId: "user-compliance",
+    approvedByUserId: "user-compliance",
+    supersedesRecommendationId: null,
+    createdAt: t("06T11:00:00.000Z"),
+  });
+
+  const dev = (
+    id: string, type: string, detail: string, actor: string | null,
+    createdAt: string, refId: string | null = null
+  ): void =>
+    drepo.insertDisputeEvent({
+      id, disputeId: "disp-demo-1", type: type as never, detail, actorUserId: actor, refId, createdAt,
+    });
+  dev("devt-1", "CREATED", "Dispute opened: 30000 USD disputed of the 200000 USD drainage tranche (headwall crack at culvert C-4). Release eligibility paused.", "user-funder", t("04T11:00:00.000Z"));
+  dev("devt-2", "STATUS_CHANGED", "OPEN → UNDER_REVIEW.", "user-compliance", t("04T14:00:00.000Z"));
+  dev("devt-3", "RESPONSE_SUBMITTED", "Contractor response v1 recorded (rout-and-seal repair proposed).", "user-pm", t("04T15:30:00.000Z"), "dresp-demo-1");
+  dev("devt-4", "CURE_CREATED", "Cure requirement created: repair C-4 headwall crack and submit repair record (due 8 July).", "user-compliance", t("04T16:00:00.000Z"), "dcure-demo-1");
+  dev("devt-5", "INSPECTION_REQUESTED", "Defect re-inspection requested for culvert C-4.", "user-compliance", t("04T16:10:00.000Z"), "dinsp-demo-1");
+  dev("devt-6", "STATUS_CHANGED", "UNDER_REVIEW → CURE_IN_PROGRESS.", "user-compliance", t("04T16:15:00.000Z"));
+  dev("devt-7", "EVIDENCE_SUBMITTED", "Repair record submitted (CRRA-QA-2026-071).", "user-pm", t("05T16:00:00.000Z"), "dev-demo-1");
+  dev("devt-8", "CURE_SUBMITTED", "Cure marked complete by the responsible party; awaiting review.", "user-pm", t("05T16:30:00.000Z"), "dcure-demo-1");
+  dev("devt-9", "EVIDENCE_REVIEWED", "Repair record ACCEPTED.", "user-compliance", t("05T17:00:00.000Z"), "dev-demo-1");
+  dev("devt-10", "CURE_REVIEWED", "Cure ACCEPTED after re-inspection.", "user-compliance", t("06T09:00:00.000Z"), "dcure-demo-1");
+  dev("devt-11", "INSPECTION_UPDATED", "Re-inspection COMPLETED — PASSED.", "user-field", t("06T10:00:00.000Z"), "dinsp-demo-1");
+  dev("devt-12", "RECOMMENDATION_RECORDED", "Advisory recommendation recorded: RECOMMEND_FULL_RELEASE. Advisory recommendation only. OBV does not act as the escrow agent, make a binding legal determination, or move funds.", "user-compliance", t("06T11:00:00.000Z"), "drec-demo-1");
+  dev("devt-13", "STATUS_CHANGED", "CURE_IN_PROGRESS → READY_FOR_DECISION.", "user-compliance", t("06T11:05:00.000Z"));
+  dev("devt-14", "RESOLVED", "Authorized decision recorded: AUTHORIZE_FULL_RELEASE (200000 USD eligible). OBV records the decision; actual financial activity is performed and confirmed outside OBV.", "user-funder", t("06T15:00:00.000Z"));
+  dev("devt-15", "CLOSED", "Dispute closed after resolution.", "user-funder", t("06T16:00:00.000Z"));
 }
 
 if (require.main === module) {

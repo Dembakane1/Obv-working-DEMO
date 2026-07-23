@@ -2057,7 +2057,8 @@ export type ProjectCapability =
   | "FINALIZE_INSPECTION_REPORT" | "REVIEW_EVIDENCE" | "REVIEW_DRAW"
   | "RECORD_LENDER_DECISION" | "ACCEPT_EXCEPTION" | "MANAGE_PROJECT_CONFIGURATION"
   | "MANAGE_USERS" | "RECORD_EXTERNAL_FUNDING"
-  | BankingCapability;
+  | BankingCapability
+  | DisputeCapability;
 
 export interface ProjectMembership {
   id: string;
@@ -2354,3 +2355,252 @@ export const BANKING_CAPABILITIES = [
 ] as const;
 
 export type BankingCapability = (typeof BANKING_CAPABILITIES)[number];
+
+// ============================================================================
+// Construction Payment Dispute + Release Hold Management.
+//
+// OBV records disputes, pauses release ELIGIBILITY, collects evidence,
+// tracks cure requirements, requests inspections, records advisory
+// recommendations and records decisions made by AUTHORIZED PARTIES. OBV
+// is not a licensed escrow company, bank, money transmitter, arbitrator
+// or fiduciary; a dispute hold never moves funds, changes a balance,
+// creates settlement or generates a provider event.
+// ============================================================================
+
+export const DISPUTE_CAPABILITIES = [
+  "OPEN_DISPUTE",
+  "RESPOND_TO_DISPUTE",
+  "MANAGE_DISPUTE",
+  "DECIDE_DISPUTE",
+  "MANAGE_LEGAL_HOLD",
+] as const;
+
+export type DisputeCapability = (typeof DISPUTE_CAPABILITIES)[number];
+
+export type DisputeSubjectType =
+  | "PROJECT" | "DRAW_REQUEST" | "DRAW_LINE_ITEM" | "MILESTONE"
+  | "PAYMENT_INSTRUCTION" | "CHANGE_ORDER" | "INVOICE_DOCUMENT"
+  | "RETAINAGE_RELEASE" | "INSPECTION_RESULT" | "EVIDENCE_ITEM";
+
+export type DisputeStatus =
+  | "OPEN" | "UNDER_REVIEW"
+  | "WAITING_FOR_CONTRACTOR" | "WAITING_FOR_LENDER" | "WAITING_FOR_OWNER"
+  | "WAITING_FOR_INSPECTION" | "WAITING_FOR_DOCUMENTS"
+  | "CURE_IN_PROGRESS" | "READY_FOR_DECISION" | "ESCALATED"
+  | "RESOLVED_RELEASE" | "RESOLVED_PARTIAL_RELEASE"
+  | "RESOLVED_CONTINUE_HOLD" | "RESOLVED_RETURN_RECOMMENDATION"
+  | "CLOSED";
+
+export type DisputeResolutionType =
+  | "AUTHORIZE_FULL_RELEASE" | "AUTHORIZE_PARTIAL_RELEASE" | "CONTINUE_HOLD"
+  | "REQUIRE_ADDITIONAL_CURE" | "ESCALATE_EXTERNALLY"
+  | "CLOSE_WITHOUT_RELEASE" | "RETURN_TO_AUTHORIZED_PARTY";
+
+export interface Dispute {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  subjectType: DisputeSubjectType;
+  subjectId: string;
+  /** Release-hold attachment points (all optional; derived from subject
+   *  where possible, explicit otherwise). */
+  drawRequestId: string | null;
+  milestoneId: string | null;
+  paymentInstructionId: string | null;
+  /** Whole-currency integers; never mutate authoritative balances. */
+  disputedAmount: number;
+  undisputedAmount: number | null;
+  affectedScope: string;
+  /** JSON array of affected draw-line / budget-line ids. */
+  affectedLineIds: string;
+  reason: string;
+  status: DisputeStatus;
+  openedByUserId: string;
+  openedByOrganizationId: string;
+  openedAt: string;
+  responsibleReviewerUserId: string | null;
+  legalHold: boolean;
+  legalHoldByUserId: string | null;
+  legalHoldReason: string | null;
+  legalHoldAt: string | null;
+  resolutionType: DisputeResolutionType | null;
+  resolutionAmount: number | null;
+  resolutionReasoning: string | null;
+  resolutionConditions: string | null;
+  resolutionEvidenceIds: string | null;
+  resolutionExternalReference: string | null;
+  resolvedByUserId: string | null;
+  resolvedByRole: string | null;
+  resolvedByOrganizationId: string | null;
+  resolvedAt: string | null;
+  closedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DisputeEventType =
+  | "CREATED" | "STATUS_CHANGED" | "RESPONSE_SUBMITTED" | "EVIDENCE_SUBMITTED"
+  | "EVIDENCE_REVIEWED" | "CURE_CREATED" | "CURE_SUBMITTED" | "CURE_REVIEWED"
+  | "CURE_WAIVED" | "CURE_CANCELLED" | "CURE_EXTENDED" | "INSPECTION_REQUESTED"
+  | "INSPECTION_UPDATED" | "RECOMMENDATION_RECORDED" | "RECOMMENDATION_APPROVED"
+  | "LEGAL_HOLD_ACTIVATED" | "LEGAL_HOLD_REMOVED" | "ESCALATED"
+  | "ESCALATION_UPDATED" | "RESOLVED" | "CLOSED" | "REOPENED";
+
+/** Append-only dispute timeline. No update or delete path exists. */
+export interface DisputeEvent {
+  id: string;
+  disputeId: string;
+  type: DisputeEventType;
+  detail: string;
+  actorUserId: string | null;
+  refId: string | null;
+  createdAt: string;
+}
+
+export type DisputeResponseKind =
+  | "RESPONSE" | "QUESTION" | "ANSWER" | "DISPUTED_FACTS"
+  | "CURE_PROPOSAL" | "CLARIFICATION_REQUEST";
+
+/** Immutable written submission. Corrections are ADDITIVE: a new version
+ *  references the superseded original; nothing is overwritten. */
+export interface DisputeResponse {
+  id: string;
+  disputeId: string;
+  version: number;
+  kind: DisputeResponseKind;
+  body: string;
+  submittedByUserId: string;
+  submittedByOrganizationId: string;
+  supersedesResponseId: string | null;
+  createdAt: string;
+}
+
+export type DisputeEvidenceLinkType =
+  | "EVIDENCE_ITEM" | "DRAW_DOCUMENT" | "REPORT" | "DRAW_INSPECTION" | "NONE";
+
+export interface DisputeEvidenceRecord {
+  id: string;
+  disputeId: string;
+  evidenceType: string;
+  title: string;
+  description: string | null;
+  linkedType: DisputeEvidenceLinkType;
+  linkedId: string | null;
+  externalReference: string | null;
+  /** Integrity metadata consistent with the rest of OBV: the linked
+   *  object's stored hash when one exists, otherwise a SHA-256 over the
+   *  canonical submission descriptor. */
+  documentHash: string;
+  version: number;
+  supersedesEvidenceId: string | null;
+  submittedByUserId: string;
+  submittedByOrganizationId: string;
+  reviewStatus: "PENDING" | "ACCEPTED" | "REJECTED";
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  reviewerNotes: string | null;
+  createdAt: string;
+}
+
+export type DisputeCureStatus =
+  | "OPEN" | "SUBMITTED" | "ACCEPTED" | "REJECTED" | "WAIVED" | "CANCELLED";
+
+export interface DisputeCureItem {
+  id: string;
+  disputeId: string;
+  title: string;
+  description: string;
+  responsiblePartyUserId: string | null;
+  responsibleOrganizationId: string | null;
+  dueAt: string | null;
+  evidenceRequired: string | null;
+  affectedScope: string | null;
+  affectedAmount: number | null;
+  priority: "LOW" | "MEDIUM" | "HIGH";
+  status: DisputeCureStatus;
+  completionNote: string | null;
+  completionEvidenceId: string | null;
+  submittedAt: string | null;
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  reviewDecisionNote: string | null;
+  waiverReason: string | null;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Append-only deadline-extension history for a cure item. */
+export interface DisputeCureExtension {
+  id: string;
+  cureItemId: string;
+  priorDueAt: string | null;
+  newDueAt: string;
+  reason: string;
+  actorUserId: string;
+  createdAt: string;
+}
+
+export type DisputeInspectionStatus =
+  | "REQUESTED" | "SCHEDULED" | "COMPLETED" | "ACCESS_FAILED" | "CANCELLED";
+
+export interface DisputeInspectionRequest {
+  id: string;
+  disputeId: string;
+  inspectionType: string;
+  requestedAt: string;
+  requestedByUserId: string;
+  assignedInspectorUserId: string | null;
+  scheduledAt: string | null;
+  completedAt: string | null;
+  locationScope: string | null;
+  result: "PASSED" | "FAILED" | "INCONCLUSIVE" | "NOT_APPLICABLE" | null;
+  notes: string | null;
+  status: DisputeInspectionStatus;
+  followUp: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DisputeRecommendationKind =
+  | "RECOMMEND_FULL_RELEASE" | "RECOMMEND_PARTIAL_RELEASE"
+  | "RECOMMEND_CONTINUED_HOLD" | "RECOMMEND_CORRECTIVE_WORK"
+  | "RECOMMEND_EXTERNAL_ESCALATION" | "RECOMMEND_RETURN_CONSIDERATION";
+
+/** Advisory only. Never changes balances, settles, submits payments,
+ *  generates banking events or auto-resolves the dispute. AI-generated
+ *  content requires human approval before it becomes official. */
+export interface DisputeRecommendation {
+  id: string;
+  disputeId: string;
+  kind: DisputeRecommendationKind;
+  summary: string;
+  basis: string | null;
+  aiGenerated: boolean;
+  official: boolean;
+  createdByUserId: string;
+  approvedByUserId: string | null;
+  supersedesRecommendationId: string | null;
+  createdAt: string;
+}
+
+export type DisputeEscalationType =
+  | "LENDER" | "OWNER" | "ATTORNEY" | "INSURER" | "SURETY"
+  | "INDEPENDENT_INSPECTOR" | "EXTERNAL_REVIEWER" | "ESCROW_PARTNER"
+  | "BANK_REPRESENTATIVE";
+
+export interface DisputeEscalation {
+  id: string;
+  disputeId: string;
+  escalationType: DisputeEscalationType;
+  recipientName: string;
+  recipientOrganization: string | null;
+  reason: string;
+  transmittedMaterials: string | null;
+  status: "RECORDED" | "RESPONDED" | "CLOSED";
+  response: string | null;
+  submittedByUserId: string;
+  createdAt: string;
+  respondedAt: string | null;
+  closedAt: string | null;
+}

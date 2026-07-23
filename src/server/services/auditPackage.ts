@@ -33,6 +33,7 @@ import { audit } from "./pilot/onboarding";
 import * as drawPackage from "./drawPackage";
 import * as completionGates from "./completionGates";
 import { bankingRegisterFiles } from "./banking/packageRegisters";
+import { disputeRegisterFiles } from "./disputeRegisters";
 import type {
   ApprovalRequest, AuditPackage, Project, User,
 } from "../../shared/types";
@@ -1175,6 +1176,21 @@ function buildRegisters(
     });
     for (const bf of banking.files) {
       add(bf.name, bf.data, "10_banking", banking.counts[bf.name]);
+    }
+  }
+
+  // ---- 12_disputes (dispute + release-hold registers; as-of filtered
+  //      workflow records — authoritative balances are never restated)
+  {
+    const disputeRegs = disputeRegisterFiles({
+      projectId: project.id,
+      drawRequestId: null,
+      asOf,
+      prefix: "12_disputes/",
+      users,
+    });
+    for (const df of disputeRegs.files) {
+      add(df.name, df.data, "12_disputes", disputeRegs.counts[df.name]);
     }
   }
 

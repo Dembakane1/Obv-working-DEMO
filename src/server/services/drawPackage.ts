@@ -20,6 +20,7 @@ import { wormEvidenceStore } from "./WormEvidenceStore";
 import { buildZip, csv, PackageFile } from "./auditPackage";
 import { buildLenderDrawFiles } from "./lenderReporting";
 import { bankingRegisterFiles } from "./banking/packageRegisters";
+import { disputeRegisterFiles } from "./disputeRegisters";
 import { createHash } from "node:crypto";
 import type {
   ApprovalRecord, ApprovalRequest, DrawAccountEvent, DrawDocument,
@@ -1196,6 +1197,20 @@ export function buildDrawPackageFiles(d: DrawPackageData): {
   for (const bf of banking.files) {
     files.push(bf);
     counts[bf.name] = banking.counts[bf.name];
+  }
+
+  // ---- dispute / release-hold registers (additive; as-of = generation
+  //      time; workflow records only — balances are never restated)
+  const disputeRegs = disputeRegisterFiles({
+    projectId: d.project.id,
+    drawRequestId: d.draw.id,
+    asOf: d.generatedAt,
+    prefix: "",
+    users: d.users,
+  });
+  for (const df of disputeRegs.files) {
+    files.push(df);
+    counts[df.name] = disputeRegs.counts[df.name];
   }
 
   return { files, counts };

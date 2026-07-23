@@ -24,7 +24,9 @@ async function fetchPage(user = "user-funder") {
 }
 
 function db() {
-  return new DatabaseSync(path.join(process.cwd(), "data", "obv.db"));
+  // OBV_DB lets the unified runner point at the same temp database its
+  // shared server was seeded from; the default preserves standalone use.
+  return new DatabaseSync(process.env.OBV_DB || path.join(process.cwd(), "data", "obv.db"));
 }
 
 async function main() {

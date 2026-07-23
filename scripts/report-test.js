@@ -43,7 +43,9 @@ async function preview(user, projectId = "proj-r47") {
 }
 
 function db() {
-  return new DatabaseSync(path.join(process.cwd(), "data", "obv.db"));
+  // OBV_DB lets the unified runner point at the same temp database its
+  // shared server was seeded from; the default preserves standalone use.
+  return new DatabaseSync(process.env.OBV_DB || path.join(process.cwd(), "data", "obv.db"));
 }
 
 async function main() {
@@ -117,9 +119,21 @@ async function main() {
   pass("DEMO FALLBACK evidence labeled; pending approval visible in report");
 
   // ---- 10–11: complete approvals, regenerate, RELEASED appears ----
-  const d2 = db();
-  const apId = d2.prepare("SELECT id FROM approval_requests WHERE status='PENDING' LIMIT 1").get().id;
-  d2.close();
+  // The fallback submission above creates the M3 approval request in the
+  // server process; scope the lookup to that milestone and give the
+  // cross-process read a short bounded window (the requirement itself is
+  // unchanged — the request MUST exist).
+  let apRow = null;
+  for (let i = 0; i < 20 && !apRow; i++) {
+    const d2 = db();
+    apRow = d2
+      .prepare("SELECT id FROM approval_requests WHERE status='PENDING' AND milestone_id='ms-3' ORDER BY created_at DESC LIMIT 1")
+      .get();
+    d2.close();
+    if (!apRow) await new Promise((r) => setTimeout(r, 250));
+  }
+  if (!apRow) fail("no PENDING approval request exists for ms-3 after the fallback evidence submission");
+  const apId = apRow.id;
   for (const user of ["user-funder", "user-compliance"]) {
     const res = await fetch(`${BASE}/api/approvals/${apId}/decision`, {
       method: "POST",
