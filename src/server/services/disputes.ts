@@ -115,6 +115,33 @@ export function getDisputeChecked(user: User, disputeId: string): Dispute {
   return dispute;
 }
 
+/** A CLOSED dispute is frozen: no sub-record may be created or mutated.
+ *  (Legal hold is the one exception — record preservation must remain
+ *  possible on a closed record.) */
+function assertNotClosed(dispute: Dispute): void {
+  if (dispute.status === "CLOSED") {
+    throw new DisputeError("A closed dispute is frozen — no further changes can be recorded", 409);
+  }
+}
+
+/** Users NAMED on a dispute record (responsible reviewer, responsible
+ *  party, assigned inspector) must themselves have access to the
+ *  project. One identical 422 covers "no such user" and "user outside
+ *  this tenant" — record assignment never becomes a cross-tenant user
+ *  directory probe. */
+function assertNamedUserInProject(userId: string, projectId: string, label: string): void {
+  const named = repo.getUser(userId);
+  if (named) {
+    try {
+      lenderAccess.assertProjectAccess(named, projectId);
+      return;
+    } catch (e) {
+      if (!(e instanceof lenderAccess.LenderError)) throw e;
+    }
+  }
+  throw new DisputeError(`${label} is not a participant of this project`, 422);
+}
+
 function logEvent(
   disputeId: string,
   type: DisputeEvent["type"],
@@ -196,7 +223,8 @@ export function drawDisputeHold(drawRequestId: string, ignoreDisputeId: string |
       }
     }
   }
-  const fullBlock = legalHold || active.some((d) => d.legalHold || (!HOLD_ENDED.includes(d.status) && d.status !== "RESOLVED_PARTIAL_RELEASE"));
+  const fullBlock =
+    legalHold || active.some((d) => !HOLD_ENDED.includes(d.status) && d.status !== "RESOLVED_PARTIAL_RELEASE");
   return { blocked: fullBlock, blockedReasons: reasons, partialHeldAmount: partialHeld, legalHold, activeDisputes: active };
 }
 
@@ -341,8 +369,8 @@ export function openDispute(
   const affectedScope = (input.affectedScope ?? "").trim();
   if (!affectedScope) throw new DisputeError("affectedScope is required", 400);
   const lineIds = Array.isArray(input.affectedLineIds) ? input.affectedLineIds.map(String) : [];
-  if (input.responsibleReviewerUserId && !repo.getUser(input.responsibleReviewerUserId)) {
-    throw new DisputeError("responsibleReviewerUserId does not exist", 422);
+  if (input.responsibleReviewerUserId) {
+    assertNamedUserInProject(input.responsibleReviewerUserId, project.id, "responsibleReviewerUserId");
   }
   const now = new Date().toISOString();
   const user2 = repo.getUser(user.id)!;
@@ -403,19 +431,32 @@ export function transitionDispute(user: User, disputeId: string, to: string, rea
   if (target === "CLOSED") {
     throw new DisputeError("Closure is recorded only through the authorized close action", 409);
   }
-  const allowed = DISPUTE_TRANSITIONS[dispute.status] ?? [];
-  if (!allowed.includes(target)) {
-    throw new DisputeError(`Transition ${dispute.status} → ${target} is not allowed`, 409);
-  }
-  if (RESOLVED_STATUSES.includes(dispute.status) && dispute.legalHold) {
-    throw new DisputeError("Legal hold active — the dispute cannot be reopened or changed until it is removed", 409);
-  }
+  // All state-dependent checks run against a FRESH read inside the write
+  // lock — a stale pre-lock snapshot could otherwise race a concurrent
+  // transition or legal-hold activation.
   drepo.withDisputeTx(() => {
-    if (!drepo.transitionDisputeGuarded(dispute.id, [dispute.status], target)) {
+    const fresh = drepo.getDispute(dispute.id)!;
+    const allowed = DISPUTE_TRANSITIONS[fresh.status] ?? [];
+    if (!allowed.includes(target)) {
+      throw new DisputeError(`Transition ${fresh.status} → ${target} is not allowed`, 409);
+    }
+    const isReopen = RESOLVED_STATUSES.includes(fresh.status);
+    if (isReopen && fresh.legalHold) {
+      throw new DisputeError("Legal hold active — the dispute cannot be reopened or changed until it is removed", 409);
+    }
+    // Reopening clears the current-decision columns (the prior decision
+    // stays verbatim in the append-only timeline) so a later resolution
+    // can never inherit fields from an earlier one.
+    const ok = isReopen
+      ? drepo.reopenDisputeGuarded(fresh.id, [fresh.status])
+      : drepo.transitionDisputeGuarded(fresh.id, [fresh.status], target);
+    if (!ok) {
       throw new DisputeError("The dispute was transitioned concurrently — reload and retry", 409);
     }
-    const kind = RESOLVED_STATUSES.includes(dispute.status) ? "REOPENED" : "STATUS_CHANGED";
-    logEvent(dispute.id, kind, `${dispute.status} → ${target}${reason ? ` — ${String(reason).slice(0, 200)}` : ""}`, user.id);
+    const detail = isReopen
+      ? `${fresh.status} → ${target}${reason ? ` — ${String(reason).slice(0, 200)}` : ""}. The prior recorded decision (${fresh.resolutionType ?? "unrecorded"}) remains on the timeline; the current-outcome record is reset.`
+      : `${fresh.status} → ${target}${reason ? ` — ${String(reason).slice(0, 200)}` : ""}`;
+    logEvent(dispute.id, isReopen ? "REOPENED" : "STATUS_CHANGED", detail, user.id);
   });
   return drepo.getDispute(dispute.id)!;
 }
@@ -582,6 +623,7 @@ export function reviewEvidence(
   const record = drepo.getDisputeEvidence(evidenceId);
   if (!record) throw new DisputeError("Evidence record not found", 404);
   const dispute = getDisputeChecked(user, record.disputeId);
+  assertNotClosed(dispute);
   assertCapability(user, dispute.projectId, "MANAGE_DISPUTE");
   const status = (input.status ?? "").trim().toUpperCase();
   if (!["ACCEPTED", "REJECTED"].includes(status)) {
@@ -626,8 +668,8 @@ export function createCureItem(
   if (!["LOW", "MEDIUM", "HIGH"].includes(priority)) throw new DisputeError("priority must be LOW, MEDIUM or HIGH", 400);
   const dueAt = parseIsoDate(input.dueAt ?? null, "dueAt");
   const affectedAmount = wholeAmount(input.affectedAmount ?? null, "affectedAmount");
-  if (input.responsiblePartyUserId && !repo.getUser(input.responsiblePartyUserId)) {
-    throw new DisputeError("responsiblePartyUserId does not exist", 422);
+  if (input.responsiblePartyUserId) {
+    assertNamedUserInProject(input.responsiblePartyUserId, dispute.projectId, "responsiblePartyUserId");
   }
   const now = new Date().toISOString();
   let created: DisputeCureItem | null = null;
@@ -667,6 +709,8 @@ function getCureChecked(user: User, cureId: string): { cure: DisputeCureItem; di
   const cure = drepo.getCureItem(cureId);
   if (!cure) throw new DisputeError("Cure item not found", 404);
   const dispute = getDisputeChecked(user, cure.disputeId);
+  // Every cure action is a mutation; a closed dispute is frozen.
+  assertNotClosed(dispute);
   return { cure, dispute };
 }
 
@@ -796,8 +840,8 @@ export function requestDisputeInspection(
   }
   const inspectionType = (input.inspectionType ?? "").trim();
   if (!inspectionType) throw new DisputeError("inspectionType is required", 400);
-  if (input.assignedInspectorUserId && !repo.getUser(input.assignedInspectorUserId)) {
-    throw new DisputeError("assignedInspectorUserId does not exist", 422);
+  if (input.assignedInspectorUserId) {
+    assertNamedUserInProject(input.assignedInspectorUserId, dispute.projectId, "assignedInspectorUserId");
   }
   const now = new Date().toISOString();
   let created: DisputeInspectionRequest | null = null;
@@ -846,6 +890,7 @@ export function updateDisputeInspection(
   }
 ): DisputeInspectionRequest {
   const { insp, dispute } = getInspectionChecked(user, inspectionId);
+  assertNotClosed(dispute);
   const isAssignedInspector = insp.assignedInspectorUserId === user.id;
   if (!isAssignedInspector) assertCapability(user, dispute.projectId, "MANAGE_DISPUTE");
   const action = (input.action ?? "").trim().toLowerCase();
@@ -856,8 +901,8 @@ export function updateDisputeInspection(
     if (action === "schedule") {
       const scheduledAt = parseIsoDate(input.scheduledAt ?? null, "scheduledAt");
       if (!scheduledAt) throw new DisputeError("scheduledAt is required", 400);
-      if (input.assignedInspectorUserId && !repo.getUser(input.assignedInspectorUserId)) {
-        throw new DisputeError("assignedInspectorUserId does not exist", 422);
+      if (input.assignedInspectorUserId) {
+        assertNamedUserInProject(input.assignedInspectorUserId, dispute.projectId, "assignedInspectorUserId");
       }
       ok = drepo.transitionInspectionGuarded(insp.id, ["REQUESTED", "ACCESS_FAILED"], "SCHEDULED", {
         scheduledAt,
@@ -901,6 +946,7 @@ export function recordRecommendation(
   input: { kind: string; summary: string; basis?: string | null; aiGenerated?: boolean; supersedesRecommendationId?: string | null }
 ): DisputeRecommendation {
   const dispute = getDisputeChecked(user, disputeId);
+  assertNotClosed(dispute);
   assertCapability(user, dispute.projectId, "MANAGE_DISPUTE");
   const kinds = [
     "RECOMMEND_FULL_RELEASE", "RECOMMEND_PARTIAL_RELEASE", "RECOMMEND_CONTINUED_HOLD",
@@ -946,6 +992,7 @@ export function approveRecommendation(user: User, recommendationId: string): Dis
   const rec = drepo.getRecommendation(recommendationId);
   if (!rec) throw new DisputeError("Recommendation not found", 404);
   const dispute = getDisputeChecked(user, rec.disputeId);
+  assertNotClosed(dispute);
   assertCapability(user, dispute.projectId, "MANAGE_DISPUTE");
   drepo.withDisputeTx(() => {
     if (!drepo.approveRecommendationGuarded(rec.id, user.id)) {
@@ -1004,6 +1051,7 @@ export function recordEscalation(
   }
 ): DisputeEscalation {
   const dispute = getDisputeChecked(user, disputeId);
+  assertNotClosed(dispute);
   assertCapability(user, dispute.projectId, "MANAGE_DISPUTE");
   const types = [
     "LENDER", "OWNER", "ATTORNEY", "INSURER", "SURETY", "INDEPENDENT_INSPECTOR",
@@ -1047,6 +1095,7 @@ export function updateEscalation(
   const esc = drepo.getEscalation(escalationId);
   if (!esc) throw new DisputeError("Escalation not found", 404);
   const dispute = getDisputeChecked(user, esc.disputeId);
+  assertNotClosed(dispute);
   assertCapability(user, dispute.projectId, "MANAGE_DISPUTE");
   const action = (input.action ?? "").trim().toLowerCase();
   const now = new Date().toISOString();
@@ -1161,13 +1210,27 @@ export function resolveDispute(
     if (["AUTHORIZE_FULL_RELEASE", "AUTHORIZE_PARTIAL_RELEASE"].includes(resolutionType) && fresh.drawRequestId) {
       const draw = repo.getDrawRequest(fresh.drawRequestId);
       if (draw) {
-        // Lazy import breaks the banking→disputes→banking cycle at module
-        // load time; the call itself is a pure read.
-        const { paymentEligibility } = require("./banking/paymentInstructions") as typeof import("./banking/paymentInstructions");
         const account = brepo.getOpenAccountForProject(draw.projectId);
-        const gate = paymentEligibility(draw, account, null, { ignoreDisputeId: fresh.id });
-        if (!gate.eligible) {
-          throw new DisputeError(`The underlying draw does not pass the existing release-eligibility gates: ${gate.blockers[0]}`, 409);
+        if (account) {
+          // Lazy import breaks the banking→disputes→banking cycle at
+          // module load time; the call itself is a pure read.
+          const { paymentEligibility } = require("./banking/paymentInstructions") as typeof import("./banking/paymentInstructions");
+          const gate = paymentEligibility(draw, account, null, { ignoreDisputeId: fresh.id });
+          if (!gate.eligible) {
+            throw new DisputeError(`The underlying draw does not pass the existing release-eligibility gates: ${gate.blockers[0]}`, 409);
+          }
+        } else {
+          // No banking layer on this project: a missing virtual account
+          // is not a reason to forbid RECORDING an authorized decision
+          // (OBV moves no money either way) — but the draw's formal
+          // governance gate is still authoritative and must have passed.
+          const approval = repo.getApprovalRequestForDraw(draw.id);
+          if (!approval || approval.status !== "APPROVED") {
+            throw new DisputeError(
+              "The underlying draw does not pass the existing release-eligibility gates: formal governance is not complete — the draw's approval request is not approved.",
+              409
+            );
+          }
         }
       }
     }

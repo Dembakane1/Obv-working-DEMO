@@ -48,7 +48,7 @@ src/server/services/disputes.ts     domain: state machine, authorization, hold r
 src/server/services/disputeRegisters.ts  package registers (draw + audit packages)
 src/server/http/disputeRoutes.ts    JSON + form API
 src/server/view/disputePages.tsx    /project/:id/disputes register, /dispute/:id workspace
-scripts/dispute-test.js             160-checkpoint suite
+scripts/dispute-test.js             185-checkpoint suite
 ```
 
 Layering follows the repo's doctrine: routes parse and content-negotiate only;
@@ -104,9 +104,19 @@ Rules, all test-enforced:
   silent fallbacks** and no direct status editing;
 - `RESOLVED_*` states are reachable **only** through the authorized
   resolution action; `CLOSED` only through the authorized close action;
-- every transition checks capability, tenant, and current state, executes as
-  one guarded UPDATE (concurrent duplicates get a clean 409), and writes an
+- state-dependent checks run against a **fresh read inside the write
+  lock**, then execute as one guarded UPDATE (concurrent duplicates and
+  race-window legal-hold activations get a clean 409), and write an
   attributable immutable event;
+- a formal **reopen clears the current-decision columns** (resolution
+  type, amount, conditions, references, decider) so a later decision can
+  never inherit values from an earlier one — the earlier decision remains
+  verbatim in the append-only timeline, and the REOPENED event names it;
+- a reopen is refused while a legal hold stands;
+- a **CLOSED dispute is frozen**: no response, evidence, evidence review,
+  cure action, inspection update, recommendation, approval or escalation
+  update can be recorded on it (legal hold remains the one exception —
+  record preservation stays possible on a closed record);
 - unknown states are 400, disallowed edges are 409, cross-tenant access is
   the same 404 as nonexistence.
 
@@ -124,6 +134,12 @@ requires its capability.
 Separation of duties: **the dispute opener can never record its own
 resolution.** Legal-hold **removal** is elevated: compliance reviewer or an
 explicit `MANAGE_LEGAL_HOLD` membership grant.
+
+Users *named on* dispute records (responsible reviewer, cure responsible
+party, assigned inspector) must themselves have access to the project.
+Naming a foreign-tenant user and naming a nonexistent user return the
+identical 422 — record assignment can never be used as a cross-tenant
+user-directory probe.
 
 ## Release hold
 
@@ -191,7 +207,10 @@ state, legal hold, unreviewed evidence, non-terminal cures (for release
 types), in-flight inspections, amount caps, and — for release-type decisions
 on draw-attached disputes — the **existing** release-eligibility gates
 (ignoring only the dispute's own hold). A release decision the existing
-controls would refuse is itself refused. Resolution records the decision
+controls would refuse is itself refused. On a project with no banking layer,
+a missing virtual account alone does not make an authorized decision
+unrecordable — the draw's formal governance approval remains the
+authoritative gate and must have passed. Resolution records the decision
 type, amount, reasoning, evidence relied upon, external reference, and who
 decided in which role — after the mandatory acknowledgement.
 
@@ -227,7 +246,7 @@ dispute lifecycle.
 
 ## Testing
 
-`node scripts/dispute-test.js` — 160 checkpoints: static source boundaries,
+`node scripts/dispute-test.js` — 185 checkpoints: static source boundaries,
 seeded lifecycle, open validation, tenancy/ID-guessing, release-hold
 enforcement, the complete transition graph (every allowed edge executed,
 disallowed edges refused, concurrent duplicates exactly-once), response

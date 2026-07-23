@@ -795,6 +795,166 @@ async function main() {
     assert((await api("field", "POST", `/api/disputes/${dA.id}/transition`, { to: "UNDER_REVIEW" })).status === 403,
       "…but still cannot mutate anything without a capability (403)");
 
+    // ================== 19. hardening regressions ==================
+    // (These fixtures insert rows into governance tables via SQL, so they
+    // run strictly AFTER the banking non-mutation snapshot comparison.)
+
+    // ---- schema: hold lookups are indexed ----
+    const idx = qa("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_dispute%'").map((r) => r.name);
+    assert(
+      ["idx_disputes_project", "idx_disputes_draw", "idx_dispute_events_dispute", "idx_dispute_cures_dispute"].every((n) => idx.includes(n)),
+      `dispute tables are indexed for the per-eligibility hold lookups (${idx.length} indexes)`
+    );
+
+    // ---- reopen clears the current-decision record ----
+    const dD = (await j("funder", "POST", "/api/projects/proj-r47/disputes", {
+      subjectType: "PROJECT", subjectId: "proj-r47", disputedAmount: 9000,
+      affectedScope: "Survey remeasurement", reason: "Chainage overlap in the June measurement.",
+    }, 201)).dispute;
+    await t("funder", dD.id, "UNDER_REVIEW");
+    await t("funder", dD.id, "READY_FOR_DECISION");
+    const firstDecision = (await j("compliance", "POST", `/api/disputes/${dD.id}/resolve`,
+      { resolutionType: "CONTINUE_HOLD", reasoning: "Hold pending remeasure.", conditions: "Independent survey required", externalReference: "MEMO-77", acknowledged: "true" }, 200)).dispute;
+    assert(firstDecision.resolutionConditions === "Independent survey required" && firstDecision.resolutionExternalReference === "MEMO-77",
+      "first decision records its own conditions and external reference");
+    await t("compliance", dD.id, "UNDER_REVIEW");
+    const afterReopen = (await j("funder", "GET", `/api/disputes/${dD.id}`)).dispute;
+    assert(
+      afterReopen.resolutionType === null && afterReopen.resolutionAmount === null &&
+        afterReopen.resolutionConditions === null && afterReopen.resolutionExternalReference === null &&
+        afterReopen.resolvedAt === null && afterReopen.resolvedByUserId === null,
+      "REOPEN clears every current-decision field — no stale outcome survives on the record"
+    );
+    const dDTl = (await j("funder", "GET", `/api/disputes/${dD.id}`)).events;
+    assert(dDTl.filter((e) => e.type === "RESOLVED").length === 1 && dDTl.some((e) => e.type === "REOPENED" && /prior recorded decision \(CONTINUE_HOLD\)/.test(e.detail)),
+      "the prior decision remains verbatim on the append-only timeline and the REOPENED event names it");
+    await t("funder", dD.id, "READY_FOR_DECISION");
+    const secondDecision = (await j("compliance", "POST", `/api/disputes/${dD.id}/resolve`,
+      { resolutionType: "RETURN_TO_AUTHORIZED_PARTY", reasoning: "Returned to the owner.", acknowledged: "true" }, 200)).dispute;
+    assert(
+      secondDecision.resolutionType === "RETURN_TO_AUTHORIZED_PARTY" &&
+        secondDecision.resolutionConditions === null && secondDecision.resolutionExternalReference === null,
+      "a later decision NEVER inherits conditions or references from an earlier one"
+    );
+
+    // ---- legal hold pins a resolved dispute (no reopen, no close) ----
+    await j("compliance", "POST", `/api/disputes/${dD.id}/legal-hold`, { active: "true", reason: "Counsel preservation notice." }, 200);
+    assert((await t("compliance", dD.id, "UNDER_REVIEW")).status === 409,
+      "a RESOLVED dispute under legal hold cannot be reopened (409)");
+    assert((await api("compliance", "POST", `/api/disputes/${dD.id}/close`, {})).status === 409,
+      "…and cannot be closed while the hold stands (409)");
+    await j("compliance", "POST", `/api/disputes/${dD.id}/legal-hold`, { active: "false", reason: "Preservation obligation ended." }, 200);
+
+    // ---- a CLOSED dispute is frozen for EVERY sub-record ----
+    // (fixtures are created while the dispute is active, then it closes)
+    const dE = (await j("funder", "POST", "/api/projects/proj-r47/disputes", {
+      subjectType: "PROJECT", subjectId: "proj-r47", disputedAmount: 4000,
+      affectedScope: "Traffic management costs", reason: "Duplicate day-rate billing.",
+    }, 201)).dispute;
+    await t("funder", dE.id, "UNDER_REVIEW");
+    const cureE = (await j("funder", "POST", `/api/disputes/${dE.id}/cures`, { title: "Produce daily records", description: "Site diary extracts." }, 201)).cure;
+    const escE = (await j("funder", "POST", `/api/disputes/${dE.id}/escalations`,
+      { escalationType: "OWNER", recipientName: "District Council", reason: "Rate ruling requested." }, 201)).escalation;
+    const recE = (await j("funder", "POST", `/api/disputes/${dE.id}/recommendation`,
+      { kind: "RECOMMEND_CONTINUED_HOLD", summary: "Hold until diaries arrive.", aiGenerated: "true" }, 201)).recommendation;
+    await j("funder", "POST", `/api/dispute-cures/${cureE.id}/waive`, { reason: "Records arrived by other means." }, 200);
+    await t("funder", dE.id, "READY_FOR_DECISION");
+    await j("compliance", "POST", `/api/disputes/${dE.id}/resolve`,
+      { resolutionType: "CONTINUE_HOLD", reasoning: "Deduction stands.", acknowledged: "true" }, 200);
+    const evE = (await j("pm", "POST", `/api/disputes/${dE.id}/evidence`,
+      { evidenceType: "SITE_DIARY", title: "Late diary extract" }, 201)).evidence;
+    await j("compliance", "POST", `/api/disputes/${dE.id}/close`, {}, 200);
+    assert((await api("funder", "POST", `/api/dispute-evidence/${evE.id}/review`, { status: "ACCEPTED" })).status === 409,
+      "FROZEN: evidence on a closed dispute cannot be reviewed (409)");
+    assert((await api("pm", "POST", `/api/dispute-cures/${cureE.id}/submit`, { completionNote: "late" })).status === 409,
+      "FROZEN: a closed dispute's cure cannot be submitted (409)");
+    assert((await api("funder", "POST", `/api/dispute-cures/${cureE.id}/extend`, { newDueAt: "2026-12-01", reason: "r" })).status === 409,
+      "FROZEN: a closed dispute's cure deadline cannot be extended (409)");
+    assert((await api("funder", "POST", `/api/disputes/${dE.id}/recommendation`,
+      { kind: "RECOMMEND_FULL_RELEASE", summary: "late" })).status === 409,
+      "FROZEN: no recommendation can be recorded on a closed dispute (409)");
+    assert((await api("compliance", "POST", `/api/dispute-recommendations/${recE.id}/approve`, {})).status === 409,
+      "FROZEN: an AI draft on a closed dispute cannot be approved (409)");
+    assert((await api("funder", "POST", `/api/disputes/${dE.id}/escalations`,
+      { escalationType: "OWNER", recipientName: "x", reason: "y" })).status === 409,
+      "FROZEN: no escalation can be recorded on a closed dispute (409)");
+    assert((await api("funder", "POST", `/api/dispute-escalations/${escE.id}/respond`, { response: "late" })).status === 409,
+      "FROZEN: a closed dispute's escalation cannot be updated (409)");
+
+    // ---- named users must be project participants (no cross-tenant probe) ----
+    const nameProbe = async (body) => {
+      const res = await api("funder", "POST", "/api/projects/proj-r47/disputes", {
+        subjectType: "PROJECT", subjectId: "proj-r47", disputedAmount: 100,
+        affectedScope: "probe", reason: "probe", ...body,
+      });
+      return { status: res.status, error: (await res.json()).error ?? "" };
+    };
+    const foreign = await nameProbe({ responsibleReviewerUserId: "user-x" });
+    const ghostU = await nameProbe({ responsibleReviewerUserId: "user-ghost" });
+    assert(foreign.status === 422 && ghostU.status === 422 && foreign.error === ghostU.error,
+      "naming a foreign-tenant user and naming a nonexistent user return the IDENTICAL 422 — no user-directory probe");
+    const dF = (await j("funder", "POST", "/api/projects/proj-r47/disputes", {
+      subjectType: "PROJECT", subjectId: "proj-r47", disputedAmount: 500,
+      affectedScope: "Named-user checks", reason: "fixture",
+    }, 201)).dispute;
+    await t("funder", dF.id, "UNDER_REVIEW");
+    assert((await api("funder", "POST", `/api/disputes/${dF.id}/cures`,
+      { title: "x", description: "y", responsiblePartyUserId: "user-x" })).status === 422,
+      "a cure's responsible party must be a project participant (422)");
+    assert((await api("funder", "POST", `/api/disputes/${dF.id}/inspections`,
+      { inspectionType: "X", assignedInspectorUserId: "user-x" })).status === 422,
+      "an inspection's assigned inspector must be a project participant (422)");
+    assert((await api("funder", "POST", `/api/disputes/${dF.id}/inspections`,
+      { inspectionType: "SPOT_CHECK", assignedInspectorUserId: "user-field" })).status === 201,
+      "…while a genuine project participant is accepted");
+
+    // ---- cross-tenant sub-record access with REAL ids is still a 404 ----
+    assert((await api("outsider", "POST", `/api/dispute-cures/${cureE.id}/submit`, { completionNote: "x" })).status === 404,
+      "an unrelated tenant using a REAL cure id gets the same 404 as a guess");
+    assert((await api("outsider", "POST", `/api/dispute-evidence/${evE.id}/review`, { status: "ACCEPTED" })).status === 404,
+      "an unrelated tenant using a REAL evidence id gets the same 404 as a guess");
+    assert((await api("outsider", "POST", `/api/dispute-escalations/${escE.id}/respond`, { response: "x" })).status === 404,
+      "an unrelated tenant using a REAL escalation id gets the same 404 as a guess");
+    assert((await api("funder", "POST", `/api/disputes/${dF.id}`, {})).status === 405,
+      "POST to the bare dispute resource is a clean 405");
+
+    // ---- release decisions on a project WITHOUT a banking layer ----
+    // The governance gate is still authoritative; the missing virtual
+    // account alone must not make an authorized decision unrecordable.
+    exec(`INSERT INTO projects (id, organization_id, name, description, location, site_boundary, total_budget)
+          VALUES ('proj-nb', 'org-cdfc', 'Bridge Deck Repairs (NB)', 'No-banking fixture', 'Mzimba', '[]', 100000)`);
+    exec(`INSERT INTO draw_requests (id, organization_id, project_id, draw_number, submitted_at, requested_amount, approved_amount, status, created_at, updated_at)
+          VALUES ('draw-nb', 'org-cdfc', 'proj-nb', 1, '2026-07-01T00:00:00.000Z', 40000, 40000, 'APPROVED', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z')`);
+    exec(`INSERT INTO approval_requests (id, draw_request_id, subject_type, status, required_roles, created_at)
+          VALUES ('appr-nb', 'draw-nb', 'DRAW', 'APPROVED', '["FUNDER_REP"]', '2026-07-01T00:00:00.000Z')`);
+    exec(`INSERT INTO draw_requests (id, organization_id, project_id, draw_number, submitted_at, requested_amount, status, created_at, updated_at)
+          VALUES ('draw-nb2', 'org-cdfc', 'proj-nb', 2, '2026-07-02T00:00:00.000Z', 10000, 'UNDER_REVIEW', '2026-07-02T00:00:00.000Z', '2026-07-02T00:00:00.000Z')`);
+    const dNb = (await j("funder", "POST", "/api/projects/proj-nb/disputes", {
+      subjectType: "DRAW_REQUEST", subjectId: "draw-nb", disputedAmount: 5000, undisputedAmount: 35000,
+      affectedScope: "Deck joint sealing", reason: "Sealant batch certificate missing.",
+    }, 201)).dispute;
+    await t("funder", dNb.id, "UNDER_REVIEW");
+    await t("funder", dNb.id, "READY_FOR_DECISION");
+    const nbRelease = (await j("compliance", "POST", `/api/disputes/${dNb.id}/resolve`,
+      { resolutionType: "AUTHORIZE_FULL_RELEASE", reasoning: "Certificate produced.", acknowledged: "true" }, 200)).dispute;
+    assert(nbRelease.status === "RESOLVED_RELEASE",
+      "a release decision on a governance-approved draw WITHOUT a banking account records cleanly");
+    const dNb2 = (await j("funder", "POST", "/api/projects/proj-nb/disputes", {
+      subjectType: "DRAW_REQUEST", subjectId: "draw-nb2", disputedAmount: 1000,
+      affectedScope: "Parapet works", reason: "fixture",
+    }, 201)).dispute;
+    await t("funder", dNb2.id, "UNDER_REVIEW");
+    await t("funder", dNb2.id, "READY_FOR_DECISION");
+    const nbBlocked = await api("compliance", "POST", `/api/disputes/${dNb2.id}/resolve`,
+      { resolutionType: "AUTHORIZE_FULL_RELEASE", reasoning: "r", acknowledged: "true" });
+    assert(nbBlocked.status === 409 && /governance is not complete/.test((await nbBlocked.json()).error),
+      "…but WITHOUT completed governance the release decision is still refused (409)");
+
+    // ---- funding path: scheduling external funding on a disputed draw ----
+    const fundBlocked = await api("funder", "POST", "/api/draws/draw-nb2/funding", { fundingMethod: "WIRE" });
+    assert(fundBlocked.status === 409 && /dispute/i.test((await fundBlocked.json()).error),
+      "scheduling external funding on a draw with an active dispute is refused at the lender funding boundary (409)");
+
     console.log(`\nAll ${passed} dispute + release-hold checkpoints passed.`);
   } finally {
     try { db.close(); } catch {}

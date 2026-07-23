@@ -146,7 +146,7 @@ removal authorization), recorded external escalation, and authorized
 resolutions with separation of duties, a mandatory acknowledgement and full
 in-lock revalidation — including the existing release-eligibility gates.
 Dispute registers ship inside both the Draw Verification Package and the
-Project Audit Package (`12_disputes/`, manifest-hashed). 160-checkpoint
+Project Audit Package (`12_disputes/`, manifest-hashed). 185-checkpoint
 suite (`scripts/dispute-test.js`) ends with a byte-for-byte banking
 non-mutation regression across 17 protected tables. OBV is not an escrow
 agent and never moves funds — see `docs/DISPUTES_RELEASE_HOLDS.md`.

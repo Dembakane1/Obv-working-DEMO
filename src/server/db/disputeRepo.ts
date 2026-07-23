@@ -224,6 +224,27 @@ export function setLegalHoldGuarded(
   return Number(res.changes) === 1;
 }
 
+/** Formal reopen: RESOLVED_* → UNDER_REVIEW clears the CURRENT-decision
+ *  fields so a later decision can never inherit values from an earlier
+ *  one. The earlier decision itself is preserved verbatim in the
+ *  append-only event log — nothing is lost, only the "current outcome"
+ *  columns are reset. Guarded: refuses unless the row is still resolved
+ *  and NOT under legal hold at the instant of the update. */
+export function reopenDisputeGuarded(id: string, fromStatuses: DisputeStatus[]): boolean {
+  const ph = fromStatuses.map(() => "?").join(",");
+  const res = getDb()
+    .prepare(
+      `UPDATE disputes SET status = 'UNDER_REVIEW', updated_at = ?,
+        resolution_type = NULL, resolution_amount = NULL, resolution_reasoning = NULL,
+        resolution_conditions = NULL, resolution_evidence_ids = NULL,
+        resolution_external_reference = NULL, resolved_by_user_id = NULL,
+        resolved_by_role = NULL, resolved_by_organization_id = NULL, resolved_at = NULL
+       WHERE id = ? AND legal_hold = 0 AND status IN (${ph})`
+    )
+    .run(new Date().toISOString(), id, ...fromStatuses);
+  return Number(res.changes) === 1;
+}
+
 // ------------------------------------------------------------ events
 
 function toEvent(r: Row): DisputeEvent {

@@ -528,7 +528,7 @@ export function renderDisputeWorkspace(input: {
               </form>
             </div>
           ) : null}
-          {caps.has("DECIDE_DISPUTE") && d.resolutionType && d.status !== "CLOSED" && !d.legalHold ? (
+          {caps.has("DECIDE_DISPUTE") && d.status.startsWith("RESOLVED_") && !d.legalHold ? (
             <div className="lender-actions">
               <form className="lender-form" method="POST" action={`/api/disputes/${d.id}/close`}>
                 <div className="row">

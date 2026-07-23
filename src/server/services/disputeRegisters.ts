@@ -23,6 +23,18 @@ import type { Dispute, User } from "../../shared/types";
 
 const NOT_RECORDED = "Not recorded";
 
+/** Stored JSON id lists parse defensively — a malformed row must never
+ *  be able to break package generation. */
+function safeIdList(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
 export function disputeRegisterFiles(input: {
   projectId: string;
   /** Restrict the registers to disputes attached to one draw (draw
@@ -232,7 +244,7 @@ export function disputeRegisterFiles(input: {
           resolutionAmount: d.resolutionAmount,
           reasoning: d.resolutionReasoning,
           conditions: d.resolutionConditions,
-          evidenceIds: d.resolutionEvidenceIds ? JSON.parse(d.resolutionEvidenceIds) : [],
+          evidenceIds: safeIdList(d.resolutionEvidenceIds),
           externalReference: d.resolutionExternalReference,
           decidedBy: userName(d.resolvedByUserId),
           decidedByRole: d.resolvedByRole,

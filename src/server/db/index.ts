@@ -1682,6 +1682,21 @@ CREATE TABLE IF NOT EXISTS dispute_escalations (
   closed_at TEXT
 );
 
+-- The release-hold read model runs on every payment-eligibility
+-- evaluation; these keep dispute lookups off full scans.
+CREATE INDEX IF NOT EXISTS idx_disputes_project ON disputes(project_id);
+CREATE INDEX IF NOT EXISTS idx_disputes_draw ON disputes(draw_request_id) WHERE draw_request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_disputes_milestone ON disputes(milestone_id) WHERE milestone_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_disputes_instruction ON disputes(payment_instruction_id) WHERE payment_instruction_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dispute_events_dispute ON dispute_events(dispute_id);
+CREATE INDEX IF NOT EXISTS idx_dispute_responses_dispute ON dispute_responses(dispute_id);
+CREATE INDEX IF NOT EXISTS idx_dispute_evidence_dispute ON dispute_evidence_records(dispute_id);
+CREATE INDEX IF NOT EXISTS idx_dispute_cures_dispute ON dispute_cure_items(dispute_id);
+CREATE INDEX IF NOT EXISTS idx_dispute_cure_extensions_cure ON dispute_cure_extensions(cure_item_id);
+CREATE INDEX IF NOT EXISTS idx_dispute_inspections_dispute ON dispute_inspection_requests(dispute_id);
+CREATE INDEX IF NOT EXISTS idx_dispute_recommendations_dispute ON dispute_recommendations(dispute_id);
+CREATE INDEX IF NOT EXISTS idx_dispute_escalations_dispute ON dispute_escalations(dispute_id);
+
 `;
 
 export function getDb(): DatabaseSync {
