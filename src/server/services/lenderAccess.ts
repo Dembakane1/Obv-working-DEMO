@@ -26,7 +26,7 @@ import type {
   ProjectParticipantType,
   User,
 } from "../../shared/types";
-import { BANKING_CAPABILITIES } from "../../shared/types";
+import { BANKING_CAPABILITIES, DISPUTE_CAPABILITIES } from "../../shared/types";
 
 export class LenderError extends Error {
   statusCode: number;
@@ -206,6 +206,7 @@ export function assignMembership(
   const allCaps = new Set<ProjectCapability>([
     ...Object.values(PARTICIPANT_CAPABILITIES).flat(),
     ...BANKING_CAPABILITIES,
+    ...DISPUTE_CAPABILITIES,
   ]);
   for (const c of caps) {
     if (!allCaps.has(c)) throw new LenderError(`Unknown capability ${c}`, 400);

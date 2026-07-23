@@ -1508,6 +1508,180 @@ CREATE TABLE IF NOT EXISTS mock_provider_ledger (
   reference TEXT,
   created_at TEXT NOT NULL
 );
+
+-- ==================== Dispute + release-hold management ====================
+-- Workflow, evidence, authorization and audit records ONLY. A dispute
+-- hold pauses release ELIGIBILITY; it never moves funds or touches any
+-- balance column. dispute_events and dispute_cure_extensions are
+-- append-only (no UPDATE/DELETE path exists in the repository).
+
+CREATE TABLE IF NOT EXISTS disputes (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  subject_type TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  draw_request_id TEXT REFERENCES draw_requests(id),
+  milestone_id TEXT REFERENCES milestones(id),
+  payment_instruction_id TEXT REFERENCES payment_instructions(id),
+  disputed_amount INTEGER NOT NULL,
+  undisputed_amount INTEGER,
+  affected_scope TEXT NOT NULL,
+  affected_line_ids TEXT NOT NULL DEFAULT '[]',
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL,
+  opened_by_user_id TEXT NOT NULL REFERENCES users(id),
+  opened_by_organization_id TEXT NOT NULL REFERENCES organizations(id),
+  opened_at TEXT NOT NULL,
+  responsible_reviewer_user_id TEXT REFERENCES users(id),
+  legal_hold INTEGER NOT NULL DEFAULT 0,
+  legal_hold_by_user_id TEXT REFERENCES users(id),
+  legal_hold_reason TEXT,
+  legal_hold_at TEXT,
+  resolution_type TEXT,
+  resolution_amount INTEGER,
+  resolution_reasoning TEXT,
+  resolution_conditions TEXT,
+  resolution_evidence_ids TEXT,
+  resolution_external_reference TEXT,
+  resolved_by_user_id TEXT REFERENCES users(id),
+  resolved_by_role TEXT,
+  resolved_by_organization_id TEXT REFERENCES organizations(id),
+  resolved_at TEXT,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dispute_events (
+  id TEXT PRIMARY KEY,
+  dispute_id TEXT NOT NULL REFERENCES disputes(id),
+  type TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  ref_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dispute_responses (
+  id TEXT PRIMARY KEY,
+  dispute_id TEXT NOT NULL REFERENCES disputes(id),
+  version INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  body TEXT NOT NULL,
+  submitted_by_user_id TEXT NOT NULL REFERENCES users(id),
+  submitted_by_organization_id TEXT NOT NULL REFERENCES organizations(id),
+  supersedes_response_id TEXT REFERENCES dispute_responses(id),
+  created_at TEXT NOT NULL,
+  UNIQUE(dispute_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS dispute_evidence_records (
+  id TEXT PRIMARY KEY,
+  dispute_id TEXT NOT NULL REFERENCES disputes(id),
+  evidence_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  linked_type TEXT NOT NULL DEFAULT 'NONE',
+  linked_id TEXT,
+  external_reference TEXT,
+  document_hash TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  supersedes_evidence_id TEXT REFERENCES dispute_evidence_records(id),
+  submitted_by_user_id TEXT NOT NULL REFERENCES users(id),
+  submitted_by_organization_id TEXT NOT NULL REFERENCES organizations(id),
+  review_status TEXT NOT NULL DEFAULT 'PENDING',
+  reviewed_by_user_id TEXT REFERENCES users(id),
+  reviewed_at TEXT,
+  reviewer_notes TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dispute_cure_items (
+  id TEXT PRIMARY KEY,
+  dispute_id TEXT NOT NULL REFERENCES disputes(id),
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  responsible_party_user_id TEXT REFERENCES users(id),
+  responsible_organization_id TEXT REFERENCES organizations(id),
+  due_at TEXT,
+  evidence_required TEXT,
+  affected_scope TEXT,
+  affected_amount INTEGER,
+  priority TEXT NOT NULL DEFAULT 'MEDIUM',
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN
+    ('OPEN','SUBMITTED','ACCEPTED','REJECTED','WAIVED','CANCELLED')),
+  completion_note TEXT,
+  completion_evidence_id TEXT REFERENCES dispute_evidence_records(id),
+  submitted_at TEXT,
+  reviewed_by_user_id TEXT REFERENCES users(id),
+  reviewed_at TEXT,
+  review_decision_note TEXT,
+  waiver_reason TEXT,
+  created_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dispute_cure_extensions (
+  id TEXT PRIMARY KEY,
+  cure_item_id TEXT NOT NULL REFERENCES dispute_cure_items(id),
+  prior_due_at TEXT,
+  new_due_at TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  actor_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dispute_inspection_requests (
+  id TEXT PRIMARY KEY,
+  dispute_id TEXT NOT NULL REFERENCES disputes(id),
+  inspection_type TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  requested_by_user_id TEXT NOT NULL REFERENCES users(id),
+  assigned_inspector_user_id TEXT REFERENCES users(id),
+  scheduled_at TEXT,
+  completed_at TEXT,
+  location_scope TEXT,
+  result TEXT,
+  notes TEXT,
+  status TEXT NOT NULL DEFAULT 'REQUESTED' CHECK (status IN
+    ('REQUESTED','SCHEDULED','COMPLETED','ACCESS_FAILED','CANCELLED')),
+  follow_up TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dispute_recommendations (
+  id TEXT PRIMARY KEY,
+  dispute_id TEXT NOT NULL REFERENCES disputes(id),
+  kind TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  basis TEXT,
+  ai_generated INTEGER NOT NULL DEFAULT 0,
+  official INTEGER NOT NULL DEFAULT 0,
+  created_by_user_id TEXT NOT NULL REFERENCES users(id),
+  approved_by_user_id TEXT REFERENCES users(id),
+  supersedes_recommendation_id TEXT REFERENCES dispute_recommendations(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dispute_escalations (
+  id TEXT PRIMARY KEY,
+  dispute_id TEXT NOT NULL REFERENCES disputes(id),
+  escalation_type TEXT NOT NULL,
+  recipient_name TEXT NOT NULL,
+  recipient_organization TEXT,
+  reason TEXT NOT NULL,
+  transmitted_materials TEXT,
+  status TEXT NOT NULL DEFAULT 'RECORDED' CHECK (status IN ('RECORDED','RESPONDED','CLOSED')),
+  response TEXT,
+  submitted_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  responded_at TEXT,
+  closed_at TEXT
+);
+
 `;
 
 export function getDb(): DatabaseSync {
