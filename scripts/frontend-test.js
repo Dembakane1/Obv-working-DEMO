@@ -19,6 +19,7 @@
  */
 const { chromium } = require("playwright");
 const { DatabaseSync } = require("node:sqlite");
+const fs = require("node:fs");
 
 const BASE = process.env.BASE || "http://localhost:3000";
 const DB = process.env.OBV_DB || "data/obv.db";
@@ -74,7 +75,11 @@ async function chipsInside(page) {
 
 (async () => {
   console.log("Frontend visual/responsive tests — " + BASE);
-  const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+  // Pinned sandbox Chromium when present (version-mismatch-proof in the
+  // dev sandbox); Playwright's own resolution everywhere else (CI
+  // installs browsers into its default cache).
+  const pinned = "/opt/pw-browsers/chromium";
+  const browser = await chromium.launch(fs.existsSync(pinned) ? { executablePath: pinned } : {});
 
   const makeCtx = async (viewport) => {
     const ctx = await browser.newContext({ viewport });

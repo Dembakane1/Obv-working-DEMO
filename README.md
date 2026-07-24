@@ -128,6 +128,29 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Dispute & Release Hold Management (v20)
+
+Construction payment disputes as governed workflow records: a dispute
+attaches to an authoritative OBV object (draw, line, milestone, payment
+instruction, change order, invoice, retainage release, inspection result,
+evidence item), records disputed/undisputed whole-currency amounts without
+touching any balance, and pauses **release eligibility** for the affected
+draw through the existing payment boundary. Validated state machine (no
+silent fallbacks, exactly-once guarded transitions, immutable append-only
+timeline), immutable versioned contractor responses, governed evidence with
+integrity hashes, cure requirements (display-only overdue; explicit
+waive/extend with recorded reasons), dispute inspections (results are
+evidence, never verdicts), advisory recommendations (AI-generated content
+flagged and human-approved; mandatory disclaimer), legal hold (elevated
+removal authorization), recorded external escalation, and authorized
+resolutions with separation of duties, a mandatory acknowledgement and full
+in-lock revalidation — including the existing release-eligibility gates.
+Dispute registers ship inside both the Draw Verification Package and the
+Project Audit Package (`12_disputes/`, manifest-hashed). 185-checkpoint
+suite (`scripts/dispute-test.js`) ends with a byte-for-byte banking
+non-mutation regression across 17 protected tables. OBV is not an escrow
+agent and never moves funds — see `docs/DISPUTES_RELEASE_HOLDS.md`.
+
 ## Milestone Completion Gates (v19)
 
 **Photographic completion is not legal or contractual completion.** One

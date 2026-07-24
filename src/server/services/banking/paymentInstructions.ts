@@ -39,6 +39,7 @@ import { BankingError, assertBankingCapability, assertProjectAccess } from "./ba
 import { assertDemoSimulationAllowed, resolveBankingProvider } from "./registry";
 import { logBankingEvent } from "./projectAccounts";
 import { reconciliationBlocked } from "./reconciliation";
+import { drawDisputeHold } from "../disputes";
 import type {
   BankingWebhookInput,
 } from "./provider";
@@ -78,9 +79,19 @@ export interface PaymentEligibility {
 export function paymentEligibility(
   draw: DrawRequest,
   account: ProjectVirtualAccount | null,
-  amount: number | null
+  amount: number | null,
+  opts: { ignoreDisputeId?: string | null } = {}
 ): PaymentEligibility {
   const blockers: string[] = [];
+  // Dispute release hold: an active dispute attached to the draw (or a
+  // legal hold in any state) pauses release ELIGIBILITY. This is a
+  // workflow control — no balance, settlement or provider event is ever
+  // touched by a dispute. `ignoreDisputeId` lets an authorized dispute
+  // resolution validate the UNDERLYING gates without its own hold.
+  const disputeHold = drawDisputeHold(draw.id, opts.ignoreDisputeId ?? null);
+  if (disputeHold.blocked) {
+    blockers.push(disputeHold.blockedReasons[0] ?? "An active payment dispute holds release eligibility for this draw.");
+  }
   const approval = repo.getApprovalRequestForDraw(draw.id);
   if (!approval || approval.status !== "APPROVED") {
     blockers.push("Formal governance is not complete — the draw's approval request is not approved.");
@@ -144,7 +155,10 @@ export function paymentEligibility(
       .listInstructionsForDraw(draw.id)
       .filter((i) => CAP_CONSUMING.includes(i.status))
       .reduce((sum, i) => sum + i.amount, 0);
-    approvedRemaining = decision.approvedAmount - committed;
+    // A partial-release dispute resolution keeps the DISPUTED portion
+    // held: it reduces the remaining instructable amount without ever
+    // touching a stored balance.
+    approvedRemaining = decision.approvedAmount - committed - disputeHold.partialHeldAmount;
     if (amount !== null && amount > approvedRemaining) {
       blockers.push(
         `The requested amount (${amount}) exceeds the remaining lender-approved amount (${approvedRemaining}). Retainage held by the decision is never available to instructions.`

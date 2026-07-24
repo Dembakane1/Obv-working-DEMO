@@ -1,0 +1,74 @@
+# OBV continuous integration — the complete validation for every pull
+# request into main and every push to main.
+#
+# The required status check for branch protection is the job name: "ci".
+#
+# The banking layer is FORCED to the mock provider in demo mode. No
+# real-provider flag, credential or secret exists in this workflow, and
+# none may ever be added: CI validates a simulation, not a bank.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OBV_BANKING_PROVIDER: mock
+      OBV_BANKING_MODE: demo
+      CI: "true"
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # package.json engines requires >= 22.5 (node:sqlite).
+          node-version: "22"
+
+      - name: Install dependencies
+        # The app itself is zero-dependency; devDependencies carry the
+        # TypeScript toolchain only. There is intentionally no lockfile,
+        # so plain install (npm ci requires one).
+        run: npm install
+
+      - name: Install Playwright (browser checkpoints)
+        # Deterministic browser install for the responsive/overflow
+        # checkpoints. Not saved to package.json — the application has no
+        # runtime dependencies.
+        run: |
+          npm install --no-save playwright@1
+          npx playwright install --with-deps chromium
+        timeout-minutes: 10
+
+      - name: Build + complete unified test suite + deployment checks
+        # The runner owns the build stage, every standalone suite, the
+        # server-based suites and the deployment configuration checks.
+        run: node scripts/run-all-tests.js
+        timeout-minutes: 35
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-logs
+          path: |
+            data/*.log
+            /tmp/obv-*/*.log
+          if-no-files-found: ignore
+          retention-days: 7

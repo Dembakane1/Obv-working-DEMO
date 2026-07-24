@@ -15,6 +15,7 @@ import * as lrepo from "../db/lenderRepo";
 import { teamsNotifier } from "./TeamsNotifier";
 import { LenderError, assertCapability, assertProjectAccess } from "./lenderAccess";
 import { parseIsoDate, PermitError } from "./permits";
+import { drawDisputeHold } from "./disputes";
 import { makeWholeCurrency } from "./money";
 import type {
   DrawRequest,
@@ -548,6 +549,14 @@ export function scheduleFunding(
   const draw = getDrawFor(user, input.drawRequestId);
   const project = repo.getProject(draw.projectId)!;
   assertCapability(user, project.id, "RECORD_EXTERNAL_FUNDING");
+  {
+    // Dispute release hold: external funding records mirror payment
+    // advancement, so an active dispute (or legal hold) refuses them too.
+    const hold = drawDisputeHold(draw.id);
+    if (hold.blocked) {
+      throw new LenderError(`An active payment dispute holds release eligibility for this draw: ${hold.blockedReasons[0] ?? ""}`, 409);
+    }
+  }
   const decision = input.lenderDecisionId ? lrepo.getLenderDecision(input.lenderDecisionId) : currentDecision(draw.id);
   if (!decision || decision.drawRequestId !== draw.id) {
     throw new LenderError("Funding requires the lender decision it executes", 422);
@@ -696,6 +705,12 @@ export function transitionFunding(
   const now = new Date().toISOString();
   const patch: Partial<ExternalFundingRecord> = { status: input.status };
   if (input.status === "DISBURSED") {
+    // Dispute release hold: a disbursement record cannot advance while
+    // an active dispute (or legal hold) pauses release eligibility.
+    const disputeHold = drawDisputeHold(record.drawRequestId);
+    if (disputeHold.blocked) {
+      throw new LenderError(`An active payment dispute holds release eligibility for this draw: ${disputeHold.blockedReasons[0] ?? ""}`, 409);
+    }
     const ref = (input.transactionReference ?? "").trim();
     if (!ref) throw new LenderError("DISBURSED requires a transactionReference", 400);
     const amount = wholeAmount(input.amountDisbursed ?? record.amountScheduled, "amountDisbursed");

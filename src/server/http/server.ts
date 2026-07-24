@@ -114,6 +114,10 @@ import * as brepo from "../db/bankingRepo";
 import { BankingProviderError } from "../services/banking/provider";
 import { resolveBankingProvider, isDemoBankingMode } from "../services/banking/registry";
 import { handleBankingRoutes } from "./bankingRoutes";
+import { handleDisputeRoutes } from "./disputeRoutes";
+import { DisputeError } from "../services/disputes";
+import * as disputesSvc from "../services/disputes";
+import { renderDisputeWorkspace, renderProjectDisputes } from "../view/disputePages";
 import { renderProjectAccountPage } from "../view/bankingPages";
 import * as loanProfile from "../services/loanProfile";
 import * as drawInspections from "../services/drawInspections";
@@ -2522,6 +2526,27 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   ) {
     return;
   }
+
+  // ==================== dispute + release-hold layer (API) ====================
+  if (
+    await handleDisputeRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      getUser: () => {
+        const u = currentUser(req);
+        if (!u) throw new DisputeError("Select a demo user first", 401);
+        return u;
+      },
+      readParams,
+      isForm: () => isFormPost(req),
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+    })
+  ) {
+    return;
+  }
   const loanApi = /^\/api\/projects\/([^/]+)\/(loan|parties|jurisdiction|memberships|lender-policy)$/.exec(pathname);
   if (loanApi) {
     const user = lenderUser();
@@ -4389,6 +4414,65 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  const disputePageMatch = /^\/dispute\/([^/]+)$/.exec(pathname);
+  if (method === "GET" && disputePageMatch) {
+    let detail;
+    try {
+      detail = disputesSvc.disputeDetail(user!, disputePageMatch[1]);
+    } catch (e) {
+      if (e instanceof DisputeError && e.statusCode === 404) {
+        sendHtml(res, renderError(navFor(user!, "projects"), "Dispute not found", "No dispute exists at this address."), 404);
+        return;
+      }
+      throw e;
+    }
+    const noticeErr = url.searchParams.get("err");
+    sendHtml(
+      res,
+      renderDisputeWorkspace({
+        nav: navFor(user!, "projects"),
+        detail,
+        project: repo.getProject(detail.dispute.projectId)!,
+        draw: detail.dispute.drawRequestId ? repo.getDrawRequest(detail.dispute.drawRequestId) : null,
+        users: usersById(),
+        notice: noticeErr
+          ? { kind: "err", text: noticeErr.slice(0, 300) }
+          : url.searchParams.get("ok")
+            ? { kind: "ok", text: "Recorded." }
+            : null,
+      })
+    );
+    return;
+  }
+
+  const projectDisputesMatch = /^\/project\/([^/]+)\/disputes$/.exec(pathname);
+  if (method === "GET" && projectDisputesMatch) {
+    let rows;
+    let project;
+    try {
+      rows = disputesSvc.listProjectDisputes(user!, projectDisputesMatch[1]);
+      project = repo.getProject(projectDisputesMatch[1])!;
+    } catch (e) {
+      if (e instanceof DisputeError && e.statusCode === 404) {
+        sendHtml(res, renderError(navFor(user!, "projects"), "Project not found", "No project exists at this address."), 404);
+        return;
+      }
+      throw e;
+    }
+    sendHtml(
+      res,
+      renderProjectDisputes({
+        nav: navFor(user!, "projects"),
+        project,
+        disputes: rows,
+        caps: [...disputesSvc.disputeCapabilitiesFor(user!, project.id)],
+        draws: repo.listDrawRequestsForProject(project.id),
+        users: usersById(),
+      })
+    );
+    return;
+  }
+
   const projectAccountMatch = /^\/project\/([^/]+)\/account$/.exec(pathname);
   if (method === "GET" && projectAccountMatch) {
     let project;
@@ -5373,7 +5457,7 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";
@@ -5396,6 +5480,13 @@ const server = http.createServer((req, res) => {
       const refAccount = /\/project\/([^/?#]+)\/account/.exec(ref);
       if (known && req.method === "POST" && refAccount) {
         res.writeHead(303, { Location: `/project/${refAccount[1]}/account?err=${encodeURIComponent(message).slice(0, 400)}` });
+        res.end();
+        return;
+      }
+      // Dispute workspace forms bounce back the same way.
+      const refDispute = /\/dispute\/([^/?#]+)/.exec(ref);
+      if (known && req.method === "POST" && refDispute) {
+        res.writeHead(303, { Location: `/dispute/${refDispute[1]}?err=${encodeURIComponent(message).slice(0, 400)}` });
         res.end();
         return;
       }
