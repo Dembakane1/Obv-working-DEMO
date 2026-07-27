@@ -24,6 +24,7 @@
 import * as repo from "../db/repo";
 import * as lrepo from "../db/lenderRepo";
 import * as brepo from "../db/bankingRepo";
+import * as dmvRepo from "../db/dmvRepo";
 import { effectiveStatus as permitEffectiveStatus, completeSourcesForInspection } from "./permits";
 import { wormEvidenceStore } from "./WormEvidenceStore";
 import { audit } from "./pilot/onboarding";
@@ -305,6 +306,19 @@ export const RULES: Array<{ key: string; severity: string; rule: string }> = [
   { key: "loan-maturity-approaching", severity: "MEDIUM", rule: "Loan maturity date within 60 days on an active loan" },
   { key: "loan-reserve-insufficient", severity: "HIGH", rule: "Recorded construction reserve is below the value of open draw requests (both figures recorded)" },
   { key: "loan-admin-incomplete", severity: "LOW", rule: "Loan profile is missing current servicer or current owner (servicing/ownership data incomplete)" },
+  // ---- DMV draw control (only for projects with permit-basis / line-inspection records) ----
+  { key: "dmv-basis-unresolved", severity: "MEDIUM", rule: "The authoritative Governing Code and Permit Basis is UNRESOLVED and needs an authorized determination" },
+  { key: "dmv-permit-expired", severity: "MEDIUM", rule: "A permit with an authoritative basis record is EXPIRED for control purposes" },
+  { key: "dmv-permit-revoked", severity: "HIGH", rule: "A permit with an authoritative basis record is REVOKED or SUSPENDED" },
+  { key: "dmv-official-inspection-failed", severity: "HIGH", rule: "A required official inspection for a budget line is FAILED" },
+  { key: "dmv-correction-required", severity: "MEDIUM", rule: "A required official inspection has a correction notice or reinspection pending" },
+  { key: "dmv-official-not-found", severity: "MEDIUM", rule: "A required official inspection could not be found in the jurisdiction record" },
+  { key: "dmv-line-permit-missing", severity: "MEDIUM", rule: "A before-payment inspection requirement references no permit or permit-basis record" },
+  { key: "dmv-basis-missing", severity: "MEDIUM", rule: "A requirement's permit has no authoritative Governing Code and Permit Basis version" },
+  { key: "dmv-claim-exceeds-inspector", severity: "MEDIUM", rule: "Contractor-claimed completion exceeds the OBV inspector-observed completion on an active draw line" },
+  { key: "dmv-ctc-shortfall", severity: "HIGH", rule: "The recorded cost-to-complete estimate exceeds the budget line's remaining budget" },
+  { key: "dmv-budget-overrun", severity: "HIGH", rule: "A budget line's paid-to-date exceeds its revised budget (original + approved changes)" },
+  { key: "dmv-verification-review", severity: "MEDIUM", rule: "The latest manual government-record verification for a scope needs review (no match, unavailable, or flagged)" },
 ];
 
 const ISSUE_CATEGORY: Record<FieldIssue["category"], ObvException["category"]> = {
@@ -966,6 +980,202 @@ async function activeConditions(): Promise<RuleCondition[]> {
       title: "Banking reconciliation mismatch — payments blocked",
       description: `${desc} New payment submissions for the program are blocked until an attributable resolution and a later successful reconciliation.`,
     }});
+  }
+
+  // ==================== DMV draw control conditions =====================
+  // Guarded to projects that actually use the DMV compliance layer
+  // (permit-basis versions or line inspection requirements exist) so
+  // projects that never adopted it keep their exception surface unchanged.
+  for (const project of projects) {
+    const bases = dmvRepo.listPermitBasisForProject(project.id);
+    const lineReqs = dmvRepo.listLineRequirementsForProject(project.id);
+    if (bases.length === 0 && lineReqs.length === 0) continue;
+
+    // -- authoritative basis conditions --
+    const authoritative = bases.filter((b) => b.status === "AUTHORITATIVE");
+    const authoritativePermitIds = new Set(authoritative.map((b) => b.permitId));
+    for (const b of authoritative) {
+      if (b.governingBasis === "UNRESOLVED") {
+        out.push({ seed: {
+          projectId: project.id,
+          sourceType: "PERMIT", sourceId: b.id,
+          sourceKey: `dmv-basis-unresolved:${b.id}`,
+          category: "DOCUMENT", severity: "MEDIUM",
+          title: `Governing basis unresolved — permit ${b.permitNumber}`,
+          description:
+            "The authoritative Governing Code and Permit Basis is recorded as UNRESOLVED. " +
+            "An authorized reviewer must confirm the governing code, transition, or grandfathering basis.",
+        }});
+      }
+      const permit = repo.getPermit(b.permitId);
+      if (permit) {
+        const control = permitEffectiveStatus(permit);
+        if (control === "EXPIRED") {
+          out.push({ seed: {
+            projectId: project.id,
+            sourceType: "PERMIT", sourceId: permit.id,
+            sourceKey: `dmv-permit-expired:${b.id}`,
+            category: "DOCUMENT", severity: "MEDIUM",
+            title: `Permit expired — ${b.permitNumber}`,
+            description:
+              "The permit governed by an authoritative basis record is EXPIRED for control purposes. " +
+              "Work under it cannot support draw eligibility until renewal is recorded.",
+          }});
+        } else if (control === "REVOKED" || control === "SUSPENDED") {
+          out.push({ seed: {
+            projectId: project.id,
+            sourceType: "PERMIT", sourceId: permit.id,
+            sourceKey: `dmv-permit-revoked:${b.id}`,
+            category: "INTEGRITY", severity: "HIGH",
+            title: `Permit ${control.toLowerCase()} — ${b.permitNumber}`,
+            description:
+              `The permit governed by an authoritative basis record is ${control}. ` +
+              "Draw lines under it are ineligible until the jurisdiction record clears.",
+          }});
+        }
+      }
+    }
+
+    // -- line inspection requirement conditions --
+    for (const r of lineReqs) {
+      const scopeIds = { budgetLineId: r.budgetLineId ?? undefined, milestoneId: r.milestoneId ?? undefined };
+      if (r.status === "FAILED") {
+        out.push({ seed: {
+          projectId: project.id, ...scopeIds,
+          sourceType: "INSPECTION_REQUIREMENT", sourceId: r.id,
+          sourceKey: `dmv-official-inspection-failed:${r.id}`,
+          category: "QUALITY", severity: "HIGH",
+          title: `Official ${r.inspectionType} inspection failed`,
+          description:
+            "The official jurisdiction inspection required for this scope was recorded FAILED. " +
+            "The official record — not any OBV field finding — governs this condition.",
+        }});
+      } else if (r.status === "CORRECTION_REQUIRED" || r.status === "REINSPECTION_REQUIRED") {
+        out.push({ seed: {
+          projectId: project.id, ...scopeIds,
+          sourceType: "INSPECTION_REQUIREMENT", sourceId: r.id,
+          sourceKey: `dmv-correction-required:${r.id}`,
+          category: "QUALITY", severity: "MEDIUM",
+          title: `${r.inspectionType} inspection ${r.status === "CORRECTION_REQUIRED" ? "correction" : "reinspection"} pending`,
+          description:
+            r.correctionNotice
+              ? `Correction notice on file: ${r.correctionNotice}`
+              : "The official inspection requires correction or reinspection before the scope can clear.",
+        }});
+      } else if (r.status === "NOT_FOUND") {
+        out.push({ seed: {
+          projectId: project.id, ...scopeIds,
+          sourceType: "INSPECTION_REQUIREMENT", sourceId: r.id,
+          sourceKey: `dmv-official-not-found:${r.id}`,
+          category: "DOCUMENT", severity: "MEDIUM",
+          title: `Official ${r.inspectionType} inspection record not found`,
+          description:
+            "A manual lookup could not find the required inspection in the jurisdiction record. " +
+            "Confirm the permit and inspection identifiers with the authority.",
+        }});
+      }
+      if (r.requiredBeforePayment && !r.permitId && !r.permitBasisVersionId) {
+        out.push({ seed: {
+          projectId: project.id, ...scopeIds,
+          sourceType: "INSPECTION_REQUIREMENT", sourceId: r.id,
+          sourceKey: `dmv-line-permit-missing:${r.id}`,
+          category: "DOCUMENT", severity: "MEDIUM",
+          title: `No permit mapped to required ${r.inspectionType} inspection`,
+          description:
+            "A before-payment inspection requirement references no permit or permit-basis record — " +
+            "the permit backing this scope is missing or unmapped.",
+        }});
+      } else if (r.permitId && !authoritativePermitIds.has(r.permitId)) {
+        out.push({ seed: {
+          projectId: project.id, ...scopeIds,
+          sourceType: "PERMIT", sourceId: r.permitId,
+          sourceKey: `dmv-basis-missing:${r.id}`,
+          category: "DOCUMENT", severity: "MEDIUM",
+          title: `No authoritative permit basis for required ${r.inspectionType} inspection`,
+          description:
+            "The permit behind this requirement has no authoritative Governing Code and Permit Basis " +
+            "version. Record and finalize one before draw review.",
+        }});
+      }
+    }
+
+    // -- contractor claim vs inspector-observed (active draws only) --
+    for (const draw of repo.listDrawRequestsForProject(project.id)) {
+      if (!ACTIVE_DRAW_STATES.has(draw.status)) continue;
+      for (const l of repo.listDrawLines(draw.id)) {
+        if (
+          l.percentCompleteClaimed !== null &&
+          l.percentCompleteVerified !== null &&
+          l.percentCompleteClaimed > l.percentCompleteVerified
+        ) {
+          out.push({ seed: {
+            projectId: project.id, drawRequestId: draw.id,
+            sourceType: "DRAW_LINE_ITEM", sourceId: l.id,
+            sourceKey: `dmv-claim-exceeds-inspector:${l.id}`,
+            category: "QUALITY", severity: "MEDIUM",
+            title: `Contractor claim exceeds inspector finding — ${l.description}`,
+            description:
+              `The contractor claims ${l.percentCompleteClaimed}% complete but the OBV draw inspector ` +
+              `observed ${l.percentCompleteVerified}%. These remain separate records; the difference needs review.`,
+          }});
+        }
+      }
+    }
+
+    // -- budget line cost conditions --
+    for (const bl of repo.listBudgetLines(project.id)) {
+      if (!bl.active) continue;
+      const revised = bl.originalBudget + bl.approvedChanges;
+      if (bl.paidToDate > revised) {
+        out.push({ seed: {
+          projectId: project.id, budgetLineId: bl.id,
+          sourceType: "BUDGET_VARIANCE", sourceId: bl.id,
+          sourceKey: `dmv-budget-overrun:${bl.id}`,
+          category: "COST", severity: "HIGH",
+          title: `Budget overrun — line ${bl.code}`,
+          description:
+            `Paid to date ${bl.paidToDate} exceeds the revised budget ${revised} ` +
+            `(original ${bl.originalBudget} + approved changes ${bl.approvedChanges}).`,
+        }});
+      }
+      const est = dmvRepo.latestEstimateForLine(bl.id);
+      if (est && est.estimatedCostToComplete > Math.max(revised - bl.paidToDate, 0)) {
+        out.push({ seed: {
+          projectId: project.id, budgetLineId: bl.id,
+          sourceType: "BUDGET_VARIANCE", sourceId: est.id,
+          sourceKey: `dmv-ctc-shortfall:${bl.id}`,
+          category: "COST", severity: "HIGH",
+          title: `Cost-to-complete shortfall — line ${bl.code}`,
+          description:
+            `The recorded estimate to complete (${est.estimatedCostToComplete}) exceeds the remaining ` +
+            `budget (${Math.max(revised - bl.paidToDate, 0)}). Funding review is required before further draws.`,
+        }});
+      }
+    }
+
+    // -- manual source verifications: latest run per scope needs review --
+    const verifications = dmvRepo.listSourceVerificationsForProject(project.id);
+    const latestByScope = new Map<string, (typeof verifications)[number]>();
+    for (const v of verifications) {
+      // listSourceVerificationsForProject is ordered by lookup_at, so the
+      // last write per scope key is the latest lookup.
+      const scope = `${v.officialService}|${v.permitId ?? ""}|${v.permitBasisVersionId ?? ""}|${v.lineRequirementId ?? ""}`;
+      latestByScope.set(scope, v);
+    }
+    for (const v of latestByScope.values()) {
+      if (["NO_MATCH_FOUND", "RECORD_UNAVAILABLE", "SOURCE_UNAVAILABLE", "MANUAL_REVIEW_REQUIRED"].includes(v.resultStatus)) {
+        out.push({ seed: {
+          projectId: project.id,
+          sourceType: "OFFICIAL_SOURCE", sourceId: v.id,
+          sourceKey: `dmv-verification-review:${v.id}`,
+          category: "DOCUMENT", severity: "MEDIUM",
+          title: `Government-record verification needs review — ${v.officialService}`,
+          description:
+            `The latest manual lookup (${v.lookupAt}) returned ${v.resultStatus}. ` +
+            "A newer verification run against the official service is needed to clear this.",
+        }});
+      }
+    }
   }
 
   return out;

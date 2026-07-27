@@ -16,6 +16,8 @@ import * as repo from "./repo";
 import * as lrepo from "./lenderRepo";
 import * as brepo from "./bankingRepo";
 import * as drepo from "./disputeRepo";
+import * as dmv from "./dmvRepo";
+import { basisContentHash } from "../services/dmvCompliance";
 import { COMM_MEDIA_DIR } from "../services/whatsappSync/provider";
 import { runVerificationPipeline } from "../services/verification/index";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
@@ -688,6 +690,16 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
   // stay untouched until the formal governance path approves it.
   seedDemoChangeOrder();
 
+  // ---- DMV lender-pilot demo (clearly fictional DC fix-and-flip) ----
+  // Governing Code and Permit Basis versions (including one correction),
+  // a transition-rule determination, line-level required official
+  // inspections (one passed, one scheduled, one correction-required),
+  // manual source verifications, cost-to-complete estimates, and a draw
+  // whose control record shows one eligible line, one blocked line and
+  // one line missing documents. Every name, address, parcel and permit
+  // number is fictional demo data.
+  await seedDmvDemo();
+
   // ---- unified exceptions: deterministic sweep over the seeded state ----
   // Creates the out-of-the-box register (HIGH field issue, missing lien
   // waiver, budget variance) from real conditions — nothing is invented.
@@ -915,6 +927,714 @@ function seedDemoBudget(): void {
 }
 
 /**
+ * DMV lender-pilot demo project — a CLEARLY FICTIONAL District of
+ * Columbia fix-and-flip. Every borrower, contractor, address, parcel,
+ * permit number, and government record identifier is invented demo data
+ * (marked "fictional"/"DEMO"); no real person, property, or government
+ * record is referenced. The scenario exercises the full DMV layer:
+ * versioned Governing Code and Permit Basis (with one correction), a
+ * human-determined transition rule, line-level required official
+ * inspections in three different states, manual source verifications,
+ * cost-to-complete estimates, and a draw whose control record yields one
+ * ELIGIBLE_FOR_LENDER_REVIEW line, one EXCEPTION_OPEN line and one
+ * EVIDENCE_INCOMPLETE line.
+ */
+async function seedDmvDemo(): Promise<void> {
+  const now = "2026-07-12T09:00:00.000Z";
+
+  repo.insertOrganization({
+    id: "org-dmv-borrower",
+    name: "Meridian Row Ventures LLC (Fictional Demo Borrower)",
+    kind: "DEVELOPER",
+  });
+
+  repo.insertProject({
+    id: "proj-dmv",
+    organizationId: "org-cdfc",
+    name: "DEMO — 1427 Verity Place SE Fix-and-Flip (Washington, DC)",
+    description:
+      "Fictional lender-pilot demonstration: gut renovation and resale of a " +
+      "two-story rowhouse at the invented address 1427 Verity Place SE. " +
+      "Structural repairs, full electrical/plumbing/mechanical rough-in and " +
+      "interior finishes under District of Columbia permits. All names, " +
+      "addresses, parcels and permit numbers are fictional demo data.",
+    location: "Washington, DC (fictional demo address)",
+    siteBoundary: [
+      [-76.9912, 38.8668],
+      [-76.9898, 38.8668],
+      [-76.9898, 38.8678],
+      [-76.9912, 38.8678],
+      [-76.9912, 38.8668],
+    ],
+    totalBudget: 495_000,
+    status: "ACTIVE",
+    projectType: "INFRASTRUCTURE",
+  });
+
+  const dmvMilestones: Milestone[] = [
+    {
+      id: "ms-dmv-1", projectId: "proj-dmv", seq: 1,
+      title: "Interior demolition & structural repairs",
+      requirement: "Photo showing completed structural repairs to the first-floor framing with new joists visible.",
+      trancheAmount: 120_000, weight: 25, status: "UNDER_REVIEW", accountStatus: "HELD",
+    },
+    {
+      id: "ms-dmv-2", projectId: "proj-dmv", seq: 2,
+      title: "Electrical, plumbing & mechanical rough-in",
+      requirement: "Photo showing completed rough-in (panel, branch wiring, supply/waste piping) before concealment.",
+      trancheAmount: 190_000, weight: 40, status: "PENDING_EVIDENCE", accountStatus: "HELD",
+    },
+    {
+      id: "ms-dmv-3", projectId: "proj-dmv", seq: 3,
+      title: "Finishes, fixtures & final inspections",
+      requirement: "Photo showing finished interior with fixtures installed and final inspection placards.",
+      trancheAmount: 185_000, weight: 35, status: "NOT_STARTED", accountStatus: "HELD",
+    },
+  ];
+  for (const m of dmvMilestones) repo.insertMilestone(m);
+
+  // ---- jurisdiction profile (project compliance settings — MUTABLE;
+  //      the regression suite proves changing it never rewrites any
+  //      authoritative permit-basis version) ----
+  lrepo.upsertJurisdictionProfile({
+    id: "jp-dmv",
+    projectId: "proj-dmv",
+    templateKey: "DISTRICT_OF_COLUMBIA",
+    state: "DC",
+    countyOrCity: "Washington",
+    jurisdictionName: "District of Columbia",
+    permitAuthority: "DC Department of Buildings",
+    permitSystemName: "DOB Permit & Inspection Records (manual lookup)",
+    officialSystemUrl: "https://example.invalid/dc-dob-demo",
+    timezone: "America/New_York",
+    jurisdictionCode: "DC",
+    notes: "Fictional demo configuration for the DMV lender pilot.",
+    configuredByUserId: "user-compliance",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  // ---- budget lines (whole-currency; reconcile to the $495k budget) ----
+  const dmvBudget: Array<[string, string, string, string, number, number, string | null]> = [
+    ["bl-dmv-1", "01-100", "Demolition & Structural", "Interior demolition and structural repairs", 120_000, 60_000, "ms-dmv-1"],
+    ["bl-dmv-2", "16-100", "Electrical", "Electrical service upgrade and rough-in", 85_000, 0, "ms-dmv-2"],
+    ["bl-dmv-3", "15-100", "Plumbing", "Plumbing rough-in — supply, waste and vents", 90_000, 0, "ms-dmv-2"],
+    ["bl-dmv-4", "09-100", "Finishes", "Interior finishes, fixtures and appliances", 200_000, 0, "ms-dmv-3"],
+  ];
+  dmvBudget.forEach(([id, code, category, description, originalBudget, paidToDate, milestoneId], i) => {
+    repo.insertBudgetLine({
+      id, projectId: "proj-dmv", code, category, description,
+      originalBudget, approvedChanges: 0, committedAmount: null, paidToDate,
+      retainageHeld: null, currency: "USD", sequence: i, active: true,
+      createdAt: now, updatedAt: now, currentBudget: 0,
+    });
+    if (milestoneId) {
+      repo.insertBudgetLineMap({
+        id: `blm-${id}`, budgetLineId: id, milestoneId,
+        evidenceRequirementId: null, createdAt: now,
+      });
+    }
+  });
+
+  // ---- permit register (operational rows; fictional permit numbers) ----
+  const permitBase = {
+    organizationId: "org-cdfc", projectId: "proj-dmv",
+    issuingAuthority: "DC Department of Buildings", jurisdiction: "District of Columbia",
+    effectiveAt: null, closedAt: null,
+    applicableCodeEdition: null, codeEffectiveDate: null, codeBasis: null,
+    codeDeterminedBy: null, codeDeterminedAt: null,
+    officialRecordUrl: null, officialRecordNumber: null, notes: null,
+    legacyReference: null, configurationVersion: 1,
+    createdByUserId: "user-compliance", createdAt: now, updatedAt: now,
+  };
+  repo.insertPermit({
+    ...permitBase, id: "permit-dmv-bldg", permitNumber: "DEMO-B2026-04517",
+    permitType: "BUILDING", status: "ISSUED",
+    issuedAt: "2026-02-10", expiresAt: "2027-02-10",
+    scopeDescription: "Structural repairs and interior alteration (fictional demo permit).",
+  });
+  repo.insertPermit({
+    ...permitBase, id: "permit-dmv-elec", permitNumber: "DEMO-E2026-09112",
+    permitType: "ELECTRICAL", status: "ISSUED",
+    issuedAt: "2026-03-02", expiresAt: "2027-03-02",
+    scopeDescription: "Electrical service upgrade and branch wiring (fictional demo permit).",
+  });
+  repo.insertPermit({
+    ...permitBase, id: "permit-dmv-plumb", permitNumber: "DEMO-P2026-07733",
+    permitType: "PLUMBING", status: "ISSUED",
+    issuedAt: "2026-03-02", expiresAt: "2027-03-02",
+    scopeDescription: "Plumbing rough-in and fixture replacement (fictional demo permit).",
+  });
+  repo.insertPermit({
+    ...permitBase, id: "permit-dmv-mech", permitNumber: "DEMO-M2026-05120",
+    permitType: "MECHANICAL", status: "APPLIED",
+    issuedAt: null, expiresAt: null,
+    scopeDescription: "HVAC replacement (fictional demo permit application).",
+  });
+
+  // ---- official-source provenance (manual portal lookups; fictional) ----
+  const srcBase = {
+    organizationId: "org-cdfc", projectId: "proj-dmv", milestoneId: null,
+    inspectionId: null, officialRecordUrl: null, capturedAt: null,
+    sourceDocumentPath: null, sourceArtifactHash: null, createdAt: now,
+  };
+  repo.insertOfficialSource({
+    ...srcBase, id: "osr-dmv-1", permitId: "permit-dmv-bldg",
+    sourceType: "OFFICIAL_PORTAL_LOOKUP",
+    officialSystemName: "DOB Permit & Inspection Records (demo)",
+    officialRecordNumber: "DEMO-INSP-2026-3301",
+    lookupPerformedAt: "2026-07-08T14:30:00.000Z",
+    lookupPerformedByUserId: "user-compliance",
+    officialStatusText: "PASSED — no violations noted (fictional demo record)",
+    notes: "Manual portal lookup of the structural framing inspection result. Fictional demo record.",
+  });
+  repo.insertOfficialSource({
+    ...srcBase, id: "osr-dmv-2", permitId: "permit-dmv-plumb",
+    sourceType: "OFFICIAL_PORTAL_LOOKUP",
+    officialSystemName: "DOB Permit & Inspection Records (demo)",
+    officialRecordNumber: "DEMO-INSP-2026-3388",
+    lookupPerformedAt: "2026-07-10T10:15:00.000Z",
+    lookupPerformedByUserId: "user-compliance",
+    officialStatusText: "FAILED — corrections required: vent stack clearance (fictional demo record)",
+    notes: "Manual portal lookup of the plumbing rough-in inspection result. Fictional demo record.",
+  });
+
+  // ---- transition rule (human determination — never date-inferred) ----
+  dmv.insertTransitionRule({
+    id: "trr-dmv-1",
+    organizationId: "org-cdfc",
+    projectId: "proj-dmv",
+    jurisdiction: "District of Columbia",
+    priorCodeEdition: "2013 DC Construction Codes (2012 I-Codes with DC amendments)",
+    replacementCodeEdition: "2017 DC Construction Codes (2015 I-Codes with DC amendments)",
+    transitionPeriodStart: "2026-01-01",
+    transitionPeriodEnd: "2026-06-30",
+    applicationDateCutoff: "2026-03-15",
+    permitIssuanceCutoff: null,
+    eligibility: "ELIGIBLE_PRIOR_CODE",
+    governingInterpretation:
+      "Demo determination: the electrical permit application (fictional) was filed before the " +
+      "adoption cutoff, so the reviewer recorded the prior electrical code edition as governing " +
+      "for the permitted rough-in scope. Plain-language demo record — not legal advice.",
+    officialSourceId: null,
+    lookupAt: "2026-07-05",
+    reviewerUserId: "user-compliance",
+    notes: "Fictional transition example for the DMV pilot demo.",
+    determinedAt: "2026-07-05T15:00:00.000Z",
+    createdAt: "2026-07-05T14:00:00.000Z",
+  });
+
+  // ---- Governing Code and Permit Basis versions ----
+  // Building permit: v1 recorded with a parcel-lot typo, then corrected —
+  // v1 keeps its ORIGINAL values forever; v2 records the correction
+  // reason, the correcting user and the prior-version relationship.
+  const basisDefaults = {
+    organizationId: "org-cdfc", projectId: "proj-dmv",
+    propertyAddress: "1427 Verity Place SE, Washington, DC (fictional)",
+    jurisdiction: "District of Columbia",
+    permittingAuthority: "DC Department of Buildings",
+    workCategory: "Fix-and-flip renovation",
+    localAmendments: "DC amendments to the model codes (demo summary)",
+    sourceSystem: "DOB Permit & Inspection Records (manual lookup, demo)",
+    sourceUrl: "https://example.invalid/dc-dob-demo",
+    verificationMethod: "MANUAL_PORTAL_LOOKUP" as const,
+    sourceEvidenceId: null, notes: null,
+  };
+  const bldgV1: import("../../shared/types").PermitBasisVersion = {
+    ...basisDefaults,
+    id: "pbv-dmv-bldg-1", permitId: "permit-dmv-bldg", version: 1,
+    supersedesVersionId: null, status: "SUPERSEDED",
+    parcelIdentifier: "Square 5872 Lot 0041 (fictional)",
+    permitNumber: "DEMO-B2026-04517", permitType: "BUILDING", tradeType: "BUILDING",
+    applicationDate: "2026-01-20", issuanceDate: "2026-02-10", expirationDate: "2027-02-10",
+    permitStatus: "ISSUED",
+    governingCodeEdition: "2017 DC Construction Codes (2015 IBC/IEBC with DC amendments)",
+    transitionRuleId: null, governingBasis: "CURRENT_CODE",
+    applicabilityExplanation:
+      "Permit issued under the current DC construction codes (fictional demo record).",
+    sourceRecordId: "DEMO-B2026-04517",
+    lookupAt: "2026-06-20T16:00:00.000Z", lookupByUserId: "user-compliance",
+    correctionReason: null, correctedByUserId: null,
+    recordHash: "", effectiveFrom: "2026-06-21T09:00:00.000Z",
+    supersededAt: "2026-07-10T11:00:00.000Z",
+    finalizedAt: "2026-06-21T09:00:00.000Z", finalizedByUserId: "user-funder",
+    createdByUserId: "user-compliance", createdAt: "2026-06-20T16:30:00.000Z",
+  };
+  bldgV1.recordHash = basisContentHash(bldgV1);
+  dmv.insertPermitBasis(bldgV1);
+
+  const bldgV2: import("../../shared/types").PermitBasisVersion = {
+    ...bldgV1,
+    id: "pbv-dmv-bldg-2", version: 2,
+    supersedesVersionId: "pbv-dmv-bldg-1", status: "AUTHORITATIVE",
+    parcelIdentifier: "Square 5872 Lot 0042 (fictional)",
+    lookupAt: "2026-07-10T10:00:00.000Z",
+    correctionReason:
+      "Parcel lot number corrected after a repeated manual lookup: recorded 0041, official " +
+      "record shows 0042 (fictional demo correction).",
+    correctedByUserId: "user-compliance",
+    recordHash: "", effectiveFrom: "2026-07-10T11:00:00.000Z", supersededAt: null,
+    finalizedAt: "2026-07-10T11:00:00.000Z", finalizedByUserId: "user-compliance",
+    createdByUserId: "user-compliance", createdAt: "2026-07-10T11:00:00.000Z",
+  };
+  bldgV2.recordHash = basisContentHash(bldgV2);
+  dmv.insertPermitBasis(bldgV2);
+
+  // Electrical permit: prior-code transition basis backed by the
+  // determined transition rule.
+  const elecV1: import("../../shared/types").PermitBasisVersion = {
+    ...basisDefaults,
+    id: "pbv-dmv-elec-1", permitId: "permit-dmv-elec", version: 1,
+    supersedesVersionId: null, status: "AUTHORITATIVE",
+    parcelIdentifier: "Square 5872 Lot 0042 (fictional)",
+    permitNumber: "DEMO-E2026-09112", permitType: "ELECTRICAL", tradeType: "ELECTRICAL",
+    applicationDate: "2026-02-25", issuanceDate: "2026-03-02", expirationDate: "2027-03-02",
+    permitStatus: "ISSUED",
+    governingCodeEdition: "2014 DC Electrical Code (2014 NEC with DC amendments)",
+    transitionRuleId: "trr-dmv-1", governingBasis: "PRIOR_CODE_TRANSITION",
+    applicabilityExplanation:
+      "The application (fictional) predates the adoption cutoff recorded in the transition " +
+      "rule, so the prior electrical code edition governs this rough-in. Confirmed by an " +
+      "authorized reviewer; not inferred from the current date.",
+    sourceRecordId: "DEMO-E2026-09112",
+    lookupAt: "2026-07-05T15:30:00.000Z", lookupByUserId: "user-compliance",
+    correctionReason: null, correctedByUserId: null,
+    recordHash: "", effectiveFrom: "2026-07-05T16:00:00.000Z", supersededAt: null,
+    finalizedAt: "2026-07-05T16:00:00.000Z", finalizedByUserId: "user-funder",
+    createdByUserId: "user-compliance", createdAt: "2026-07-05T15:45:00.000Z",
+  };
+  elecV1.recordHash = basisContentHash(elecV1);
+  dmv.insertPermitBasis(elecV1);
+
+  // Plumbing permit: current-code basis.
+  const plumbV1: import("../../shared/types").PermitBasisVersion = {
+    ...basisDefaults,
+    id: "pbv-dmv-plumb-1", permitId: "permit-dmv-plumb", version: 1,
+    supersedesVersionId: null, status: "AUTHORITATIVE",
+    parcelIdentifier: "Square 5872 Lot 0042 (fictional)",
+    permitNumber: "DEMO-P2026-07733", permitType: "PLUMBING", tradeType: "PLUMBING",
+    applicationDate: "2026-02-25", issuanceDate: "2026-03-02", expirationDate: "2027-03-02",
+    permitStatus: "ISSUED",
+    governingCodeEdition: "2017 DC Plumbing Code (2015 IPC with DC amendments)",
+    transitionRuleId: null, governingBasis: "CURRENT_CODE",
+    applicabilityExplanation: "Permit issued under the current DC plumbing code (fictional demo record).",
+    sourceRecordId: "DEMO-P2026-07733",
+    lookupAt: "2026-07-05T15:35:00.000Z", lookupByUserId: "user-compliance",
+    correctionReason: null, correctedByUserId: null,
+    recordHash: "", effectiveFrom: "2026-07-05T16:05:00.000Z", supersededAt: null,
+    finalizedAt: "2026-07-05T16:05:00.000Z", finalizedByUserId: "user-funder",
+    createdByUserId: "user-compliance", createdAt: "2026-07-05T15:50:00.000Z",
+  };
+  plumbV1.recordHash = basisContentHash(plumbV1);
+  dmv.insertPermitBasis(plumbV1);
+
+  // Mechanical permit: still a DRAFT basis (permit application pending) —
+  // drafts carry no control weight until finalized.
+  const mechV1: import("../../shared/types").PermitBasisVersion = {
+    ...basisDefaults,
+    id: "pbv-dmv-mech-1", permitId: "permit-dmv-mech", version: 1,
+    supersedesVersionId: null, status: "DRAFT",
+    parcelIdentifier: "Square 5872 Lot 0042 (fictional)",
+    permitNumber: "DEMO-M2026-05120", permitType: "MECHANICAL", tradeType: "MECHANICAL",
+    applicationDate: "2026-06-15", issuanceDate: null, expirationDate: null,
+    permitStatus: "APPLIED",
+    governingCodeEdition: null,
+    transitionRuleId: null, governingBasis: "UNRESOLVED",
+    applicabilityExplanation:
+      "Mechanical permit application is pending (fictional); the governing basis stays " +
+      "UNRESOLVED until an authorized reviewer confirms it.",
+    sourceRecordId: null,
+    lookupAt: null, lookupByUserId: null,
+    correctionReason: null, correctedByUserId: null,
+    recordHash: "", effectiveFrom: null, supersededAt: null,
+    finalizedAt: null, finalizedByUserId: null,
+    createdByUserId: "user-pm", createdAt: "2026-07-11T09:00:00.000Z",
+  };
+  mechV1.recordHash = basisContentHash(mechV1);
+  dmv.insertPermitBasis(mechV1);
+
+  // ---- line-level required official inspections ----
+  const reqDefaults = {
+    organizationId: "org-cdfc", projectId: "proj-dmv",
+    jurisdiction: "District of Columbia",
+    inspectionAuthority: "DC Department of Buildings",
+    description: null, prerequisiteRequirementId: null,
+    requiredBeforeConcealment: false, requiredBeforeFinal: false,
+    scheduledDate: null, completedDate: null, officialResultText: null,
+    correctionNotice: null, reinspectionRequired: false, reinspectionResult: null,
+    jurisdictionalInspectionId: null, officialSourceId: null, lookupAt: null,
+    externalIdentifier: null, reviewerUserId: null, notes: null,
+    createdByUserId: "user-compliance",
+  };
+  // PASSED — official structural framing inspection (backed by osr-dmv-1).
+  dmv.insertLineRequirement({
+    ...reqDefaults,
+    id: "lir-dmv-1", budgetLineId: "bl-dmv-1", milestoneId: "ms-dmv-1",
+    inspectionType: "Structural framing inspection",
+    permitId: "permit-dmv-bldg", permitBasisVersionId: "pbv-dmv-bldg-2",
+    sequence: 1, requiredBeforePayment: true,
+    status: "PASSED",
+    completedDate: "2026-07-07",
+    officialResultText: "PASSED — no violations noted (fictional demo record)",
+    officialSourceId: "osr-dmv-1",
+    lookupAt: "2026-07-08T14:30:00.000Z",
+    externalIdentifier: "DEMO-INSP-2026-3301",
+    reviewerUserId: "user-compliance",
+    createdAt: "2026-07-01T09:00:00.000Z", updatedAt: "2026-07-08T14:35:00.000Z",
+  });
+  // SCHEDULED — electrical rough-in (before concealment; result pending).
+  dmv.insertLineRequirement({
+    ...reqDefaults,
+    id: "lir-dmv-2", budgetLineId: "bl-dmv-2", milestoneId: "ms-dmv-2",
+    inspectionType: "Electrical rough-in inspection",
+    permitId: "permit-dmv-elec", permitBasisVersionId: "pbv-dmv-elec-1",
+    sequence: 2, requiredBeforeConcealment: true, requiredBeforePayment: false,
+    status: "SCHEDULED",
+    scheduledDate: "2026-07-18",
+    reviewerUserId: "user-compliance",
+    createdAt: "2026-07-01T09:05:00.000Z", updatedAt: "2026-07-09T10:00:00.000Z",
+  });
+  // CORRECTION_REQUIRED — plumbing rough-in failed with a correction
+  // notice (backed by osr-dmv-2); reinspection pending.
+  dmv.insertLineRequirement({
+    ...reqDefaults,
+    id: "lir-dmv-3", budgetLineId: "bl-dmv-3", milestoneId: "ms-dmv-2",
+    inspectionType: "Plumbing rough-in inspection",
+    permitId: "permit-dmv-plumb", permitBasisVersionId: "pbv-dmv-plumb-1",
+    sequence: 3, requiredBeforeConcealment: true, requiredBeforePayment: true,
+    status: "CORRECTION_REQUIRED",
+    completedDate: "2026-07-09",
+    officialResultText: "FAILED — corrections required: vent stack clearance (fictional demo record)",
+    correctionNotice: "Correct vent stack clearance at the second-floor bathroom before reinspection (demo).",
+    reinspectionRequired: true,
+    officialSourceId: "osr-dmv-2",
+    lookupAt: "2026-07-10T10:15:00.000Z",
+    externalIdentifier: "DEMO-INSP-2026-3388",
+    reviewerUserId: "user-compliance",
+    createdAt: "2026-07-01T09:10:00.000Z", updatedAt: "2026-07-10T10:20:00.000Z",
+  });
+
+  // ---- manual government-record verifications (append-only history) ----
+  const verBase = {
+    organizationId: "org-cdfc", projectId: "proj-dmv",
+    verificationMethod: "MANUAL_PORTAL_LOOKUP" as const,
+    evidenceSourceId: null, lineRequirementId: null, nextReviewDate: null,
+  };
+  // Early lookup mis-keyed the permit number → NO_MATCH_FOUND…
+  dmv.insertSourceVerification({
+    ...verBase,
+    id: "srcver-dmv-0",
+    officialService: "DC DOB Permit Search (manual lookup, demo)",
+    searchCriteria: "Permit DEMO-B2026-04571 — 1427 Verity Place SE (fictional)",
+    sourceRecordIdentifier: null,
+    lookupAt: "2026-06-20T15:30:00.000Z",
+    performedByUserId: "user-compliance",
+    resultStatus: "NO_MATCH_FOUND",
+    resultSummary: "No permit found for the searched number (digits transposed in the search).",
+    confidence: "LOW",
+    notes: "Fictional demo lookup. Search criteria later corrected.",
+    permitId: "permit-dmv-bldg", permitBasisVersionId: null,
+    createdAt: "2026-06-20T15:35:00.000Z",
+  });
+  // …and the corrected re-run verified the record (clears the exception).
+  dmv.insertSourceVerification({
+    ...verBase,
+    id: "srcver-dmv-1",
+    officialService: "DC DOB Permit Search (manual lookup, demo)",
+    searchCriteria: "Permit DEMO-B2026-04517 — 1427 Verity Place SE (fictional)",
+    sourceRecordIdentifier: "DEMO-B2026-04517",
+    lookupAt: "2026-07-10T10:00:00.000Z",
+    performedByUserId: "user-compliance",
+    resultStatus: "VERIFIED_MATCH",
+    resultSummary: "Permit record matches the recorded basis: issued, active, parcel Lot 0042 (fictional).",
+    evidenceSourceId: "osr-dmv-1",
+    confidence: "HIGH",
+    notes: "Fictional demo lookup.",
+    permitId: "permit-dmv-bldg", permitBasisVersionId: null,
+    createdAt: "2026-07-10T10:05:00.000Z",
+  });
+  // Mechanical permit application not yet visible in the portal — the
+  // latest run needs review, which the deterministic sweep surfaces as
+  // the seeded OPEN exception.
+  dmv.insertSourceVerification({
+    ...verBase,
+    id: "srcver-dmv-2",
+    officialService: "DC DOB Permit Search (manual lookup, demo)",
+    searchCriteria: "Permit application DEMO-M2026-05120 (fictional)",
+    sourceRecordIdentifier: null,
+    lookupAt: "2026-07-11T09:30:00.000Z",
+    performedByUserId: "user-compliance",
+    resultStatus: "MANUAL_REVIEW_REQUIRED",
+    resultSummary: "Application not yet visible in the portal; re-check after intake processing (demo).",
+    confidence: "LOW",
+    nextReviewDate: "2026-07-25",
+    notes: "Fictional demo lookup.",
+    permitId: "permit-dmv-mech", permitBasisVersionId: null,
+    createdAt: "2026-07-11T09:35:00.000Z",
+  });
+
+  // ---- historical record of the cleared verification exception ----
+  // When srcver-dmv-0 was the latest lookup the deterministic rule opened
+  // an exception; the corrected re-run cleared the condition and the
+  // sweep auto-resolved it. Seeded exactly as that lifecycle would have
+  // left it — the RESOLVED record and its history stay intact.
+  repo.insertException({
+    id: "exc-dmv-resolved",
+    organizationId: "org-cdfc",
+    projectId: "proj-dmv",
+    milestoneId: null, drawRequestId: null, budgetLineId: null,
+    sourceType: "OFFICIAL_SOURCE",
+    sourceId: "srcver-dmv-0",
+    sourceKey: "dmv-verification-review:srcver-dmv-0",
+    category: "DOCUMENT", severity: "MEDIUM", status: "RESOLVED",
+    title: "Government-record verification needs review — DC DOB Permit Search (manual lookup, demo)",
+    description: "The latest manual lookup (2026-06-20T15:30:00.000Z) returned NO_MATCH_FOUND. A newer verification run against the official service is needed to clear this.",
+    ownerUserId: null, dueAt: null,
+    openedAt: "2026-06-20T16:00:00.000Z",
+    acknowledgedAt: null,
+    resolvedAt: "2026-07-10T10:06:00.000Z",
+    resolutionSummary: "The underlying source condition no longer holds.",
+    resolutionType: "SOURCE_CLEARED",
+    createdBy: "system",
+    createdAt: "2026-06-20T16:00:00.000Z",
+    updatedAt: "2026-07-10T10:06:00.000Z",
+  });
+  repo.insertExceptionEvent({
+    id: "exev-dmv-1", exceptionId: "exc-dmv-resolved", type: "CREATED",
+    detail: "Auto-created: latest manual lookup returned NO_MATCH_FOUND.",
+    actorUserId: null, createdAt: "2026-06-20T16:00:00.000Z",
+  });
+  repo.insertExceptionEvent({
+    id: "exev-dmv-2", exceptionId: "exc-dmv-resolved", type: "RESOLVED",
+    detail: "Auto-resolved: a corrected lookup verified the record (VERIFIED_MATCH).",
+    actorUserId: null, createdAt: "2026-07-10T10:06:00.000Z",
+  });
+
+  // ---- evidence for the draw lines (fictional; ledger-anchored) ----
+  const dmvEvidence: Array<{ id: string; milestoneId: string; photo: string; verdict: "VERIFIED" | "NEEDS_REVIEW"; capturedAt: string; reasoning: string }> = [
+    {
+      id: "ev-dmv-1", milestoneId: "ms-dmv-1", photo: "/demo-evidence/m1-clearing.jpg",
+      verdict: "VERIFIED", capturedAt: "2026-07-06T13:00:00.000Z",
+      reasoning: "Demo verification: structural repair evidence consistent with the milestone requirement.",
+    },
+    {
+      id: "ev-dmv-2", milestoneId: "ms-dmv-2", photo: "/demo-evidence/m2-drainage.jpg",
+      verdict: "NEEDS_REVIEW", capturedAt: "2026-07-09T15:00:00.000Z",
+      reasoning: "Demo verification: rough-in coverage unclear — reviewer confirmation required.",
+    },
+  ];
+  for (const e of dmvEvidence) {
+    const uploadedAt = e.capturedAt.replace("T13", "T14").replace("T15", "T16");
+    const evidence: EvidenceItem = {
+      id: e.id, milestoneId: e.milestoneId, userId: "user-field",
+      photoPath: e.photo, latitude: 38.8673, longitude: -76.9905,
+      capturedAt: e.capturedAt, uploadedAt,
+      deviceMetadata: {
+        userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 7a) Chrome/126 Mobile",
+        platform: "Android", screen: "412x915", language: "en-US",
+      },
+      hash: sha256(JSON.stringify({ photoHash: sha256(`demo-fallback:${e.photo}:${e.id}`), capturedAt: e.capturedAt, uploadedAt })),
+      previousHash: null,
+      isDemoFallback: false,
+    };
+    repo.insertEvidence(evidence);
+    const verification: Verification = {
+      id: `vf-${e.id}`, evidenceItemId: e.id, verdict: e.verdict,
+      confidence: e.verdict === "VERIFIED" ? 0.93 : 0.55,
+      checks: [{ name: "Demo seeded check", passed: e.verdict === "VERIFIED", detail: e.reasoning }],
+      reasoning: e.reasoning, createdAt: uploadedAt, source: "MOCK_DEFAULT",
+    };
+    repo.insertVerification(verification);
+    if (!repo.getLedgerEntryForEvidence(e.id)) {
+      await wormEvidenceStore.appendLedgerEntry({
+        evidenceItemId: e.id, milestoneId: e.milestoneId, verificationId: verification.id,
+        payloadHash: sha256(JSON.stringify({ evidenceHash: evidence.hash, verdict: verification.verdict, confidence: verification.confidence })),
+        timestamp: uploadedAt,
+      });
+    }
+  }
+
+  // ---- Draw #1 (UNDER_REVIEW; a request for review, nothing more) ----
+  repo.insertDrawRequest({
+    id: "draw-dmv-1",
+    organizationId: "org-cdfc",
+    projectId: "proj-dmv",
+    drawNumber: 1,
+    requestedByUserId: "user-pm",
+    requestedByOrganizationId: "org-dmv-borrower",
+    submittedAt: "2026-07-10T09:00:00.000Z",
+    requestedAmount: 105_000,
+    approvedAmount: null,
+    recommendedAmount: null,
+    currency: "USD",
+    periodStart: "2026-06-01",
+    periodEnd: "2026-06-30",
+    retainageRate: null,
+    retainageWithheld: null,
+    status: "UNDER_REVIEW",
+    reviewRecommendation: null,
+    reviewSummary: null,
+    createdAt: "2026-07-09T15:00:00.000Z",
+    updatedAt: "2026-07-11T11:00:00.000Z",
+  });
+  repo.insertDrawRequirement({
+    id: "dreq-dmv-1", drawRequestId: "draw-dmv-1", sort: 0,
+    docType: "PAY_APPLICATION", title: "Pay application / schedule of values",
+    required: true, notes: null,
+  });
+  const dmvLineBase = {
+    drawRequestId: "draw-dmv-1",
+    totalCompletedAndStored: 0, balanceToFinish: 0,
+    varianceAmount: null, variancePercent: null,
+    materialsStored: null,
+  };
+  // Line 1 — ELIGIBLE_FOR_LENDER_REVIEW (never "approved"): passed
+  // official inspection, verified photo, accepted invoice + lien waiver.
+  repo.insertDrawLine({
+    ...dmvLineBase,
+    id: "dline-dmv-1", sort: 0, budgetLineId: "01-100",
+    milestoneId: "ms-dmv-1", description: "Structural repairs & demolition completion",
+    scheduledValue: 120_000, previouslyPaid: 60_000, currentRequested: 30_000,
+    retainageAmount: 3_000,
+    percentCompleteClaimed: 75, percentCompleteVerified: 75,
+    supportedAmount: 30_000, status: "SUPPORTED",
+    reviewNotes: "Supported by the passed official framing inspection and verified field evidence.",
+    reviewedByUserId: "user-compliance", reviewedAt: "2026-07-11T10:30:00.000Z",
+  });
+  // Line 2 — blocked: plumbing correction notice outstanding, claim
+  // exceeds the inspector-observed completion, waiver not accepted.
+  repo.insertDrawLine({
+    ...dmvLineBase,
+    id: "dline-dmv-2", sort: 1, budgetLineId: "15-100",
+    milestoneId: "ms-dmv-2", description: "Plumbing rough-in — supply, waste and vents",
+    scheduledValue: 90_000, previouslyPaid: 0, currentRequested: 40_000,
+    retainageAmount: 4_000,
+    percentCompleteClaimed: 60, percentCompleteVerified: 40,
+    supportedAmount: null, status: "EXCEPTION",
+    reviewNotes: "Official plumbing inspection requires corrections; contractor claim exceeds the inspector-observed completion.",
+    reviewedByUserId: "user-compliance", reviewedAt: "2026-07-11T10:45:00.000Z",
+  });
+  // Line 3 — documentation incomplete: no invoice, no verified photo
+  // link, no lien waiver on file yet.
+  repo.insertDrawLine({
+    ...dmvLineBase,
+    id: "dline-dmv-3", sort: 2, budgetLineId: "16-100",
+    milestoneId: "ms-dmv-2", description: "Electrical rough-in progress",
+    scheduledValue: 85_000, previouslyPaid: 0, currentRequested: 35_000,
+    retainageAmount: 3_500,
+    percentCompleteClaimed: 45, percentCompleteVerified: null,
+    supportedAmount: null, status: "PENDING",
+    reviewNotes: null, reviewedByUserId: null, reviewedAt: null,
+  });
+
+  repo.insertDrawDocument({
+    id: "ddoc-dmv-1", drawRequestId: "draw-dmv-1", requirementId: null,
+    lineItemId: "dline-dmv-1", docType: "CONTRACTOR_INVOICE",
+    title: "Capitol Stone Builders invoice CSB-2026-011 (fictional)",
+    filePath: null, note: null, status: "ACCEPTED", expiresAt: null,
+    uploadedByUserId: "user-pm", receivedAt: "2026-07-10T09:05:00.000Z",
+    reviewedByUserId: "user-compliance", reviewedAt: "2026-07-11T10:10:00.000Z",
+    reviewNote: "Amount agrees with the schedule of values.",
+    vendor: "Capitol Stone Builders LLC (fictional)",
+    invoiceNumber: "CSB-2026-011", amount: 30_000,
+  });
+  repo.insertDrawDocument({
+    id: "ddoc-dmv-2", drawRequestId: "draw-dmv-1", requirementId: "dreq-dmv-1",
+    lineItemId: null, docType: "PAY_APPLICATION",
+    title: "Pay Application #1 (June 2026, fictional)",
+    filePath: null, note: null, status: "RECEIVED", expiresAt: null,
+    uploadedByUserId: "user-pm", receivedAt: "2026-07-10T09:06:00.000Z",
+    reviewedByUserId: null, reviewedAt: null, reviewNote: null,
+  });
+  repo.insertDrawDocument({
+    id: "ddoc-dmv-3", drawRequestId: "draw-dmv-1", requirementId: null,
+    lineItemId: "dline-dmv-2", docType: "CONTRACTOR_INVOICE",
+    title: "Capitol Stone Builders invoice CSB-2026-012 (fictional)",
+    filePath: null, note: null, status: "RECEIVED", expiresAt: null,
+    uploadedByUserId: "user-pm", receivedAt: "2026-07-10T09:07:00.000Z",
+    reviewedByUserId: null, reviewedAt: null, reviewNote: null,
+    vendor: "Capitol Stone Builders LLC (fictional)",
+    invoiceNumber: "CSB-2026-012", amount: 40_000,
+  });
+
+  repo.insertDrawEvidenceLink({
+    id: "dlink-dmv-1", drawRequestId: "draw-dmv-1", lineItemId: "dline-dmv-1",
+    evidenceItemId: "ev-dmv-1",
+    note: "Verified structural repair evidence supports the completion claim.",
+    linkedByUserId: "user-pm", createdAt: "2026-07-10T09:10:00.000Z",
+  });
+  repo.insertDrawEvidenceLink({
+    id: "dlink-dmv-2", drawRequestId: "draw-dmv-1", lineItemId: "dline-dmv-2",
+    evidenceItemId: "ev-dmv-2",
+    note: "Rough-in photo pending reviewer confirmation.",
+    linkedByUserId: "user-pm", createdAt: "2026-07-10T09:11:00.000Z",
+  });
+
+  // Lien waivers: accepted for the eligible line, received (not accepted)
+  // for the blocked line, none yet for the documentation-incomplete line.
+  const lwBase = {
+    organizationId: "org-cdfc", projectId: "proj-dmv", drawRequestId: "draw-dmv-1",
+    drawDocumentId: null, contractorOrSupplierOrganizationId: null,
+    waiverType: "CONDITIONAL", waiverScope: "PARTIAL",
+    coveredThrough: "2026-06-30", requestedAt: "2026-07-10T09:00:00.000Z",
+    rejectedAt: null, rejectionReason: null, documentHash: null,
+  };
+  lrepo.insertLienWaiver({
+    ...lwBase,
+    id: "lw-dmv-1", drawLineItemId: "dline-dmv-1",
+    signingParty: "Capitol Stone Builders LLC (fictional)",
+    relatedAmount: 30_000,
+    receivedAt: "2026-07-10T12:00:00.000Z", reviewedAt: "2026-07-11T10:15:00.000Z",
+    acceptedAt: "2026-07-11T10:15:00.000Z", signatureDate: "2026-07-09",
+    status: "ACCEPTED", reviewedByUserId: "user-compliance",
+    createdAt: "2026-07-10T12:00:00.000Z", updatedAt: "2026-07-11T10:15:00.000Z",
+  });
+  lrepo.insertLienWaiver({
+    ...lwBase,
+    id: "lw-dmv-2", drawLineItemId: "dline-dmv-2",
+    signingParty: "Capitol Stone Builders LLC (fictional)",
+    relatedAmount: 40_000,
+    receivedAt: "2026-07-10T12:05:00.000Z", reviewedAt: null,
+    acceptedAt: null, signatureDate: "2026-07-09",
+    status: "RECEIVED", reviewedByUserId: null,
+    createdAt: "2026-07-10T12:05:00.000Z", updatedAt: "2026-07-10T12:05:00.000Z",
+  });
+
+  const dmvDrawEvents: Array<[string, string, string, string | null, string]> = [
+    ["dev-dmv-1", "CREATED", "Draft draw #1 created for the fictional Verity Place project — $105,000.", "user-pm", "2026-07-09T15:00:00.000Z"],
+    ["dev-dmv-2", "SUBMITTED", "Draw #1 submitted — $105,000 requested. Submission authorizes nothing.", "user-pm", "2026-07-10T09:00:00.000Z"],
+    ["dev-dmv-3", "LINE_REVIEWED", "Line \"Structural repairs & demolition completion\" marked SUPPORTED — passed official framing inspection on record.", "user-compliance", "2026-07-11T10:30:00.000Z"],
+    ["dev-dmv-4", "LINE_REVIEWED", "Line \"Plumbing rough-in\" marked EXCEPTION — official inspection requires corrections.", "user-compliance", "2026-07-11T10:45:00.000Z"],
+  ];
+  for (const [id, type, detail, actor, createdAt] of dmvDrawEvents) {
+    repo.insertDrawEvent({ id, drawRequestId: "draw-dmv-1", type: type as never, detail, actorUserId: actor, createdAt });
+  }
+  // ---- cost-to-complete estimates (append-only; analytical only) ----
+  dmv.insertEstimate({
+    id: "ctc-dmv-1", organizationId: "org-cdfc", projectId: "proj-dmv",
+    budgetLineId: "bl-dmv-1", drawRequestId: "draw-dmv-1",
+    verifiedCompletedValue: 90_000, remainingCommittedCost: 30_000,
+    estimatedCostToComplete: 30_000,
+    sourceOfEstimate: "Inspector walkthrough + remaining subcontract value (demo)",
+    estimatorUserId: "user-compliance", estimateDate: "2026-07-11",
+    confidence: "HIGH", notes: "Fictional demo estimate.",
+    createdAt: "2026-07-11T10:00:00.000Z",
+  });
+  dmv.insertEstimate({
+    id: "ctc-dmv-2", organizationId: "org-cdfc", projectId: "proj-dmv",
+    budgetLineId: "bl-dmv-4", drawRequestId: null,
+    verifiedCompletedValue: 0, remainingCommittedCost: 200_000,
+    estimatedCostToComplete: 200_000,
+    sourceOfEstimate: "Contract value — finishes not started (demo)",
+    estimatorUserId: "user-compliance", estimateDate: "2026-07-11",
+    confidence: "MEDIUM", notes: "Fictional demo estimate.",
+    createdAt: "2026-07-11T10:05:00.000Z",
+  });
+
+
+}
+
+/**
  * Remove demo-scoped rows only (projects/orgs/users/threads/records of
  * the seeded R47 demo). Ledger entries and WORM objects are append-only
  * and are intentionally NOT touched. Pilot data is never matched here —
@@ -1118,6 +1838,77 @@ function purgeDemoScopedRows(): void {
   db.prepare("DELETE FROM reports WHERE project_id = ?").run(DEMO_PROJECT);
   db.prepare("DELETE FROM milestones WHERE project_id = ?").run(DEMO_PROJECT);
   db.prepare("DELETE FROM projects WHERE id = ?").run(DEMO_PROJECT);
+
+  // ---- DMV lender-pilot demo project (proj-dmv; all fixed ids) ----
+  // Same doctrine: demo-scoped rows only; ledger entries stay untouched.
+  const DMV_PROJECT = "proj-dmv";
+  const dmvMsIds = db
+    .prepare("SELECT id FROM milestones WHERE project_id = ?")
+    .all(DMV_PROJECT)
+    .map((r) => (r as { id: string }).id);
+  const dmvDrawIds = db
+    .prepare("SELECT id FROM draw_requests WHERE project_id = ?")
+    .all(DMV_PROJECT)
+    .map((r) => (r as { id: string }).id);
+  if (dmvDrawIds.length) {
+    const dph = inList(dmvDrawIds);
+    db.prepare(`DELETE FROM draw_permit_basis_pins WHERE draw_request_id IN (${dph})`).run(...dmvDrawIds);
+    db.prepare(
+      `DELETE FROM approval_records WHERE approval_request_id IN
+         (SELECT id FROM approval_requests WHERE draw_request_id IN (${dph}))`
+    ).run(...dmvDrawIds);
+    db.prepare(`DELETE FROM approval_requests WHERE draw_request_id IN (${dph})`).run(...dmvDrawIds);
+    db.prepare(`DELETE FROM draw_account_events WHERE draw_request_id IN (${dph})`).run(...dmvDrawIds);
+    db.prepare(`DELETE FROM draw_events WHERE draw_request_id IN (${dph})`).run(...dmvDrawIds);
+    db.prepare(`DELETE FROM draw_evidence_links WHERE draw_request_id IN (${dph})`).run(...dmvDrawIds);
+    db.prepare(`DELETE FROM draw_documents WHERE draw_request_id IN (${dph})`).run(...dmvDrawIds);
+    db.prepare(`DELETE FROM draw_document_requirements WHERE draw_request_id IN (${dph})`).run(...dmvDrawIds);
+    db.prepare(`DELETE FROM draw_line_items WHERE draw_request_id IN (${dph})`).run(...dmvDrawIds);
+    db.prepare(
+      `DELETE FROM lender_condition_events WHERE condition_id IN
+         (SELECT id FROM lender_decision_conditions WHERE lender_decision_id IN
+            (SELECT id FROM lender_draw_decisions WHERE draw_request_id IN (${dph})))`
+    ).run(...dmvDrawIds);
+    db.prepare(
+      `DELETE FROM lender_decision_conditions WHERE lender_decision_id IN
+         (SELECT id FROM lender_draw_decisions WHERE draw_request_id IN (${dph}))`
+    ).run(...dmvDrawIds);
+    db.prepare(`DELETE FROM lender_draw_decisions WHERE draw_request_id IN (${dph})`).run(...dmvDrawIds);
+    db.prepare(`DELETE FROM draw_requests WHERE id IN (${dph})`).run(...dmvDrawIds);
+  }
+  for (const table of [
+    "source_verifications", "cost_to_complete_estimates", "line_inspection_requirements",
+    "permit_basis_versions", "transition_rule_records", "lien_waiver_records",
+    "official_source_records", "jurisdictional_inspections", "inspection_requirements",
+    "jurisdiction_profiles", "field_issues", "evidence_drafts", "spatial_features",
+    "reports", "notifications",
+  ]) {
+    db.prepare(`DELETE FROM ${table} WHERE project_id = ?`).run(DMV_PROJECT);
+  }
+  db.prepare(
+    `DELETE FROM permit_milestone_links WHERE permit_id IN (SELECT id FROM permits WHERE project_id = ?)`
+  ).run(DMV_PROJECT);
+  db.prepare("DELETE FROM permits WHERE project_id = ?").run(DMV_PROJECT);
+  db.prepare(
+    `DELETE FROM exception_events WHERE exception_id IN (SELECT id FROM exceptions WHERE project_id = ?)`
+  ).run(DMV_PROJECT);
+  db.prepare("DELETE FROM exceptions WHERE project_id = ?").run(DMV_PROJECT);
+  db.prepare(
+    `DELETE FROM budget_line_maps WHERE budget_line_id IN (SELECT id FROM budget_lines WHERE project_id = ?)`
+  ).run(DMV_PROJECT);
+  db.prepare("DELETE FROM budget_lines WHERE project_id = ?").run(DMV_PROJECT);
+  if (dmvMsIds.length) {
+    const mph = inList(dmvMsIds);
+    db.prepare(
+      `DELETE FROM verifications WHERE evidence_item_id IN
+         (SELECT id FROM evidence_items WHERE milestone_id IN (${mph}))`
+    ).run(...dmvMsIds);
+    db.prepare(`DELETE FROM evidence_items WHERE milestone_id IN (${mph})`).run(...dmvMsIds);
+    db.prepare(`DELETE FROM verified_quantities WHERE milestone_id IN (${mph})`).run(...dmvMsIds);
+  }
+  db.prepare("DELETE FROM milestones WHERE project_id = ?").run(DMV_PROJECT);
+  db.prepare("DELETE FROM projects WHERE id = ?").run(DMV_PROJECT);
+  db.prepare("DELETE FROM organizations WHERE id = 'org-dmv-borrower'").run();
   db.prepare(`DELETE FROM users WHERE id IN (${inList(DEMO_USERS)})`).run(...DEMO_USERS);
   db.prepare(`DELETE FROM organizations WHERE id IN (${inList(DEMO_ORGS)})`).run(...DEMO_ORGS);
   db.exec("PRAGMA foreign_keys = ON;");
