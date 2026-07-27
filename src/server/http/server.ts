@@ -1295,8 +1295,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sendJson(res, { error: "Select a demo user first" }, 401);
       return;
     }
+    // Flagship-first ordering: the global map focuses the first entry, so
+    // the largest project leads — deterministic even with the added DMV
+    // demo project (project-scoped map pages are unaffected).
     const projects = await Promise.all(
-      repo.listProjects().filter((p) => p.status !== "DRAFT").map(async (project) => {
+      repo.listProjects()
+        .filter((p) => p.status !== "DRAFT")
+        .sort((a, b) => b.totalBudget - a.totalBudget)
+        .map(async (project) => {
         const features = repo.listSpatialFeatures(project.id);
         const summary = await virtualAccountService.getProjectSummary(project.id);
         const chain = await wormEvidenceStore.verifyChain();
