@@ -53,7 +53,9 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
     Boolean(opts.preservePilot) &&
     (() => {
       try {
-        return repo.listProjects().some((p) => p.id !== "proj-r47");
+        // Fixed-id DEMO projects (R47 hero loop + DMV pilot) never trigger
+        // pilot preservation — only genuine user-created projects do.
+        return repo.listProjects().some((p) => p.id !== "proj-r47" && p.id !== "proj-dmv");
       } catch {
         return false; // fresh/empty database — full path
       }

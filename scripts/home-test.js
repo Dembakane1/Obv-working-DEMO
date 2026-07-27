@@ -174,12 +174,13 @@ const assert = (c, m) => (c ? pass(m) : fail(m));
     );
 
     // ---- 12. no backend mutation from the public pages ----
-    // Five seeded roles since the VAM demo added the second lender
-    // officer (dual control needs a distinct approver).
+    // Seven seeded roles: the original four, the second lender officer
+    // (VAM dual control), and the DMV pilot's fictional borrower-side
+    // project manager and assigned site technician.
     assert(
       !homeHtml.match(/method="POST"/i) &&
-        (demoHtml.match(/action="\/api\/session"/g) ?? []).length === 5,
-      "homepage has no mutating forms; /demo keeps exactly the five seeded session forms"
+        (demoHtml.match(/action="\/api\/session"/g) ?? []).length === 7,
+      "homepage has no mutating forms; /demo keeps exactly the seven seeded session forms"
     );
 
     // ---- 13. mobile rendering (Playwright when available) ----
