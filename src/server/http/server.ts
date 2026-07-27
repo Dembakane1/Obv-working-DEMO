@@ -4176,7 +4176,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   function homeSnapshot(): HomeSnapshot | null {
     try {
-      const project = repo.listProjects().find((p) => p.status === "ACTIVE");
+      // Flagship hero frame: the largest ACTIVE project — deterministic
+      // even when additional demo projects (e.g. the DMV pilot) exist.
+      const project = repo
+        .listProjects()
+        .filter((p) => p.status === "ACTIVE")
+        .sort((a, b) => b.totalBudget - a.totalBudget)[0];
       if (!project) return null;
       const fin = budget.assessFinancialProgress(project.id);
       const phys = budget.assessPhysicalProgress(project.id);
