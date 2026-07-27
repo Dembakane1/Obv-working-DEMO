@@ -957,6 +957,17 @@ async function seedDmvDemo(): Promise<void> {
     role: "PROJECT_MANAGER",
     title: "Renovation Project Manager",
   });
+  // Fictional site tech with an ACTIVE field assignment to this project.
+  // The assignment scopes DMV field capture to this user AND keeps the
+  // DMV project out of the legacy unassigned field context — the original
+  // R47 hero-loop field surface is unchanged.
+  repo.insertUser({
+    id: "user-dmv-field",
+    organizationId: "org-dmv-borrower",
+    name: "Casey Reyes (Fictional)",
+    role: "FIELD",
+    title: "Site Technician",
+  });
 
   repo.insertProject({
     id: "proj-dmv",
@@ -1002,6 +1013,18 @@ async function seedDmvDemo(): Promise<void> {
     },
   ];
   for (const m of dmvMilestones) repo.insertMilestone(m);
+
+  repo.insertAssignment({
+    id: "fa-dmv-1",
+    projectId: "proj-dmv",
+    userId: "user-dmv-field",
+    milestoneIds: [],
+    effectiveFrom: null,
+    effectiveTo: null,
+    active: true,
+    createdBy: "user-funder",
+    createdAt: "2026-07-01T09:00:00.000Z",
+  });
 
   // ---- jurisdiction profile (project compliance settings — MUTABLE;
   //      the regression suite proves changing it never rewrites any
@@ -1891,7 +1914,7 @@ function purgeDemoScopedRows(): void {
     "permit_basis_versions", "transition_rule_records", "lien_waiver_records",
     "official_source_records", "jurisdictional_inspections", "inspection_requirements",
     "jurisdiction_profiles", "field_issues", "evidence_drafts", "spatial_features",
-    "reports", "notifications",
+    "field_assignments", "reports", "notifications",
   ]) {
     db.prepare(`DELETE FROM ${table} WHERE project_id = ?`).run(DMV_PROJECT);
   }
@@ -1918,7 +1941,7 @@ function purgeDemoScopedRows(): void {
   }
   db.prepare("DELETE FROM milestones WHERE project_id = ?").run(DMV_PROJECT);
   db.prepare("DELETE FROM projects WHERE id = ?").run(DMV_PROJECT);
-  db.prepare("DELETE FROM users WHERE id = 'user-dmv-pm'").run();
+  db.prepare("DELETE FROM users WHERE id IN ('user-dmv-pm', 'user-dmv-field')").run();
   db.prepare("DELETE FROM organizations WHERE id = 'org-dmv-borrower'").run();
   db.prepare(`DELETE FROM users WHERE id IN (${inList(DEMO_USERS)})`).run(...DEMO_USERS);
   db.prepare(`DELETE FROM organizations WHERE id IN (${inList(DEMO_ORGS)})`).run(...DEMO_ORGS);

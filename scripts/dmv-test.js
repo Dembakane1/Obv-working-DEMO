@@ -459,8 +459,8 @@ async function main() {
       { toStatus: "PASSED", officialResultText: "PASSED (demo)", lookupAt: "2026-07-19T10:00:00.000Z" });
     assert(pmOfficial.status === 403,
       "a PROJECT_MANAGER cannot record official inspection results (determination roles only, 403)");
-    // In-tenant FIELD user: tenancy passes, role authority must still fail.
-    exec("INSERT INTO users (id, organization_id, name, role, title) VALUES ('user-dmv-field', 'org-dmv-borrower', 'Field Demo (Fictional)', 'FIELD', 'Site Tech')");
+    // In-tenant FIELD user (seeded, field-assigned): tenancy passes,
+    // role authority must still fail.
     await signIn("dmvField", "user-dmv-field");
     const fieldAny = await api("dmvField", "POST", "/api/line-requirements/lir-dmv-2/status",
       { toStatus: "SCHEDULED" });
