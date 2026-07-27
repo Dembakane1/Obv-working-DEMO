@@ -70,6 +70,7 @@ const STANDALONE = [
   "lender-ui-test.js",
   "vam-test.js",
   "dispute-test.js",
+  "dmv-test.js",
 ];
 
 /** Suites that target one shared, freshly seeded application server. */

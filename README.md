@@ -128,6 +128,31 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## DMV Draw Control Record + Governing Code and Permit Basis (v21)
+
+**A project's current compliance settings never silently rewrite the permit,
+code, inspection, or jurisdictional basis that applied when the work was
+permitted or reviewed.** The DMV lender-pilot layer adds: immutable,
+versioned Governing Code and Permit Basis records (corrections insert new
+versions with reason + attribution; the only writes are two guarded
+lifecycle transitions), human-determined code-transition rules (never
+date-inferred), line-level required official inspections with a 12-status
+guarded machine (official results demand a determination role plus official
+backing — an OBV field finding never impersonates a government inspection),
+append-only manual government-record verifications (documented lookups, no
+live integration, no credentials, no scraping), append-only whole-currency
+cost-to-complete estimates, draw permit-basis pins (first pin wins — a draw
+keeps citing the version that applied at review), and a per-line DMV Draw
+Control Record whose transparent evaluator emits explicit reason codes with
+a documented precedence ending at **"Eligible for lender review — not
+automatically approved."** Eligibility never creates a lender decision,
+approval, payment instruction, provider event, or banking change. Draw and
+audit packages gain a visible "Governing Code and Permit Basis" section and
+as-of-honest DMV registers (`13_dmv_compliance/`); a clearly fictional DC
+fix-and-flip demo (`proj-dmv`) seeds the full lifecycle. 117-checkpoint
+suite (`scripts/dmv-test.js`) ends with the byte-for-byte banking
+non-mutation regression — see `docs/DMV_DRAW_CONTROL.md`.
+
 ## Dispute & Release Hold Management (v20)
 
 Construction payment disputes as governed workflow records: a dispute
