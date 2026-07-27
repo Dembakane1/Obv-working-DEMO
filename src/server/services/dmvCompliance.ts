@@ -18,7 +18,7 @@
  *    result are separate records; neither substitutes for the other.
  *  - Line eligibility means "eligible for LENDER REVIEW". It is never a
  *    lender approval, a payment authorization, or a release. Nothing in
- *    this module reaches the VirtualAccountService or any banking table.
+ *    this module reaches the virtual-account release path or any banking table.
  */
 import * as repo from "../db/repo";
 import * as dmv from "../db/dmvRepo";
@@ -1404,13 +1404,14 @@ function buildControlLine(ctx: BuildLineCtx): DrawControlLine {
 
   const budgetLine = resolveBudgetLine(ctx.budgetLines, line.budgetLineId);
 
-  // Requirements scoped to this line: by budget line (id or raw ref) or by
-  // the line's anchored milestone.
-  const lineReqs = ctx.requirements.filter(
-    (r) =>
-      (r.budgetLineId &&
-        (r.budgetLineId === budgetLine?.id || r.budgetLineId === line.budgetLineId)) ||
-      (r.milestoneId && line.milestoneId && r.milestoneId === line.milestoneId)
+  // Requirements scoped to this line. A budget-line-scoped requirement
+  // binds ONLY its budget line (it never leaks to sibling lines on the
+  // same milestone); milestone matching applies only to requirements
+  // recorded without a budget line.
+  const lineReqs = ctx.requirements.filter((r) =>
+    r.budgetLineId
+      ? r.budgetLineId === budgetLine?.id || r.budgetLineId === line.budgetLineId
+      : Boolean(r.milestoneId && line.milestoneId && r.milestoneId === line.milestoneId)
   );
 
   // Governing bases relevant to this line: pinned basis versions for the

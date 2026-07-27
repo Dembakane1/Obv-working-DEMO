@@ -947,6 +947,16 @@ async function seedDmvDemo(): Promise<void> {
     name: "Meridian Row Ventures LLC (Fictional Demo Borrower)",
     kind: "DEVELOPER",
   });
+  // Borrower-side project manager (fictional). Holds RECORDING authority
+  // through the borrower organization's draw relationship — never the
+  // lender-side determination authority.
+  repo.insertUser({
+    id: "user-dmv-pm",
+    organizationId: "org-dmv-borrower",
+    name: "Jordan Avery (Fictional)",
+    role: "PROJECT_MANAGER",
+    title: "Renovation Project Manager",
+  });
 
   repo.insertProject({
     id: "proj-dmv",
@@ -1248,7 +1258,7 @@ async function seedDmvDemo(): Promise<void> {
     correctionReason: null, correctedByUserId: null,
     recordHash: "", effectiveFrom: null, supersededAt: null,
     finalizedAt: null, finalizedByUserId: null,
-    createdByUserId: "user-pm", createdAt: "2026-07-11T09:00:00.000Z",
+    createdByUserId: "user-dmv-pm", createdAt: "2026-07-11T09:00:00.000Z",
   };
   mechV1.recordHash = basisContentHash(mechV1);
   dmv.insertPermitBasis(mechV1);
@@ -1460,7 +1470,7 @@ async function seedDmvDemo(): Promise<void> {
     organizationId: "org-cdfc",
     projectId: "proj-dmv",
     drawNumber: 1,
-    requestedByUserId: "user-pm",
+    requestedByUserId: "user-dmv-pm",
     requestedByOrganizationId: "org-dmv-borrower",
     submittedAt: "2026-07-10T09:00:00.000Z",
     requestedAmount: 105_000,
@@ -1532,7 +1542,7 @@ async function seedDmvDemo(): Promise<void> {
     lineItemId: "dline-dmv-1", docType: "CONTRACTOR_INVOICE",
     title: "Capitol Stone Builders invoice CSB-2026-011 (fictional)",
     filePath: null, note: null, status: "ACCEPTED", expiresAt: null,
-    uploadedByUserId: "user-pm", receivedAt: "2026-07-10T09:05:00.000Z",
+    uploadedByUserId: "user-dmv-pm", receivedAt: "2026-07-10T09:05:00.000Z",
     reviewedByUserId: "user-compliance", reviewedAt: "2026-07-11T10:10:00.000Z",
     reviewNote: "Amount agrees with the schedule of values.",
     vendor: "Capitol Stone Builders LLC (fictional)",
@@ -1543,7 +1553,7 @@ async function seedDmvDemo(): Promise<void> {
     lineItemId: null, docType: "PAY_APPLICATION",
     title: "Pay Application #1 (June 2026, fictional)",
     filePath: null, note: null, status: "RECEIVED", expiresAt: null,
-    uploadedByUserId: "user-pm", receivedAt: "2026-07-10T09:06:00.000Z",
+    uploadedByUserId: "user-dmv-pm", receivedAt: "2026-07-10T09:06:00.000Z",
     reviewedByUserId: null, reviewedAt: null, reviewNote: null,
   });
   repo.insertDrawDocument({
@@ -1551,7 +1561,7 @@ async function seedDmvDemo(): Promise<void> {
     lineItemId: "dline-dmv-2", docType: "CONTRACTOR_INVOICE",
     title: "Capitol Stone Builders invoice CSB-2026-012 (fictional)",
     filePath: null, note: null, status: "RECEIVED", expiresAt: null,
-    uploadedByUserId: "user-pm", receivedAt: "2026-07-10T09:07:00.000Z",
+    uploadedByUserId: "user-dmv-pm", receivedAt: "2026-07-10T09:07:00.000Z",
     reviewedByUserId: null, reviewedAt: null, reviewNote: null,
     vendor: "Capitol Stone Builders LLC (fictional)",
     invoiceNumber: "CSB-2026-012", amount: 40_000,
@@ -1561,13 +1571,13 @@ async function seedDmvDemo(): Promise<void> {
     id: "dlink-dmv-1", drawRequestId: "draw-dmv-1", lineItemId: "dline-dmv-1",
     evidenceItemId: "ev-dmv-1",
     note: "Verified structural repair evidence supports the completion claim.",
-    linkedByUserId: "user-pm", createdAt: "2026-07-10T09:10:00.000Z",
+    linkedByUserId: "user-dmv-pm", createdAt: "2026-07-10T09:10:00.000Z",
   });
   repo.insertDrawEvidenceLink({
     id: "dlink-dmv-2", drawRequestId: "draw-dmv-1", lineItemId: "dline-dmv-2",
     evidenceItemId: "ev-dmv-2",
     note: "Rough-in photo pending reviewer confirmation.",
-    linkedByUserId: "user-pm", createdAt: "2026-07-10T09:11:00.000Z",
+    linkedByUserId: "user-dmv-pm", createdAt: "2026-07-10T09:11:00.000Z",
   });
 
   // Lien waivers: accepted for the eligible line, received (not accepted)
@@ -1601,8 +1611,8 @@ async function seedDmvDemo(): Promise<void> {
   });
 
   const dmvDrawEvents: Array<[string, string, string, string | null, string]> = [
-    ["dev-dmv-1", "CREATED", "Draft draw #1 created for the fictional Verity Place project — $105,000.", "user-pm", "2026-07-09T15:00:00.000Z"],
-    ["dev-dmv-2", "SUBMITTED", "Draw #1 submitted — $105,000 requested. Submission authorizes nothing.", "user-pm", "2026-07-10T09:00:00.000Z"],
+    ["dev-dmv-1", "CREATED", "Draft draw #1 created for the fictional Verity Place project — $105,000.", "user-dmv-pm", "2026-07-09T15:00:00.000Z"],
+    ["dev-dmv-2", "SUBMITTED", "Draw #1 submitted — $105,000 requested. Submission authorizes nothing.", "user-dmv-pm", "2026-07-10T09:00:00.000Z"],
     ["dev-dmv-3", "LINE_REVIEWED", "Line \"Structural repairs & demolition completion\" marked SUPPORTED — passed official framing inspection on record.", "user-compliance", "2026-07-11T10:30:00.000Z"],
     ["dev-dmv-4", "LINE_REVIEWED", "Line \"Plumbing rough-in\" marked EXCEPTION — official inspection requires corrections.", "user-compliance", "2026-07-11T10:45:00.000Z"],
   ];
@@ -1908,6 +1918,7 @@ function purgeDemoScopedRows(): void {
   }
   db.prepare("DELETE FROM milestones WHERE project_id = ?").run(DMV_PROJECT);
   db.prepare("DELETE FROM projects WHERE id = ?").run(DMV_PROJECT);
+  db.prepare("DELETE FROM users WHERE id = 'user-dmv-pm'").run();
   db.prepare("DELETE FROM organizations WHERE id = 'org-dmv-borrower'").run();
   db.prepare(`DELETE FROM users WHERE id IN (${inList(DEMO_USERS)})`).run(...DEMO_USERS);
   db.prepare(`DELETE FROM organizations WHERE id IN (${inList(DEMO_ORGS)})`).run(...DEMO_ORGS);
