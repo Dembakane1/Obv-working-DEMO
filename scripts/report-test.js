@@ -76,7 +76,9 @@ async function main() {
   }
   pass(`amounts match dashboard/database (${fmt(released)} released, ${fmt(held)} held)`);
 
-  for (const m of d1.prepare("SELECT title, account_status FROM milestones").all()) {
+  // Scoped to the reported project — the seeded DMV pilot project carries
+  // its own milestones which belong to its own report.
+  for (const m of d1.prepare("SELECT title, account_status FROM milestones WHERE project_id = 'proj-r47'").all()) {
     if (!html.includes(m.title.replace(/&/g, "&amp;"))) fail(`missing milestone ${m.title}`);
   }
   if ((html.match(/>RELEASED</g) ?? []).length < 2) fail("released states not shown");
