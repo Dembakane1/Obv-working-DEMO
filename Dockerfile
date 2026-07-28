@@ -13,10 +13,11 @@
 # ---------- stage 1: compile TypeScript + generate PWA icons ----------
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
-COPY package.json ./
-# Installs only devDependencies (typescript, @types/node) — the app has
-# no runtime npm dependencies.
-RUN npm install
+COPY package.json package-lock.json .npmrc ./
+# Lockfile-exact install of the build toolchain (typescript, @types/node,
+# playwright) — the same versions CI and developers use. The application
+# itself has no runtime npm dependencies.
+RUN set -eux && npm ci
 COPY tsconfig.server.json tsconfig.client.json ./
 COPY scripts ./scripts
 COPY src ./src
@@ -33,17 +34,23 @@ ENV NODE_ENV=production \
     PORT=10000
 WORKDIR /app
 
-# Playwright is a renderer tool of the image, not an app dependency:
-# installed --no-save so package.json stays dependency-free.
-# --with-deps pulls in Chromium's required system libraries via apt.
-COPY package.json ./
-RUN npm install --no-save playwright@1.56.1 \
+# Playwright is the image's PDF renderer. It comes from the SAME committed
+# lockfile as everywhere else, so the image, CI and developers all run one
+# Playwright build. It is a devDependency, so this stage installs with the
+# dev tree intact and must NOT be pruned — pruning would delete the very
+# renderer this stage exists for. --with-deps pulls in Chromium's required
+# system libraries via apt. Every command must fail the build if it fails:
+# no `|| true` anywhere in this chain.
+COPY package.json package-lock.json .npmrc ./
+RUN set -eux \
+ && npm ci \
  && npx playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/* /root/.npm
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/public ./public
 COPY scripts/render-pdf.js ./scripts/render-pdf.js
+COPY scripts/lib ./scripts/lib
 
 # Default (ephemeral) data location. For persistence, mount a volume and
 # set OBV_DATA_DIR to its mount path (e.g. /var/data) — see render.yaml.

@@ -3,6 +3,9 @@ dist/
 public/js/
 public/icons/
 
+# test runner output (full per-suite logs + summary.json)
+.test-logs/
+
 # runtime data (SQLite db, WORM evidence objects, uploads)
 data/
 

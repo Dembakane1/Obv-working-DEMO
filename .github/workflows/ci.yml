@@ -3,6 +3,10 @@
 #
 # The required status check for branch protection is the job name: "ci".
 #
+# Reproducibility contract: CI installs from the committed lockfile with
+# `npm ci`, so it runs the EXACT dependency versions a developer gets
+# locally, and it runs the SAME command a developer runs (`npm test`).
+#
 # The banking layer is FORCED to the mock provider in demo mode. No
 # real-provider flag, credential or secret exists in this workflow, and
 # none may ever be added: CI validates a simulation, not a bank.
@@ -17,7 +21,9 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded pull-request runs are cancelled, but a push to main always
+  # runs to completion so every merged commit keeps a conclusive result.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -26,7 +32,8 @@ jobs:
   ci:
     name: ci
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Headroom over the sum of the step timeouts (10 + 35).
+    timeout-minutes: 50
     env:
       OBV_BANKING_PROVIDER: mock
       OBV_BANKING_MODE: demo
@@ -38,37 +45,86 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          # package.json engines requires >= 22.5 (node:sqlite).
-          node-version: "22"
+          # One source of truth for the Node version: .node-version, which
+          # package.json engines (>= 22.5, for node:sqlite) must satisfy.
+          node-version-file: .node-version
+          cache: npm
 
-      - name: Install dependencies
-        # The app itself is zero-dependency; devDependencies carry the
-        # TypeScript toolchain only. There is intentionally no lockfile,
-        # so plain install (npm ci requires one).
-        run: npm install
+      - name: Install dependencies (lockfile-exact)
+        # `npm ci` installs precisely what package-lock.json pins and fails
+        # if package.json and the lockfile disagree. .npmrc sets
+        # ignore-scripts, so no dependency lifecycle script executes here.
+        run: npm ci
 
-      - name: Install Playwright (browser checkpoints)
-        # Deterministic browser install for the responsive/overflow
-        # checkpoints. Not saved to package.json — the application has no
-        # runtime dependencies.
-        run: |
-          npm install --no-save playwright@1
-          npx playwright install --with-deps chromium
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          # The browser build is a function of the pinned Playwright
+          # version, which is recorded in the lockfile.
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-playwright-
+
+      - name: Install Chromium (browser checkpoints)
+        # Same pinned Playwright, same browser build as a developer gets
+        # from `npm run browsers`; the :deps variant additionally installs
+        # Chromium's OS packages, which a CI runner needs and a developer
+        # machine usually already has.
+        run: npm run browsers:deps
         timeout-minutes: 10
+
+      - name: Environment preflight
+        run: npm run doctor
 
       - name: Build + complete unified test suite + deployment checks
         # The runner owns the build stage, every standalone suite, the
         # server-based suites and the deployment configuration checks.
-        run: node scripts/run-all-tests.js
+        run: npm test
         timeout-minutes: 35
 
-      - name: Upload failure logs
-        if: failure()
+      - name: Upload test logs
+        # .test-logs/ holds summary.json plus the full transcript of every
+        # suite, so a failure is diagnosable from the artifact alone.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-failure-logs
-          path: |
-            data/*.log
-            /tmp/obv-*/*.log
-          if-no-files-found: ignore
+          name: obv-test-logs
+          path: .test-logs/
+          if-no-files-found: warn
           retention-days: 7
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install dependencies (lockfile-exact)
+        run: npm ci
+
+      - name: Production dependency audit
+        # The application ships ZERO runtime dependencies, so the
+        # production surface must always be clean. This step is blocking.
+        # It only reports — it never rewrites dependencies (`npm audit fix`
+        # is deliberately absent from this workflow).
+        run: npm run audit:prod
+
+      - name: Critical advisories in the toolchain
+        # Blocking: a CRITICAL advisory against the build/test toolchain
+        # stops the pull request. Reporting only — never `npm audit fix`.
+        run: npm audit --audit-level=critical
+
+      - name: Full dependency audit (development toolchain, advisory)
+        # Advisory: high/moderate advisories against the toolchain must be
+        # visible, but they do not gate a pull request on their own and
+        # they never modify production code.
+        run: npm run audit
+        continue-on-error: true

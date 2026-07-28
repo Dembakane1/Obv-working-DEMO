@@ -115,7 +115,7 @@ async function decide(approvalId, user, decision) {
 }
 
 function notificationRows(where = "") {
-  const db = new DatabaseSync(path.join(process.cwd(), "data", "obv.db"));
+  const db = new DatabaseSync(path.join(process.env.OBV_DATA_DIR || path.join(process.cwd(), "data"), "obv.db"));
   const rows = db.prepare(`SELECT * FROM notifications ${where} ORDER BY created_at`).all();
   db.close();
   return rows;
@@ -211,7 +211,7 @@ async function main() {
   // ---------- TEST 8: ledger tamper -> integrity alert card, no false success ----------
   received.length = 0;
   {
-    const db = new DatabaseSync(path.join(process.cwd(), "data", "obv.db"));
+    const db = new DatabaseSync(path.join(process.env.OBV_DATA_DIR || path.join(process.cwd(), "data"), "obv.db"));
     db.prepare("UPDATE ledger_entries SET payload_hash='deadbeef' WHERE seq=1").run();
     db.close();
   }

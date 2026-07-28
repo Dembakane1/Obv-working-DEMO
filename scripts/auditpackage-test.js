@@ -573,6 +573,29 @@ async function download(key, id) {
     );
     void coverName;
 
+    // ---------- path traversal via the operator-supplied pilot code ----------
+    // The pilot code is free-form input and becomes a path segment in the
+    // package filename and stored object key. It must be reduced to a
+    // filename-safe slug so a package can never be written outside
+    // data/audit-packages/.
+    exec(`UPDATE projects SET code = ? WHERE id = 'proj-r47'`, "../../../../tmp/PWNED");
+    const travGen = await api("funder", "POST", "/api/projects/proj-r47/audit-packages", {});
+    const travPkg = (await travGen.json()).auditPackage;
+    const travKey = q(`SELECT storage_object_key AS k FROM audit_packages WHERE id = ?`, travPkg.id)[0].k;
+    assert(
+      travGen.status === 201 &&
+        travKey === `audit-packages/${travPkg.id}/obv-audit-package-tmp-pwned-v${travPkg.packageVersion}.zip`,
+      "21. a traversal-shaped pilot code is reduced to a safe slug — no '..' survives into the storage key"
+    );
+    assert(
+      !travKey.includes("..") &&
+        fs.existsSync(path.join(DATA_DIR, "audit-packages", travPkg.id)) &&
+        !fs.existsSync("/tmp/PWNED-v1.zip"),
+      "21b. the package is written inside data/audit-packages/ and nowhere else"
+    );
+    const travDl = await download("funder", travPkg.id);
+    assert(travDl.status === 200, "21c. the safely-named package still downloads through the normal route");
+
     console.log(`\nAUDIT PACKAGE TESTS PASSED — ${n} checkpoints.`);
   } finally {
     srv.kill();

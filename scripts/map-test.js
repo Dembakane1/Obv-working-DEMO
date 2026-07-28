@@ -1,7 +1,7 @@
 /**
  * Spatial map tests — 12 checkpoints against an isolated server.
  *
- *   node scripts/map-test.js     (requires global playwright via NODE_PATH)
+ *   node scripts/map-test.js     (requires the pinned Playwright devDependency)
  *
  * Tile IMAGES may not load in a sandboxed environment (no egress to the
  * public tile services) — the tests assert the correct tile URLs are
@@ -9,6 +9,7 @@
  * exactly the engine's offline behavior.
  */
 const { spawn } = require("node:child_process");
+const { launchChromium } = require("./lib/browser");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
@@ -39,8 +40,7 @@ const assert = (c, m) => (c ? pass(m) : fail(m));
     env: { ...process.env, OBV_DATA_DIR: DATA_DIR, PORT: String(PORT) },
     stdio: "ignore",
   });
-  const { chromium } = require("playwright");
-  const browser = await chromium.launch({ args: ["--no-sandbox"] });
+  const browser = await launchChromium({ args: ["--no-sandbox"] });
   try {
     for (let i = 0; i < 50; i++) {
       try {

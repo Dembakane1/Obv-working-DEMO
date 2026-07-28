@@ -12,6 +12,7 @@
  * without horizontal overflow (when Playwright is available).
  */
 const { spawn } = require("node:child_process");
+const { launchChromium, chromiumAvailable } = require("./lib/browser");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
@@ -183,20 +184,10 @@ const assert = (c, m) => (c ? pass(m) : fail(m));
     );
 
     // ---- 13. mobile rendering (Playwright when available) ----
-    let pw = null;
-    try {
-      pw = require("playwright");
-    } catch {
-      try {
-        pw = require(path.join(process.env.OBV_PLAYWRIGHT_NODE_PATH ?? "/opt/node22/lib/node_modules", "playwright"));
-      } catch {}
-    }
-    if (pw) {
-      // Pinned sandbox Chromium when present (version-mismatch-proof in
-      // the dev sandbox); Playwright's own resolution everywhere else
-      // (CI installs browsers into its default cache).
-      const pinned = "/opt/pw-browsers/chromium";
-      const browser = await pw.chromium.launch(fs.existsSync(pinned) ? { executablePath: pinned } : {});
+    // Pinned project Playwright + its matching Chromium build; identical
+    // locally and in CI (scripts/lib/browser.js).
+    if (chromiumAvailable()) {
+      const browser = await launchChromium();
       for (const [url, w] of [["/", 390], ["/", 375], ["/demo", 390]]) {
         const ctx = await browser.newContext({ viewport: { width: w, height: 844 } });
         const page = await ctx.newPage();

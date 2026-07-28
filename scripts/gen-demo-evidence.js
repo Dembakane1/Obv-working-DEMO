@@ -9,11 +9,11 @@
  * demo-fallback submissions in the evidence UI, reports, and ledger
  * provenance. Nothing here touches verification or business logic.
  *
- *   NODE_PATH=/opt/node22/lib/node_modules node scripts/gen-demo-evidence.js
+ *   npm ci && npm run browsers && node scripts/gen-demo-evidence.js
  */
 const path = require("node:path");
 const fs = require("node:fs");
-const { chromium } = require("playwright");
+const { launchChromium } = require("./lib/browser");
 
 const OUT_DIR = path.join(process.cwd(), "public", "demo-evidence");
 
@@ -514,7 +514,7 @@ window.sceneNames=Object.keys(SCENES);
 
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });
-  const browser = await chromium.launch({ args: ["--no-sandbox"] });
+  const browser = await launchChromium({ args: ["--no-sandbox"] });
   const page = await browser.newPage();
   await page.setContent(PAGE, { waitUntil: "domcontentloaded" });
   const filter = process.argv.slice(2);

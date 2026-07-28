@@ -20,6 +20,9 @@ const { createHmac } = require("node:crypto");
 const OBV_PORT = 3190;
 const OBV_PORT_NOCREDS = 3191;
 const STUB_PORT = 4620;
+/** Stands in for an attacker-chosen host in the SSRF checkpoint — a
+ *  different origin from the configured provider base URL. */
+const SSRF_PORT = 4621;
 const BASE = `http://127.0.0.1:${OBV_PORT}`;
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "obv-wasync-"));
 
@@ -101,7 +104,9 @@ const stubServer = http.createServer(async (req, res) => {
         id: m[1],
         mime_type: rec.mime,
         file_size: rec.size ?? rec.bytes.length,
-        url: `http://127.0.0.1:${STUB_PORT}/blob/${m[1]}`,
+        // A record may override the download URL so the SSRF guard can be
+        // exercised with a destination the provider does not control.
+        url: rec.url ?? `http://127.0.0.1:${STUB_PORT}/blob/${m[1]}`,
       })
     );
     return;
@@ -467,6 +472,52 @@ const WA_ENV = {
       fs.readdirSync(path.join(DATA_DIR, "comm-media")).length === filesBefore,
       "no rejected media bytes are ever written to disk"
     );
+
+    // ---- 9b. SSRF: the media download destination comes out of the
+    // provider response body and the request carries the bearer token, so
+    // an off-origin or internal destination must never be fetched.
+    const ssrfProbe = http.createServer((_req, res) => {
+      ssrfProbe.hit = true;
+      res.writeHead(200, { "content-type": "image/jpeg" });
+      res.end(png);
+    });
+    ssrfProbe.hit = false;
+    await new Promise((r) => ssrfProbe.listen(SSRF_PORT, "127.0.0.1", r));
+    try {
+      // Loopback on a DIFFERENT origin than the configured base URL, plus
+      // the classic cloud metadata address.
+      stub.media.set("media-ssrf-1", {
+        mime: "image/jpeg",
+        bytes: png,
+        url: `http://127.0.0.1:${SSRF_PORT}/blob/steal`,
+      });
+      stub.media.set("media-ssrf-2", {
+        mime: "image/jpeg",
+        bytes: png,
+        url: "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+      });
+      const ssrfFilesBefore = fs.readdirSync(path.join(DATA_DIR, "comm-media")).length;
+      await webhook(
+        inbound([
+          { id: "wamid.m.7", type: "image", image: { id: "media-ssrf-1", mime_type: "image/jpeg" } },
+          { id: "wamid.m.8", type: "image", image: { id: "media-ssrf-2", mime_type: "image/jpeg" } },
+        ])
+      );
+      const ssrfMsg = await waitForMessage("wamid.m.7");
+      const metaMsg = await waitForMessage("wamid.m.8");
+      assert(
+        ssrfMsg && JSON.parse(ssrfMsg.attachments)[0].url === null &&
+          metaMsg && JSON.parse(metaMsg.attachments)[0].url === null,
+        "media whose provider-supplied URL points off-origin or at an internal address is rejected — message kept"
+      );
+      assert(!ssrfProbe.hit, "the bearer-token media request is never sent to an attacker-chosen host");
+      assert(
+        fs.readdirSync(path.join(DATA_DIR, "comm-media")).length === ssrfFilesBefore,
+        "no bytes from a rejected SSRF destination are written to disk"
+      );
+    } finally {
+      await new Promise((r) => ssrfProbe.close(r));
+    }
 
     // ---- 10. GOVERNANCE SAFETY (non-negotiable) ----
     const g0 = counts();

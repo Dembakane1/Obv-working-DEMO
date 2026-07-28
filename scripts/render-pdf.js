@@ -6,10 +6,13 @@
  *
  * config: { url, outPath, projectName, generatedAt }
  *
- * Playwright + Chromium are provided by the environment (globally installed;
- * the parent process sets NODE_PATH so `require("playwright")` resolves).
- * No npm dependency is added to the application itself.
+ * Playwright is a pinned DEV dependency of this repository (see
+ * scripts/lib/browser.js); the application itself still has zero runtime
+ * dependencies. When Playwright or its Chromium build is absent the
+ * server falls back to printable HTML.
  */
+const { launchChromium } = require("./lib/browser");
+
 const config = JSON.parse(Buffer.from(process.argv[2], "base64").toString("utf8"));
 
 const esc = (s) =>
@@ -24,8 +27,7 @@ const footerTemplate = `
   </div>`;
 
 (async () => {
-  const { chromium } = require("playwright");
-  const browser = await chromium.launch({ args: ["--no-sandbox"] });
+  const browser = await launchChromium({ args: ["--no-sandbox"] });
   try {
     const page = await browser.newPage();
     await page.goto(config.url, { waitUntil: "networkidle", timeout: 30000 });

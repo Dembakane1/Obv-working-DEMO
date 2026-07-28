@@ -8,10 +8,11 @@
  * untouched, resolves package links, has no horizontal overflow at the
  * required widths, and that production deploys from main.
  *
- * Browser sections need playwright:
- *   NODE_PATH=/opt/node22/lib/node_modules node scripts/lender-ui-test.js
+ * Browser sections need the pinned Playwright devDependency:
+ *   npm ci && npm run browsers && node scripts/lender-ui-test.js
  */
 const { spawn } = require("node:child_process");
+const { launchChromium } = require("./lib/browser");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
@@ -268,10 +269,7 @@ const financialState = () =>
     assert(preview.status === 200, "the printable package preview resolves");
 
     // ---- 12. no horizontal overflow at required widths ----
-    let chromium = null;
-    try { ({ chromium } = require("playwright")); } catch { /* NODE_PATH missing */ }
-    if (!chromium) fail("playwright unavailable — run with NODE_PATH=/opt/node22/lib/node_modules");
-    const browser = await chromium.launch();
+    const browser = await launchChromium();
     const ctx = await browser.newContext();
     await ctx.addCookies([{ name: "obv_user", value: "user-funder", url: BASE }]);
     const bpage = await ctx.newPage();

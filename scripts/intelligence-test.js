@@ -156,7 +156,18 @@ async function main() {
     fail("intelligence sections collapsed after issue resolution");
   pass(`resolving the seeded HIGH issue clears HIGH signals; calm banner obeys its rule (${calmShown ? "calm" : `${sevCount(html2, "MEDIUM")} MEDIUM remain`})`);
 
-  // ---- 10: demo reset restores the seeded signal ----
+  // ---- 10: demo reset requires a session, then restores the seeded signal ----
+  // Reseeding is destructive (it can remove uploads, WORM evidence, reports
+  // and audit packages), so an anonymous caller must never reach it.
+  const anonReset = await fetch(`${BASE}/api/demo/reset`, { method: "POST" });
+  if (anonReset.status !== 403) fail(`unauthenticated demo reset -> ${anonReset.status} (expected 403)`);
+  // The seeded HIGH issue is resolved at this point, so a reseed would be
+  // visible immediately. Its continued absence proves nothing was reset.
+  const afterRefusal = await fetchPage();
+  if (afterRefusal.includes("unresolved-high-issue"))
+    fail("refused reset still reseeded the demo data");
+  pass("demo reset refuses an unauthenticated caller (403) and changes nothing");
+
   const reset = await fetch(`${BASE}/api/demo/reset`, {
     method: "POST",
     headers: { Cookie: "obv_user=user-funder" },

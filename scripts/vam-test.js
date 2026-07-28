@@ -11,6 +11,7 @@
  * released milestones) across the ENTIRE banking flow.
  */
 const { spawn, spawnSync } = require("node:child_process");
+const { launchChromium } = require("./lib/browser");
 const { mkdtempSync, readFileSync, readdirSync } = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -595,10 +596,7 @@ async function main() {
     );
 
     // ---- 19. mobile/desktop rendering ----
-    let pw = null;
-    try { pw = require("playwright"); } catch {}
-    if (!pw) fail("playwright unavailable — run with NODE_PATH=/opt/node22/lib/node_modules");
-    const browser = await pw.chromium.launch();
+    const browser = await launchChromium();
     try {
       const cookie = { name: "obv_user", value: "user-funder", url: BASE };
       for (const width of [375, 390, 430, 768, 1024, 1440]) {

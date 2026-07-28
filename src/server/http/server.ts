@@ -205,8 +205,12 @@ function safeEqual(a: string, b: string): boolean {
 // (no npm dependency added). One-time token lets the renderer fetch the
 // report HTML without a demo session cookie.
 const RENDER_SCRIPT = path.join(process.cwd(), "scripts", "render-pdf.js");
+/** Where the PDF child process resolves `playwright` from. Playwright is
+ *  a pinned devDependency, so the application's own node_modules is the
+ *  correct default; deployments that place it elsewhere (the Docker image
+ *  sets /app/node_modules) override it explicitly. */
 const PLAYWRIGHT_NODE_PATH =
-  process.env.OBV_PLAYWRIGHT_NODE_PATH ?? "/opt/node22/lib/node_modules";
+  process.env.OBV_PLAYWRIGHT_NODE_PATH ?? path.join(process.cwd(), "node_modules");
 const previewToken = randomUUID();
 /** Report HTML cached between generate-request and Chromium fetch. */
 const pendingReportHtml = new Map<string, string>();
@@ -283,8 +287,36 @@ function isFormPost(req: http.IncomingMessage): boolean {
   return (req.headers["content-type"] ?? "").includes("application/x-www-form-urlencoded");
 }
 
+/** Defence-in-depth policy for every server-rendered page.
+ *
+ *  Scoped to what this application actually needs: pages carry inline
+ *  <script> and inline style, and the map loads raster tiles from public
+ *  tile services, so those are permitted. Everything else is denied —
+ *  notably object/embed, a rewritten <base>, and framing (clickjacking).
+ *  This SUPPLEMENTS output encoding (src/server/view/jsx.ts escapes every
+ *  text node and attribute); it does not replace it. */
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "media-src 'self' blob: data:",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  "object-src 'none'",
+  "base-uri 'self'",
+].join("; ");
+
 function sendHtml(res: http.ServerResponse, html: string, status = 200): void {
-  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+    "X-Frame-Options": "DENY",
+  });
   res.end(html);
 }
 
@@ -1225,7 +1257,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     res.setHeader(
       "Set-Cookie",
-      `obv_user=${encodeURIComponent(user.id)}; Path=/; SameSite=Lax; Max-Age=86400`
+      `obv_user=${encodeURIComponent(user.id)}; Path=/; SameSite=Lax; HttpOnly; Max-Age=86400`
     );
     redirect(res, user.role === "FIELD" ? "/field" : "/overview");
     return;
@@ -3801,6 +3833,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   // through onboarding are preserved — wiping everything requires the
   // explicitly gated Development Full Reset below.
   if (method === "POST" && pathname === "/api/demo/reset") {
+    // Reseeding is destructive (it can remove uploads, WORM evidence,
+    // reports and audit packages), so it requires a session. The blanket
+    // page guard further down is GET-only and would never cover this.
+    if (!currentUser(req)) {
+      sendJson(res, { error: "Not authorized" }, 403);
+      return;
+    }
     await seedDemo({ preservePilot: true });
     await teamsNotifier.notify("DEMO_RESET", "Demo data reset to the seeded state.");
     if (isFormPost(req) || (req.headers.accept ?? "").includes("text/html")) {
@@ -3863,7 +3902,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     });
     res.setHeader(
       "Set-Cookie",
-      `obv_user=${encodeURIComponent(newUser.id)}; Path=/; SameSite=Lax; Max-Age=86400`
+      `obv_user=${encodeURIComponent(newUser.id)}; Path=/; SameSite=Lax; HttpOnly; Max-Age=86400`
     );
     if (isFormPost(req)) redirect(res, newUser.role === "FIELD" ? "/field" : "/overview");
     else sendJson(res, { user: newUser }, 201);

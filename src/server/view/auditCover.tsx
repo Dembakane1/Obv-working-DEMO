@@ -5,7 +5,7 @@
  * printable HTML itself ships in the package (honestly labelled in the
  * manifest).
  */
-import { h, renderDocument } from "./jsx";
+import { h, raw, renderDocument } from "./jsx";
 import type { AuditCoverData } from "../services/auditPackage";
 
 const money = (n: number): string => "$" + n.toLocaleString("en-US");
@@ -51,7 +51,7 @@ export function renderAuditCover(d: AuditCoverData): string {
       <head>
         <meta charSet="utf-8" />
         <title>{`Audit Package — ${d.project.name}`}</title>
-        <style>{CSS}</style>
+        <style>{raw(CSS)}</style>
       </head>
       <body>
         <div className="mast">

@@ -23,22 +23,78 @@ production infrastructure mocked behind clean TypeScript interfaces.
 
 ## Run it
 
-Requires Node.js ≥ 22.5 (uses the built-in `node:sqlite`). No other runtime
-dependencies.
+Requires Node.js ≥ 22.5 (uses the built-in `node:sqlite`). The application
+has **zero runtime dependencies**; the pinned `devDependencies` are the
+build and test toolchain only.
 
 ```bash
-npm run setup   # compile TypeScript (server + client) and seed the demo database
-npm start       # serve on http://localhost:3000
+npm ci            # install the EXACT toolchain from package-lock.json
+npm run build     # tsc (server TSX + client TS) + generate PWA icons
+npm run seed      # create data/obv.db with the seeded demo project
+npm start         # serve on http://localhost:3000
 ```
 
 Then open **http://localhost:3000** and pick a demo user.
 
-Rebuild/reseed at any time:
+Shortcuts:
 
 ```bash
-npm run build   # tsc (server TSX + client TS) + generate PWA icons
-npm run seed    # drop & recreate data/obv.db with the seeded project
+npm run setup     # build + seed (after npm ci)
+npm run dev       # build + start
+npm run doctor    # environment preflight: node, deps, browser, ports, banking
+npm run clean     # remove dist/ and generated public assets
 ```
+
+### Test it
+
+```bash
+npm ci                          # exact toolchain
+npm run browsers                # Chromium for the browser checkpoints (once)
+                                # (on a bare Linux box: npm run browsers:deps)
+npm test                        # build + EVERY suite + deployment checks
+```
+
+`npm test` is the complete authoritative validation — the identical command
+CI runs. Useful flags:
+
+```bash
+npm test -- --list              # show the suite inventory
+npm test -- --filter permits    # run only matching suites
+npm test -- --continue          # keep going after a failure
+npm test -- --verbose           # stream suite output live (still summarised)
+npm test -- --skip-build        # reuse the existing dist/
+```
+
+Every run writes `.test-logs/` (gitignored): `summary.json` plus the full
+transcript of each suite. On failure the runner prints the failing lines,
+the log path and the exact command to reproduce that one suite. CI uploads
+the same directory as an artifact.
+
+### Dependency policy
+
+| Rule | Where it is enforced |
+|---|---|
+| Zero runtime dependencies | `scripts/toolchain-test.js` (also scans every `src/` import) |
+| Exact version pins, no ranges | `package.json` + `.npmrc` `save-exact` + guard suite |
+| Deterministic installs | committed `package-lock.json`, `npm ci` locally, in CI and in Docker |
+| No dependency may execute install scripts | `.npmrc` `ignore-scripts=true`; browsers installed explicitly via `npm run browsers` |
+| Vulnerability auditing never rewrites code | `npm run audit:prod` (blocking, production surface) and `npm run audit` (advisory); `npm audit fix` is never run |
+
+```bash
+npm run audit:prod   # production dependency surface — must stay clean
+npm run audit        # full toolchain advisory report (needs registry access)
+```
+
+Full reasoning behind every control: **`docs/TOOLCHAIN.md`**.
+
+### Security
+
+`docs/SECURITY_REVIEW.md` records the automated review across SQL
+injection, XSS, broken authorization, unsafe file handling, secret
+exposure, dependency vulnerabilities and SSRF — what was fixed (each with
+a regression checkpoint in `npm test`), and, explicitly, the
+authorization gaps that were found and deferred to a dedicated change
+rather than folded into a tooling pass.
 
 ### Demo users (no passwords — demo user switcher)
 
@@ -898,7 +954,7 @@ HELD → RELEASED transition happens exactly once. See also
 `docs/DEMO_RUNBOOK.md` for the operational demo guide.
 
 Requires the `playwright` npm package and a Chromium install (in the build
-environment: `NODE_PATH=/opt/node22/lib/node_modules`). Reseed between runs.
+environment: `npm ci && npm run browsers`). Reseed between runs.
 
 **Status: v2 regression passed in both modes** (fallback ×2, camera ×1)
 before this commit; the v1 hero loop passed 3/3 before the redesign.
@@ -980,8 +1036,13 @@ could not be installed. Rather than ship nothing, the app is built
 
 Everything else (PWA, camera/geolocation, IndexedDB queue, hash-chained
 ledger, polling refresh) uses standard web/Node APIs and carries over as-is.
-`node_modules/@types/` is vendored (committed) only so `tsc` type-checks
-without registry access.
+
+The toolchain is now pinned and lockfile-driven (`npm ci` installs exactly
+`typescript`, `@types/node` and `playwright` at the versions in
+`package-lock.json`). `node_modules/@types/` remains vendored (committed)
+as an OFFLINE FALLBACK so `tsc` still type-checks in a sandbox with no
+registry access; it is byte-identical to the version the lockfile pins, and
+`scripts/toolchain-test.js` fails if the two ever drift.
 
 ## Implementation log
 
