@@ -51,6 +51,23 @@ function portFree(port) {
   } else {
     bad("node", `${process.versions.node} does not satisfy ${pkg.engines.node}`, "install Node >= 22.5 (see .node-version)");
   }
+  // Satisfying engines is not the same as matching what CI runs. A
+  // node:sqlite behaviour difference between two 22.x releases is enough
+  // to pass locally and fail in CI, so surface the drift explicitly.
+  try {
+    const pinned = fs.readFileSync(path.join(ROOT, ".node-version"), "utf8").trim();
+    if (pinned && pinned !== process.versions.node) {
+      warn(
+        "node version parity",
+        `local ${process.versions.node} != .node-version ${pinned} (what CI runs)`,
+        `use Node ${pinned} locally (nvm/fnm/volta read .node-version) so local results match CI`
+      );
+    } else if (pinned) {
+      ok("node version parity", `matches .node-version (${pinned}) — same runtime as CI`);
+    }
+  } catch {
+    warn("node version parity", ".node-version is unreadable", "restore .node-version");
+  }
   try {
     require("node:sqlite");
     ok("node:sqlite", "built-in SQLite available (no native module needed)");

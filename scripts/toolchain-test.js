@@ -219,6 +219,20 @@ const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
     !/npm audit fix|--fix\b/.test(ci),
     "the CI audit never rewrites dependencies automatically (`npm audit fix` is absent)"
   );
+  // .test-logs/ is a dotted path; upload-artifact treats dotted paths as
+  // hidden and silently uploads NOTHING without this flag, which quietly
+  // voids the whole failure-diagnostics contract.
+  assert(
+    !/path:\s*\.test-logs\//.test(ci) || /include-hidden-files:\s*true/.test(ci),
+    "the CI test-log artifact sets include-hidden-files (a dotted path is skipped otherwise)"
+  );
+  // CI must run the Node version the repo pins, not a floating major —
+  // that difference is what let a node:sqlite incompatibility pass
+  // locally and fail in CI.
+  assert(
+    /node-version-file:\s*\.node-version/.test(ci) && !/node-version:\s*['"]?\d/.test(ci),
+    "CI takes its Node version from .node-version, never a floating major"
+  );
 
   // The runner itself must force mock/demo regardless of ambient env.
   const runner = read("scripts/run-all-tests.js");

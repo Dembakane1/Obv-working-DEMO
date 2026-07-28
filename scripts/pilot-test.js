@@ -61,17 +61,21 @@ function q(sql, ...params) {
   return r;
 }
 function projGov(projectId) {
+  // Plain positional `?` placeholders, repeated once per subquery. SQLite
+  // treats numbered `?1` as a NAMED parameter, and node:sqlite before
+  // ~22.20 refuses to bind those positionally ("column index out of
+  // range") — so `?1` passed locally and failed on the pinned CI Node.
   return q(
     `SELECT
-       (SELECT COUNT(*) FROM evidence_items e JOIN milestones m ON e.milestone_id=m.id WHERE m.project_id=?1) AS evidence,
+       (SELECT COUNT(*) FROM evidence_items e JOIN milestones m ON e.milestone_id=m.id WHERE m.project_id=?) AS evidence,
        (SELECT COUNT(*) FROM approval_records r JOIN approval_requests a ON r.approval_request_id=a.id
-          JOIN milestones m ON a.milestone_id=m.id WHERE m.project_id=?1) AS approvals,
+          JOIN milestones m ON a.milestone_id=m.id WHERE m.project_id=?) AS approvals,
        (SELECT COUNT(*) FROM virtual_account_events v JOIN milestones m ON v.milestone_id=m.id
-          WHERE m.project_id=?1 AND v.type='RELEASED') AS released,
+          WHERE m.project_id=? AND v.type='RELEASED') AS released,
        (SELECT COUNT(*) FROM virtual_account_events v JOIN milestones m ON v.milestone_id=m.id
-          WHERE m.project_id=?1 AND v.type='HELD') AS held,
-       (SELECT COUNT(*) FROM ledger_entries l JOIN milestones m ON l.milestone_id=m.id WHERE m.project_id=?1) AS ledger`,
-    projectId
+          WHERE m.project_id=? AND v.type='HELD') AS held,
+       (SELECT COUNT(*) FROM ledger_entries l JOIN milestones m ON l.milestone_id=m.id WHERE m.project_id=?) AS ledger`,
+    projectId, projectId, projectId, projectId, projectId
   );
 }
 /** Deterministic >256-byte PNG (the mock visual check needs real content). */

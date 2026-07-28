@@ -90,6 +90,12 @@ jobs:
         with:
           name: obv-test-logs
           path: .test-logs/
+          # .test-logs/ is a dotted path, which upload-artifact treats as
+          # hidden and silently skips — without this the artifact uploads
+          # nothing and a failed run is undiagnosable.
+          include-hidden-files: true
+          # Stays a warning: an install/preflight failure legitimately
+          # produces no logs, and erroring here would mask that real cause.
           if-no-files-found: warn
           retention-days: 7
 

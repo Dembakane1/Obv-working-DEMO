@@ -140,14 +140,20 @@ legitimately alter who can see and do what across the demo. They are
 listed here so the decision is explicit rather than silent, and they
 warrant a dedicated change.
 
+Severities below are the **post-verification** ratings: each finding was
+re-checked by an independent adversarial pass instructed to refute it, and
+two were downgraded on that evidence (the orchestrator gap from CRITICAL,
+because the ledger is a mock and identity is already a self-asserted demo
+cookie; the chat gap from HIGH).
+
 | Severity | Where | Issue |
 |---|---|---|
-| CRITICAL | `workflow/orchestrator.ts` | `processApprovalDecision` performs no project/tenant check, so a milestone tranche release can be approved across tenants. The Approvals queue also lists every tenant's pending requests. |
-| HIGH | `services/chat.ts` | `participatesInProject` ignores its project argument — the conversation/thread tenant boundary is effectively open to any org containing a `PROJECT_MANAGER`. |
+| HIGH | `workflow/orchestrator.ts` | `processApprovalDecision` performs no project/tenant check, so a milestone tranche release can be approved across tenants. The Approvals queue also lists every tenant's pending requests. |
+| MEDIUM | `services/chat.ts` | `participatesInProject` ignores its project argument, so the predicate returns the same answer for every project — the thread tenant boundary is open to any `PROJECT_MANAGER`/`FIELD` user. `repo.getThread`/`listThreads` are unscoped, and this is the only authorization on message posting, Teams binding and evidence sharing. |
 | HIGH | `services/fieldOps.ts` | Issue, clarification and evidence-draft handlers check role but never object-level or tenant ownership. |
-| HIGH | `http/server.ts` | Pilot onboarding mutations are role-gated only: any `PROJECT_MANAGER` can rewrite another tenant's approval matrix, tranche amounts and field assignments. |
-| HIGH | `http/server.ts` | Sign-in identity is a self-asserted unsigned cookie, and `/demo` publicly enumerates every user id — including real users created by pilot invitations. |
-| MEDIUM | `report/data.ts` | Funder report assembly performs no tenant check; any signed-in user can read any project's evidence, ledger and financials by project id. |
+| MEDIUM | `http/server.ts` | Pilot onboarding mutations are role-gated only (`canAdminPilot` is exactly `role === "PROJECT_MANAGER"`, with no project or org argument), so any project manager can rewrite another tenant's approval matrix, tranche amounts and field assignments. |
+| MEDIUM | `http/server.ts` | Sign-in identity is a self-asserted unsigned cookie (`obv_user` is the raw user primary key, no MAC, no server-side session), `POST /api/session` validates only that the id exists, and `/demo` enumerates every user unfiltered with no session or env gate. |
+| LOW | `report/data.ts` | Funder report assembly performs no tenant check — `assembleReportData` validates only that the project exists and never compares `generatedBy` against the project's organization, so any signed-in user can read any project's evidence, ledger and financials by project id. |
 | MEDIUM | `http/server.ts` | Report PDFs are listed and downloaded across tenants — only `DRAW_VERIFICATION_PACKAGE` is access-checked. |
 | MEDIUM | `http/server.ts` | `GET /api/field-context` returns project, milestone and tranche data with no session. |
 | MEDIUM | `http/server.ts` | `/worm/` evidence media is served with no session check and before the access-code gate. |

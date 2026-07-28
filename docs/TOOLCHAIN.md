@@ -183,7 +183,14 @@ configuration.
 - **The full advisory audit needs registry access.** `npm run audit`
   contacts the npm advisory endpoint; in a restricted sandbox it fails
   loudly rather than reporting a false "clean". `npm run audit:prod` works
-  offline because there is nothing to audit.
+  offline because there is nothing to audit. (All three audit steps have
+  since been validated against the real registry on CI: `npm ci` installs
+  the lockfile cleanly and each audit reports zero vulnerabilities.)
+- **Local Node should match `.node-version`.** Satisfying `engines`
+  (`>= 22.5`) is not the same as running what CI runs, and the difference
+  is not academic: a `node:sqlite` binding behaviour change between two
+  22.x releases made `pilot-test.js` pass locally and fail in CI.
+  `npm run doctor` now warns when the local runtime differs from the pin.
 - **Action versions are pinned by major tag** (`actions/checkout@v4`), not
   by commit SHA. SHA pinning is stricter supply-chain hygiene and is a
   reasonable next step if the pilot's threat model calls for it.
