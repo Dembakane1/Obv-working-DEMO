@@ -63,6 +63,11 @@ const BASE = `http://127.0.0.1:${SERVER_PORT}`;
 
 /** Full per-suite output lands here; CI uploads this directory. */
 const LOG_DIR = path.join(ROOT, ".test-logs");
+/** Per-suite wall-clock ceiling. The slowest suite is ~35s locally, so ten
+ *  minutes is generous even on a slow shared CI runner — its only job is to
+ *  turn a hang into a named failure with a transcript, well before the CI
+ *  step timeout kills the whole job with no diagnosis. */
+const SUITE_TIMEOUT_MS = Number(process.env.OBV_SUITE_TIMEOUT_MS || 600_000);
 
 /** The banking layer is mock/demo-only in every test context. */
 const SAFE_ENV = {
@@ -170,6 +175,11 @@ function runSuite(name, argv, extraEnv = {}) {
       // transcript, so verbose runs still produce checkpoint counts,
       // summary.json and per-suite logs.
       stdio: ["ignore", "pipe", "pipe"],
+      // Own process group, so a timeout can kill the suite AND the server
+      // it spawned. Killing only the suite orphans that server, which
+      // keeps its port bound and silently answers the next run from stale
+      // data — a failure that looks like a real regression but is not.
+      detached: true,
     });
     let output = "";
     child.stdout.on("data", (d) => {
@@ -180,9 +190,26 @@ function runSuite(name, argv, extraEnv = {}) {
       output += d;
       if (VERBOSE) process.stderr.write(d);
     });
+    // A suite that hangs must FAIL with its transcript, not stall the run
+    // until the CI step timeout kills everything opaquely. SIGKILL follows
+    // shortly after SIGTERM so a wedged browser process cannot ignore it.
+    let timedOut = false;
+    /** Signal the suite's whole process group (negative pid), so any
+     *  server it started dies with it rather than being orphaned. */
+    const killGroup = (signal) => {
+      try { process.kill(-child.pid, signal); }
+      catch { try { child.kill(signal); } catch {} }
+    };
+    const killTimer = setTimeout(() => {
+      timedOut = true;
+      output += `\n\n*** SUITE TIMEOUT after ${SUITE_TIMEOUT_MS}ms — killed by the runner ***\n`;
+      killGroup("SIGTERM");
+      setTimeout(() => killGroup("SIGKILL"), 5000).unref();
+    }, SUITE_TIMEOUT_MS);
     child.on("exit", (code) => {
+      clearTimeout(killTimer);
       const seconds = ((Date.now() - started) / 1000).toFixed(1);
-      const ok = code === 0;
+      const ok = code === 0 && !timedOut;
       // Always persist the full transcript — a CI failure must be
       // diagnosable from the uploaded artifact alone.
       const logPath = path.join(LOG_DIR, `${name.replace(/\.js$/, "")}.log`);
