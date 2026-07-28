@@ -129,11 +129,20 @@ an official jurisdiction inspection result are separate records:
 
 - Official-result statuses (`PASSED`, `FAILED`, `PARTIAL`,
   `CORRECTION_REQUIRED`, `REINSPECTION_REQUIRED`, `NOT_FOUND`,
-  `WAIVED_BY_AUTHORITY`) require a determination role **and** official
-  backing — verbatim official result text, an official-source record, or a
-  jurisdictional-inspection record — plus the lookup timestamp.
+  `WAIVED_BY_AUTHORITY`) require a determination role **and** FRESH
+  official backing supplied with the recording itself — the lookup
+  timestamp plus verbatim official result text, an official-source record,
+  or a jurisdictional-inspection record. Backing carried over from an
+  earlier (possibly contradictory) lookup never supports a new status, and
+  terminal results (`PASSED`/`FAILED`/`PARTIAL`) always require the
+  verbatim result text of their own lookup.
+- `NOT_REQUIRED` is itself a determination about what the jurisdiction
+  requires: it demands a determination role and recorded basis notes — a
+  borrower-side project manager can never neutralize a requirement.
 - A recorded official `PASSED` is immutable (no transitions out; record a
-  new requirement if the situation changes).
+  new requirement if the situation changes). `PARTIAL` is not a pass — it
+  keeps blocking payment eligibility until the jurisdiction records the
+  full result.
 - Contractor completion, photographic evidence, OBV inspector findings, and
   official government status are carried as distinct fields everywhere and
   are never substituted for one another.

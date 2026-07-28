@@ -689,6 +689,10 @@ const OFFICIAL_RESULT_STATUSES = new Set<LineInspectionStatus>([
   "NOT_FOUND", "WAIVED_BY_AUTHORITY",
 ]);
 
+/** Terminal official results — the jurisdiction's verbatim wording is the
+ *  core of the record, so it must be supplied with the recording itself. */
+const TERMINAL_OFFICIAL_STATUSES = new Set<LineInspectionStatus>(["PASSED", "FAILED", "PARTIAL"]);
+
 /** Allowed status transitions. PASSED is terminal: an official passed
  *  result is never rewritten — a later dispute about it is handled by a
  *  NEW requirement record, mirroring the jurisdictional-inspection chain. */
@@ -881,23 +885,41 @@ export function updateLineRequirementStatus(
   if (officialSourceId) requireProjectSource(project.id, officialSourceId, "officialSourceId");
   const officialResultText = optText(input.officialResultText, "officialResultText");
   const lookupAt = parseDate(input.lookupAt, "lookupAt");
+  const notes = optText(input.notes, "notes");
   if (OFFICIAL_RESULT_STATUSES.has(toStatus)) {
     requireRole(user, DETERMINATION_ROLES, `record the official inspection status ${toStatus}`);
-    const effectiveLookup = lookupAt ?? requirement.lookupAt;
-    if (!effectiveLookup) {
+    // FRESH backing only: the lookup timestamp and backing must come with
+    // THIS recording. Backing carried over from an earlier (possibly
+    // contradictory) lookup — e.g. the FAILED result that preceded a
+    // reinspection — can never support a new official status.
+    if (!lookupAt) {
       throw new ComplianceError(
-        `Recording ${toStatus} requires the official-record lookup timestamp (lookupAt)`
+        `Recording ${toStatus} requires the official-record lookup timestamp (lookupAt) of the lookup that observed it`
       );
     }
-    const hasBacking =
-      Boolean(officialResultText) || Boolean(officialSourceId) || Boolean(jurisdictionalInspectionId) ||
-      Boolean(requirement.officialResultText) || Boolean(requirement.officialSourceId) ||
-      Boolean(requirement.jurisdictionalInspectionId);
-    if (!hasBacking) {
+    if (TERMINAL_OFFICIAL_STATUSES.has(toStatus) && !officialResultText) {
       throw new ComplianceError(
-        `Recording ${toStatus} requires official backing: the official result text, an ` +
-          "official-source record, or a jurisdictional inspection record. A contractor claim, " +
+        `Recording ${toStatus} requires the official system's verbatim result text (officialResultText) ` +
+          "from the lookup that observed it"
+      );
+    }
+    const hasFreshBacking =
+      Boolean(officialResultText) || Boolean(officialSourceId) || Boolean(jurisdictionalInspectionId);
+    if (!hasFreshBacking) {
+      throw new ComplianceError(
+        `Recording ${toStatus} requires official backing from this lookup: the official result text, ` +
+          "an official-source record, or a jurisdictional inspection record. A contractor claim, " +
           "photo, or OBV field finding is not an official inspection result."
+      );
+    }
+  }
+  if (toStatus === "NOT_REQUIRED") {
+    // NOT_REQUIRED asserts what the jurisdiction requires — a lender-side
+    // determination with a recorded basis, never a borrower-side toggle.
+    requireRole(user, DETERMINATION_ROLES, "determine that an official inspection is not required");
+    if (!notes) {
+      throw new ComplianceError(
+        "Recording NOT_REQUIRED requires notes stating the basis for the determination"
       );
     }
   }
@@ -913,7 +935,7 @@ export function updateLineRequirementStatus(
     lookupAt: lookupAt ?? undefined,
     externalIdentifier: optText(input.externalIdentifier, "externalIdentifier", 200) ?? undefined,
     reviewerUserId: user.id,
-    notes: optText(input.notes, "notes") ?? undefined,
+    notes: notes ?? undefined,
   });
   if (!ok) {
     throw new ComplianceError("The requirement status changed concurrently — reload and retry", 409);
@@ -1281,9 +1303,11 @@ function resolveBudgetLine(projectLines: BudgetLine[], ref: string | null): Budg
 const BLOCKING_EXCEPTION_SEVERITIES = new Set(["HIGH", "CRITICAL"]);
 const OPEN_EXCEPTION_STATUSES = new Set(["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_RESPONSE"]);
 
-/** Requirement statuses that keep an official inspection outstanding. */
+/** Requirement statuses that keep an official inspection outstanding.
+ *  PARTIAL blocks too: a partially-approved official inspection is not a
+ *  pass — the remaining scope is still awaiting the jurisdiction. */
 const INSPECTION_BLOCKING: Set<LineInspectionStatus> = new Set([
-  "REQUIRED_NOT_SCHEDULED", "SCHEDULED", "FAILED", "CORRECTION_REQUIRED",
+  "REQUIRED_NOT_SCHEDULED", "SCHEDULED", "FAILED", "PARTIAL", "CORRECTION_REQUIRED",
   "REINSPECTION_REQUIRED", "NOT_FOUND", "UNKNOWN",
 ]);
 

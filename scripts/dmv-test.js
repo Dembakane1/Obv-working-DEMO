@@ -504,10 +504,61 @@ async function main() {
     await walk(freshReq.id, "REQUIRED_NOT_SCHEDULED", {});
     await walk(freshReq.id, "WAIVED_BY_AUTHORITY", { officialResultText: "Waived per authority letter (demo)", lookupAt: "2026-08-13T10:00:00.000Z" });
     await walk(freshReq.id, "REQUIRED_NOT_SCHEDULED", {});
-    await walk(freshReq.id, "NOT_REQUIRED", {});
+    await walk(freshReq.id, "NOT_REQUIRED", { notes: "Below the demo threshold for this scope (fictional determination basis)." });
     pass("the full official-status vocabulary is reachable through guarded, backed transitions");
     await walk(freshReq.id, "SCHEDULED", {}, 409);
     pass("invalid transitions (NOT_REQUIRED → SCHEDULED) are refused by the status machine");
+
+    // NOT_REQUIRED is a lender-side determination with a recorded basis —
+    // a borrower-side PM can never neutralize a requirement.
+    const reqNr = (await j("compliance", "POST", `/api/projects/${P}/line-requirements`, {
+      budgetLineId: "bl-dmv-4", inspectionType: "Insulation inspection (demo)",
+      requiredBeforePayment: false,
+    }, 201)).requirement;
+    assert((await api("pm", "POST", `/api/line-requirements/${reqNr.id}/status`,
+      { toStatus: "NOT_REQUIRED", notes: "n/a" })).status === 403,
+      "a borrower-side PROJECT_MANAGER cannot record NOT_REQUIRED (determination roles only, 403)");
+    assert((await api("compliance", "POST", `/api/line-requirements/${reqNr.id}/status`,
+      { toStatus: "NOT_REQUIRED" })).status === 400,
+      "NOT_REQUIRED without a recorded determination basis is refused (400)");
+    await walk(reqNr.id, "NOT_REQUIRED", { notes: "Scope is finish carpentry only; no rough inspection applies (demo)." });
+    pass("a determination role records NOT_REQUIRED with its basis");
+
+    // Fresh-backing rule: backing recorded for an earlier, contradictory
+    // lookup can never support a NEW official result.
+    const reqStale = (await j("compliance", "POST", `/api/projects/${P}/line-requirements`, {
+      budgetLineId: "bl-dmv-4", inspectionType: "Drywall screw inspection (demo)",
+      requiredBeforePayment: false,
+    }, 201)).requirement;
+    await walk(reqStale.id, "SCHEDULED", { scheduledDate: "2026-08-01" });
+    await walk(reqStale.id, "FAILED", { officialResultText: "FAILED — fastener spacing (demo)", lookupAt: "2026-08-02T09:00:00.000Z" });
+    await walk(reqStale.id, "REINSPECTION_REQUIRED", { officialResultText: "Reinspection required (demo)", lookupAt: "2026-08-02T09:05:00.000Z" });
+    await walk(reqStale.id, "SCHEDULED", { scheduledDate: "2026-08-09" });
+    assert((await api("compliance", "POST", `/api/line-requirements/${reqStale.id}/status`,
+      { toStatus: "PASSED" })).status === 400,
+      "REGRESSION: PASSED with only the stale FAILED-lookup backing on file is refused (fresh lookup required)");
+    assert((await api("compliance", "POST", `/api/line-requirements/${reqStale.id}/status`,
+      { toStatus: "PASSED", officialSourceId: "osr-dmv-1", lookupAt: "2026-08-10T09:00:00.000Z" })).status === 400,
+      "REGRESSION: a terminal official result without the verbatim result text of ITS lookup is refused");
+    await walk(reqStale.id, "PASSED", { officialResultText: "PASSED — reinspection approved (demo)", lookupAt: "2026-08-10T09:00:00.000Z" });
+    pass("a terminal official result records only with the fresh verbatim text and lookup timestamp");
+
+    // PARTIAL is not a pass: a partially-approved official inspection
+    // keeps blocking payment eligibility until the jurisdiction passes it.
+    const reqPartial = (await j("compliance", "POST", `/api/projects/${P}/line-requirements`, {
+      budgetLineId: "bl-dmv-1", inspectionType: "Structural close-in inspection (demo)",
+      requiredBeforePayment: true,
+    }, 201)).requirement;
+    await walk(reqPartial.id, "SCHEDULED", { scheduledDate: "2026-08-03" });
+    await walk(reqPartial.id, "PARTIAL", { officialResultText: "PARTIAL — first floor approved, second floor pending (demo)", lookupAt: "2026-08-04T10:00:00.000Z" });
+    rec = await controlRecord();
+    const l1Partial = lineOf(rec, "dline-dmv-1");
+    assert(l1Partial.finalEligibilityStatus === "INSPECTION_REQUIRED" && codes(l1Partial).includes("INSPECTION_PARTIAL"),
+      "REGRESSION: a PARTIAL official result blocks eligibility with its own explicit reason code");
+    await walk(reqPartial.id, "PASSED", { officialResultText: "PASSED — remaining scope approved (demo)", lookupAt: "2026-08-05T10:00:00.000Z" });
+    rec = await controlRecord();
+    assert(lineOf(rec, "dline-dmv-1").finalEligibilityStatus === "ELIGIBLE_FOR_LENDER_REVIEW",
+      "once the jurisdiction records the full pass the line returns to eligible");
 
     // Trade-type extensibility: not a closed DMV-only list.
     const draftCustom = (await j("compliance", "POST", "/api/permits/permit-dmv-mech/basis", {

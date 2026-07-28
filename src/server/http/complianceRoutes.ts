@@ -37,6 +37,8 @@ export async function handleComplianceRoutes(ctx: ComplianceRouteContext): Promi
       ctx.sendJson(json, status);
     }
   };
+  // Form posts deliver "1"/"true"; JSON clients deliver real booleans.
+  const flag = (v: unknown): boolean => v === true || v === "1" || v === "true";
 
   // ---------------- project compliance read model ----------------
   const projectApi = /^\/api\/projects\/([^/]+)\/compliance$/.exec(pathname);
@@ -170,12 +172,12 @@ export async function handleComplianceRoutes(ctx: ComplianceRouteContext): Promi
       permitBasisVersionId: body.permitBasisVersionId || null,
       prerequisiteRequirementId: body.prerequisiteRequirementId || null,
       sequence: body.sequence ? Number(body.sequence) : 0,
-      requiredBeforeConcealment: body.requiredBeforeConcealment === "1" || body.requiredBeforeConcealment === "true",
+      requiredBeforeConcealment: flag(body.requiredBeforeConcealment),
       requiredBeforePayment:
         body.requiredBeforePayment === undefined || body.requiredBeforePayment === ""
           ? undefined
-          : body.requiredBeforePayment === "1" || body.requiredBeforePayment === "true",
-      requiredBeforeFinal: body.requiredBeforeFinal === "1" || body.requiredBeforeFinal === "true",
+          : flag(body.requiredBeforePayment),
+      requiredBeforeFinal: flag(body.requiredBeforeFinal),
       notes: body.notes || null,
     });
     finish(`/project/${requirement.projectId}/compliance`, { requirement }, 201);
@@ -196,7 +198,7 @@ export async function handleComplianceRoutes(ctx: ComplianceRouteContext): Promi
       reinspectionRequired:
         body.reinspectionRequired === undefined || body.reinspectionRequired === ""
           ? undefined
-          : body.reinspectionRequired === "1" || body.reinspectionRequired === "true",
+          : flag(body.reinspectionRequired),
       jurisdictionalInspectionId: body.jurisdictionalInspectionId || null,
       officialSourceId: body.officialSourceId || null,
       lookupAt: body.lookupAt || null,
