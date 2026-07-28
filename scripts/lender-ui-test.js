@@ -13,6 +13,7 @@
  */
 const { spawn } = require("node:child_process");
 const { launchChromium } = require("./lib/browser");
+const { signInAll, playwrightCookie } = require("./lib/session");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
@@ -271,7 +272,8 @@ const financialState = () =>
     // ---- 12. no horizontal overflow at required widths ----
     const browser = await launchChromium();
     const ctx = await browser.newContext();
-    await ctx.addCookies([{ name: "obv_user", value: "user-funder", url: BASE }]);
+    await signInAll(BASE);
+    await ctx.addCookies([playwrightCookie(BASE, "user-funder")]);
     const bpage = await ctx.newPage();
     for (const w of [375, 390, 393, 430, 768, 1024, 1280, 1440]) {
       await bpage.setViewportSize({ width: w, height: 900 });

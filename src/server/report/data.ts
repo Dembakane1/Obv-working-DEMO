@@ -7,6 +7,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as repo from "../db/repo";
+import { canAccessProject } from "../services/authz";
 import { WORM_DIR } from "../db/index";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { wormEvidenceStore } from "../services/WormEvidenceStore";
@@ -87,8 +88,14 @@ export async function assembleReportData(
   projectId: string,
   generatedBy: User
 ): Promise<FunderReportData | null> {
+  // TENANT BOUNDARY at the authoritative assembly boundary, not the route.
+  // This function is the only place the full funder picture is built —
+  // evidence, verification verdicts, the ledger, tranche amounts, approver
+  // names — so enforcing here means no internal caller (report page, PDF
+  // path, preview) can assemble another tenant's project. Returning null
+  // gives the caller the SAME "project not found" a nonexistent id does.
   const project = repo.getProject(projectId);
-  if (!project) return null;
+  if (!project || !canAccessProject(generatedBy, project)) return null;
 
   const funder = repo.getOrganization(project.organizationId);
   const pm = repo.listUsers().find((u) => u.role === "PROJECT_MANAGER");

@@ -131,14 +131,13 @@ it corrupts a lender-facing artifact.
 
 ---
 
-## Found and NOT fixed — recommended follow-up
+## Broken authorization — ALL FIXED in the remediation pass
 
-These are real and independently reproduced, but fixing them means
-reworking the authorization model. That is a behaviour change of a size
-this dependency/tooling pass should not smuggle in, and it would
-legitimately alter who can see and do what across the demo. They are
-listed here so the decision is explicit rather than silent, and they
-warrant a dedicated change.
+These were deferred from the dependency/tooling pass because closing them
+meant reworking the authorization model. That work is now done: see
+**`docs/AUTHORIZATION.md`** for the model and
+**`scripts/authz-test.js`** (58 adversarial checkpoints) for the proof.
+Every row below is fixed and regression-tested.
 
 Severities below are the **post-verification** ratings: each finding was
 re-checked by an independent adversarial pass instructed to refute it, and
@@ -158,14 +157,14 @@ cookie; the chat gap from HIGH).
 | MEDIUM | `http/server.ts` | `GET /api/field-context` returns project, milestone and tranche data with no session. |
 | MEDIUM | `http/server.ts` | `/worm/` evidence media is served with no session check and before the access-code gate. |
 
-Note on `/worm/` specifically: the obvious one-line session gate **breaks
-PDF generation**. The renderer fetches report HTML with a one-time
-preview token rather than a session cookie, and `view/report.tsx` embeds
-evidence photos as `<img src="/worm/…">`, so those sub-resource requests
-are unauthenticated by design. Closing this properly means giving the
-renderer a real credential or inlining the media — worth doing, but not a
-one-liner, and not something to land untested alongside a toolchain
-change.
+How `/worm/` was closed without breaking PDFs: the renderer fetches report
+HTML with a render token rather than a session cookie, so an
+`<img src="/worm/...">` inside it was an unauthenticated sub-resource
+request. Rather than authorize that request, the media is now inlined as
+`data:` URIs when the HTML is cached for rendering — the sub-resource
+request no longer exists, so `/worm/` carries a plain session gate with no
+bearer-token surface, and nothing new is exported into the ZIPs handed to
+external auditors.
 
 The newer layers are notably *not* in this table. Banking, disputes,
 lender decisions, draw inspections, retainage, change orders, exceptions,

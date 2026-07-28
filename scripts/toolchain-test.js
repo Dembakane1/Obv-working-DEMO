@@ -241,6 +241,56 @@ const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
     "the test runner forces mock/demo banking regardless of ambient environment"
   );
 
+  // ---- 7b. authorization controls stay in place ----
+  // These are cheap structural guards, not a substitute for authz-test.js.
+  // They catch the specific regressions that would silently reopen the
+  // holes this pass closed.
+  const sessionSrc = read("src/server/http/session.ts");
+  assert(
+    /createHmac\(/.test(sessionSrc) && /timingSafeEqual\(/.test(sessionSrc),
+    "session tokens are HMAC-signed and compared in constant time"
+  );
+  assert(
+    /OBV_SESSION_SECRET/.test(sessionSrc) && /SessionConfigError/.test(sessionSrc),
+    "a server secret is required, with explicit startup validation"
+  );
+  assert(
+    !/OBV_SESSION_SECRET\s*=\s*["'][^"']+["']/.test(sessionSrc),
+    "no session secret is hardcoded in the session module"
+  );
+  const serverSrc = read("src/server/http/server.ts");
+  assert(
+    /readSessionToken\(parseCookies\(req\)\[SESSION_COOKIE\]\)/.test(serverSrc),
+    "currentUser resolves identity through the signed-token reader, never the raw cookie"
+  );
+  const authzSrc = read("src/server/services/authz.ts");
+  assert(
+    /export function requireProject/.test(authzSrc) && /AccessError/.test(authzSrc),
+    "the shared authorization boundary exposes requireProject with a same-404 error"
+  );
+  assert(
+    !/from "\.\/lenderAccess"/.test(authzSrc) && !/from "\.\/budgetProgress"/.test(authzSrc),
+    "authz stays a dependency leaf (importing services back would recreate the load-time cycle)"
+  );
+  const orchestratorSrc = read("src/server/workflow/orchestrator.ts");
+  assert(
+    /requireApprovalRequestAccess/.test(orchestratorSrc),
+    "the approval orchestrator enforces the tenant boundary itself, not only at the route"
+  );
+  const previewSrc = read("src/server/http/previewToken.ts");
+  assert(
+    /randomBytes\(32\)/.test(previewSrc) && /tokens\.delete\(token\)/.test(previewSrc),
+    "render tokens are cryptographically random and single-use"
+  );
+  assert(
+    /inlineWormMedia/.test(serverSrc),
+    "report HTML inlines WORM media, so /worm/ can stay session-gated without breaking PDFs"
+  );
+  assert(
+    /"authz-test\.js"/.test(read("scripts/run-all-tests.js")),
+    "the adversarial authorization suite runs as part of the battery"
+  );
+
   // ---- 8. no committed secrets ----
   const tracked = execFileSync("git", ["ls-files"], { cwd: ROOT, encoding: "utf8" })
     .split("\n")

@@ -55,8 +55,50 @@ const ORG_KINDS = [
   "DEVELOPMENT_FINANCE", "GOVERNMENT",
 ];
 
+/**
+ * ROLE predicate only — which roles may use the pilot surfaces at all.
+ * It says nothing about WHICH project. Use `assertPilotProjectAccess` for
+ * anything that names a project: role alone let any PROJECT_MANAGER rewrite
+ * another tenant's approval matrix, tranche amounts and field assignments.
+ */
 export function canAdminPilot(user: User): boolean {
   return user.role === "PROJECT_MANAGER";
+}
+
+/**
+ * Pilot administration authority over ONE project: the pilot admin role
+ * plus actual participation in that project — a counterparty organisation,
+ * an active field assignment, an accepted project invitation, or having
+ * created the draft. This is the same participation set the approval matrix
+ * and readiness engine already use, so it introduces no new model.
+ */
+export function canAdminPilotProject(user: User, projectId: string): boolean {
+  if (!canAdminPilot(user)) return false;
+  try {
+    return projectParticipants(projectId).some((u) => u.id === user.id);
+  } catch {
+    return false;
+  }
+}
+
+/** Same-404: a project the caller may not administer is indistinguishable
+ *  from one that does not exist. */
+export function assertPilotProjectAccess(user: User, projectId: string): Project {
+  const project = repo.getProject(projectId);
+  if (!project || !canAdminPilotProject(user, projectId)) {
+    throw new SubmissionError("Unknown project", 404);
+  }
+  return project;
+}
+
+/** Read authority over one pilot project (viewer roles + participation). */
+export function canViewPilotProject(user: User, projectId: string): boolean {
+  if (!canViewPilot(user)) return false;
+  try {
+    return projectParticipants(projectId).some((u) => u.id === user.id);
+  } catch {
+    return false;
+  }
 }
 export function canViewPilot(user: User): boolean {
   return ["PROJECT_MANAGER", "FUNDER_REP", "COMPLIANCE_REVIEWER"].includes(user.role);
@@ -657,6 +699,9 @@ export function updateMilestone(
 ): Milestone {
   const milestone = repo.getMilestone(milestoneId);
   if (!milestone) throw new SubmissionError("Unknown milestone", 404);
+  // Project + tenant authority at the SERVICE boundary — these routes sit
+  // outside /api/pilot/projects/:id, so the router gate does not cover them.
+  assertPilotProjectAccess(actor, milestone.projectId);
   const project = mustProject(milestone.projectId);
   const reason = strOrNull(input.reason, 400);
   requireChangeReason(project, reason, `milestone M${milestone.seq}`);
@@ -717,6 +762,10 @@ export function updateMilestone(
 export function removeMilestone(milestoneId: string, actor: User): void {
   const milestone = repo.getMilestone(milestoneId);
   if (!milestone) throw new SubmissionError("Unknown milestone", 404);
+  // Project + tenant authority at the SERVICE boundary: these routes are
+  // not under /api/pilot/projects/:id, so the router-level gate does not
+  // reach them. Same-404 for a milestone in another tenant.
+  assertPilotProjectAccess(actor, milestone.projectId);
   const project = mustProject(milestone.projectId);
   if (project.status !== "DRAFT") {
     throw new SubmissionError("Milestones can only be deleted before launch — archive requires a draft", 409);
@@ -741,6 +790,10 @@ export function saveRequirement(
   const milestoneId = String(input.milestoneId ?? "");
   const milestone = repo.getMilestone(milestoneId);
   if (!milestone) throw new SubmissionError("Unknown milestone", 404);
+  // Project + tenant authority at the SERVICE boundary — these routes sit
+  // outside /api/pilot/projects/:id, so the router gate does not cover them.
+  assertPilotProjectAccess(actor, milestone.projectId);
+
   const project = mustProject(milestone.projectId);
   const reason = strOrNull(input.reason, 400);
   requireChangeReason(project, reason, "evidence requirements");
@@ -790,6 +843,9 @@ export function removeRequirement(id: string, actor: User): void {
   const req = repo.getRequirement(id);
   if (!req) throw new SubmissionError("Unknown requirement", 404);
   const milestone = repo.getMilestone(req.milestoneId)!;
+  // Project + tenant authority at the SERVICE boundary — these routes sit
+  // outside /api/pilot/projects/:id, so the router gate does not cover them.
+  assertPilotProjectAccess(actor, milestone.projectId);
   const project = mustProject(milestone.projectId);
   if (project.status !== "DRAFT") {
     throw new SubmissionError("Launched projects edit requirements with a change reason instead of deleting", 409);

@@ -17,6 +17,7 @@
  */
 import * as repo from "../db/repo";
 import * as lrepo from "../db/lenderRepo";
+import { hasActiveMembership } from "./authz";
 import { canAccessProjectFinance } from "./budgetProgress";
 import { parseIsoDate } from "./permits";
 import type {
@@ -104,12 +105,7 @@ export function hasCapability(user: User, projectId: string, cap: ProjectCapabil
  *  the project. Used to extend (never restrict) project access: a granted
  *  membership makes lender endpoints reachable even for roles that would
  *  not pass the legacy finance-access check. */
-export function hasActiveMembership(user: User, projectId: string): boolean {
-  const now = Date.now();
-  return lrepo
-    .listMembershipsForUser(user.id)
-    .some((m) => m.projectId === projectId && membershipActive(m, now));
-}
+export { hasActiveMembership } from "./authz";
 
 /** True when the project has ANY currently-effective membership rows.
  *  This is the authority-mode pivot: with no active memberships the

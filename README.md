@@ -89,6 +89,12 @@ Full reasoning behind every control: **`docs/TOOLCHAIN.md`**.
 
 ### Security
 
+`docs/AUTHORIZATION.md` documents the authorization model: the same-404
+tenant boundary, service-layer (not route-layer) enforcement, the signed
+session mechanism and `OBV_SESSION_SECRET`, and the scoped single-use
+render tokens used for PDF generation. `scripts/authz-test.js` proves it
+adversarially with real cross-tenant object ids.
+
 `docs/SECURITY_REVIEW.md` records the automated review across SQL
 injection, XSS, broken authorization, unsafe file handling, secret
 exposure, dependency vulnerabilities and SSRF — what was fixed (each with

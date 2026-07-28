@@ -226,6 +226,7 @@ async function waitUp() {
       body: JSON.stringify({ token: rawToken, name: "Lena Okafor", title: "Compliance Officer" }),
     });
     assert(accept1.status === 201, "valid invitation activates and creates the user");
+    jars.lena = accept1.headers.getSetCookie()[0].split(";")[0];
     const reviewer = (await accept1.json()).user;
     const accept2 = await fetch(BASE + "/api/invitations/accept", {
       method: "POST",
@@ -364,6 +365,9 @@ async function waitUp() {
         name: "Grace Tembo", title: "Site Engineer",
       }),
     });
+    // The accept response issues this user's session — capture it rather
+    // than impersonating them through the demo switcher.
+    jars.grace = fAccept.headers.getSetCookie()[0].split(";")[0];
     const fieldUser = (await fAccept.json()).user;
     assert(
       fAccept.status === 201 &&
@@ -374,8 +378,8 @@ async function waitUp() {
     const readyPage = await page("pm", `/setup/project/${project.id}?stage=review`);
     assert(readyPage.includes("READY TO LAUNCH"), "readiness passes when configuration is complete");
 
-    // unauthorized launch blocked
-    await signIn("grace", fieldUser.id);
+    // unauthorized launch blocked (grace's session came from her invitation)
+    void fieldUser;
     const fieldLaunch = await api("grace", "POST", `/api/pilot/projects/${project.id}/launch`, {});
     assert(fieldLaunch.status === 403, "unauthorized role cannot launch a project");
 
@@ -473,7 +477,7 @@ async function waitUp() {
       (await pmDecision.json()).released === false && projGov(project.id).released === 0,
       "one matrix approval is not enough — funds stay HELD"
     );
-    await signIn("lena", reviewer.id);
+    void reviewer;
     const finalDecision = await api("lena", "POST", `/api/approvals/${ev.approvalRequest.id}/decision`, { decision: "APPROVED" });
     assert(
       (await finalDecision.json()).released === true && projGov(project.id).released === 1,

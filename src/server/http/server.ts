@@ -13,8 +13,20 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { consumeRenderToken, mintRenderToken } from "./previewToken";
+import {
+  SESSION_COOKIE,
+  assertSessionConfig,
+  demoAuthEnabled,
+  isSeededDemoUserId,
+  readSessionToken,
+  sessionCookieHeader,
+  sessionStartupNotice,
+} from "./session";
 import { getDb, REPORTS_DIR, WORM_DIR, UPLOADS_DIR } from "../db/index";
 import * as repo from "../db/repo";
+import * as authz from "../services/authz";
+import { AccessError } from "../services/authz";
 import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { wormEvidenceStore } from "../services/WormEvidenceStore";
@@ -68,6 +80,7 @@ import {
   verifySignature,
   WhatsAppSyncError,
 } from "../services/whatsappSync/provider";
+import * as fieldOps from "../services/fieldOps";
 import {
   canManageFieldOps,
   createClarification,
@@ -180,7 +193,7 @@ import { renderHome, type HomeSnapshot } from "../view/homePage";
 import type { NavContext } from "../view/components";
 import { assembleReportData, reportFilename } from "../report/data";
 import { renderFunderReport } from "../view/report";
-import type { EvidenceSubmission, Report, User } from "../../shared/types";
+import type { EvidenceSubmission, FieldIssue, Report, User } from "../../shared/types";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const PUBLIC_DIR = path.join(process.cwd(), "public");
@@ -211,9 +224,30 @@ const RENDER_SCRIPT = path.join(process.cwd(), "scripts", "render-pdf.js");
  *  sets /app/node_modules) override it explicitly. */
 const PLAYWRIGHT_NODE_PATH =
   process.env.OBV_PLAYWRIGHT_NODE_PATH ?? path.join(process.cwd(), "node_modules");
-const previewToken = randomUUID();
 /** Report HTML cached between generate-request and Chromium fetch. */
 const pendingReportHtml = new Map<string, string>();
+
+/**
+ * Inline WORM evidence media as data URIs.
+ *
+ * Chromium fetches report HTML with a render token, not a session, so any
+ * <img src="/worm/..."> inside it would be an unauthenticated sub-resource
+ * request — which is exactly why that route used to be open. Embedding the
+ * bytes at cache time removes the requirement entirely, so /worm/ can be
+ * session-gated without breaking PDF generation. Anything unreadable is
+ * left untouched rather than turned into a broken gate.
+ */
+function inlineWormMedia(html: string): string {
+  return html.replace(/src="\/worm\/([^"]+)"/g, (whole: string, file: string) => {
+    try {
+      const bytes = fs.readFileSync(path.join(WORM_DIR, path.basename(file)));
+      const mime = MIME[path.extname(file).toLowerCase()] ?? "image/jpeg";
+      return `src="data:${mime};base64,${bytes.toString("base64")}"`;
+    } catch {
+      return whole;
+    }
+  });
+}
 
 /**
  * Whether the Playwright-based PDF renderer is usable in this environment.
@@ -260,8 +294,14 @@ function parseCookies(req: http.IncomingMessage): Record<string, string> {
   return out;
 }
 
+/**
+ * The authenticated identity, or null.
+ *
+ * The cookie is a signed token, not a raw user id: a forged or edited value
+ * fails verification and yields null, exactly like no cookie at all.
+ */
 function currentUser(req: http.IncomingMessage): User | null {
-  const id = parseCookies(req)["obv_user"];
+  const id = readSessionToken(parseCookies(req)[SESSION_COOKIE]);
   return id ? repo.getUser(id) : null;
 }
 
@@ -355,17 +395,31 @@ function usersById(): Map<string, User> {
 
 function navFor(user: User, active: string): NavContext {
   const org = repo.getOrganization(user.organizationId);
+  // Every badge is scoped to the caller's projects. An unscoped count is a
+  // side channel: it discloses how much work exists in other tenants even
+  // when the underlying records are unreachable.
+  const visible = authz.accessibleProjectIds(user);
+  const milestoneInScope = (milestoneId: string | null | undefined): boolean => {
+    if (!milestoneId) return false;
+    const m = repo.getMilestone(milestoneId);
+    return Boolean(m && visible.has(m.projectId));
+  };
   return {
     user,
     active,
-    pendingApprovals: repo.listPendingApprovalRequests().length,
-    openIssues: repo.listFieldIssues().filter((i) => !["RESOLVED", "CLOSED"].includes(i.status)).length,
+    pendingApprovals: repo
+      .listPendingApprovalRequests()
+      .filter((a) => milestoneInScope(a.milestoneId)).length,
+    openIssues: repo
+      .listFieldIssues()
+      .filter((i) => !["RESOLVED", "CLOSED"].includes(i.status) && visible.has(i.projectId)).length,
     openExceptions: repo
       .listExceptions()
       .filter(
         (e) =>
           ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_RESPONSE"].includes(e.status) &&
-          ["HIGH", "CRITICAL"].includes(e.severity)
+          ["HIGH", "CRITICAL"].includes(e.severity) &&
+          visible.has(e.projectId)
       ).length,
     orgName: org?.name,
     orgKind: org?.kind,
@@ -416,21 +470,32 @@ async function projectCardData(projectId: string): Promise<ProjectCardData | nul
   };
 }
 
-async function allProjectCards(): Promise<ProjectCardData[]> {
+/** Project cards the caller may see. Never all projects: this feeds the
+ *  Overview and Projects pages, which would otherwise render every
+ *  tenant's portfolio, budgets and milestone status to anyone signed in. */
+async function allProjectCards(user: User): Promise<ProjectCardData[]> {
   const out: ProjectCardData[] = [];
-  for (const project of repo.listProjects()) {
+  for (const project of authz.accessibleProjects(user)) {
     const d = await projectCardData(project.id);
     if (d) out.push(d);
   }
   return out;
 }
 
-function overviewMetrics(projects: ProjectCardData[]): OverviewMetrics {
+function overviewMetrics(user: User, projects: ProjectCardData[]): OverviewMetrics {
   const allRows = projects.flatMap((p) => p.milestones);
+  // Counts follow the same boundary as the cards themselves.
+  const visibleMilestones = new Set(allRows.map((r) => r.milestone.id));
   const flagged = repo
     .listAllVerifications()
-    .filter((v) => v.verdict !== "VERIFIED").length;
-  const pendingRequests = repo.listPendingApprovalRequests();
+    .filter((v) => v.verdict !== "VERIFIED")
+    .filter((v) => {
+      const ev = repo.getEvidence(v.evidenceItemId);
+      return Boolean(ev && visibleMilestones.has(ev.milestoneId));
+    }).length;
+  const pendingRequests = repo
+    .listPendingApprovalRequests()
+    .filter((a) => a.milestoneId && visibleMilestones.has(a.milestoneId));
   return {
     totalBudget: projects.reduce((s, p) => s + p.summary.totalBudget, 0),
     released: projects.reduce((s, p) => s + p.summary.released, 0),
@@ -450,7 +515,9 @@ function overviewMetrics(projects: ProjectCardData[]): OverviewMetrics {
 
 function approvalQueue(user: User): ApprovalQueueItem[] {
   const items: ApprovalQueueItem[] = [];
-  const projects = new Map(repo.listProjects().map((p) => [p.id, p]));
+  // Only the caller's projects. The queue used to iterate every project in
+  // the database, so one tenant's governance backlog was visible to all.
+  const projects = new Map(authz.accessibleProjects(user).map((p) => [p.id, p]));
   for (const project of projects.values()) {
     const releasedByMilestone = new Map(
       repo
@@ -946,14 +1013,14 @@ async function generateDrawReport(
     integrityStatus: data.ledger.valid ? "INTACT" : `TAMPERED_AT:${data.ledger.brokenAt}`,
     ledgerEntries: data.ledger.entries,
   };
-  pendingReportHtml.set(report.id, renderDrawReport(data));
+  pendingReportHtml.set(report.id, inlineWormMedia(renderDrawReport(data)));
   try {
     const outDir = path.join(REPORTS_DIR, report.id);
     fs.mkdirSync(outDir, { recursive: true });
     const outPath = path.join(outDir, report.filename);
     const config = Buffer.from(
       JSON.stringify({
-        url: `http://127.0.0.1:${PORT}/report-cache/${report.id}?token=${previewToken}`,
+        url: `http://127.0.0.1:${PORT}/report-cache/${report.id}?token=${mintRenderToken(report.id)}`,
         outPath,
         projectName: `Draw #${draw.drawNumber} — ${data.project.name}`,
         generatedAt: data.generatedAt.replace("T", " ").replace(/\.\d+Z$/, " UTC"),
@@ -1012,12 +1079,12 @@ async function generateDrawVerificationPackage(
   if (pdfRendererAvailable()) {
     const key = `draw-pkg-${randomUUID()}`;
     const outPath = path.join(REPORTS_DIR, `${key}.pdf`);
-    pendingReportHtml.set(key, html);
+    pendingReportHtml.set(key, inlineWormMedia(html));
     try {
       fs.mkdirSync(REPORTS_DIR, { recursive: true });
       const config = Buffer.from(
         JSON.stringify({
-          url: `http://127.0.0.1:${PORT}/report-cache/${key}?token=${previewToken}`,
+          url: `http://127.0.0.1:${PORT}/report-cache/${key}?token=${mintRenderToken(key)}`,
           outPath,
           projectName: `Draw #${data.draw.drawNumber} — ${data.project.name}`,
           generatedAt: data.generatedAt.replace("T", " ").replace(/\.\d+Z$/, " UTC"),
@@ -1200,6 +1267,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       if (serveStatic(res, COMM_MEDIA_DIR, pathname.slice("/comm-media/".length))) return;
     }
     if (pathname.startsWith("/worm/")) {
+      // WORM evidence media is the primary evidence artifact and its object
+      // name IS the published evidence hash, which appears in audit-package
+      // registers shared with external auditors. It is session-gated, like
+      // /comm-media/ above. The PDF renderer does NOT need this route: the
+      // HTML it fetches has its evidence media inlined as data URIs, so
+      // Chromium makes no credential-less sub-resource request.
+      if (!currentUser(req)) {
+        sendJson(res, { error: "Not found" }, 404);
+        return;
+      }
       if (serveStatic(res, WORM_DIR, pathname.slice("/worm/".length))) return;
     } else if (pathname !== "/" && serveStatic(res, PUBLIC_DIR, pathname.slice(1))) {
       return;
@@ -1241,7 +1318,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   // ---- demo session ----
+  // The passwordless role switcher. It is the demo's sign-in, so it stays
+  // open for the demo — but it is disabled entirely under production
+  // posture, where assuming any identity by id is an authentication bypass.
   if (method === "POST" && pathname === "/api/session") {
+    if (!demoAuthEnabled()) {
+      sendJson(res, { error: "Not found" }, 404);
+      return;
+    }
     const body = await readBody(req, 64 * 1024);
     const text = body.toString("utf8");
     let userId = "";
@@ -1250,21 +1334,31 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     } else {
       userId = new URLSearchParams(text).get("userId") ?? "";
     }
+    // Only SEEDED demo identities may be assumed here. People created by
+    // real pilot invitations receive their session from the invitation
+    // acceptance itself; without this restriction the switcher is a
+    // passwordless impersonation oracle for every real user in the
+    // database. Unknown and non-seeded produce the identical response, so
+    // this cannot be used to test whether a user id exists.
     const user = repo.getUser(userId);
-    if (!user) {
-      sendJson(res, { error: "Unknown user" }, 400);
+    if (!user || !isSeededDemoUserId(user.id)) {
+      sendJson(res, { error: "Not found" }, 404);
       return;
     }
-    res.setHeader(
-      "Set-Cookie",
-      `obv_user=${encodeURIComponent(user.id)}; Path=/; SameSite=Lax; HttpOnly; Max-Age=86400`
-    );
+    res.setHeader("Set-Cookie", sessionCookieHeader(req, user.id));
     redirect(res, user.role === "FIELD" ? "/field" : "/overview");
     return;
   }
 
   // ---- APIs ----
   if (method === "GET" && pathname === "/api/state") {
+    // The fingerprint aggregates milestone and evidence counts across every
+    // project, so anonymously it is a cross-tenant activity oracle: an
+    // outsider could watch it change and infer another tenant's operations.
+    if (!currentUser(req)) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
     sendJson(res, { fingerprint: stateFingerprint() });
     return;
   }
@@ -1274,10 +1368,17 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // assignments sees exactly their assigned projects/milestones; a user
     // without assignments keeps the legacy behavior for unassigned
     // (demo) projects but never sees assignment-scoped pilot projects.
+    // Requires a session: this returns project, milestone and tranche data
+    // and was previously readable by anyone who could reach the port.
     const fieldUser = currentUser(req);
-    const myAssignments = fieldUser ? repo.listAssignmentsForUser(fieldUser.id) : [];
+    if (!fieldUser) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const myAssignments = repo.listAssignmentsForUser(fieldUser.id);
     const assignedProjectIds = new Set(myAssignments.map((a) => a.projectId));
-    const visibleProjects = repo.listProjects().filter((project) => {
+    // Only projects this caller may see, then the field-assignment scoping.
+    const visibleProjects = authz.accessibleProjects(fieldUser).filter((project) => {
       if (project.status !== "ACTIVE") return false;
       if (assignedProjectIds.size > 0) return assignedProjectIds.has(project.id);
       return repo.listAssignmentsForProject(project.id).filter((a) => a.active).length === 0;
@@ -1319,12 +1420,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   // every state shown is read from the primary verification/governance
   // records, never computed by the map).
   if (method === "GET" && pathname === "/api/map-context") {
-    if (!currentUser(req)) {
+    const mapUser = currentUser(req);
+    if (!mapUser) {
       sendJson(res, { error: "Select a demo user first" }, 401);
       return;
     }
     const projects = await Promise.all(
-      repo.listProjects().filter((p) => p.status !== "DRAFT").map(async (project) => {
+      authz.accessibleProjects(mapUser).filter((p) => p.status !== "DRAFT").map(async (project) => {
         const features = repo.listSpatialFeatures(project.id);
         const summary = await virtualAccountService.getProjectSummary(project.id);
         const chain = await wormEvidenceStore.verifyChain();
@@ -3167,6 +3269,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   // Ledger integrity check on demand.
   if (method === "POST" && pathname === "/api/ledger/verify") {
+    // State-changing side effects (an in-app notification record and, on
+    // failure, a Teams card) — never reachable anonymously.
+    if (!currentUser(req)) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
     const chain = await wormEvidenceStore.verifyChain();
     if (chain.valid) {
       // Intact checks are routine — in-app record only, no Teams card
@@ -3234,14 +3342,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         : `TAMPERED_AT:${data.integrity.brokenAt}`,
       ledgerEntries: data.integrity.entries,
     };
-    pendingReportHtml.set(report.id, renderFunderReport(data));
+    pendingReportHtml.set(report.id, inlineWormMedia(renderFunderReport(data)));
     try {
       const outDir = path.join(REPORTS_DIR, report.id);
       fs.mkdirSync(outDir, { recursive: true });
       const outPath = path.join(outDir, report.filename);
       const config = Buffer.from(
         JSON.stringify({
-          url: `http://127.0.0.1:${PORT}/report-cache/${report.id}?token=${previewToken}`,
+          url: `http://127.0.0.1:${PORT}/report-cache/${report.id}?token=${mintRenderToken(report.id)}`,
           outPath,
           projectName: data.project.name,
           generatedAt: data.generatedAt.replace("T", " ").replace(/\.\d+Z$/, " UTC"),
@@ -3303,8 +3411,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   // Cached report HTML fetched by the headless renderer (token-gated).
   const cacheMatch = /^\/report-cache\/([^/]+)$/.exec(pathname);
   if (method === "GET" && cacheMatch) {
+    // The token must have been minted for THIS subject, be unexpired and
+    // unused. It is never an alternative to a session for any other route.
     const html = pendingReportHtml.get(cacheMatch[1]);
-    if (!html || url.searchParams.get("token") !== previewToken) {
+    if (!consumeRenderToken(url.searchParams.get("token"), cacheMatch[1]) || !html) {
       sendJson(res, { error: "Not found" }, 404);
       return;
     }
@@ -3344,18 +3454,27 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sendHtml(res, renderError(navFor(user, "reports"), "Report not found", "This report is no longer available (demo data may have been reset). Generate a new one from the Reports page."), 404);
       return;
     }
-    // Lender Draw Verification Packages carry the audit-package policy:
-    // institutional roles + tenant access only (404 across tenants).
-    if (report.reportType === "DRAW_VERIFICATION_PACKAGE") {
-      const project = repo.getProject(report.projectId);
-      const allowed =
-        project &&
-        ["FUNDER_REP", "PROJECT_MANAGER", "COMPLIANCE_REVIEWER"].includes(user.role) &&
-        budget.canAccessProjectFinance(user, project);
-      if (!allowed) {
-        sendHtml(res, renderError(navFor(user, "reports"), "Report not found", "This report is no longer available (demo data may have been reset). Generate a new one from the Reports page."), 404);
-        return;
-      }
+    // TENANT BOUNDARY for EVERY report type. This check used to sit inside
+    // the DRAW_VERIFICATION_PACKAGE branch, so VERIFICATION_FUND_RELEASE and
+    // DRAW_REVIEW_SUMMARY PDFs were served to any signed-in user of any
+    // organisation — and report ids are not secret (they appear in the
+    // audit-package report index).
+    const reportProject = repo.getProject(report.projectId);
+    const notFound = () => {
+      sendHtml(res, renderError(navFor(user, "reports"), "Report not found", "This report is no longer available (demo data may have been reset). Generate a new one from the Reports page."), 404);
+    };
+    if (!reportProject || !authz.canAccessProject(user, reportProject)) {
+      notFound();
+      return;
+    }
+    // Lender Draw Verification Packages additionally carry the
+    // audit-package policy: institutional roles only.
+    if (
+      report.reportType === "DRAW_VERIFICATION_PACKAGE" &&
+      !["FUNDER_REP", "PROJECT_MANAGER", "COMPLIANCE_REVIEWER"].includes(user.role)
+    ) {
+      notFound();
+      return;
     }
     const isZip = report.filename.endsWith(".zip");
     const disposition = isZip || url.searchParams.get("dl") === "1" ? "attachment" : "inline";
@@ -3400,12 +3519,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           if (!pdfRendererAvailable()) return null;
           const key = `audit-cover-${randomUUID()}`;
           const outPath = path.join(REPORTS_DIR, `${key}.pdf`);
-          pendingReportHtml.set(key, html);
+          pendingReportHtml.set(key, inlineWormMedia(html));
           try {
             fs.mkdirSync(REPORTS_DIR, { recursive: true });
             const config = Buffer.from(
               JSON.stringify({
-                url: `http://127.0.0.1:${PORT}/report-cache/${key}?token=${previewToken}`,
+                url: `http://127.0.0.1:${PORT}/report-cache/${key}?token=${mintRenderToken(key)}`,
                 outPath,
                 projectName: "Project Audit Package",
                 generatedAt: new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC"),
@@ -3900,10 +4019,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       name: params.get("name") ?? "",
       title: params.get("title") ?? "",
     });
-    res.setHeader(
-      "Set-Cookie",
-      `obv_user=${encodeURIComponent(newUser.id)}; Path=/; SameSite=Lax; HttpOnly; Max-Age=86400`
-    );
+    res.setHeader("Set-Cookie", sessionCookieHeader(req, newUser.id));
     if (isFormPost(req)) redirect(res, newUser.role === "FIELD" ? "/field" : "/overview");
     else sendJson(res, { user: newUser }, 201);
     return;
@@ -3977,10 +4093,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (pilotProjectMatch && pathname.startsWith("/api/pilot/projects/")) {
     const projectId = pilotProjectMatch[1];
     const sub = pilotProjectMatch[2] ?? "";
-    // Export is readable by any pilot viewer role; everything else is admin.
+    // Export is readable by any pilot viewer role WHO PARTICIPATES in this
+    // project; everything else needs project administration authority.
     if (method === "GET" && sub === "export") {
       const viewer = currentUser(req);
       if (!viewer || !pilot.canViewPilot(viewer)) { sendJson(res, { error: "Not authorized" }, 403); return; }
+      // Same 404 across tenants — never disclose that the project exists.
+      if (!pilot.canViewPilotProject(viewer, projectId)) { sendJson(res, { error: "Unknown project" }, 404); return; }
       const pkg = pilot.buildExportPackage(projectId);
       res.writeHead(200, {
         "Content-Type": "application/json; charset=utf-8",
@@ -3992,6 +4111,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (method === "POST") {
       const actor = pilotAdmin();
       if (!actor) { sendJson(res, { error: "Not authorized" }, 403); return; }
+      // PROJECT + TENANT authority, not just the role. Every mutation below
+      // takes projectId straight from the URL, so this single gate covers
+      // the approval matrix, tranche amounts, assignments, requirements,
+      // policies, launch, change control and CSV import.
+      try {
+        pilot.assertPilotProjectAccess(actor, projectId);
+      } catch {
+        sendJson(res, { error: "Unknown project" }, 404);
+        return;
+      }
       const setupUrl = (stage: string) => `/setup/project/${projectId}?stage=${stage}`;
       if (sub === "") {
         const params = await pilotForm();
@@ -4259,8 +4388,25 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   // Seeded demonstration role selector (moved from the root route).
+  //
+  // Only SEEDED identities are listed. People created through real pilot
+  // invitations are never enumerated here, so this page cannot be used to
+  // discover a tenant's actual staff. The whole switcher is unavailable
+  // under production posture, where it would be an authentication bypass.
   if (method === "GET" && pathname === "/demo") {
-    const users = repo.listUsers();
+    if (!demoAuthEnabled()) {
+      // Self-contained: there is no session here, so there is no nav context.
+      sendHtml(
+        res,
+        `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>OBV</title></head>` +
+          `<body style="font-family:system-ui;margin:3rem;color:#0d1626">` +
+          `<h1 style="font-size:1.25rem">Not available</h1>` +
+          `<p>The demonstration role switcher is disabled in this deployment.</p></body></html>`,
+        404
+      );
+      return;
+    }
+    const users = repo.listUsers().filter((u) => isSeededDemoUserId(u.id));
     const orgs = new Map(
       users.map((u) => [u.organizationId, repo.getOrganization(u.organizationId)!])
     );
@@ -4284,6 +4430,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     "/approvals", "/ledger", "/reports", "/compliance", "/insights", "/more", "/field",
     "/map", "/communications", "/issues", "/issue/", "/evidence-drafts",
     "/setup", "/pilot", "/draws", "/draw/", "/budget", "/exceptions", "/exception/", "/change-orders", "/change-order/",
+    // /disputes and /dispute/<id> were absent, so those handlers ran with a
+    // null user and failed as a TypeError instead of redirecting to sign-in.
+    "/disputes", "/dispute/",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -4299,11 +4448,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     // Overview shows operational (launched) projects; drafts live in
     // Pilot Setup until launched.
-    const projects = (await allProjectCards()).filter((p) => p.project.status !== "DRAFT");
+    const projects = (await allProjectCards(user!)).filter((p) => p.project.status !== "DRAFT");
     const chain = await wormEvidenceStore.verifyChain();
     // Real records only: pending approvals -> next releases + queue; open
     // clarifications/issues/review counts from the primary stores.
-    const pendingReqs = repo.listPendingApprovalRequests();
+    const visibleForOverview = authz.accessibleProjectIds(user!);
+    const pendingReqs = repo.listPendingApprovalRequests().filter((a) => {
+      const m = a.milestoneId ? repo.getMilestone(a.milestoneId) : null;
+      return Boolean(m && visibleForOverview.has(m.projectId));
+    });
     const nextReleases = pendingReqs
       .map((req2) => {
         const ms = repo.getMilestone(req2.milestoneId!)!;
@@ -4328,7 +4481,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const openClarsOv = allMilestonesOv
       .flatMap((ms) => repo.listClarificationsForMilestone(ms.id))
       .filter((c) => ["OPEN", "RESPONDED", "REOPENED"].includes(c.status)).length;
-    const openIssuesOv = repo.listFieldIssues().filter((i) => !["RESOLVED", "CLOSED"].includes(i.status));
+    const openIssuesOv = fieldOps.listFieldIssuesForUser(user!).filter((i) => !["RESOLVED", "CLOSED"].includes(i.status));
     await exceptions.evaluateExceptions();
     const openExceptionsOv = repo
       .listExceptions()
@@ -4341,7 +4494,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       res,
       renderOverview({
         nav: navFor(user!, "overview"),
-        metrics: overviewMetrics(projects),
+        metrics: overviewMetrics(user!, projects),
         projects,
         notifications: repo.listNotifications(),
         chainValid: chain.valid,
@@ -4370,15 +4523,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       res,
       renderProjects({
         nav: navFor(user!, "projects"),
-        projects: await allProjectCards(),
+        projects: await allProjectCards(user!),
         filters: {
           q: url.searchParams.get("q") ?? "",
           state: url.searchParams.get("state") ?? "",
         },
         openIssuesByProject: new Map(
-          repo.listProjects().map((p) => [
+          authz.accessibleProjects(user!).map((p) => [
             p.id,
-            repo.listFieldIssues().filter((i) => i.projectId === p.id && !["RESOLVED", "CLOSED"].includes(i.status)).length,
+            fieldOps.listFieldIssuesForUser(user!).filter((i) => i.projectId === p.id && !["RESOLVED", "CLOSED"].includes(i.status)).length,
           ])
         ),
       })
@@ -4575,7 +4728,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
 
   if (method === "GET" && pathname.startsWith("/project/")) {
-    const data = await projectCardData(pathname.slice("/project/".length));
+    // Same 404 for absent and out-of-tenant: this page renders budgets,
+    // milestones, evidence, approvals and the ledger.
+    const requestedProjectId = pathname.slice("/project/".length);
+    const visibleProject = repo.getProject(requestedProjectId);
+    const data =
+      visibleProject && authz.canAccessProject(user!, visibleProject)
+        ? await projectCardData(requestedProjectId)
+        : null;
     if (!data) {
       sendHtml(res, renderError(navFor(user!, ""), "Project not found", "No project exists at this address."), 404);
       return;
@@ -4616,11 +4776,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   if (method === "GET" && pathname.startsWith("/milestone/")) {
     const milestone = repo.getMilestone(pathname.slice("/milestone/".length));
-    if (!milestone) {
+    const milestoneProject = milestone ? repo.getProject(milestone.projectId) : null;
+    // A milestone id from another tenant resolves to a real row — the row
+    // alone proves nothing, so the owning project decides.
+    if (!milestone || !milestoneProject || !authz.canAccessProject(user!, milestoneProject)) {
       sendHtml(res, renderError(navFor(user!, ""), "Milestone not found", "No milestone exists at this address."), 404);
       return;
     }
-    const project = repo.getProject(milestone.projectId)!;
+    const project = milestoneProject;
     const rows = milestoneRows(project.id);
     const row = rows.find((r) => r.milestone.id === milestone.id)!;
     const canDecide = Boolean(
@@ -5013,8 +5176,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   if (method === "GET" && pathname === "/ledger") {
     const chain = await wormEvidenceStore.verifyChain();
-    const milestones = repo.listProjects().flatMap((p) => repo.listMilestones(p.id));
-    const ledger = repo.listLedgerEntries();
+    const milestones = authz.accessibleProjects(user!).flatMap((p) => repo.listMilestones(p.id));
+    // The ledger is evidence-derived, so scope it through the milestones the
+    // caller may see rather than exposing every tenant's chain.
+    const visibleMilestoneIds = new Set(milestones.map((m) => m.id));
+    const ledger = repo.listLedgerEntries().filter((e) => {
+      const ev = repo.getEvidence(e.evidenceItemId);
+      return Boolean(ev && visibleMilestoneIds.has(ev.milestoneId));
+    });
     const users = usersById();
     const actorByEntry = new Map(
       ledger.map((e) => {
@@ -5057,8 +5226,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       res,
       renderReports({
         nav: navFor(user!, "reports"),
-        projects: repo.listProjects(),
-        reports: repo.listReports(),
+        projects: authz.accessibleProjects(user!),
+        // Reports were listed unfiltered while the audit-package list three
+        // lines below was already scoped — same rule now applies to both.
+        reports: repo.listReports().filter((r) => {
+          const proj = repo.getProject(r.projectId);
+          return Boolean(proj && authz.canAccessProject(user!, proj));
+        }),
         users: usersById(),
         pdfError: url.searchParams.get("error") === "pdf",
         auditPackages: repo
@@ -5077,15 +5251,18 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   if (method === "GET" && pathname === "/compliance") {
     const chain = await wormEvidenceStore.verifyChain();
-    const bundles = repo
-      .listProjects()
+    const complianceProjects = authz.accessibleProjects(user!);
+    const bundles = complianceProjects
       .flatMap((p) => repo.listMilestones(p.id))
       .flatMap((m) => evidenceBundlesForMilestone(m.id));
-    const projects = new Map(repo.listProjects().map((p) => [p.id, p]));
+    const projects = new Map(complianceProjects.map((p) => [p.id, p]));
     const data: ComplianceData = {
       needsReview: bundles.filter((b) => b.verification?.verdict === "NEEDS_REVIEW"),
       rejected: bundles.filter((b) => b.verification?.verdict === "REJECTED"),
-      awaitingApproval: repo.listPendingApprovalRequests().map((approval) => {
+      awaitingApproval: repo.listPendingApprovalRequests().filter((a) => {
+        const m = a.milestoneId ? repo.getMilestone(a.milestoneId) : null;
+        return Boolean(m && projects.has(m.projectId));
+      }).map((approval) => {
         const milestone = repo.getMilestone(approval.milestoneId!)!;
         return {
           approval,
@@ -5097,7 +5274,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       chainValid: chain.valid,
       brokenAt: chain.brokenAt,
     };
-    const allIssues = repo.listFieldIssues();
+    const allIssues = fieldOps.listFieldIssuesForUser(user!);
     const openIssues = allIssues.filter((i) => !["RESOLVED", "CLOSED"].includes(i.status));
     sendHtml(
       res,
@@ -5122,7 +5299,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       res,
       renderIntelligence({
         nav: navFor(user!, "insights"),
-        data: computeIntelligence({ chainValid: chain.valid }),
+        data: computeIntelligence({ chainValid: chain.valid, viewer: user! }),
       })
     );
     return;
@@ -5182,7 +5359,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       res,
       renderIssues({
         nav: navFor(user!, "issues"),
-        issues: repo.listFieldIssues().map((issue) => ({
+        issues: fieldOps.listFieldIssuesForUser(user!).map((issue) => ({
           issue,
           project: repo.getProject(issue.projectId),
           milestone: issue.milestoneId ? repo.getMilestone(issue.milestoneId) : null,
@@ -5201,8 +5378,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (method === "GET" && pathname.startsWith("/issue/")) {
-    const issue = repo.getFieldIssue(pathname.slice("/issue/".length));
-    if (!issue) {
+    // Same 404 for a nonexistent issue and one in another tenant.
+    let issue: FieldIssue;
+    try {
+      issue = fieldOps.getFieldIssueForUser(user!, pathname.slice("/issue/".length));
+    } catch {
       sendHtml(res, renderError(navFor(user!, "issues"), "Issue not found", "No field issue exists at this address."), 404);
       return;
     }
@@ -5416,7 +5596,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   // ---- pilot operations dashboard ----
   if (method === "GET" && pathname === "/pilot") {
-    const allProjects = repo.listProjects();
+    // The pilot dashboard aggregates budgets, release totals and readiness
+    // across projects — scope it like every other portfolio surface.
+    const allProjects = authz.accessibleProjects(user!);
+    const pilotVisible = new Set(allProjects.map((p) => p.id));
     const activeProjects = allProjects.filter((p) => p.status === "ACTIVE");
     const draftProjects = allProjects.filter((p) => p.status === "DRAFT");
     const verifications = repo.listAllVerifications();
@@ -5454,10 +5637,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           verified: verifications.filter((v) => v.verdict === "VERIFIED").length,
           needsReview: verifications.filter((v) => v.verdict === "NEEDS_REVIEW").length,
           rejected: verifications.filter((v) => v.verdict === "REJECTED").length,
-          pendingApprovals: repo.listPendingApprovalRequests().length,
+          pendingApprovals: repo.listPendingApprovalRequests().filter((a) => {
+            const m = a.milestoneId ? repo.getMilestone(a.milestoneId) : null;
+            return Boolean(m && pilotVisible.has(m.projectId));
+          }).length,
           fundsHeld,
           fundsReleased,
-          openIssues: repo.listFieldIssues().filter((i) => !["RESOLVED", "CLOSED"].includes(i.status)).length,
+          openIssues: fieldOps
+            .listFieldIssuesForUser(user!)
+            .filter((i) => !["RESOLVED", "CLOSED"].includes(i.status)).length,
           openClarifications,
           invitationsPending: repo.listInvitations().filter((i) => i.status === "PENDING").length,
         },
@@ -5496,7 +5684,12 @@ const server = http.createServer((req, res) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
     // stack traces, no internal paths, no provider details.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError;
+    // AccessError (and its ChatAccessError subclass) MUST be listed: an
+    // access denial that escaped a handler would otherwise surface as a 500
+    // "Internal server error", which is both a worse experience and a weak
+    // existence oracle — 500 here, 404 there, tells an attacker they hit
+    // something real.
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";
@@ -5537,9 +5730,28 @@ const server = http.createServer((req, res) => {
   });
 });
 
-getDb(); // fail fast if the database cannot be opened
-resolveBankingProvider(); // refuse to start a misconfigured banking provider
+/** Startup configuration failures must read as instructions, not stack
+ *  traces: an operator seeing this line needs to know exactly what to set. */
+function startupCheck(label: string, fn: () => void): void {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`\nOBV cannot start — ${label}:\n  ${(err as Error).message}\n`);
+    process.exit(1);
+  }
+}
+
+startupCheck("database", () => void getDb());
+startupCheck("banking provider", () => resolveBankingProvider());
+startupCheck("session configuration", () => assertSessionConfig());
 server.listen(PORT, () => {
   console.log(`OBV running at http://localhost:${PORT}`);
-  console.log(`Demo sign-in: http://localhost:${PORT}/  (pick a seeded role)`);
+  // Session posture is disclosed at boot: a reader must never have to guess
+  // whether identity cookies are signed with a durable secret.
+  console.log(sessionStartupNotice());
+  if (demoAuthEnabled()) {
+    console.log(`Demo sign-in: http://localhost:${PORT}/  (pick a seeded role)`);
+  } else {
+    console.log("Demo role switcher: DISABLED (production posture)");
+  }
 });

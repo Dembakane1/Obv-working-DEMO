@@ -75,6 +75,11 @@ const SAFE_ENV = {
   OBV_BANKING_PROVIDER: "mock",
   OBV_BANKING_MODE: "demo",
   OBV_BANKING_PRODUCTION_ENABLE: "",
+  // One signing secret for the whole run, so a suite that restarts its
+  // server keeps the cookies it already holds. Random per run and never
+  // committed — it exists only to make sessions stable within the battery.
+  OBV_SESSION_SECRET:
+    process.env.OBV_SESSION_SECRET || require("node:crypto").randomBytes(32).toString("hex"),
 };
 
 /** Standalone suites — each owns its isolated database and server. */
@@ -101,6 +106,7 @@ const STANDALONE = [
   "lender-ui-test.js",
   "vam-test.js",
   "dispute-test.js",
+  "authz-test.js",
   "toolchain-test.js",
 ];
 
