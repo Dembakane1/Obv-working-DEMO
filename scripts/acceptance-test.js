@@ -73,7 +73,8 @@ async function main() {
   const funder = await signIn(funderCtx, "Margaret Osei", "**/overview");
   pass("application up — Funder Representative signed in, Overview loads");
 
-  await waitForText(funder, "$2,400,000"); // portfolio value
+  // Portfolio value: R47 ($2.4M) + the seeded DMV pilot project ($495k).
+  await waitForText(funder, "$2,895,000"); // portfolio value
   await waitForText(funder, "$720,000"); // released
   await waitForText(funder, "$1,680,000"); // held
   pass("overview summary shows portfolio value, released and held amounts");
