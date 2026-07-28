@@ -138,7 +138,7 @@ async function main() {
 
   await funder.goto(BASE + "/project/proj-r47?tab=milestones");
   await waitForText(funder, "approval 1 of 2");
-  await waitForText(funder, "$2,175,000"); // held (R47 $1.68M + DMV pilot $495k) unchanged
+  await waitForText(funder, "$1,680,000"); // R47 project-level held unchanged
   pass("funds remain HELD before final approval");
 
   // ---------- 15–16: final approval -> release ----------
