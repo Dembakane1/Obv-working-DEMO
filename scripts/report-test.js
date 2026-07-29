@@ -8,6 +8,7 @@
 const BASE = process.env.OBV_BASE_URL || "http://localhost:3000";
 const { DatabaseSync } = require("node:sqlite");
 const path = require("node:path");
+const { signInAll, sessionCookie } = require("./lib/session");
 
 let step = 0;
 const pass = (msg) => console.log(`  ✓ [${String(++step).padStart(2, "0")}] ${msg}`);
@@ -15,7 +16,7 @@ const fail = (msg) => {
   throw new Error(msg);
 };
 
-const cookie = (user) => ({ Cookie: `obv_user=${user}` });
+const cookie = (user) => ({ Cookie: sessionCookie(BASE, user) });
 
 async function generate(user, projectId = "proj-r47") {
   const res = await fetch(`${BASE}/api/reports/generate`, {
@@ -49,6 +50,8 @@ function db() {
 }
 
 async function main() {
+  await signInAll(BASE);
+
   // ---- 1–2: generate for seeded project, open PDF ----
   const r1 = await generate("user-funder");
   if (!/^OBV_.*_Verification_Report_\d{4}-\d{2}-\d{2}\.pdf$/.test(r1.filename)) {

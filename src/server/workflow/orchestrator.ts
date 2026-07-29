@@ -19,6 +19,7 @@ import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { teamsNotifier } from "../services/TeamsNotifier";
 import { mirrorEvent } from "../services/chat";
+import { requireApprovalRequestAccess, requireProject } from "../services/authz";
 import {
   approvalRecordedCard,
   approvalRejectedCard,
@@ -35,6 +36,7 @@ import type {
   EvidenceSubmission,
   LedgerEntry,
   Milestone,
+  Project,
   Verification,
 } from "../../shared/types";
 
@@ -62,6 +64,16 @@ export async function processEvidenceSubmission(
   if (!project) throw new SubmissionError("Unknown project", 404);
   const user = repo.getUser(userId);
   if (!user) throw new SubmissionError("Unknown user — select a demo user first", 401);
+  // TENANT BOUNDARY for the field pipeline. Without this, any signed-in
+  // user could attach evidence — and therefore a WORM ledger entry and an
+  // approval request — to any milestone in any tenant. Enforced here rather
+  // than at POST /api/evidence because fieldOps.submitDraft is a second,
+  // internal entry point into this same function.
+  try {
+    requireProject(user, milestone.projectId);
+  } catch {
+    throw new SubmissionError("Unknown milestone", 404);
+  }
 
   // ---- 1. Persist the photo into WORM evidence storage ----
   let photoPath: string;
@@ -314,6 +326,23 @@ export async function processApprovalDecision(
 ): Promise<ApprovalDecisionResult> {
   const request = repo.getApprovalRequest(approvalRequestId);
   if (!request) throw new SubmissionError("Unknown approval request", 404);
+  const user = repo.getUser(userId);
+  if (!user) throw new SubmissionError("Select a demo user first", 401);
+  // TENANT BOUNDARY — first, and before any message that would reveal the
+  // request's subject or state. Every check below (subject type, status,
+  // role, separation of duties) discloses something about a real record, so
+  // a caller outside the tenant must be turned away here with the same
+  // "unknown approval request" a nonexistent id produces.
+  //
+  // Enforced in the orchestrator rather than the route: this is the only
+  // path to releaseTranche, so no internal caller can reach a release
+  // without passing this line.
+  let project: Project;
+  try {
+    project = requireApprovalRequestAccess(user, request);
+  } catch {
+    throw new SubmissionError("Unknown approval request", 404);
+  }
   // DRAW-subject requests have their own governance gate (draws service)
   // with draw-specific separation of duties; they never reach the
   // milestone release path below.
@@ -323,8 +352,6 @@ export async function processApprovalDecision(
   if (request.status !== "PENDING") {
     throw new SubmissionError("This approval request has already been resolved", 409);
   }
-  const user = repo.getUser(userId);
-  if (!user) throw new SubmissionError("Select a demo user first", 401);
   if (!request.requiredRoles.includes(user.role)) {
     throw new SubmissionError(
       `Role ${user.role} is not part of this approval (requires ${request.requiredRoles.join(", ")})`,
@@ -342,7 +369,6 @@ export async function processApprovalDecision(
     throw new SubmissionError("Separation of duties: the evidence submitter cannot approve their own submission", 403);
   }
   const milestone = repo.getMilestone(request.milestoneId)!;
-  const project = repo.getProject(milestone.projectId)!;
 
   repo.insertApprovalRecord({
     id: repo.newId(),

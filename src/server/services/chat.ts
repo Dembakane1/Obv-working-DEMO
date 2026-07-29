@@ -17,6 +17,7 @@
  * docs/COMMUNICATIONS_INTEGRATION.md for the integration seams).
  */
 import * as repo from "../db/repo";
+import { AccessError, canAccessProject, requireProject } from "./authz";
 import type {
   ChatMessage,
   ChatMessageType,
@@ -27,6 +28,13 @@ import type {
 } from "../../shared/types";
 
 // ------------------------------------------------------------ access
+
+/** Denial that never discloses whether the thread or project exists. */
+export class ChatAccessError extends AccessError {
+  constructor() {
+    super("Thread not found", 404);
+  }
+}
 
 /**
  * Demo authorization: a user may access a thread when their organization
@@ -45,32 +53,64 @@ export function canAccessThread(user: User, thread: ConversationThread): boolean
   return participatesInProject(user, project);
 }
 
+/**
+ * Participation in THIS project.
+ *
+ * The previous implementation asked "does my organization contain any
+ * PROJECT_MANAGER or FIELD user?" — a property of the CALLER, not of the
+ * requested project — so the `project` argument was inert and any org with
+ * one such user participated in every project in the database.
+ *
+ * It now delegates to the same boundary the lender layer enforces: the
+ * owning/funding org, a pilot counterparty org, an org that raised a draw
+ * on this project, or an explicit active project membership.
+ */
 export function participatesInProject(user: User, project: Project): boolean {
-  if (project.organizationId === user.organizationId) return true; // funder org
-  // Implementing agency: an organization whose users run the project on
-  // the ground (project manager / field engineers).
-  return repo
-    .listUsers()
-    .some(
-      (u) =>
-        u.organizationId === user.organizationId &&
-        (u.role === "PROJECT_MANAGER" || u.role === "FIELD")
-    );
+  return canAccessProject(user, project);
+}
+
+/** Same-404: a thread outside the caller's projects is indistinguishable
+ *  from a thread that does not exist. */
+export function assertThreadAccess(user: User, thread: ConversationThread): void {
+  if (!canAccessThread(user, thread)) throw new ChatAccessError();
+}
+
+/** The only supported way to resolve a thread id on behalf of a user. */
+export function getThreadForUser(user: User, threadId: string): ConversationThread {
+  const thread = repo.getThread(threadId);
+  if (!thread) throw new ChatAccessError();
+  assertThreadAccess(user, thread);
+  return thread;
 }
 
 export function listThreadsForUser(user: User): ConversationThread[] {
-  return repo.listThreads().filter((t) => canAccessThread(user, t));
+  // Memoized per project: the predicate is now a real lookup, and a
+  // communications page can hold many threads on the same project.
+  const verdict = new Map<string, boolean>();
+  return repo.listThreads().filter((t) => {
+    if (!t.projectId) return t.organizationId === user.organizationId;
+    let ok = verdict.get(t.projectId);
+    if (ok === undefined) {
+      const project = repo.getProject(t.projectId);
+      ok = project ? participatesInProject(user, project) : false;
+      verdict.set(t.projectId, ok);
+    }
+    return ok;
+  });
 }
 
 // ------------------------------------------------------------ threads
 
 /** Find or create the discussion thread for a milestone. */
 export function ensureMilestoneThread(milestoneId: string, createdBy: User): ConversationThread {
+  // Authorize BEFORE the find-or-create: an unrelated tenant must not be
+  // able to force a row into another tenant's project by "opening" a
+  // thread on a milestone it cannot see.
+  const milestone = repo.getMilestone(milestoneId);
+  if (!milestone) throw new ChatAccessError();
+  const project = requireProject(createdBy, milestone.projectId);
   const existing = repo.findThreadForMilestone(milestoneId);
   if (existing) return existing;
-  const milestone = repo.getMilestone(milestoneId);
-  if (!milestone) throw new Error("Unknown milestone");
-  const project = repo.getProject(milestone.projectId)!;
   const thread: ConversationThread = {
     id: repo.newId(),
     organizationId: project.organizationId,
@@ -89,10 +129,10 @@ export function ensureMilestoneThread(milestoneId: string, createdBy: User): Con
 
 /** Find or create the general thread for a project. */
 export function ensureProjectThread(projectId: string, createdBy: User): ConversationThread {
+  // Authorize before creating — same reason as ensureMilestoneThread.
+  const project = requireProject(createdBy, projectId);
   const existing = repo.findProjectThread(projectId);
   if (existing) return existing;
-  const project = repo.getProject(projectId);
-  if (!project) throw new Error("Unknown project");
   const thread: ConversationThread = {
     id: repo.newId(),
     organizationId: project.organizationId,
@@ -111,7 +151,12 @@ export function ensureProjectThread(projectId: string, createdBy: User): Convers
 
 /** Find or create the coordination thread for a draw request. Chat about
  *  a draw stays coordination only — a message saying "Approve Draw 4"
- *  approves nothing; governance lives in the ApprovalRequest workflow. */
+ *  approves nothing; governance lives in the ApprovalRequest workflow.
+ *
+ *  NOT user-authorized on purpose: the only caller is submitDraw (draws.ts),
+ *  which has already run the full draw authorization chain for the actor and
+ *  persisted the draw's owning organization immediately before calling here.
+ *  Never call this from a route. */
 export function ensureDrawThread(draw: DrawRequest, createdBy: User): ConversationThread {
   const existing = repo.findThreadForDraw(draw.id);
   if (existing) return existing;

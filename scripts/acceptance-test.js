@@ -7,13 +7,13 @@
  *   final approval -> release -> ledger integrity -> demo reset -> repeat.
  *
  * Usage:  node scripts/acceptance-test.js [camera|fallback]
- * Requires the `playwright` package (NODE_PATH=/opt/node22/lib/node_modules
- * in the build environment) and a running, freshly-seeded server.
+ * Requires the pinned Playwright devDependency (`npm ci` + `npm run browsers`)
+ * and a running, freshly-seeded server.
  */
 const MODE = process.argv[2] === "camera" ? "camera" : "fallback";
 const BASE = process.env.OBV_BASE_URL || "http://localhost:3000";
 
-const { chromium } = require("playwright");
+const { launchChromium } = require("./lib/browser");
 
 let step = 0;
 function pass(msg) {
@@ -61,7 +61,7 @@ async function captureEvidence(field) {
 }
 
 async function main() {
-  const browser = await chromium.launch({
+  const browser = await launchChromium({
     args:
       MODE === "camera"
         ? ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"]

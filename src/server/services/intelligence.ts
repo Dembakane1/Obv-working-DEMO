@@ -13,6 +13,7 @@
  * MOCK_FALLBACK / MOCK_DEFAULT) is surfaced honestly here.
  */
 import * as repo from "../db/repo";
+import { accessibleProjects } from "./authz";
 // Read-only draw helpers (document checklist derivation). Nothing in this
 // module can write draw state or reach the approval/financial paths.
 import * as drawsService from "./draws";
@@ -31,6 +32,7 @@ import type {
   FieldIssue,
   Milestone,
   Project,
+  User,
   UserRole,
   Verification,
   VerificationSource,
@@ -204,9 +206,14 @@ const SOURCE_LABELS: Record<VerificationSource, string> = {
 
 // ------------------------------------------------------------------ main
 
-export function computeIntelligence(opts: { chainValid: boolean }): IntelligenceData {
+/**
+ * @param opts.viewer scopes every signal to the projects this caller may
+ *   see. It is required: an unscoped intelligence page aggregates evidence
+ *   verdicts, exception counts and release activity across every tenant.
+ */
+export function computeIntelligence(opts: { chainValid: boolean; viewer: User }): IntelligenceData {
   const now = Date.now();
-  const projects = repo.listProjects().filter((p) => p.status === "ACTIVE");
+  const projects = accessibleProjects(opts.viewer).filter((p) => p.status === "ACTIVE");
   const projectById = new Map(projects.map((p) => [p.id, p]));
 
   const milestones: Milestone[] = [];

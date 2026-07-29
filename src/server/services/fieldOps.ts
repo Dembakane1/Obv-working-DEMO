@@ -17,7 +17,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as repo from "../db/repo";
-import { mirrorEvent } from "./chat";
+import { mirrorEvent, canAccessThread } from "./chat";
+import * as authz from "./authz";
 import { COMM_MEDIA_DIR } from "./whatsappSync/provider";
 import { processEvidenceSubmission, SubmissionError } from "../workflow/orchestrator";
 import type {
@@ -28,8 +29,45 @@ import type {
   User,
 } from "../../shared/types";
 
+/**
+ * ROLE predicate only — which roles may operate field-ops surfaces at all.
+ * It is NEVER sufficient authorization: object-level access is asserted
+ * inside every exported mutation and query below. A true return says
+ * nothing about whether this caller may touch THIS project, milestone,
+ * issue, clarification, draft or message.
+ */
 export function canManageFieldOps(user: User): boolean {
   return ["PROJECT_MANAGER", "FUNDER_REP", "COMPLIANCE_REVIEWER"].includes(user.role);
+}
+
+// ---- object-level boundary (same-404: foreign and nonexistent match) ----
+
+/** Assert project access, reporting it as the caller's own "unknown X". */
+function requireProject(user: User, projectId: string | null | undefined, notFound: string) {
+  try {
+    return authz.requireProject(user, projectId);
+  } catch {
+    throw new SubmissionError(notFound, 404);
+  }
+}
+
+/** Assert milestone access AND resolve its project. */
+function requireMilestone(user: User, milestoneId: string | null | undefined, notFound: string) {
+  try {
+    return authz.requireMilestone(user, milestoneId);
+  } catch {
+    throw new SubmissionError(notFound, 404);
+  }
+}
+
+/** A chat message the caller may actually read — resolved through its
+ *  thread, so a message id from another tenant is simply "unknown". */
+function requireReadableMessage(user: User, messageId: string, notFound = "Unknown message"): ChatMessage {
+  const message = repo.getChatMessage(messageId);
+  if (!message) throw new SubmissionError(notFound, 404);
+  const thread = repo.getThread(message.threadId);
+  if (!thread || !canAccessThread(user, thread)) throw new SubmissionError(notFound, 404);
+  return message;
 }
 
 // ------------------------------------------------------------ issues
@@ -46,8 +84,16 @@ export function createFieldIssue(input: {
   dueAt: string | null;
   createdBy: User;
 }): FieldIssue {
-  const project = repo.getProject(input.projectId);
-  if (!project) throw new SubmissionError("Unknown project", 404);
+  const project = requireProject(input.createdBy, input.projectId, "Unknown project");
+  // Nested-object substitution: a milestone id that RESOLVES is not proof
+  // that it belongs to THIS project.
+  if (input.milestoneId) {
+    const m = repo.getMilestone(input.milestoneId);
+    if (!m || m.projectId !== project.id) throw new SubmissionError("Unknown milestone", 404);
+  }
+  // The source message is copied into the issue (body, GPS, thread id), so
+  // it must be one the caller can read.
+  if (input.sourceMessage) requireReadableMessage(input.createdBy, input.sourceMessage.id);
   const now = new Date().toISOString();
   const issue: FieldIssue = {
     id: repo.newId(),
@@ -114,6 +160,9 @@ export function updateIssueStatus(
 ): FieldIssue {
   const issue = repo.getFieldIssue(issueId);
   if (!issue) throw new SubmissionError("Unknown issue", 404);
+  // Before the state machine, which would otherwise disclose the issue's
+  // current status to a caller outside the tenant.
+  requireProject(actor, issue.projectId, "Unknown issue");
   if (!ISSUE_TRANSITIONS[issue.status].includes(status)) {
     throw new SubmissionError(`Cannot move issue from ${issue.status} to ${status}`, 409);
   }
@@ -144,8 +193,15 @@ export function createClarification(input: {
   assignedToUserId: string | null;
   requestedBy: User;
 }): ClarificationRequest {
-  const milestone = repo.getMilestone(input.milestoneId);
-  if (!milestone) throw new SubmissionError("Unknown milestone", 404);
+  const { milestone } = requireMilestone(input.requestedBy, input.milestoneId, "Unknown milestone");
+  // evidenceItemId is stored verbatim and rendered on the milestone page —
+  // it must belong to THIS milestone.
+  if (input.evidenceItemId) {
+    const ev = repo.getEvidence(input.evidenceItemId);
+    if (!ev || ev.milestoneId !== milestone.id) {
+      throw new SubmissionError("Unknown evidence item", 404);
+    }
+  }
   const now = new Date().toISOString();
   const clar: ClarificationRequest = {
     id: repo.newId(),
@@ -192,6 +248,7 @@ export function updateClarificationStatus(
 ): ClarificationRequest {
   const clar = repo.getClarification(id);
   if (!clar) throw new SubmissionError("Unknown clarification request", 404);
+  requireMilestone(actor, clar.milestoneId, "Unknown clarification request");
   if (!CLAR_TRANSITIONS[clar.status].includes(status)) {
     throw new SubmissionError(`Cannot move clarification from ${clar.status} to ${status}`, 409);
   }
@@ -202,6 +259,20 @@ export function updateClarificationStatus(
     { projectId: milestone.projectId, milestoneId: milestone.id }
   );
   return repo.getClarification(id)!;
+}
+
+/** Every field issue in the caller's projects. */
+export function listFieldIssuesForUser(user: User): FieldIssue[] {
+  const visible = authz.accessibleProjectIds(user);
+  return repo.listFieldIssues().filter((i) => visible.has(i.projectId));
+}
+
+/** One issue, with the tenant boundary: unknown and foreign are identical. */
+export function getFieldIssueForUser(user: User, issueId: string): FieldIssue {
+  const issue = repo.getFieldIssue(issueId);
+  if (!issue) throw new SubmissionError("Unknown issue", 404);
+  requireProject(user, issue.projectId, "Unknown issue");
+  return issue;
 }
 
 // ------------------------------------------------- evidence drafts
@@ -222,15 +293,16 @@ export function createEvidenceDraft(input: {
   locationMessageId: string | null;
   createdBy: User;
 }): EvidenceDraft {
-  const message = repo.getChatMessage(input.messageId);
-  if (!message) throw new SubmissionError("Unknown message", 404);
+  // Authorize BOTH ends before any 400 that would confirm the message
+  // exists or describe its media: the source message must be readable by
+  // this caller, and the destination milestone must be in their tenant.
+  const message = requireReadableMessage(input.createdBy, input.messageId);
+  const { milestone } = requireMilestone(input.createdBy, input.milestoneId, "Unknown milestone");
   const attachment = message.attachments[input.attachmentIndex];
   if (!attachment || !attachment.url) throw new SubmissionError("No media on this message", 400);
   if (!PROMOTABLE_KINDS.has(attachment.kind ?? "")) {
     throw new SubmissionError("Only image media can be promoted to an evidence draft", 400);
   }
-  const milestone = repo.getMilestone(input.milestoneId);
-  if (!milestone) throw new SubmissionError("Unknown milestone", 404);
   let latitude: number | null = null;
   let longitude: number | null = null;
   if (input.locationMessageId) {
@@ -280,6 +352,12 @@ const MIME_BY_EXT: Record<string, string> = {
 export async function submitDraft(draftId: string, submitter: User) {
   const draft = repo.getDraft(draftId);
   if (!draft) throw new SubmissionError("Unknown draft", 404);
+  // Before the 409, which would otherwise reveal another tenant's draft
+  // state. Also re-checks that the draft's milestone and project agree.
+  const { milestone: draftMilestone } = requireMilestone(submitter, draft.milestoneId, "Unknown draft");
+  if (draft.projectId && draftMilestone.projectId !== draft.projectId) {
+    throw new SubmissionError("Unknown draft", 404);
+  }
   if (draft.status !== "DRAFT") {
     throw new SubmissionError("This draft has already been submitted or discarded", 409);
   }

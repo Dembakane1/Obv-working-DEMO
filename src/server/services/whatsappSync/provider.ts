@@ -176,6 +176,58 @@ async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> 
   }
 }
 
+/**
+ * SSRF guard for the one outbound fetch whose destination comes out of a
+ * provider response body rather than our own configuration.
+ *
+ * The media download attaches the WhatsApp bearer token, so an attacker who
+ * can influence `meta.url` would otherwise be able to point it at an
+ * internal address (cloud metadata, loopback, a private service) and
+ * capture the credential. Meta serves media from CDN hosts distinct from
+ * the Graph host, so an origin allowlist is too strict; the enforced rules
+ * are: HTTPS only — unless the URL is same-origin with the configured base
+ * URL, which preserves the documented local http stub — and no literal
+ * private, loopback or link-local address.
+ */
+function assertSafeMediaUrl(rawUrl: string): URL {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new WhatsAppSyncError("invalid-response", false);
+  }
+
+  let sameOriginAsBase = false;
+  try {
+    sameOriginAsBase = url.origin === new URL(WHATSAPP_CONFIG.baseUrl()).origin;
+  } catch {
+    sameOriginAsBase = false;
+  }
+  if (url.protocol !== "https:" && !sameOriginAsBase) {
+    throw new WhatsAppSyncError("invalid-response", false);
+  }
+
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const blocked =
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    /^f[cd][0-9a-f]{2}:/.test(host) ||
+    /^fe80:/.test(host);
+  // Same-origin with the operator-configured base URL is trusted by
+  // definition — that is how the local stub is pointed at 127.0.0.1.
+  if (blocked && !sameOriginAsBase) {
+    throw new WhatsAppSyncError("invalid-response", false);
+  }
+  return url;
+}
+
 async function graphCall(pathname: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
   if (!WHATSAPP_CONFIG.configured()) throw new WhatsAppSyncError("not-configured", false);
   const res = await apiFetch(
@@ -291,6 +343,9 @@ export async function downloadMedia(
   if (size > WHATSAPP_CONFIG.maxMediaBytes()) throw new WhatsAppSyncError("media-rejected", false);
   const mediaUrl = String(meta.url ?? "");
   if (!mediaUrl) throw new WhatsAppSyncError("invalid-response", false);
+  // The destination comes from the provider body, and the request below
+  // carries the bearer token — validate before it is sent anywhere.
+  assertSafeMediaUrl(mediaUrl);
   const res = await apiFetch(mediaUrl, {
     headers: { authorization: `Bearer ${WHATSAPP_CONFIG.accessToken()}` },
   });

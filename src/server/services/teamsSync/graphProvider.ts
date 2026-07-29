@@ -218,7 +218,14 @@ class TeamsConversationProvider implements ExternalConversationProvider {
       ? (raw.attachments as Array<{ name?: string; contentUrl?: string }>)
           .map((a): MessageAttachment => ({
             name: String(a.name ?? "attachment").slice(0, 200),
-            url: typeof a.contentUrl === "string" ? a.contentUrl : null,
+            // Scheme allowlist at the trust boundary: an inbound Graph
+            // payload is untrusted input and this URL is later rendered
+            // into an href. javascript:/data: URLs are dropped here so a
+            // malicious attachment can never become a clickable script.
+            url:
+              typeof a.contentUrl === "string" && /^https?:\/\//i.test(a.contentUrl.trim())
+                ? a.contentUrl.trim()
+                : null,
           }))
           .slice(0, 10)
       : [];

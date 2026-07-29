@@ -44,6 +44,7 @@
  * OBV_VARIANCE_WATCH_PTS; defaults 5 / 10).
  */
 import * as repo from "../db/repo";
+import { canAccessProjectFinance } from "./authz";
 import { audit, snapshotProject } from "./pilot/onboarding";
 import type {
   BudgetLine,
@@ -417,20 +418,10 @@ export function compareDrawLine(projectId: string, line: DrawLineItem): DrawLine
  *  organization, any organization wired into the pilot configuration, or
  *  an organization with a draw on the project (the borrower). Unrelated
  *  tenants get 404 — existence is not disclosed. */
-export function canAccessProjectFinance(user: User, project: Project): boolean {
-  if (user.organizationId === project.organizationId) return true;
-  const pilot = project.pilot;
-  if (
-    [pilot?.implementingOrgId, pilot?.contractorOrgId, pilot?.funderOrgId, pilot?.engineerOrgId].some(
-      (orgId) => orgId && orgId === user.organizationId
-    )
-  ) {
-    return true;
-  }
-  return repo
-    .listDrawRequestsForProject(project.id)
-    .some((d) => d.requestedByOrganizationId === user.organizationId);
-}
+/** Re-exported from the authorization leaf so there is exactly ONE
+ *  implementation of the tenant relationship test. Every existing caller of
+ *  budget.canAccessProjectFinance keeps working unchanged. */
+export { canAccessProjectFinance } from "./authz";
 
 /** Budget lines and quantities are lender-control records. */
 export function canManageBudget(user: User): boolean {

@@ -2,19 +2,28 @@
   "name": "obv",
   "version": "0.1.0",
   "private": true,
-  "description": "OBV (OpenBuild Verify) — the truth layer for physical projects. Demo build.",
+  "description": "OBV (OpenBuild Verify) \u2014 the truth layer for physical projects. Demo build.",
   "scripts": {
     "build": "tsc -p tsconfig.server.json && tsc -p tsconfig.client.json && node scripts/gen-icons.js",
-    "seed": "node dist/server/db/seed.js --reset",
+    "seed": "node dist/server/db/seed.js",
     "start": "node dist/server/http/server.js",
     "setup": "npm run build && npm run seed",
-    "dev": "npm run build && node dist/server/http/server.js"
+    "dev": "npm run build && node dist/server/http/server.js",
+    "test": "node scripts/run-all-tests.js",
+    "verify": "npm run build && npm test",
+    "doctor": "node scripts/doctor.js",
+    "browsers": "playwright install chromium",
+    "browsers:deps": "playwright install --with-deps chromium",
+    "audit": "npm audit --audit-level=high",
+    "audit:prod": "npm audit --omit=dev --audit-level=low",
+    "clean": "node -e \"const fs=require('node:fs');for(const p of ['dist','public/js','public/icons'])fs.rmSync(p,{recursive:true,force:true})\""
   },
   "engines": {
     "node": ">=22.5"
   },
   "devDependencies": {
-    "typescript": "^5.6.0 || ^6.0.0",
-    "@types/node": ">=22"
+    "@types/node": "25.5.0",
+    "playwright": "1.56.1",
+    "typescript": "6.0.2"
   }
 }

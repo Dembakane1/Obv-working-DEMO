@@ -15,9 +15,9 @@
  * restored afterwards) and re-asserts the overflow rule on the worst pages.
  *
  * Requires a freshly seeded server on :3000 (same contract as the other
- * browser suites). NODE_PATH must include playwright.
+ * browser suites) and the pinned Playwright devDependency.
  */
-const { chromium } = require("playwright");
+const { launchChromium } = require("./lib/browser");
 const { DatabaseSync } = require("node:sqlite");
 const fs = require("node:fs");
 
@@ -75,11 +75,9 @@ async function chipsInside(page) {
 
 (async () => {
   console.log("Frontend visual/responsive tests — " + BASE);
-  // Pinned sandbox Chromium when present (version-mismatch-proof in the
-  // dev sandbox); Playwright's own resolution everywhere else (CI
-  // installs browsers into its default cache).
-  const pinned = "/opt/pw-browsers/chromium";
-  const browser = await chromium.launch(fs.existsSync(pinned) ? { executablePath: pinned } : {});
+  // Pinned project Playwright resolves its own matching Chromium build
+  // (see scripts/lib/browser.js) — identical locally and in CI.
+  const browser = await launchChromium();
 
   const makeCtx = async (viewport) => {
     const ctx = await browser.newContext({ viewport });
