@@ -1697,6 +1697,199 @@ CREATE INDEX IF NOT EXISTS idx_dispute_inspections_dispute ON dispute_inspection
 CREATE INDEX IF NOT EXISTS idx_dispute_recommendations_dispute ON dispute_recommendations(dispute_id);
 CREATE INDEX IF NOT EXISTS idx_dispute_escalations_dispute ON dispute_escalations(dispute_id);
 
+-- ============== DMV Draw Control + Governing Code and Permit Basis =========
+-- OBV records compliance evidence, source lookups, inspection status,
+-- verification results and lender-review eligibility. Nothing here issues
+-- permits, performs government inspections, provides legal interpretations,
+-- approves loans, or authorizes payment.
+
+-- Immutable versioned Governing Code and Permit Basis. Content columns are
+-- NEVER updated after finalization: the repository exposes only guarded
+-- status transitions (DRAFT -> AUTHORITATIVE, AUTHORITATIVE -> SUPERSEDED);
+-- corrections insert a NEW version referencing the superseded one.
+CREATE TABLE IF NOT EXISTS permit_basis_versions (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  permit_id TEXT NOT NULL REFERENCES permits(id),
+  version INTEGER NOT NULL,
+  supersedes_version_id TEXT REFERENCES permit_basis_versions(id),
+  status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','AUTHORITATIVE','SUPERSEDED')),
+  jurisdiction TEXT NOT NULL,
+  permitting_authority TEXT NOT NULL,
+  property_address TEXT,
+  parcel_identifier TEXT,
+  permit_number TEXT NOT NULL,
+  permit_type TEXT NOT NULL,
+  trade_type TEXT,
+  work_category TEXT,
+  application_date TEXT,
+  issuance_date TEXT,
+  expiration_date TEXT,
+  permit_status TEXT NOT NULL,
+  governing_code_edition TEXT,
+  local_amendments TEXT,
+  transition_rule_id TEXT REFERENCES transition_rule_records(id),
+  governing_basis TEXT NOT NULL DEFAULT 'UNRESOLVED' CHECK (governing_basis IN
+    ('CURRENT_CODE','PRIOR_CODE_TRANSITION','PERMIT_GRANDFATHERED','LOCAL_AMENDMENT','UNRESOLVED')),
+  applicability_explanation TEXT,
+  source_system TEXT,
+  source_url TEXT,
+  source_record_id TEXT,
+  lookup_at TEXT,
+  lookup_by_user_id TEXT REFERENCES users(id),
+  verification_method TEXT NOT NULL DEFAULT 'MANUAL_PORTAL_LOOKUP' CHECK (verification_method IN
+    ('MANUAL_PORTAL_LOOKUP','OFFICIAL_DOCUMENT','EMAIL_FROM_AUTHORITY','SITE_POSTING_PHOTO','API_LOOKUP','OTHER')),
+  source_evidence_id TEXT REFERENCES official_source_records(id),
+  notes TEXT,
+  correction_reason TEXT,
+  corrected_by_user_id TEXT REFERENCES users(id),
+  record_hash TEXT NOT NULL,
+  effective_from TEXT,
+  superseded_at TEXT,
+  finalized_at TEXT,
+  finalized_by_user_id TEXT REFERENCES users(id),
+  created_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  UNIQUE (permit_id, version)
+);
+
+-- Code-transition determination: recorded and confirmed by an authorized
+-- human. OBV never infers legal applicability from the current date alone.
+CREATE TABLE IF NOT EXISTS transition_rule_records (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  jurisdiction TEXT NOT NULL,
+  prior_code_edition TEXT NOT NULL,
+  replacement_code_edition TEXT NOT NULL,
+  transition_period_start TEXT,
+  transition_period_end TEXT,
+  application_date_cutoff TEXT,
+  permit_issuance_cutoff TEXT,
+  eligibility TEXT NOT NULL DEFAULT 'PENDING_DETERMINATION' CHECK (eligibility IN
+    ('ELIGIBLE_PRIOR_CODE','NOT_ELIGIBLE','PENDING_DETERMINATION')),
+  governing_interpretation TEXT,
+  official_source_id TEXT REFERENCES official_source_records(id),
+  lookup_at TEXT,
+  reviewer_user_id TEXT NOT NULL REFERENCES users(id),
+  notes TEXT,
+  determined_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+-- Required official inspections at budget-line/milestone scope. Separate
+-- from OBV field findings AND from lender draw inspections: the official
+-- jurisdiction result lives here (backed by jurisdictional_inspections /
+-- official_source_records) and never substitutes for either.
+CREATE TABLE IF NOT EXISTS line_inspection_requirements (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  budget_line_id TEXT REFERENCES budget_lines(id),
+  milestone_id TEXT REFERENCES milestones(id),
+  jurisdiction TEXT,
+  inspection_authority TEXT,
+  inspection_type TEXT NOT NULL,
+  description TEXT,
+  permit_id TEXT REFERENCES permits(id),
+  permit_basis_version_id TEXT REFERENCES permit_basis_versions(id),
+  prerequisite_requirement_id TEXT REFERENCES line_inspection_requirements(id),
+  sequence INTEGER NOT NULL DEFAULT 0,
+  required_before_concealment INTEGER NOT NULL DEFAULT 0,
+  required_before_payment INTEGER NOT NULL DEFAULT 0,
+  required_before_final INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (status IN
+    ('NOT_REQUIRED','REQUIRED_NOT_SCHEDULED','SCHEDULED','PASSED','FAILED','PARTIAL',
+     'CORRECTION_REQUIRED','REINSPECTION_REQUIRED','PENDING_OFFICIAL_CONFIRMATION',
+     'NOT_FOUND','WAIVED_BY_AUTHORITY','UNKNOWN')),
+  scheduled_date TEXT,
+  completed_date TEXT,
+  official_result_text TEXT,
+  correction_notice TEXT,
+  reinspection_required INTEGER NOT NULL DEFAULT 0,
+  reinspection_result TEXT,
+  jurisdictional_inspection_id TEXT REFERENCES jurisdictional_inspections(id),
+  official_source_id TEXT REFERENCES official_source_records(id),
+  lookup_at TEXT,
+  external_identifier TEXT,
+  reviewer_user_id TEXT REFERENCES users(id),
+  notes TEXT,
+  created_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (budget_line_id IS NOT NULL OR milestone_id IS NOT NULL)
+);
+
+-- Manual government-record verification runs. Append-only; each run is
+-- labeled with its manual method — never presented as a live integration.
+CREATE TABLE IF NOT EXISTS source_verifications (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  official_service TEXT NOT NULL,
+  search_criteria TEXT NOT NULL,
+  source_record_identifier TEXT,
+  lookup_at TEXT NOT NULL,
+  performed_by_user_id TEXT NOT NULL REFERENCES users(id),
+  result_status TEXT NOT NULL CHECK (result_status IN
+    ('VERIFIED_MATCH','PARTIAL_MATCH','NO_MATCH_FOUND','RECORD_UNAVAILABLE',
+     'SOURCE_UNAVAILABLE','MANUAL_REVIEW_REQUIRED')),
+  result_summary TEXT,
+  evidence_source_id TEXT REFERENCES official_source_records(id),
+  verification_method TEXT NOT NULL DEFAULT 'MANUAL_PORTAL_LOOKUP' CHECK (verification_method IN
+    ('MANUAL_PORTAL_LOOKUP','OFFICIAL_DOCUMENT','EMAIL_FROM_AUTHORITY','SITE_POSTING_PHOTO','API_LOOKUP','OTHER')),
+  confidence TEXT CHECK (confidence IN ('LOW','MEDIUM','HIGH')),
+  next_review_date TEXT,
+  notes TEXT,
+  permit_id TEXT REFERENCES permits(id),
+  permit_basis_version_id TEXT REFERENCES permit_basis_versions(id),
+  line_requirement_id TEXT REFERENCES line_inspection_requirements(id),
+  created_at TEXT NOT NULL
+);
+
+-- Cost-to-complete estimates: append-only per budget line; computations
+-- always use the latest estimate. Whole-currency integers.
+CREATE TABLE IF NOT EXISTS cost_to_complete_estimates (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  budget_line_id TEXT NOT NULL REFERENCES budget_lines(id),
+  draw_request_id TEXT REFERENCES draw_requests(id),
+  verified_completed_value INTEGER,
+  remaining_committed_cost INTEGER,
+  estimated_cost_to_complete INTEGER NOT NULL,
+  source_of_estimate TEXT NOT NULL,
+  estimator_user_id TEXT NOT NULL REFERENCES users(id),
+  estimate_date TEXT NOT NULL,
+  confidence TEXT NOT NULL DEFAULT 'MEDIUM' CHECK (confidence IN ('LOW','MEDIUM','HIGH')),
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+
+-- Permit-basis version pinned to a draw at control-record time: the draw
+-- keeps referencing the version that applied when it was reviewed, even
+-- after later corrections create newer versions.
+CREATE TABLE IF NOT EXISTS draw_permit_basis_pins (
+  id TEXT PRIMARY KEY,
+  draw_request_id TEXT NOT NULL REFERENCES draw_requests(id),
+  permit_id TEXT NOT NULL REFERENCES permits(id),
+  permit_basis_version_id TEXT NOT NULL REFERENCES permit_basis_versions(id),
+  pinned_at TEXT NOT NULL,
+  pinned_by_user_id TEXT REFERENCES users(id),
+  UNIQUE (draw_request_id, permit_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pbv_permit ON permit_basis_versions(permit_id);
+CREATE INDEX IF NOT EXISTS idx_pbv_project ON permit_basis_versions(project_id);
+CREATE INDEX IF NOT EXISTS idx_trr_project ON transition_rule_records(project_id);
+CREATE INDEX IF NOT EXISTS idx_lir_project ON line_inspection_requirements(project_id);
+CREATE INDEX IF NOT EXISTS idx_lir_budget_line ON line_inspection_requirements(budget_line_id) WHERE budget_line_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_lir_milestone ON line_inspection_requirements(milestone_id) WHERE milestone_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_srcver_project ON source_verifications(project_id);
+CREATE INDEX IF NOT EXISTS idx_ctc_line ON cost_to_complete_estimates(budget_line_id);
+CREATE INDEX IF NOT EXISTS idx_dpbp_draw ON draw_permit_basis_pins(draw_request_id);
+
 `;
 
 export function getDb(): DatabaseSync {

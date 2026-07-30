@@ -73,9 +73,10 @@ async function main() {
   const funder = await signIn(funderCtx, "Margaret Osei", "**/overview");
   pass("application up — Funder Representative signed in, Overview loads");
 
-  await waitForText(funder, "$2,400,000"); // portfolio value
+  // Portfolio value: R47 ($2.4M) + the seeded DMV pilot project ($495k).
+  await waitForText(funder, "$2,895,000"); // portfolio value
   await waitForText(funder, "$720,000"); // released
-  await waitForText(funder, "$1,680,000"); // held
+  await waitForText(funder, "$2,175,000"); // held (R47 $1.68M + DMV pilot $495k)
   pass("overview summary shows portfolio value, released and held amounts");
 
   await funder.getByRole("link", { name: /Mzimba–Kafukule/ }).first().click();
@@ -137,7 +138,7 @@ async function main() {
 
   await funder.goto(BASE + "/project/proj-r47?tab=milestones");
   await waitForText(funder, "approval 1 of 2");
-  await waitForText(funder, "$1,680,000"); // held unchanged
+  await waitForText(funder, "$1,680,000"); // R47 project-level held unchanged
   pass("funds remain HELD before final approval");
 
   // ---------- 15–16: final approval -> release ----------
@@ -152,7 +153,7 @@ async function main() {
 
   await compliance.goto(BASE + "/overview");
   await waitForText(compliance, "$1,320,000"); // released 720k + 600k
-  await waitForText(compliance, "$1,080,000"); // held
+  await waitForText(compliance, "$1,575,000"); // held (R47 $1.08M + DMV pilot $495k)
   pass("release state updated — tranche RELEASED on virtual account");
 
   // ---------- 17: ledger integrity ----------
@@ -167,7 +168,7 @@ async function main() {
   await compliance.getByRole("button", { name: "Reset demo data" }).click();
   await compliance.waitForURL("**/overview");
   await waitForText(compliance, "$720,000");
-  await waitForText(compliance, "$1,680,000");
+  await waitForText(compliance, "$2,175,000");
   pass("demo reset — seeded state restored ($720,000 released)");
 
   // ---------- 19: repeat the loop ----------

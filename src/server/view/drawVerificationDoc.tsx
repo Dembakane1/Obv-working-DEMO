@@ -59,6 +59,71 @@ function Amount(props: { label: string; value: string; note?: string }): VNode {
   );
 }
 
+/** Governing Code and Permit Basis section — rendered only for projects
+ *  using the DMV compliance layer. For a District of Columbia package the
+ *  section carries exactly that title; other jurisdictions get a
+ *  jurisdiction-labelled variant. All content comes from the pinned basis
+ *  versions in the Draw Control Record generated with this package. */
+function GoverningBasisSection(props: { dmv: NonNullable<DrawPackageData["dmv"]> }): VNode {
+  const { dmv } = props;
+  const js = dmv.jurisdictionSummary;
+  const isDc = js.length === 1 && /district of columbia|washington,?\s*d\.?c\.?/i.test(js[0]);
+  const title =
+    isDc || js.length !== 1 ? "Governing Code and Permit Basis" : `Governing Code and Permit Basis — ${js[0]}`;
+  const bases = [...new Map(dmv.lines.flatMap((l) => l.governingBases).map((b) => [b.basisVersionId, b])).values()];
+  return (
+    <Fragment>
+      <h2 className="pagebreak"><span className="sec">H2</span>{title}</h2>
+      <table>
+        <thead><tr><th>Permit</th><th>Type</th><th>Jurisdiction</th><th>Authority</th><th>Code edition</th><th>Governing basis</th><th>Basis version</th><th>Permit control status</th></tr></thead>
+        <tbody>
+          {bases.map((b) => (
+            <tr>
+              <td>{b.permitNumber}</td>
+              <td>{b.permitType.replace(/_/g, " ")}</td>
+              <td>{b.jurisdiction}</td>
+              <td>{b.permittingAuthority}</td>
+              <td>{b.governingCodeEdition ?? NOT_AVAILABLE}</td>
+              <td><span className="tag">{b.governingBasis.replace(/_/g, " ")}</span></td>
+              <td>v{b.version}</td>
+              <td>{b.permitControlStatus}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <h2><span className="sec">H3</span>DMV draw control — line eligibility</h2>
+      <div className="flag ok">
+        <b>{dmv.eligibleWording}</b> — Eligibility is a verification result with explicit reason codes.
+        The lender decision workflow remains a separate human act; nothing in this package approves,
+        authorizes, or releases funds.
+      </div>
+      <table>
+        <thead><tr><th>Budget line</th><th>Scope</th><th className="num">Requested</th><th>Contractor claimed</th><th>Inspector observed</th><th>Official inspections</th><th>Eligibility</th><th>Reason codes</th></tr></thead>
+        <tbody>
+          {dmv.lines.map((l) => (
+            <tr>
+              <td>{l.budgetLineCode ?? l.budgetLineRef ?? NOT_AVAILABLE}</td>
+              <td>{l.scopeDescription}</td>
+              <td className="num">{money(l.borrowerRequestedAmount)}</td>
+              <td>{l.contractorPercentComplete === null ? NOT_AVAILABLE : `${l.contractorPercentComplete}% (contractor-reported)`}</td>
+              <td>{l.inspectorObservedPercent === null ? NOT_AVAILABLE : `${l.inspectorObservedPercent}% (OBV inspector)`}</td>
+              <td>{l.requiredInspections.length === 0 ? "None recorded" : l.requiredInspections.map((r) => `${r.inspectionType}: ${r.status.replace(/_/g, " ")}`).join("; ")}</td>
+              <td><span className="tag">{l.finalEligibilityStatus.replace(/_/g, " ")}</span></td>
+              <td className="muted">{l.eligibilityReasons.map((r) => r.code).join(", ")}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted">
+        {dmv.scopeNote} {dmv.legalNote} Contractor-reported figures, OBV inspector findings, official
+        jurisdiction inspection results, and lender decisions are separate records and are never
+        substituted for one another. Basis versions shown are the versions pinned to this draw;
+        later corrections create new versions and never rewrite this package.
+      </p>
+    </Fragment>
+  );
+}
+
 export function renderDrawVerificationDoc(d: DrawPackageData): string {
   const a = d.amounts;
   const disputed = a.currentException;
@@ -340,6 +405,9 @@ export function renderDrawVerificationDoc(d: DrawPackageData): string {
           </tbody>
         </table>
         <p className="muted">States come from authoritative document review records. A recorded upload is RECEIVED — PENDING REVIEW; it is never treated as accepted or compliant.</p>
+
+        {/* ============ H2. Governing Code and Permit Basis (DMV) ============ */}
+        {d.dmv ? <GoverningBasisSection dmv={d.dmv} /> : null}
 
         {/* ============ I. Invoices & lien waivers ============ */}
         <h2><span className="sec">I</span>Invoice &amp; lien-waiver status</h2>

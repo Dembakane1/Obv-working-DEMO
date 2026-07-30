@@ -2604,3 +2604,226 @@ export interface DisputeEscalation {
   respondedAt: string | null;
   closedAt: string | null;
 }
+
+// ============================================================================
+// DMV Draw Control + Governing Code and Permit Basis (lender pilot)
+//
+// OBV records construction compliance evidence, source lookups, inspection
+// status, verification results, and lender-review eligibility. OBV does not
+// issue permits, perform government inspections, provide legal
+// interpretations, approve loans, or automatically authorize payment.
+// ============================================================================
+
+/** How the recorded governing basis was established. Manual methods are
+ *  labeled as manual — a portal lookup is never presented as a live
+ *  government integration. */
+export type BasisVerificationMethod =
+  | "MANUAL_PORTAL_LOOKUP" | "OFFICIAL_DOCUMENT" | "EMAIL_FROM_AUTHORITY"
+  | "SITE_POSTING_PHOTO" | "API_LOOKUP" | "OTHER";
+
+/** Which body of rules governs the permitted work — always a HUMAN
+ *  determination recorded with its basis, never inferred from the current
+ *  date alone. */
+export type GoverningBasisKind =
+  | "CURRENT_CODE" | "PRIOR_CODE_TRANSITION" | "PERMIT_GRANDFATHERED"
+  | "LOCAL_AMENDMENT" | "UNRESOLVED";
+
+export type PermitBasisStatus = "DRAFT" | "AUTHORITATIVE" | "SUPERSEDED";
+
+/** Immutable, versioned Governing Code and Permit Basis record. Once
+ *  AUTHORITATIVE its content NEVER changes: corrections create a new
+ *  version that references (and supersedes) this one, preserving original
+ *  values, the correction reason, the correcting user and the effective
+ *  period. Changing a project's general compliance settings never rewrites
+ *  a previously authoritative version. */
+export interface PermitBasisVersion {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  /** Operational permit-register row this basis record governs. */
+  permitId: string;
+  version: number;
+  supersedesVersionId: string | null;
+  status: PermitBasisStatus;
+  jurisdiction: string;
+  permittingAuthority: string;
+  propertyAddress: string | null;
+  parcelIdentifier: string | null;
+  permitNumber: string;
+  permitType: string;
+  tradeType: string | null;
+  workCategory: string | null;
+  applicationDate: string | null;
+  issuanceDate: string | null;
+  expirationDate: string | null;
+  permitStatus: string;
+  governingCodeEdition: string | null;
+  localAmendments: string | null;
+  /** Optional link to a recorded transition-rule determination. */
+  transitionRuleId: string | null;
+  governingBasis: GoverningBasisKind;
+  applicabilityExplanation: string | null;
+  sourceSystem: string | null;
+  sourceUrl: string | null;
+  sourceRecordId: string | null;
+  lookupAt: string | null;
+  lookupByUserId: string | null;
+  verificationMethod: BasisVerificationMethod;
+  /** Attached source evidence (official-source provenance record). */
+  sourceEvidenceId: string | null;
+  notes: string | null;
+  /** Set on corrected versions (version > 1). */
+  correctionReason: string | null;
+  correctedByUserId: string | null;
+  /** SHA-256 over the canonical content fields — integrity metadata. */
+  recordHash: string;
+  effectiveFrom: string | null;
+  supersededAt: string | null;
+  finalizedAt: string | null;
+  finalizedByUserId: string | null;
+  createdByUserId: string;
+  createdAt: string;
+}
+
+export type TransitionEligibility =
+  | "ELIGIBLE_PRIOR_CODE" | "NOT_ELIGIBLE" | "PENDING_DETERMINATION";
+
+/** Code-transition determination: a project permitted under one edition
+ *  while the jurisdiction adopts a replacement. Recorded and confirmed by
+ *  an authorized human; OBV never infers legal applicability. */
+export interface TransitionRuleRecord {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  jurisdiction: string;
+  priorCodeEdition: string;
+  replacementCodeEdition: string;
+  transitionPeriodStart: string | null;
+  transitionPeriodEnd: string | null;
+  applicationDateCutoff: string | null;
+  permitIssuanceCutoff: string | null;
+  eligibility: TransitionEligibility;
+  governingInterpretation: string | null;
+  officialSourceId: string | null;
+  lookupAt: string | null;
+  reviewerUserId: string;
+  notes: string | null;
+  determinedAt: string | null;
+  createdAt: string;
+}
+
+/** Required-official-inspection status for a budget-line/milestone scope.
+ *  An OBV field finding and an official jurisdiction inspection result are
+ *  SEPARATE records — neither substitutes for the other. */
+export type LineInspectionStatus =
+  | "NOT_REQUIRED" | "REQUIRED_NOT_SCHEDULED" | "SCHEDULED" | "PASSED"
+  | "FAILED" | "PARTIAL" | "CORRECTION_REQUIRED" | "REINSPECTION_REQUIRED"
+  | "PENDING_OFFICIAL_CONFIRMATION" | "NOT_FOUND" | "WAIVED_BY_AUTHORITY"
+  | "UNKNOWN";
+
+export interface LineInspectionRequirement {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  budgetLineId: string | null;
+  milestoneId: string | null;
+  jurisdiction: string | null;
+  inspectionAuthority: string | null;
+  inspectionType: string;
+  description: string | null;
+  permitId: string | null;
+  permitBasisVersionId: string | null;
+  prerequisiteRequirementId: string | null;
+  sequence: number;
+  requiredBeforeConcealment: boolean;
+  requiredBeforePayment: boolean;
+  requiredBeforeFinal: boolean;
+  status: LineInspectionStatus;
+  scheduledDate: string | null;
+  completedDate: string | null;
+  /** The official system's result wording, preserved verbatim. */
+  officialResultText: string | null;
+  correctionNotice: string | null;
+  reinspectionRequired: boolean;
+  reinspectionResult: string | null;
+  /** Official jurisdiction record backing the status, when one exists. */
+  jurisdictionalInspectionId: string | null;
+  officialSourceId: string | null;
+  lookupAt: string | null;
+  externalIdentifier: string | null;
+  reviewerUserId: string | null;
+  notes: string | null;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SourceVerificationResult =
+  | "VERIFIED_MATCH" | "PARTIAL_MATCH" | "NO_MATCH_FOUND"
+  | "RECORD_UNAVAILABLE" | "SOURCE_UNAVAILABLE" | "MANUAL_REVIEW_REQUIRED";
+
+/** Manual government-record verification run — an authorized reviewer's
+ *  documented lookup against an official jurisdiction service. Append-only;
+ *  always labeled as a manual lookup, never as a live integration. */
+export interface SourceVerification {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  officialService: string;
+  searchCriteria: string;
+  sourceRecordIdentifier: string | null;
+  lookupAt: string;
+  performedByUserId: string;
+  resultStatus: SourceVerificationResult;
+  resultSummary: string | null;
+  /** Screenshot/PDF evidence stored as an official-source record. */
+  evidenceSourceId: string | null;
+  verificationMethod: BasisVerificationMethod;
+  confidence: "LOW" | "MEDIUM" | "HIGH" | null;
+  nextReviewDate: string | null;
+  notes: string | null;
+  permitId: string | null;
+  permitBasisVersionId: string | null;
+  lineRequirementId: string | null;
+  createdAt: string;
+}
+
+/** Cost-to-complete estimate for one budget line. Append-only history —
+ *  computations use the latest estimate; whole-currency integers. */
+export interface CostToCompleteEstimate {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  budgetLineId: string;
+  drawRequestId: string | null;
+  verifiedCompletedValue: number | null;
+  remainingCommittedCost: number | null;
+  estimatedCostToComplete: number;
+  sourceOfEstimate: string;
+  estimatorUserId: string;
+  estimateDate: string;
+  confidence: "LOW" | "MEDIUM" | "HIGH";
+  notes: string | null;
+  createdAt: string;
+}
+
+/** Permit-basis version pinned to a draw at control-record time: the draw
+ *  keeps referencing the version that applied when it was reviewed, even
+ *  after later corrections. */
+export interface DrawPermitBasisPin {
+  id: string;
+  drawRequestId: string;
+  permitId: string;
+  permitBasisVersionId: string;
+  pinnedAt: string;
+  pinnedByUserId: string | null;
+}
+
+/** Line-level eligibility for LENDER REVIEW — never lender approval.
+ *  "Eligible for lender review" means verification conditions passed; the
+ *  lender decision workflow remains a separate human act. */
+export type LineEligibilityStatus =
+  | "NOT_READY" | "EVIDENCE_INCOMPLETE" | "INSPECTION_REQUIRED"
+  | "OFFICIAL_STATUS_PENDING" | "EXCEPTION_OPEN" | "OVER_BUDGET_REVIEW_REQUIRED"
+  | "ELIGIBLE_FOR_LENDER_REVIEW" | "INELIGIBLE"
+  | "HELD_BY_DISPUTE" | "HELD_BY_LEGAL_HOLD";

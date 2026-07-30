@@ -34,6 +34,8 @@ import * as drawPackage from "./drawPackage";
 import * as completionGates from "./completionGates";
 import { bankingRegisterFiles } from "./banking/packageRegisters";
 import { disputeRegisterFiles } from "./disputeRegisters";
+import { projectUsesDmvCompliance } from "./dmvCompliance";
+import { dmvRegisterFiles } from "./dmvRegisters";
 import type {
   ApprovalRequest, AuditPackage, Project, User,
 } from "../../shared/types";
@@ -1191,6 +1193,25 @@ function buildRegisters(
     });
     for (const df of disputeRegs.files) {
       add(df.name, df.data, "12_disputes", disputeRegs.counts[df.name]);
+    }
+  }
+
+  // ---- 13_dmv_compliance (Governing Code and Permit Basis, required
+  //      official inspections, manual source verifications, cost to
+  //      complete; as-of filtered — a later correction never rewrites
+  //      what this package records. Control records stay per-draw and
+  //      are never regenerated from newer settings at audit time.)
+  if (projectUsesDmvCompliance(project.id)) {
+    const dmvRegs = dmvRegisterFiles({
+      projectId: project.id,
+      drawRequestId: null,
+      asOf,
+      prefix: "13_dmv_compliance/",
+      users,
+      controlRecord: null,
+    });
+    for (const mf of dmvRegs.files) {
+      add(mf.name, mf.data, "13_dmv_compliance", dmvRegs.counts[mf.name]);
     }
   }
 

@@ -129,6 +129,10 @@ import { resolveBankingProvider, isDemoBankingMode } from "../services/banking/r
 import { handleBankingRoutes } from "./bankingRoutes";
 import { handleDisputeRoutes } from "./disputeRoutes";
 import { DisputeError } from "../services/disputes";
+import { handleComplianceRoutes } from "./complianceRoutes";
+import * as dmvCompliance from "../services/dmvCompliance";
+import { ComplianceError } from "../services/dmvCompliance";
+import { renderProjectCompliance, renderDrawControl } from "../view/compliancePages";
 import * as disputesSvc from "../services/disputes";
 import { renderDisputeWorkspace, renderProjectDisputes } from "../view/disputePages";
 import { renderProjectAccountPage } from "../view/bankingPages";
@@ -1425,8 +1429,18 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sendJson(res, { error: "Select a demo user first" }, 401);
       return;
     }
+    // Flagship-first ordering: the global map focuses the first entry, so
+    // the largest project leads — deterministic even with the added DMV
+    // demo project (project-scoped map pages are unaffected).
     const projects = await Promise.all(
-      authz.accessibleProjects(mapUser).filter((p) => p.status !== "DRAFT").map(async (project) => {
+      // Tenant-scoped (authz.accessibleProjects) THEN flagship-first: the
+      // global map focuses the first entry, so within the caller's own
+      // projects the largest budget leads deterministically.
+      authz
+        .accessibleProjects(mapUser)
+        .filter((p) => p.status !== "DRAFT")
+        .sort((a, b) => b.totalBudget - a.totalBudget)
+        .map(async (project) => {
         const features = repo.listSpatialFeatures(project.id);
         const summary = await virtualAccountService.getProjectSummary(project.id);
         const chain = await wormEvidenceStore.verifyChain();
@@ -2671,6 +2685,27 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       getUser: () => {
         const u = currentUser(req);
         if (!u) throw new DisputeError("Select a demo user first", 401);
+        return u;
+      },
+      readParams,
+      isForm: () => isFormPost(req),
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+    })
+  ) {
+    return;
+  }
+
+  // ============== DMV compliance layer (permit basis, control record) ==============
+  if (
+    await handleComplianceRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      getUser: () => {
+        const u = currentUser(req);
+        if (!u) throw new ComplianceError("Select a demo user first", 401);
         return u;
       },
       readParams,
@@ -4319,7 +4354,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   function homeSnapshot(): HomeSnapshot | null {
     try {
-      const project = repo.listProjects().find((p) => p.status === "ACTIVE");
+      // Flagship hero frame: the largest ACTIVE project — deterministic
+      // even when additional demo projects (e.g. the DMV pilot) exist.
+      const project = repo
+        .listProjects()
+        .filter((p) => p.status === "ACTIVE")
+        .sort((a, b) => b.totalBudget - a.totalBudget)[0];
       if (!project) return null;
       const fin = budget.assessFinancialProgress(project.id);
       const phys = budget.assessPhysicalProgress(project.id);
@@ -4660,6 +4700,61 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         caps: [...disputesSvc.disputeCapabilitiesFor(user!, project.id)],
         draws: repo.listDrawRequestsForProject(project.id),
         users: usersById(),
+      })
+    );
+    return;
+  }
+
+  const compliancePageMatch = /^\/project\/([^/]+)\/compliance$/.exec(pathname);
+  if (method === "GET" && compliancePageMatch) {
+    let view;
+    try {
+      view = dmvCompliance.projectCompliance(user!, compliancePageMatch[1]);
+    } catch (e) {
+      if (e instanceof ComplianceError && e.statusCode === 404) {
+        sendHtml(res, renderError(navFor(user!, "projects"), "Project not found", "No project exists at this address."), 404);
+        return;
+      }
+      throw e;
+    }
+    const complianceErr = url.searchParams.get("err");
+    sendHtml(
+      res,
+      renderProjectCompliance({
+        nav: navFor(user!, "projects"),
+        view,
+        draws: repo.listDrawRequestsForProject(view.project.id),
+        users: usersById(),
+        notice: complianceErr
+          ? { kind: "err", text: complianceErr.slice(0, 300) }
+          : url.searchParams.get("ok")
+            ? { kind: "ok", text: "The record was stored." }
+            : null,
+      })
+    );
+    return;
+  }
+
+  const drawControlMatch = /^\/draw\/([^/]+)\/control$/.exec(pathname);
+  if (method === "GET" && drawControlMatch) {
+    let record;
+    try {
+      record = dmvCompliance.drawControlRecord(user!, drawControlMatch[1]);
+    } catch (e) {
+      if (e instanceof ComplianceError && e.statusCode === 404) {
+        sendHtml(res, renderError(navFor(user!, "projects"), "Draw not found", "No draw request exists at this address."), 404);
+        return;
+      }
+      throw e;
+    }
+    sendHtml(
+      res,
+      renderDrawControl({
+        nav: navFor(user!, "projects"),
+        record,
+        project: repo.getProject(record.projectId)!,
+        users: usersById(),
+        notice: null,
       })
     );
     return;
@@ -5688,8 +5783,8 @@ const server = http.createServer((req, res) => {
     // access denial that escaped a handler would otherwise surface as a 500
     // "Internal server error", which is both a worse experience and a weak
     // existence oracle — 500 here, 404 there, tells an attacker they hit
-    // something real.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError;
+    // something real. ComplianceError is the DMV layer's typed error.
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";
@@ -5719,6 +5814,13 @@ const server = http.createServer((req, res) => {
       const refDispute = /\/dispute\/([^/?#]+)/.exec(ref);
       if (known && req.method === "POST" && refDispute) {
         res.writeHead(303, { Location: `/dispute/${refDispute[1]}?err=${encodeURIComponent(message).slice(0, 400)}` });
+        res.end();
+        return;
+      }
+      // Compliance workspace forms bounce back the same way.
+      const refCompliance = /\/project\/([^/?#]+)\/compliance/.exec(ref);
+      if (known && req.method === "POST" && refCompliance) {
+        res.writeHead(303, { Location: `/project/${refCompliance[1]}/compliance?err=${encodeURIComponent(message).slice(0, 400)}` });
         res.end();
         return;
       }

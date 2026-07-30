@@ -21,6 +21,8 @@ import { buildZip, csv, PackageFile } from "./auditPackage";
 import { buildLenderDrawFiles } from "./lenderReporting";
 import { bankingRegisterFiles } from "./banking/packageRegisters";
 import { disputeRegisterFiles } from "./disputeRegisters";
+import * as dmvCompliance from "./dmvCompliance";
+import { dmvRegisterFiles } from "./dmvRegisters";
 import { createHash } from "node:crypto";
 import type {
   ApprovalRecord, ApprovalRequest, DrawAccountEvent, DrawDocument,
@@ -269,6 +271,9 @@ export interface DrawPackageData {
   physicalProgress: ReturnType<typeof budget.assessPhysicalProgress>;
   ledger: { valid: boolean; entries: number; brokenAt?: number };
   criticalIntegrityFindings: string[];
+  /** DMV Draw Control Record — only for projects using the DMV
+   *  compliance layer; null keeps every other package unchanged. */
+  dmv: import("./dmvCompliance").DrawControlRecord | null;
   generatedAt: string;
   generatedBy: User;
   users: Map<string, User>;
@@ -791,6 +796,13 @@ export async function assembleDrawPackageData(user: User, drawId: string): Promi
     physicalProgress: phys,
     ledger: { valid: chain.valid, entries: chain.entries, brokenAt: chain.brokenAt },
     criticalIntegrityFindings,
+    // The control record pins the currently authoritative basis versions
+    // to this draw (first pin wins permanently) and evaluates line
+    // eligibility with explicit reason codes. Null when the project does
+    // not use the DMV compliance layer.
+    dmv: dmvCompliance.projectUsesDmvCompliance(project.id)
+      ? dmvCompliance.drawControlRecord(user, draw.id)
+      : null,
     generatedAt: new Date().toISOString(),
     generatedBy: user,
     users,
@@ -1211,6 +1223,23 @@ export function buildDrawPackageFiles(d: DrawPackageData): {
   for (const df of disputeRegs.files) {
     files.push(df);
     counts[df.name] = disputeRegs.counts[df.name];
+  }
+
+  // ---- DMV compliance registers (additive; only when the project uses
+  //      the DMV layer — the control record was generated at assembly)
+  if (d.dmv) {
+    const dmvRegs = dmvRegisterFiles({
+      projectId: d.project.id,
+      drawRequestId: d.draw.id,
+      asOf: d.generatedAt,
+      prefix: "",
+      users: d.users,
+      controlRecord: d.dmv,
+    });
+    for (const mf of dmvRegs.files) {
+      files.push(mf);
+      counts[mf.name] = dmvRegs.counts[mf.name];
+    }
   }
 
   return { files, counts };

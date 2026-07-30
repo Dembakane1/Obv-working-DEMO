@@ -199,7 +199,9 @@ const financialState = () =>
       populated.includes(inspRow.n) && populated.includes(enumLabel(inspRow.st)) && populated.includes("2026-07-25"),
       "displayed inspection data equals the stored draw_inspections row"
     );
-    const wRow = q1("SELECT signing_party AS p, status AS st, covered_through AS ct FROM lien_waiver_records LIMIT 1");
+    // Scoped to this draw — the seeded DMV pilot project carries its own
+    // lien-waiver records.
+    const wRow = q1("SELECT signing_party AS p, status AS st, covered_through AS ct FROM lien_waiver_records WHERE draw_request_id = 'draw-1' LIMIT 1");
     assert(populated.includes(wRow.p) && populated.includes(enumLabel(wRow.st)) && populated.includes(wRow.ct),
       "displayed lien-waiver data equals the stored lien_waiver_records row");
 
