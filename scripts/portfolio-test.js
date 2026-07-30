@@ -104,10 +104,14 @@ function assertSnapshotEqual(before, after, label) {
   assert(diff.length === 0, `${label}${diff.length ? ` (changed: ${diff.join(", ")})` : ""}`);
 }
 
+// draw_account_events is deliberately NOT in this list: section 4 inserts
+// two synthetic rows into it (in this suite's own disposable database) to
+// exercise the unified held/released read model, and section 16 asserts
+// those two rows are the ONLY change.
 const BANKING_AND_LEDGER = [
   "banking_programs", "project_virtual_accounts", "project_account_holds",
   "payment_instructions", "bank_transactions", "reconciliation_runs",
-  "banking_events", "mock_provider_ledger", "draw_account_events",
+  "banking_events", "mock_provider_ledger",
   "retainage_events", "virtual_account_events", "ledger_entries",
   "evidence_items", "verifications", "reports", "audit_packages",
   "lender_draw_decisions",
@@ -304,6 +308,10 @@ async function main() {
     ov.totals.budgetUtilizationPct > 0 && ov.totals.fundingUtilizationPct > 0,
     "utilization percentages computed"
   );
+  assert(
+    ov.totals.fundingUtilizationPct === Math.round((released / held) * 1000) / 10,
+    `funding utilization = released ÷ ever-held governed capital (${ov.totals.fundingUtilizationPct}%)`
+  );
 
   const distSum = (entries) => entries.reduce((a, e) => a + e.count, 0);
   assert(distSum(ov.distributions.byStatus) === projCount, "byStatus distribution covers every project");
@@ -467,7 +475,21 @@ async function main() {
     `INSERT INTO budget_lines (id, project_id, code, category, description, original_budget, approved_changes, paid_to_date, active, created_at, updated_at)
      VALUES ('bl-pi-over','proj-dmv','99-999','Contingency','Synthetic overrun line',10000,0,25000,1,'${T}','${T}')`
   );
-  pass("synthetic verified records inserted (organizations, loan, parties, inspections, invoices, exceptions, disputes, permit, milestone, budget line)");
+  // Draw-scoped governed account events (unified held/released read model)
+  // and a pending CHANGE_ORDER approval (subject-type coverage).
+  exec(
+    `INSERT INTO draw_account_events (id, draw_request_id, type, amount, created_at)
+     VALUES ('dae-pi-held','draw-vam','HELD',200000,'2026-07-12T00:00:00.000Z')`
+  );
+  exec(
+    `INSERT INTO draw_account_events (id, draw_request_id, type, amount, created_at)
+     VALUES ('dae-pi-rel','draw-vam','RELEASED',200000,'2026-07-15T00:00:00.000Z')`
+  );
+  exec(
+    `INSERT INTO approval_requests (id, change_order_id, subject_type, status, required_roles, created_at)
+     VALUES ('apr-pi-co','co-1','CHANGE_ORDER','PENDING','["FUNDER_REP"]','2026-07-01T00:00:00.000Z')`
+  );
+  pass("synthetic verified records inserted (organizations, loan, parties, inspections, invoices, exceptions, disputes, permit, milestone, budget line, draw account events, CO approval)");
   await signIn("exec2", "user-pi-exec");
   pass("second-lender executive signed in");
 
@@ -542,6 +564,24 @@ async function main() {
   assert(
     attention1.size === expected1.size && [...attention1].every((id) => expected1.has(id)),
     "attention queue tracks the new band assignments automatically"
+  );
+  const r47Risk1 = risk1.projects.find((p) => p.projectId === "proj-r47");
+  assert(
+    r47Risk1.dimensions.operational.reasons.some((r) => r.code === "APPROVAL_BACKLOG"),
+    "aged CHANGE_ORDER approval registers in operational risk (all subject types scoped)"
+  );
+  const ovAfter = await j("funder", "GET", "/api/portfolio/overview");
+  assert(
+    ovAfter.totals.releasedAmount === 920000,
+    `released total unifies milestone and draw account events (${ovAfter.totals.releasedAmount})`
+  );
+  assert(
+    ovAfter.trends.growth.at(-1).cumulativeReleased === ovAfter.totals.releasedAmount,
+    "growth series and headline released total agree after a draw-scoped release"
+  );
+  assert(
+    ovAfter.totals.pendingApprovals === 1,
+    "pending approvals count includes CHANGE_ORDER subjects"
   );
 
   // ------------------------------------------------------------ section 7
@@ -732,6 +772,10 @@ async function main() {
     );
     const fieldSnap = await api("field", "POST", "/api/portfolio/snapshots");
     assert(fieldSnap.status === 403, "FIELD role cannot record snapshots");
+    const fieldSnapList = await api("field", "GET", "/api/portfolio/snapshots");
+    assert(fieldSnapList.status === 403, "FIELD role cannot read the snapshot series either");
+    const malformed = await api("funder", "GET", "/api/portfolio/vendor/%zz");
+    assert(malformed.status === 404, "malformed entity keys are indistinguishable from nonexistent (404)");
   }
 
   // ----------------------------------------------------------- section 13
@@ -780,6 +824,11 @@ async function main() {
   assert(
     !execSnaps.some((s) => s.id === recorded.id),
     "snapshot series are tenant-scoped — one lender never sees another's"
+  );
+  const complianceSnaps = (await j("compliance", "GET", "/api/portfolio/snapshots")).snapshots;
+  assert(
+    !complianceSnaps.some((s) => s.id === recorded.id),
+    "snapshot series are recorder-scoped — access sets are per-user, so even org-mates never read another recorder's aggregates"
   );
   const funderSnaps2 = (await j("funder", "GET", "/api/portfolio/snapshots")).snapshots;
   assert(
@@ -830,6 +879,11 @@ async function main() {
     bankingBaseline,
     snapshotTables(BANKING_AND_LEDGER),
     "banking, VAM, ledger, evidence, reports and package tables are byte-identical from suite start to finish"
+  );
+  const daeRows = qa("SELECT id FROM draw_account_events ORDER BY id").map((r) => r.id);
+  assert(
+    daeRows.length === 2 && daeRows.every((id) => id.startsWith("dae-pi-")),
+    "draw_account_events contains only this suite's two synthetic rows — the analytics layer wrote none"
   );
   assert(
     q1("SELECT COUNT(*) AS c FROM gov_portfolios").c === 0 &&

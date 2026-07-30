@@ -6,7 +6,7 @@
  */
 import type { User } from "../../../shared/types";
 import * as prepo from "../../db/portfolioRepo";
-import { PortfolioContext, buildPortfolioContext } from "./context";
+import { PortfolioContext, assertPortfolioViewer, buildPortfolioContext } from "./context";
 import { portfolioOverview } from "./aggregate";
 import { portfolioRisk } from "./riskEngine";
 
@@ -54,10 +54,17 @@ export function recordSnapshot(user: User): SnapshotView {
 }
 
 export function listSnapshots(user: User): SnapshotView[] {
-  // Snapshots are scoped to the viewer's own organization — one tenant's
-  // series is invisible to another's, matching the same-404 posture of
-  // everything else in the portfolio layer.
-  return prepo.listPortfolioSnapshots(user.organizationId).map(toView);
+  // Same viewer-role gate as every other portfolio surface. The series
+  // is additionally scoped to snapshots THIS USER recorded within their
+  // organization: a snapshot aggregates the recorder's accessible
+  // portfolio, and two users in one organization do not necessarily
+  // share an accessible set (memberships are per-user), so an org-wide
+  // listing could leak aggregate figures across access boundaries.
+  assertPortfolioViewer(user);
+  return prepo
+    .listPortfolioSnapshots(user.organizationId)
+    .filter((row) => row.takenByUserId === user.id)
+    .map(toView);
 }
 
 function toView(row: prepo.PortfolioSnapshotRow): SnapshotView {

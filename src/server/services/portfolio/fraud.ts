@@ -161,7 +161,9 @@ export function fraudSignals(ctx: PortfolioContext): FraudSignal[] {
     const open = (ctx.exceptionsByProject().get(project.id) ?? []).filter(
       (e) => !["RESOLVED", "CLOSED", "WAIVED"].includes(e.status)
     );
-    const openDisputes = (ctx.disputesByProject().get(project.id) ?? []).filter((d) => !d.closedAt);
+    const openDisputes = (ctx.disputesByProject().get(project.id) ?? []).filter(
+      (d) => !d.closedAt && !d.resolvedAt
+    );
     if (open.length === 0 && openDisputes.length === 0) continue;
     for (const contractorOrgId of facets.contractorOrgIds) {
       const set = contractorIssueProjects.get(contractorOrgId) ?? new Set<string>();

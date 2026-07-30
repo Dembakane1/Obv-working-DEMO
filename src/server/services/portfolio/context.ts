@@ -189,17 +189,12 @@ export function buildPortfolioContext(viewer: User): PortfolioContext {
     linesByDraw: lazy(() => byDraw(prepo.drawLineRows())),
     docsByDraw: lazy(() => byDraw(prepo.drawDocumentRows())),
     decisionsByDraw: lazy(() => byDraw(inScope(prepo.lenderDecisionRows()))),
-    approvals: lazy(() => {
-      const draws = drawById();
-      const milestoneIds = scopedMilestoneIds();
-      return prepo
-        .approvalRows()
-        .filter(
-          (a) =>
-            (a.drawRequestId !== null && draws.has(a.drawRequestId)) ||
-            (a.milestoneId !== null && milestoneIds.has(a.milestoneId))
-        );
-    }),
+    approvals: lazy(() =>
+      // Project ownership is resolved in SQL through whichever subject
+      // pointer is set (milestone, draw, change order, retainage), so
+      // every approval subject type is tenancy-filtered identically.
+      prepo.approvalRows().filter((a) => a.projectId !== null && projectIds.has(a.projectId))
+    ),
     exceptionsByProject: lazy(() => groupBy(inScope(prepo.exceptionRows()), (e) => e.projectId)),
     disputesByProject: lazy(() => groupBy(inScope(prepo.disputeRows()), (d) => d.projectId)),
     permitsByProject: lazy(() => groupBy(inScope(prepo.permitRows()), (p) => p.projectId)),

@@ -140,9 +140,21 @@ export function portfolioOverview(ctx: PortfolioContext, filters: PortfolioFilte
   const scopedIds = new Set(scoped.map((p) => p.id));
 
   // ------------------------------------------------------------- totals
+  // Held/released cover BOTH governed event ledgers (milestone-scoped
+  // virtual_account_events and draw-scoped draw_account_events) so the
+  // headline totals and the growth trend always agree. "Held" is capital
+  // ever placed under governance — releases move within it, so
+  // utilization is released ÷ held, never released ÷ (held + released).
   let heldAmount = 0;
   let releasedAmount = 0;
   for (const [projectId, events] of ctx.accountEventsByProject()) {
+    if (!scopedIds.has(projectId)) continue;
+    for (const e of events) {
+      if (e.type === "HELD") heldAmount += e.amount;
+      if (e.type === "RELEASED") releasedAmount += e.amount;
+    }
+  }
+  for (const [projectId, events] of ctx.drawAccountEventsByProject()) {
     if (!scopedIds.has(projectId)) continue;
     for (const e of events) {
       if (e.type === "HELD") heldAmount += e.amount;
@@ -172,17 +184,9 @@ export function portfolioOverview(ctx: PortfolioContext, filters: PortfolioFilte
   const drawsInReview = drawsInScope.filter((d) =>
     ["SUBMITTED", "UNDER_REVIEW", "CLARIFICATION_REQUIRED", "READY_FOR_GOVERNANCE"].includes(d.status)
   ).length;
-  const pendingApprovals = ctx.approvals().filter((a) => {
-    if (a.status !== "PENDING") return false;
-    if (a.drawRequestId) return scopedIds.has(ctx.drawById().get(a.drawRequestId)?.projectId ?? "");
-    if (a.milestoneId) {
-      for (const [projectId, milestones] of ctx.milestonesByProject()) {
-        if (!scopedIds.has(projectId)) continue;
-        if (milestones.some((m) => m.id === a.milestoneId)) return true;
-      }
-    }
-    return false;
-  }).length;
+  const pendingApprovals = ctx
+    .approvals()
+    .filter((a) => a.status === "PENDING" && a.projectId !== null && scopedIds.has(a.projectId)).length;
 
   // ------------------------------------------------------ distributions
   const byStatus = new Map<string, { label: string; count: number; totalBudget: number }>();
@@ -324,7 +328,7 @@ export function portfolioOverview(ctx: PortfolioContext, filters: PortfolioFilte
       releasedAmount,
       paidToDate,
       revisedBudget,
-      fundingUtilizationPct: Math.round(pct(releasedAmount, heldAmount + releasedAmount) * 10) / 10,
+      fundingUtilizationPct: Math.round(pct(releasedAmount, heldAmount) * 10) / 10,
       budgetUtilizationPct: Math.round(pct(paidToDate, revisedBudget) * 10) / 10,
       openExceptions,
       openDisputes,

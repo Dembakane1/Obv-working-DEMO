@@ -116,7 +116,9 @@ draws, authorize payments, or replace human review.
 Each lender's executives see exactly their accessible portfolio —
 aggregates, entities, fraud signals, summaries, and snapshots are all
 scoped before computation. Snapshot series are keyed to the recording
-viewer's organization. The suite proves a second seeded lender cannot
+viewer (organization + recorder): a snapshot aggregates the recorder's
+accessible portfolio, and access sets are per-user, so listings never
+cross a recorder boundary. The suite proves a second seeded lender cannot
 observe the first's projects, contractors, or snapshots, and that
 cross-tenant detail requests 404 identically to nonexistent ones.
 

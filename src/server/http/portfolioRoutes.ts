@@ -23,6 +23,16 @@ export interface PortfolioRouteContext {
   sendJson: (data: unknown, status?: number) => void;
 }
 
+/** Malformed percent-encoding in an entity key is indistinguishable from
+ *  an entity that does not exist. */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new portfolio.PortfolioError("Not found", 404);
+  }
+}
+
 function filtersFrom(searchParams: URLSearchParams): portfolio.PortfolioFilters {
   const pick = (key: string): string | undefined => {
     const value = searchParams.get(key);
@@ -69,21 +79,21 @@ export async function handlePortfolioRoutes(ctx: PortfolioRouteContext): Promise
   }
   const contractorMatch = /^\/api\/portfolio\/contractor\/([^/]+)$/.exec(pathname);
   if (contractorMatch) {
-    return get((user) => portfolio.contractorDetail(user, decodeURIComponent(contractorMatch[1])));
+    return get((user) => portfolio.contractorDetail(user, safeDecode(contractorMatch[1])));
   }
   if (pathname === "/api/portfolio/inspectors") {
     return get((user) => ({ inspectors: portfolio.inspectors(user) }));
   }
   const inspectorMatch = /^\/api\/portfolio\/inspector\/([^/]+)$/.exec(pathname);
   if (inspectorMatch) {
-    return get((user) => portfolio.inspectorDetail(user, decodeURIComponent(inspectorMatch[1])));
+    return get((user) => portfolio.inspectorDetail(user, safeDecode(inspectorMatch[1])));
   }
   if (pathname === "/api/portfolio/vendors") {
     return get((user) => ({ vendors: portfolio.vendors(user) }));
   }
   const vendorMatch = /^\/api\/portfolio\/vendor\/([^/]+)$/.exec(pathname);
   if (vendorMatch) {
-    return get((user) => portfolio.vendorDetail(user, decodeURIComponent(vendorMatch[1])));
+    return get((user) => portfolio.vendorDetail(user, safeDecode(vendorMatch[1])));
   }
   if (pathname === "/api/portfolio/forecast") {
     return get((user) => portfolio.forecast(user));

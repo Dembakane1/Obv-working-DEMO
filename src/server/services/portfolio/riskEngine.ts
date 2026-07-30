@@ -304,7 +304,9 @@ function contractorRiskDim(ctx: PortfolioContext, projectId: string, facets: Pro
       const open = (ctx.exceptionsByProject().get(other.id) ?? []).filter(
         (e) => !["RESOLVED", "CLOSED", "WAIVED"].includes(e.status)
       );
-      const disputes = (ctx.disputesByProject().get(other.id) ?? []).filter((d) => !d.closedAt);
+      const disputes = (ctx.disputesByProject().get(other.id) ?? []).filter(
+        (d) => !d.closedAt && !d.resolvedAt
+      );
       if (open.length > 0 || disputes.length > 0) otherProjectsWithIssues += 1;
     }
     if (otherProjectsWithIssues > 0) {
@@ -365,13 +367,8 @@ function operationalRisk(ctx: PortfolioContext, projectId: string): DimensionSco
   const now = ctx.generatedAt;
   const agedApprovals = ctx
     .approvals()
-    .filter((a) => a.status === "PENDING")
+    .filter((a) => a.status === "PENDING" && a.projectId === projectId)
     .filter((a) => {
-      const projectMatch =
-        (a.drawRequestId !== null && ctx.drawById().get(a.drawRequestId)?.projectId === projectId) ||
-        (a.milestoneId !== null &&
-          (ctx.milestonesByProject().get(projectId) ?? []).some((m) => m.id === a.milestoneId));
-      if (!projectMatch) return false;
       const age = daysBetween(a.createdAt, now);
       return age !== null && age > 14;
     });

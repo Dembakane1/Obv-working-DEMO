@@ -273,6 +273,9 @@ export interface ApprovalRow {
   createdAt: string;
   milestoneId: string | null;
   drawRequestId: string | null;
+  /** Owning project resolved through whichever subject pointer is set
+   *  (milestone, draw, change order, or retainage release). */
+  projectId: string | null;
   decidedAt: string | null;
 }
 
@@ -280,6 +283,12 @@ export function approvalRows(): ApprovalRow[] {
   return getDb()
     .prepare(
       `SELECT ar.id, ar.subject_type, ar.status, ar.created_at, ar.milestone_id, ar.draw_request_id,
+              COALESCE(
+                (SELECT m.project_id FROM milestones m WHERE m.id = ar.milestone_id),
+                (SELECT d.project_id FROM draw_requests d WHERE d.id = ar.draw_request_id),
+                (SELECT c.project_id FROM change_orders c WHERE c.id = ar.change_order_id),
+                (SELECT rr.project_id FROM retainage_release_requests rr WHERE rr.id = ar.retainage_release_id)
+              ) AS project_id,
               (SELECT MAX(rec.created_at) FROM approval_records rec
                 WHERE rec.approval_request_id = ar.id) AS decided_at
          FROM approval_requests ar`
@@ -294,6 +303,7 @@ export function approvalRows(): ApprovalRow[] {
         createdAt: s(x.created_at),
         milestoneId: sn(x.milestone_id),
         drawRequestId: sn(x.draw_request_id),
+        projectId: sn(x.project_id),
         decidedAt: sn(x.decided_at),
       };
     });
@@ -805,16 +815,18 @@ export interface CtcRow {
   confidence: string;
 }
 
-/** Latest cost-to-complete estimate per budget line (append-only source). */
+/** Latest cost-to-complete estimate per budget line (append-only source).
+ *  rowid breaks created_at ties so a line never yields two "latest" rows. */
 export function latestCtcRows(): CtcRow[] {
   return getDb()
     .prepare(
       `SELECT c.project_id, c.budget_line_id, c.estimated_cost_to_complete,
               c.estimate_date, c.confidence
          FROM cost_to_complete_estimates c
-        WHERE c.created_at = (
-          SELECT MAX(c2.created_at) FROM cost_to_complete_estimates c2
+        WHERE c.rowid = (
+          SELECT c2.rowid FROM cost_to_complete_estimates c2
            WHERE c2.budget_line_id = c.budget_line_id
+           ORDER BY c2.created_at DESC, c2.rowid DESC LIMIT 1
         )`
     )
     .all()

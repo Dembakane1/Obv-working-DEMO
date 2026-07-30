@@ -211,7 +211,7 @@ export function contractorScorecard(
   const openExceptions = exceptions.filter((e) => !["RESOLVED", "CLOSED", "WAIVED"].includes(e.status));
   const topRisks: string[] = [];
   if (openExceptions.length > 0) topRisks.push(`${openExceptions.length} open exception(s) across their projects`);
-  if (disputes.some((d) => !d.closedAt)) topRisks.push("Open dispute(s) on their projects");
+  if (disputes.some((d) => !d.closedAt && !d.resolvedAt)) topRisks.push("Open dispute(s) on their projects");
   if ((averageCostVariancePct ?? 0) > 10) topRisks.push(`Average cost growth of ${averageCostVariancePct}%`);
   if (averageScheduleVarianceDays > 14) topRisks.push(`Average schedule slip of ${averageScheduleVarianceDays} days`);
   if (inspectionSuccessRatePct !== null && inspectionSuccessRatePct < 70)
@@ -449,24 +449,27 @@ export function vendorIntelligence(ctx: PortfolioContext): VendorScorecard[] {
     const rejected = v.invoices.filter((i) => i.status === "REJECTED" || i.status === "EXPIRED").length;
     const reviewed = accepted + rejected;
 
-    // Payment timing: invoice received -> settled payment instruction or
-    // recorded external funding on the same draw.
+    // Payment timing: one sample per invoice — the EARLIEST settlement
+    // event (settled payment instruction or recorded external funding)
+    // on that invoice's draw at or after the invoice was received. One
+    // sample per invoice keeps a draw with many settlement events from
+    // multiplying into a cross-join of misleading averages.
     const paymentDays: number[] = [];
     for (const invoice of v.invoices) {
-      const instructions = ctx.instructionsByDraw().get(invoice.drawId) ?? [];
-      const settled = instructions.filter((i) => i.settledAt);
-      for (const instruction of settled) {
+      const candidates: number[] = [];
+      for (const instruction of ctx.instructionsByDraw().get(invoice.drawId) ?? []) {
         const days = daysBetween(invoice.receivedAt, instruction.settledAt);
-        if (days !== null && days >= 0) paymentDays.push(days);
+        if (days !== null && days >= 0) candidates.push(days);
       }
       const draw = ctx.drawById().get(invoice.drawId);
       if (draw) {
         for (const funding of ctx.fundingByProject().get(draw.projectId) ?? []) {
-          if (funding.drawRequestId !== invoice.drawId || !funding.fundedAt) continue;
+          if (funding.drawRequestId !== invoice.drawId) continue;
           const days = daysBetween(invoice.receivedAt, funding.fundedAt);
-          if (days !== null && days >= 0) paymentDays.push(days);
+          if (days !== null && days >= 0) candidates.push(days);
         }
       }
+      if (candidates.length > 0) paymentDays.push(Math.min(...candidates));
     }
 
     const disputeTouches = new Set<string>();
