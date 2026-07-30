@@ -34,6 +34,12 @@ services:
       # empty keeps the demo open).
       - key: OBV_ACCESS_CODE
         sync: false
+      # Session signing key. generateValue makes Render mint a random
+      # secret per service — nothing is committed, and sessions survive
+      # restarts (an unset value would fall back to a per-boot ephemeral
+      # key, silently signing everyone out on every deploy).
+      - key: OBV_SESSION_SECRET
+        generateValue: true
       # Optional integrations — set values in the Render dashboard only;
       # never commit them to the repository:
       #   ANTHROPIC_API_KEY   -> enables live AI visual verification
@@ -68,3 +74,9 @@ services:
         value: "1"
       - key: OBV_ACCESS_CODE
         sync: false
+      # Session signing key. generateValue makes Render mint a random
+      # secret per service — nothing is committed, and sessions survive
+      # restarts (an unset value would fall back to a per-boot ephemeral
+      # key, silently signing everyone out on every deploy).
+      - key: OBV_SESSION_SECRET
+        generateValue: true

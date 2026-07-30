@@ -10,6 +10,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { DatabaseSync } = require("node:sqlite");
+const { signInAll, sessionCookie } = require("./lib/session");
 
 const PORT = 3110;
 const HOOK_PORT = 4601;
@@ -79,7 +80,7 @@ async function startServer(extraEnv) {
 const reset = async () =>
   fetch(BASE + "/api/demo/reset", {
     method: "POST",
-    headers: { "content-type": "application/json", Cookie: "obv_user=user-funder" },
+    headers: { "content-type": "application/json", Cookie: sessionCookie(BASE, "user-funder") },
   });
 
 const PNG =
@@ -89,7 +90,7 @@ const PNG =
 async function submit(overrides = {}) {
   const res = await fetch(BASE + "/api/evidence", {
     method: "POST",
-    headers: { "content-type": "application/json", Cookie: "obv_user=user-field" },
+    headers: { "content-type": "application/json", Cookie: sessionCookie(BASE, "user-field") },
     body: JSON.stringify({
       milestoneId: "ms-3",
       photoDataUrl: PNG,
@@ -107,7 +108,7 @@ async function submit(overrides = {}) {
 async function decide(approvalId, user, decision) {
   const res = await fetch(`${BASE}/api/approvals/${approvalId}/decision`, {
     method: "POST",
-    headers: { "content-type": "application/json", Cookie: `obv_user=${user}` },
+    headers: { "content-type": "application/json", Cookie: sessionCookie(BASE, user) },
     body: JSON.stringify({ decision }),
   });
   if (res.status !== 200) fail(`decision -> ${res.status}`);
@@ -115,7 +116,7 @@ async function decide(approvalId, user, decision) {
 }
 
 function notificationRows(where = "") {
-  const db = new DatabaseSync(path.join(process.cwd(), "data", "obv.db"));
+  const db = new DatabaseSync(path.join(process.env.OBV_DATA_DIR || path.join(process.cwd(), "data"), "obv.db"));
   const rows = db.prepare(`SELECT * FROM notifications ${where} ORDER BY created_at`).all();
   db.close();
   return rows;
@@ -126,6 +127,7 @@ async function main() {
 
   // ---------- TEST 1: no webhook configured -> demo mode, loop intact ----------
   await startServer({});
+  await signInAll(BASE);
   await reset();
   let r = await submit();
   if (r.status !== 201 || !r.body.approvalRequest || !r.body.ledgerEntry) fail("hero artifacts missing (no webhook)");
@@ -204,20 +206,20 @@ async function main() {
   await decide(r.body.approvalRequest.id, "user-funder", "REJECTED");
   if (!cardTitles().some((t) => t.includes("Approval Rejected"))) fail("approval-rejected card missing");
   const ms = notificationRows("WHERE 1=1"); // milestone state via API instead
-  const projPage = await (await fetch(`${BASE}/project/proj-r47`, { headers: { Cookie: "obv_user=user-funder" } })).text();
+  const projPage = await (await fetch(`${BASE}/project/proj-r47`, { headers: { Cookie: sessionCookie(BASE, "user-funder") } })).text();
   if (!projPage.includes("$1,680,000")) fail("funds did not remain HELD after approval rejection");
   pass("approval rejection: card sent, tranche remains HELD, milestone returned for review");
 
   // ---------- TEST 8: ledger tamper -> integrity alert card, no false success ----------
   received.length = 0;
   {
-    const db = new DatabaseSync(path.join(process.cwd(), "data", "obv.db"));
+    const db = new DatabaseSync(path.join(process.env.OBV_DATA_DIR || path.join(process.cwd(), "data"), "obv.db"));
     db.prepare("UPDATE ledger_entries SET payload_hash='deadbeef' WHERE seq=1").run();
     db.close();
   }
   await fetch(BASE + "/api/ledger/verify", {
     method: "POST",
-    headers: { "content-type": "application/json", Cookie: "obv_user=user-funder" },
+    headers: { "content-type": "application/json", Cookie: sessionCookie(BASE, "user-funder") },
   });
   const alertTitles = cardTitles();
   if (!alertTitles.some((t) => t.includes("Evidence Ledger Integrity Alert"))) fail("integrity alert card missing");

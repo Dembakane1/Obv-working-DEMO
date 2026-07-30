@@ -61,17 +61,21 @@ function q(sql, ...params) {
   return r;
 }
 function projGov(projectId) {
+  // Plain positional `?` placeholders, repeated once per subquery. SQLite
+  // treats numbered `?1` as a NAMED parameter, and node:sqlite before
+  // ~22.20 refuses to bind those positionally ("column index out of
+  // range") — so `?1` passed locally and failed on the pinned CI Node.
   return q(
     `SELECT
-       (SELECT COUNT(*) FROM evidence_items e JOIN milestones m ON e.milestone_id=m.id WHERE m.project_id=?1) AS evidence,
+       (SELECT COUNT(*) FROM evidence_items e JOIN milestones m ON e.milestone_id=m.id WHERE m.project_id=?) AS evidence,
        (SELECT COUNT(*) FROM approval_records r JOIN approval_requests a ON r.approval_request_id=a.id
-          JOIN milestones m ON a.milestone_id=m.id WHERE m.project_id=?1) AS approvals,
+          JOIN milestones m ON a.milestone_id=m.id WHERE m.project_id=?) AS approvals,
        (SELECT COUNT(*) FROM virtual_account_events v JOIN milestones m ON v.milestone_id=m.id
-          WHERE m.project_id=?1 AND v.type='RELEASED') AS released,
+          WHERE m.project_id=? AND v.type='RELEASED') AS released,
        (SELECT COUNT(*) FROM virtual_account_events v JOIN milestones m ON v.milestone_id=m.id
-          WHERE m.project_id=?1 AND v.type='HELD') AS held,
-       (SELECT COUNT(*) FROM ledger_entries l JOIN milestones m ON l.milestone_id=m.id WHERE m.project_id=?1) AS ledger`,
-    projectId
+          WHERE m.project_id=? AND v.type='HELD') AS held,
+       (SELECT COUNT(*) FROM ledger_entries l JOIN milestones m ON l.milestone_id=m.id WHERE m.project_id=?) AS ledger`,
+    projectId, projectId, projectId, projectId, projectId
   );
 }
 /** Deterministic >256-byte PNG (the mock visual check needs real content). */
@@ -222,6 +226,7 @@ async function waitUp() {
       body: JSON.stringify({ token: rawToken, name: "Lena Okafor", title: "Compliance Officer" }),
     });
     assert(accept1.status === 201, "valid invitation activates and creates the user");
+    jars.lena = accept1.headers.getSetCookie()[0].split(";")[0];
     const reviewer = (await accept1.json()).user;
     const accept2 = await fetch(BASE + "/api/invitations/accept", {
       method: "POST",
@@ -360,6 +365,9 @@ async function waitUp() {
         name: "Grace Tembo", title: "Site Engineer",
       }),
     });
+    // The accept response issues this user's session — capture it rather
+    // than impersonating them through the demo switcher.
+    jars.grace = fAccept.headers.getSetCookie()[0].split(";")[0];
     const fieldUser = (await fAccept.json()).user;
     assert(
       fAccept.status === 201 &&
@@ -370,8 +378,8 @@ async function waitUp() {
     const readyPage = await page("pm", `/setup/project/${project.id}?stage=review`);
     assert(readyPage.includes("READY TO LAUNCH"), "readiness passes when configuration is complete");
 
-    // unauthorized launch blocked
-    await signIn("grace", fieldUser.id);
+    // unauthorized launch blocked (grace's session came from her invitation)
+    void fieldUser;
     const fieldLaunch = await api("grace", "POST", `/api/pilot/projects/${project.id}/launch`, {});
     assert(fieldLaunch.status === 403, "unauthorized role cannot launch a project");
 
@@ -469,7 +477,7 @@ async function waitUp() {
       (await pmDecision.json()).released === false && projGov(project.id).released === 0,
       "one matrix approval is not enough — funds stay HELD"
     );
-    await signIn("lena", reviewer.id);
+    void reviewer;
     const finalDecision = await api("lena", "POST", `/api/approvals/${ev.approvalRequest.id}/decision`, { decision: "APPROVED" });
     assert(
       (await finalDecision.json()).released === true && projGov(project.id).released === 1,

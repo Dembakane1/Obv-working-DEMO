@@ -7,7 +7,9 @@
     "rootDir": "src/client",
     "strict": true,
     "skipLibCheck": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"]
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    // Browser bundle: no ambient Node globals may leak into client code.
+    "types": []
   },
   "include": ["src/client/**/*"]
 }

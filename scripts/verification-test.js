@@ -12,6 +12,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { signInAll, sessionCookie } = require("./lib/session");
 
 const PORT = 3100;
 const STUB_PORT = 4599;
@@ -77,7 +78,7 @@ async function startServer(extraEnv) {
 async function resetDemo() {
   const r = await fetch(BASE + "/api/demo/reset", {
     method: "POST",
-    headers: { "content-type": "application/json", Cookie: "obv_user=user-funder" },
+    headers: { "content-type": "application/json", Cookie: sessionCookie(BASE, "user-funder") },
   });
   if (r.status !== 200) fail(`reset -> ${r.status}`);
 }
@@ -100,7 +101,7 @@ async function submit(overrides = {}) {
   const started = Date.now();
   const res = await fetch(BASE + "/api/evidence", {
     method: "POST",
-    headers: { "content-type": "application/json", Cookie: "obv_user=user-field" },
+    headers: { "content-type": "application/json", Cookie: sessionCookie(BASE, "user-field") },
     body: JSON.stringify(payload),
   });
   const body = await res.json();
@@ -121,6 +122,7 @@ async function main() {
 
   // ---------- TEST 1: no API key -> MOCK_DEFAULT, hero loop intact ----------
   await startServer({});
+  await signInAll(BASE);
   await resetDemo();
   let r = await submit();
   if (r.status !== 201) fail(`no-key submit -> ${r.status}: ${JSON.stringify(r.body).slice(0, 200)}`);
@@ -180,7 +182,7 @@ async function main() {
   pass("live success: fenced JSON parsed, LIVE_AI provenance, deterministic checks + aggregator ran");
 
   // provenance appears in report preview
-  const preview = await (await fetch(`${BASE}/report/proj-r47/preview`, { headers: { Cookie: "obv_user=user-funder" } })).text();
+  const preview = await (await fetch(`${BASE}/report/proj-r47/preview`, { headers: { Cookie: sessionCookie(BASE, "user-funder") } })).text();
   if (!preview.includes("Live multimodal visual assessment")) fail("report missing live provenance");
   if (!preview.includes("Demo fallback visual assessment")) fail("report missing fallback provenance for seeded items");
   pass("funder report shows accurate verification method per evidence section");
@@ -212,7 +214,7 @@ async function main() {
   if (stubCalls.err !== 2) fail(`expected 1 retry (2 calls), saw ${stubCalls.err}`);
   const asText = JSON.stringify(r.body);
   if (asText.includes("SECRET-PROVIDER-ERROR")) fail("raw provider error leaked to client");
-  const acts = await (await fetch(`${BASE}/overview`, { headers: { Cookie: "obv_user=user-funder" } })).text();
+  const acts = await (await fetch(`${BASE}/overview`, { headers: { Cookie: sessionCookie(BASE, "user-funder") } })).text();
   if (acts.includes("SECRET-PROVIDER-ERROR")) fail("raw provider error leaked to activity feed");
   if (!acts.includes("AI VISUAL FALLBACK USED")) fail("fallback audit event missing");
   expectHeroArtifacts(r.body);

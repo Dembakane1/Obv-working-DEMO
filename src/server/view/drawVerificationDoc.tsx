@@ -5,7 +5,7 @@
  * supported, approved, released and retained amounts are labelled
  * distinctly and never merged. Grayscale-safe: state is always text.
  */
-import { h, Fragment, VNode, renderDocument } from "./jsx";
+import { h, Fragment, VNode, raw, renderDocument } from "./jsx";
 import type { DrawPackageData } from "../services/drawPackage";
 import { NOT_AVAILABLE } from "../services/drawPackage";
 
@@ -138,7 +138,7 @@ export function renderDrawVerificationDoc(d: DrawPackageData): string {
       <head>
         <meta charSet="utf-8" />
         <title>{`Draw Verification Package — Draw #${d.draw.drawNumber} — ${d.project.name}`}</title>
-        <style>{CSS}</style>
+        <style>{raw(CSS)}</style>
       </head>
       <body>
         {/* ============ A. Cover & draw decision summary ============ */}

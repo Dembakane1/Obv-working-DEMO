@@ -1666,7 +1666,16 @@ export async function generateAuditPackage(
 
     // 5. Write-once ZIP (immutable once READY).
     const zip = buildZip(files, now);
-    const filename = `obv-audit-package-${(project.pilot?.code ?? project.id).toLowerCase()}-v${pkg.packageVersion}.zip`;
+    // The pilot code is free-form operator input, and it becomes a path
+    // segment here. Reduce it to a filename-safe slug (same treatment as
+    // permit source artifacts) so it cannot escape the package directory.
+    const slug =
+      (project.pilot?.code ?? project.id)
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/^[.-]+/, "")
+        .slice(0, 60) || project.id;
+    const filename = `obv-audit-package-${slug}-v${pkg.packageVersion}.zip`;
     const dir = path.join(AUDIT_PACKAGES_DIR, pkg.id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, filename), zip, { flag: "wx" });
@@ -1744,7 +1753,13 @@ export function resolvePackageDownload(
   if (!["READY", "SUPERSEDED"].includes(pkg.status) || !pkg.storageObjectKey) {
     throw new AuditPackageError(`Package is ${pkg.status} — not downloadable`, 409);
   }
-  const filePath = path.join(DATA_DIR, pkg.storageObjectKey);
+  // Defence in depth: the stored key is generated from a sanitised slug,
+  // but it is still data. Refuse to serve anything that resolves outside
+  // the data directory rather than trusting the row.
+  const filePath = path.resolve(DATA_DIR, pkg.storageObjectKey);
+  if (!filePath.startsWith(path.resolve(DATA_DIR) + path.sep)) {
+    throw new AuditPackageError("Unknown audit package", 404);
+  }
   if (!fs.existsSync(filePath)) throw new AuditPackageError("Package file no longer on storage", 410);
   return { pkg, filePath, filename: path.basename(filePath) };
 }

@@ -3,7 +3,7 @@
  * Usage: node scripts/shots.js <outDir> [routesCsv] [widthsCsv]
  * Signs in as a funder representative via /api/session (demo).
  */
-const { chromium } = require("playwright");
+const { launchChromium } = require("./lib/browser");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -18,7 +18,7 @@ const SIZES = (process.argv[4] || "1440x900,390x844,768x1024")
 
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+  const browser = await launchChromium();
   const userId = process.env.SHOT_USER || "user-funder";
   for (const [w, hgt] of SIZES) {
     const ctx = await browser.newContext({ viewport: { width: w, height: hgt } });

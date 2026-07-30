@@ -116,7 +116,7 @@ separation-of-duties, unauthorized-reviewer rejection, unrelated-tenant
 isolation (404), and report totals matching database records.
 
 Run the full regression afterwards (all suites pass as of v13):
-`acceptance` (needs `NODE_PATH=/opt/node22/lib/node_modules` + running
+`acceptance` (needs `npm ci && npm run browsers` + running
 server), `chat`, `fieldops`, `idempotency`, `map`, `pilot`, `report`
 (needs running server), `teams`, `teams-sync`, `verification`,
 `whatsapp-sync`, `draws`.
