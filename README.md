@@ -190,6 +190,39 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Portfolio Intelligence Platform (v22)
+
+**Every verified project continuously produces intelligence.** The
+Executive Command Center (`/executive`) derives portfolio analytics on
+demand from verified records — never altering historical records,
+evidence, or packages: portfolio overview with distributions by state,
+jurisdiction, lender, contractor, inspector, stage, status and risk;
+funding/budget utilization; draw-approval and inspection-turnaround
+timing; exception/dispute/permit/compliance trends and portfolio growth.
+An eight-dimension deterministic risk engine (financial, compliance,
+schedule, documentation, inspection, contractor, fraud, operational —
+explainable reason codes, documented weights) yields Project Health =
+100 − risk and surfaces ELEVATED/CRITICAL projects in an automatic
+attention queue. Contractor, inspector, and vendor scorecards resolve
+identities from existing records (no entity is ever replaced; government
+inspector names stay records-about-inspections, never OBV identities).
+Deterministic forecasting (final cost, projected completion, remaining
+budget/funding, confidence bands, inspection/permit completion, cash
+flow) stays separate from actuals. Fraud intelligence emits advisory
+flags only (duplicate invoices, duplicate evidence hashes, rapid budget
+changes, suspicious inspection patterns, releases without evidence, cost
+anomalies, risk clustering). AI executive summaries (weekly / monthly /
+lender briefing) are template-composed from the computed analytics and
+always carry the does-not-approve advisory. Multi-lender: every figure
+is scoped through `authz.accessibleProjects` with same-404 detail
+behavior; append-only `portfolio_snapshots` power the historical series
+per tenant. A disabled government-portfolio foundation (gov_* tables,
+`status IN ('INACTIVE')`, zero write paths, activation 404s) is
+architecture only. Exportable executive PDF via the existing report
+pipeline. 142-checkpoint suite (`scripts/portfolio-test.js`) proves the
+layer read-only against every primary table — see
+`docs/PORTFOLIO_INTELLIGENCE.md`.
+
 ## DMV Draw Control Record + Governing Code and Permit Basis (v21)
 
 **A project's current compliance settings never silently rewrite the permit,
