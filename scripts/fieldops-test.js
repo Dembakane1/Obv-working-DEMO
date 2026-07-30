@@ -193,7 +193,11 @@ async function waitUp() {
     assert(denied.status === 403, "FIELD role cannot create field issues (role-gated)");
 
     const d0 = db();
-    const projectId = d0.prepare("SELECT id FROM projects LIMIT 1").get().id;
+    // Derive the project from the milestone this issue targets, not the
+    // first project row: the seed now also contains the DMV pilot project,
+    // and naming a different project than ms-3's owner is (correctly)
+    // refused by the nested-object tenant guard.
+    const projectId = d0.prepare("SELECT project_id AS p FROM milestones WHERE id = 'ms-3'").get().p;
     d0.close();
     const created = await api("pm", "POST", "/api/issues", {
       projectId,
