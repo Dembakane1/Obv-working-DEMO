@@ -2258,6 +2258,24 @@ export function renderReports(input: {
 
       <div className="panel">
         <div className="panel-head">
+          <h3>Executive Portfolio Report</h3>
+          <span className="right">Portfolio-wide risk, rankings, forecasts and narrative · derived from verified records at generation time</span>
+        </div>
+        <div style="padding:4px 18px 8px">
+          <div style="display:flex;align-items:center;gap:12px;padding:9px 0;flex-wrap:wrap;border-top:1px solid var(--line)">
+            <span style="font-weight:600;min-width:0;font-size:13px">Your accessible portfolio</span>
+            <span style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
+              <a className="btn ghost sm" href="/executive/report/preview" target="_blank">Preview HTML</a>
+              <form method="POST" action="/api/reports/executive" style="margin:0">
+                <button className="btn sm" type="submit" data-busy-label="Generating…">Download executive report (PDF)</button>
+              </form>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
           <h3>Project Audit Package</h3>
           <span className="right">Structured auditor-ready ZIP · registers, manifest, integrity validation · generation and download are audited</span>
         </div>
@@ -3007,6 +3025,7 @@ export function renderMore(input: { nav: NavContext }): string {
     {
       title: "Portfolio & analysis",
       items: [
+        { href: "/executive", label: "Executive", icon: icons.insights, desc: "Portfolio command center, risk and forecasts" },
         { href: "/map", label: "Map / Satellite", icon: icons.map, desc: "Spatial project intelligence" },
         { href: "/insights", label: "OBV Intelligence", icon: icons.insights, desc: "Deterministic intelligence from recorded data" },
         { href: "/budget", label: "Budget & Progress", icon: icons.ledger, desc: "Verified physical vs financial progress" },

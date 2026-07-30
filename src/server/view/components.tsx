@@ -209,6 +209,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { key: "overview", href: "/overview", label: "Overview", icon: icons.overview },
       { key: "projects", href: "/projects", label: "Projects", icon: icons.projects },
+      { key: "executive", href: "/executive", label: "Executive", icon: icons.insights },
       { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
       { key: "insights", href: "/insights", label: "OBV Intelligence", icon: icons.insights },
     ],
