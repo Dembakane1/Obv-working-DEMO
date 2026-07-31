@@ -3616,3 +3616,31 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
   .idp-head { flex-direction: column; align-items: flex-start; }
   .idp-table { display: block; overflow-x: auto; }
 }
+
+/* =====================================================================
+   v18 — Production Integrations Platform (dashboard)
+   ===================================================================== */
+.int-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.int-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+.int-grid .int-card { margin-bottom: 0; }
+.int-card h2 { font-size: 13px; margin: 0 0 6px; }
+.int-card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.int-card-cat { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-4); margin: 2px 0 6px; }
+.int-card .sub { font-size: 12px; margin: 0; }
+.int-alt { margin-top: 8px !important; font-size: 11px !important; color: var(--ink-4); }
+.int-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.int-stat { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
+.int-stat b { font-size: 20px; }
+.int-stat span { font-size: 12px; color: var(--ink-2); }
+.int-stat .sub { font-size: 11px; color: var(--ink-4); }
+.int-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.int-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-4); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.int-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.int-table tr:last-child td { border-bottom: none; }
+.int-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.int-inline { display: flex; gap: 6px; align-items: center; }
+.int-inline input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+@media (max-width: 640px) {
+  .int-table { display: block; overflow-x: auto; }
+  .int-actions { flex-direction: column; align-items: stretch; }
+}

@@ -21,6 +21,7 @@ import {
   nowIso,
   recordIntegration,
 } from "./core";
+import { emitWebhookEvent } from "./webhooks";
 
 const ESIGN_KINDS: EsignKind[] = [
   "CONTRACTOR_AGREEMENT", "LIEN_WAIVER", "APPROVAL_ACKNOWLEDGEMENT", "COMPLETION_CERTIFICATE", "OTHER",
@@ -176,6 +177,13 @@ export function settleSignatureRequest(
     subjectType: "esign_request",
     subjectId: request.id,
   });
+  if (decision === "SIGNED" || decision === "DECLINED") {
+    emitWebhookEvent(actor.organizationId, "esign.completed", `esign-${request.id}`, {
+      requestId: request.id,
+      kind: fresh.kind,
+      decision,
+    });
+  }
   return integrationsRepo.getEsignRequest(request.id)!;
 }
 

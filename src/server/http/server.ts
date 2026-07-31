@@ -140,6 +140,9 @@ import { PortfolioError } from "../services/portfolio";
 import { handleIdentityRoutes } from "./identityRoutes";
 import * as identitySvc from "../services/identity";
 import { IdentityError } from "../services/identity";
+import { handleIntegrationRoutes } from "./integrationRoutes";
+import * as integrationsSvc from "../services/integrations";
+import { IntegrationError } from "../services/integrations";
 import {
   renderExecutive,
   renderExecutiveEntities,
@@ -2812,6 +2815,38 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ============== Production Integrations Platform ==============
+  if (
+    await handleIntegrationRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      searchParams: url.searchParams,
+      getUser: () => {
+        const u = currentUser(req);
+        if (!u) throw new IntegrationError("Select a demo user first", 401);
+        return u;
+      },
+      signInLocation: signInPath(),
+      navFor,
+      readParams,
+      isForm: () => isFormPost(req),
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+      sendHtml: (html, status) => sendHtml(res, html, status ?? 200),
+      sendText: (body, contentType, filename) => {
+        res.writeHead(200, {
+          "Content-Type": contentType,
+          ...(filename ? { "Content-Disposition": `attachment; filename="${filename}"` } : {}),
+        });
+        res.end(body);
+      },
+    })
+  ) {
+    return;
+  }
+
   const loanApi = /^\/api\/projects\/([^/]+)\/(loan|parties|jurisdiction|memberships|lender-policy)$/.exec(pathname);
   if (loanApi) {
     const user = lenderUser();
@@ -4666,6 +4701,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     "/disputes", "/dispute/",
     "/executive",
     "/account",
+    "/integrations",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -6061,7 +6097,7 @@ const server = http.createServer((req, res) => {
     // "Internal server error", which is both a worse experience and a weak
     // existence oracle — 500 here, 404 there, tells an attacker they hit
     // something real. ComplianceError is the DMV layer's typed error.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError || err instanceof IdentityError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError || err instanceof IdentityError || err instanceof IntegrationError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";
@@ -6127,12 +6163,24 @@ startupCheck("identity configuration", () => identitySvc.assertIdentityConfig())
 // First-admin bootstrap: only ever acts when the identities table is empty
 // and OBV_BOOTSTRAP_ADMIN_EMAIL is set; a populated table makes it a no-op.
 startupCheck("identity bootstrap", () => void identitySvc.ensureBootstrapIdentity());
+startupCheck("integrations configuration", () => integrationsSvc.assertIntegrationsConfig());
+// Optional periodic webhook dispatch (off by default; tests and demos
+// trigger dispatch explicitly so behavior stays deterministic).
+if (integrationsSvc.integrationsConfig().webhookDispatchIntervalMs > 0) {
+  const timer = setInterval(() => {
+    void integrationsSvc.dispatchDueDeliveries().catch(() => {
+      /* dispatch failures are recorded per delivery; the loop never dies */
+    });
+  }, integrationsSvc.integrationsConfig().webhookDispatchIntervalMs);
+  timer.unref();
+}
 server.listen(PORT, () => {
   console.log(`OBV running at http://localhost:${PORT}`);
   // Session posture is disclosed at boot: a reader must never have to guess
   // whether identity cookies are signed with a durable secret.
   console.log(sessionStartupNotice());
   console.log(identitySvc.identityStartupNotice());
+  console.log(integrationsSvc.integrationsStartupNotice());
   if (demoAuthEnabled()) {
     console.log(`Demo sign-in: http://localhost:${PORT}/  (pick a seeded role)`);
   } else {

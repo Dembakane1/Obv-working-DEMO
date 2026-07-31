@@ -19,6 +19,7 @@ import {
   nowIso,
   recordIntegration,
 } from "./core";
+import { emitWebhookEvent } from "./webhooks";
 
 const CALENDAR_KINDS: CalendarKind[] = [
   "INSPECTION", "DRAW_REVIEW", "LENDER_MEETING", "CONTRACTOR_MEETING", "PERMIT_DEADLINE", "REMINDER",
@@ -90,6 +91,11 @@ export function createCalendarEvent(
     subjectType: "calendar_event",
     subjectId: event.id,
     detail: kind,
+  });
+  emitWebhookEvent(actor.organizationId, "calendar.scheduled", `calendar-${event.id}`, {
+    eventId: event.id,
+    kind: event.kind,
+    startsAt: event.startsAt,
   });
   return event;
 }
