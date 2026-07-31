@@ -510,8 +510,8 @@ export function switchOrganization(
  * Synchronizer-token CSRF check for session-management POSTs: the
  * submitted value (header `x-obv-csrf` or form field `csrf`) must equal
  * the token stored on the server-side session row, compared in constant
- * time. The obv_csrf cookie is a convenience copy for fetch() callers —
- * validation never trusts it.
+ * time. The obv_csrf cookie is a convenience copy for client-side JS
+ * callers to echo into the header — validation never trusts it.
  */
 export function requireCsrf(resolved: ResolvedSession, submitted: string | null | undefined): void {
   if (!submitted || !safeStringEqual(String(submitted), resolved.session.csrfToken)) {
