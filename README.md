@@ -190,6 +190,39 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Production Identity Platform (v23)
+
+**One email, one identity. Sessions are revocable rows, not bearer
+statements.** Passwordless magic-link sign-in (`/signin`) replaces the
+demo role switcher as the production path: durable identities (unique
+normalized email, display name, verified-email state, lifecycle status)
+link to the existing per-organization `users` rows through
+`identity_users`, so authorization, tenancy, and same-404 behavior are
+structurally untouched — multi-org membership is simply multiple users
+rows behind one identity, with org switching as audited session
+rotation. Sign-in links are single-use sha256-hashed tokens (guarded
+consume defeats replays even under a race; the GET confirmation page
+never consumes, so inbox scanners cannot burn links) with non-oracle
+responses everywhere: unknown, throttled, locked, expired, and tampered
+attempts are indistinguishable to the caller and fully distinguished in
+the append-only `auth_events` audit. Server-side sessions carry idle +
+absolute expiry (absolute never extends — rotation inherits it),
+trusted-device windows, concurrent-session listing, per-device and
+global revocation, constant-time secret verification against hashes at
+rest, and synchronizer-token CSRF on every management POST. Brute-force
+lockout (email + IP scopes) and issuance throttling are audited.
+Invitation acceptance attaches to the durable identity and never
+duplicates a user inside an organization; owners administer membership
+suspension/restoration/deactivation (live sessions revoked immediately)
+and ownership transfer, all same-404 to non-owners. Passwords, SSO
+(Entra ID, Okta, Google Workspace, Auth0, Ping, generic OIDC/SAML 2.0),
+and MFA/passkeys (TOTP, WebAuthn, FIDO2) exist as readiness
+architecture only — DISABLED-constrained registries with no write path
+and no active flow. First-admin bootstrap via
+`OBV_BOOTSTRAP_ADMIN_EMAIL` acts only on an empty identities table.
+156-checkpoint suite (`scripts/identity-test.js`) — see
+`docs/IDENTITY_PLATFORM.md`.
+
 ## Portfolio Intelligence Platform (v22)
 
 **Every verified project continuously produces intelligence.** The

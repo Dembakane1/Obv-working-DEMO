@@ -1957,6 +1957,151 @@ CREATE TABLE IF NOT EXISTS gov_program_links (
   UNIQUE (gov_program_id, project_id)
 );
 
+-- ==================== Production Identity Platform (additive) ====================
+-- A durable IDENTITY is a person (one email address). Org participation is
+-- expressed by linking an identity to the EXISTING per-organization users
+-- rows through identity_users, so the authorization and tenancy model is
+-- structurally unchanged: every session still resolves to a users row, and
+-- multi-org membership is simply multiple users rows behind one identity.
+
+CREATE TABLE IF NOT EXISTS identities (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,           -- normalized (trimmed, lowercased)
+  display_name TEXT NOT NULL,
+  email_verified_at TEXT,               -- first proven control of the mailbox
+  status TEXT NOT NULL DEFAULT 'ACTIVE'
+    CHECK (status IN ('ACTIVE','SUSPENDED','DEACTIVATED')),
+  -- ARCHITECTURAL SLOT ONLY. Passwords are supported by the data model but
+  -- deliberately not implemented: nothing in the application ever writes,
+  -- reads for verification, or accepts a password. Sign-in is passwordless.
+  password_hash TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS identity_users (
+  id TEXT PRIMARY KEY,
+  identity_id TEXT NOT NULL REFERENCES identities(id),
+  user_id TEXT NOT NULL UNIQUE REFERENCES users(id),
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  status TEXT NOT NULL DEFAULT 'ACTIVE'
+    CHECK (status IN ('ACTIVE','SUSPENDED','DEACTIVATED')),
+  is_owner INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  -- One membership per identity per organization: accepting a second
+  -- invitation to the same organization reuses the existing users row
+  -- instead of duplicating the person.
+  UNIQUE (identity_id, organization_id)
+);
+CREATE INDEX IF NOT EXISTS idx_identity_users_identity ON identity_users(identity_id);
+
+-- Single-use sign-in secrets. Only the sha256 of the raw token is stored;
+-- the raw value exists once, inside the delivered link.
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id TEXT PRIMARY KEY,
+  identity_id TEXT NOT NULL REFERENCES identities(id),
+  purpose TEXT NOT NULL CHECK (purpose IN ('MAGIC_LINK','EMAIL_VERIFY')),
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,                     -- set exactly once (guarded update)
+  request_ip TEXT,
+  request_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_identity ON auth_tokens(identity_id, created_at);
+
+-- Server-side session records. The cookie is <id>.<secret>; only the
+-- sha256 of the secret half is stored, so a database read cannot mint a
+-- working cookie. Sessions are revocable rows, not bearer statements.
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY,
+  identity_id TEXT NOT NULL REFERENCES identities(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  secret_hash TEXT NOT NULL,
+  csrf_token TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  idle_expires_at TEXT NOT NULL,
+  absolute_expires_at TEXT NOT NULL,
+  trusted_device INTEGER NOT NULL DEFAULT 0,
+  device_label TEXT,
+  ip TEXT,
+  user_agent TEXT,
+  revoked_at TEXT,
+  revoked_reason TEXT,
+  rotated_to TEXT                       -- successor session id after rotation
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_identity ON auth_sessions(identity_id, created_at);
+
+-- Append-only authentication audit. No UPDATE or DELETE path exists
+-- anywhere in the application; corrections are new events.
+CREATE TABLE IF NOT EXISTS auth_events (
+  id TEXT PRIMARY KEY,
+  occurred_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  identity_id TEXT,                     -- null for events about unknown emails
+  user_id TEXT,
+  organization_id TEXT,
+  session_id TEXT,
+  actor_identity_id TEXT,               -- administrative actor, when distinct
+  email TEXT,
+  ip TEXT,
+  user_agent TEXT,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_auth_events_identity ON auth_events(identity_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_auth_events_kind ON auth_events(kind, occurred_at);
+
+-- Brute-force counters keyed by scope ('email:<addr>' or 'ip:<addr>').
+-- Operational state, not audit — cleared on successful sign-in.
+CREATE TABLE IF NOT EXISTS auth_lockouts (
+  scope TEXT PRIMARY KEY,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  first_failure_at TEXT,
+  last_failure_at TEXT,
+  locked_until TEXT
+);
+
+-- ================= Enterprise SSO readiness (DISABLED) ====================
+-- FUTURE-READY ARCHITECTURE ONLY, following the government-foundation
+-- pattern: stable data shapes with NO write path anywhere in the
+-- application and a status constraint that admits only DISABLED. No SSO
+-- flow is implemented; magic-link sign-in remains the only active method.
+CREATE TABLE IF NOT EXISTS identity_providers (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN
+    ('ENTRA_ID','OKTA','GOOGLE_WORKSPACE','AUTH0','PING','GENERIC_OIDC','GENERIC_SAML2')),
+  protocol TEXT NOT NULL CHECK (protocol IN ('OIDC','SAML2')),
+  display_name TEXT NOT NULL,
+  organization_id TEXT REFERENCES organizations(id),
+  issuer TEXT,
+  metadata TEXT,                        -- JSON provider metadata shape (unused)
+  status TEXT NOT NULL DEFAULT 'DISABLED' CHECK (status IN ('DISABLED')),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS identity_provider_links (
+  id TEXT PRIMARY KEY,
+  identity_id TEXT NOT NULL REFERENCES identities(id),
+  provider_id TEXT NOT NULL REFERENCES identity_providers(id),
+  subject TEXT NOT NULL,                -- provider-side stable subject claim
+  created_at TEXT NOT NULL,
+  UNIQUE (provider_id, subject)
+);
+
+-- MFA / passkey readiness: TOTP, WebAuthn and FIDO2 have a landing shape
+-- but no enrollment, challenge, or verification path exists. DISABLED only.
+CREATE TABLE IF NOT EXISTS mfa_methods (
+  id TEXT PRIMARY KEY,
+  identity_id TEXT NOT NULL REFERENCES identities(id),
+  kind TEXT NOT NULL CHECK (kind IN ('TOTP','WEBAUTHN','FIDO2')),
+  label TEXT,
+  credential TEXT,                      -- JSON credential shape (unused)
+  status TEXT NOT NULL DEFAULT 'DISABLED' CHECK (status IN ('DISABLED')),
+  created_at TEXT NOT NULL
+);
+
 `;
 
 export function getDb(): DatabaseSync {
