@@ -1890,6 +1890,73 @@ CREATE INDEX IF NOT EXISTS idx_srcver_project ON source_verifications(project_id
 CREATE INDEX IF NOT EXISTS idx_ctc_line ON cost_to_complete_estimates(budget_line_id);
 CREATE INDEX IF NOT EXISTS idx_dpbp_draw ON draw_permit_basis_pins(draw_request_id);
 
+-- ==================== Portfolio Intelligence (additive) ====================
+-- DERIVED analytics only. Every figure in the portfolio layer is computed
+-- on read from the verified primary records above; this table is the ONLY
+-- portfolio-layer write surface. It is an append-only series of dated
+-- portfolio observations (for historical growth/health trend lines) and is
+-- never an input to any verification, approval, eligibility, banking, or
+-- package-generation decision. No UPDATE/DELETE path exists.
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+  id TEXT PRIMARY KEY,
+  scope_organization_id TEXT NOT NULL REFERENCES organizations(id),
+  taken_by_user_id TEXT NOT NULL REFERENCES users(id),
+  taken_at TEXT NOT NULL,
+  project_count INTEGER NOT NULL,
+  active_project_count INTEGER NOT NULL,
+  total_budget INTEGER NOT NULL,
+  total_released INTEGER NOT NULL,
+  total_paid_to_date INTEGER NOT NULL,
+  open_exception_count INTEGER NOT NULL,
+  open_dispute_count INTEGER NOT NULL,
+  average_health REAL NOT NULL,
+  attention_count INTEGER NOT NULL,
+  detail TEXT NOT NULL -- JSON PortfolioSnapshotDetail (derived figures only)
+);
+CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_scope
+  ON portfolio_snapshots(scope_organization_id, taken_at);
+
+-- ============== Government portfolio foundation (DISABLED) ================
+-- FUTURE-READY ARCHITECTURE ONLY. These tables exist so government,
+-- infrastructure-program, donor-funded and grant portfolios have a stable
+-- data shape to land on later. There is NO write path anywhere in the
+-- application: no service inserts into these tables, no route mutates
+-- them, and the feature module refuses activation. No government workflow
+-- is active; the lender workflow remains the primary workflow.
+CREATE TABLE IF NOT EXISTS gov_portfolios (
+  id TEXT PRIMARY KEY,
+  sponsor_organization_id TEXT NOT NULL REFERENCES organizations(id),
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN
+    ('GOVERNMENT','INFRASTRUCTURE_PROGRAM','DONOR_FUNDED','GRANT')),
+  country TEXT,
+  region TEXT,
+  currency TEXT,
+  public_reporting_enabled INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'INACTIVE' CHECK (status IN ('INACTIVE')),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gov_programs (
+  id TEXT PRIMARY KEY,
+  gov_portfolio_id TEXT NOT NULL REFERENCES gov_portfolios(id),
+  name TEXT NOT NULL,
+  program_reference TEXT,
+  funding_source TEXT,
+  authorized_amount INTEGER,
+  reporting_frame TEXT, -- JSON GovReportingFrame (public-reporting shape, unused)
+  status TEXT NOT NULL DEFAULT 'INACTIVE' CHECK (status IN ('INACTIVE')),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gov_program_links (
+  id TEXT PRIMARY KEY,
+  gov_program_id TEXT NOT NULL REFERENCES gov_programs(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  created_at TEXT NOT NULL,
+  UNIQUE (gov_program_id, project_id)
+);
+
 `;
 
 export function getDb(): DatabaseSync {

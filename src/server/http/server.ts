@@ -133,6 +133,16 @@ import { handleComplianceRoutes } from "./complianceRoutes";
 import * as dmvCompliance from "../services/dmvCompliance";
 import { ComplianceError } from "../services/dmvCompliance";
 import { renderProjectCompliance, renderDrawControl } from "../view/compliancePages";
+import { handlePortfolioRoutes } from "./portfolioRoutes";
+import * as portfolioIntel from "../services/portfolio";
+import { PortfolioError } from "../services/portfolio";
+import {
+  renderExecutive,
+  renderExecutiveEntities,
+  renderExecutiveForecast,
+  renderExecutiveSummaryPage,
+} from "../view/portfolioPages";
+import { renderExecutiveReportDoc } from "../view/executiveReport";
 import * as disputesSvc from "../services/disputes";
 import { renderDisputeWorkspace, renderProjectDisputes } from "../view/disputePages";
 import { renderProjectAccountPage } from "../view/bankingPages";
@@ -2716,6 +2726,28 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   ) {
     return;
   }
+
+  // ============== Portfolio Intelligence (derived analytics, read-only) ==============
+  if (
+    await handlePortfolioRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      searchParams: url.searchParams,
+      getUser: () => {
+        const u = currentUser(req);
+        if (!u) throw new PortfolioError("Select a demo user first", 401);
+        return u;
+      },
+      readParams,
+      isForm: () => isFormPost(req),
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+    })
+  ) {
+    return;
+  }
   const loanApi = /^\/api\/projects\/([^/]+)\/(loan|parties|jurisdiction|memberships|lender-policy)$/.exec(pathname);
   if (loanApi) {
     const user = lenderUser();
@@ -3472,6 +3504,75 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     sendHtml(res, renderFunderReport(data));
+    return;
+  }
+
+  // ---- executive portfolio report (derived; streams the PDF, stores no
+  // report row — the reports table is project-scoped and this artifact is
+  // portfolio-scoped; the printable preview is the durable surface) ----
+  if (method === "POST" && pathname === "/api/reports/executive") {
+    const user = currentUser(req);
+    if (!user) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    // Role gate + tenancy scoping happen inside the portfolio service.
+    const data = portfolioIntel.executiveReportData(user);
+    if (!pdfRendererAvailable()) {
+      if (isFormPost(req)) {
+        redirect(res, "/executive/report/preview");
+      } else {
+        sendJson(res, { fallback: "html", preview: "/executive/report/preview" });
+      }
+      return;
+    }
+    const cacheId = `exec-${repo.newId()}`;
+    const outDir = path.join(REPORTS_DIR, cacheId);
+    pendingReportHtml.set(cacheId, renderExecutiveReportDoc(data));
+    try {
+      fs.mkdirSync(outDir, { recursive: true });
+      const filename = `OBV_Executive_Portfolio_Report_${data.generatedAt.slice(0, 10)}.pdf`;
+      const outPath = path.join(outDir, filename);
+      const config = Buffer.from(
+        JSON.stringify({
+          url: `http://127.0.0.1:${PORT}/report-cache/${cacheId}?token=${mintRenderToken(cacheId)}`,
+          outPath,
+          projectName: "Executive Portfolio Report",
+          generatedAt: data.generatedAt.replace("T", " ").replace(/\.\d+Z$/, " UTC"),
+        })
+      ).toString("base64");
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          process.execPath,
+          [RENDER_SCRIPT, config],
+          { env: { ...process.env, NODE_PATH: PLAYWRIGHT_NODE_PATH }, timeout: 90_000 },
+          (err, _stdout, stderr) => (err ? reject(new Error(stderr || err.message)) : resolve())
+        );
+      });
+      if (!fs.existsSync(outPath)) throw new Error("Renderer produced no output file");
+      const pdf = fs.readFileSync(outPath);
+      res.writeHead(200, {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Length": pdf.length,
+        "Cache-Control": "no-store",
+      });
+      res.end(pdf);
+    } catch (err) {
+      console.error("[executive-report] PDF generation failed:", (err as Error).message);
+      if (isFormPost(req)) {
+        redirect(res, "/executive/report/preview");
+      } else {
+        sendJson(
+          res,
+          { error: "PDF generation failed — the printable HTML preview remains available", preview: "/executive/report/preview" },
+          500
+        );
+      }
+    } finally {
+      pendingReportHtml.delete(cacheId);
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
     return;
   }
 
@@ -4473,6 +4574,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // /disputes and /dispute/<id> were absent, so those handlers ran with a
     // null user and failed as a TypeError instead of redirecting to sign-in.
     "/disputes", "/dispute/",
+    "/executive",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -5400,6 +5502,90 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ---- Executive Command Center (portfolio intelligence pages) ----
+  if (method === "GET" && pathname === "/executive/report/preview") {
+    sendHtml(res, renderExecutiveReportDoc(portfolioIntel.executiveReportData(user!)));
+    return;
+  }
+  if (method === "GET" && pathname === "/executive") {
+    const filterState = {
+      status: url.searchParams.get("status") ?? "",
+      state: url.searchParams.get("state") ?? "",
+      stage: url.searchParams.get("stage") ?? "",
+      risk: url.searchParams.get("risk") ?? "",
+      lender: url.searchParams.get("lender") ?? "",
+      contractor: url.searchParams.get("contractor") ?? "",
+    };
+    const filtersActive = Object.values(filterState).some((v) => v.length > 0);
+    const overviewData = portfolioIntel.overview(user!, {
+      status: filterState.status || undefined,
+      state: filterState.state || undefined,
+      stage: filterState.stage || undefined,
+      riskBand: filterState.risk || undefined,
+      lenderOrgId: filterState.lender || undefined,
+      contractorOrgId: filterState.contractor || undefined,
+    });
+    // Filter options always come from the unfiltered scope so narrowing
+    // one facet never hides the others' choices.
+    const optionSource = filtersActive ? portfolioIntel.overview(user!) : overviewData;
+    sendHtml(
+      res,
+      renderExecutive({
+        nav: navFor(user!, "executive"),
+        overview: overviewData,
+        risk: portfolioIntel.risk(user!),
+        fraud: portfolioIntel.fraud(user!),
+        government: portfolioIntel.government(user!),
+        snapshots: portfolioIntel.listSnapshots(user!),
+        filters: filterState,
+        filterOptions: {
+          states: optionSource.distributions.byState.map((d) => d.key),
+          stages: optionSource.distributions.byStage.map((d) => d.key),
+          lenders: optionSource.distributions.byLender.map((d) => ({ id: d.key, name: d.label })),
+          contractors: optionSource.distributions.byContractor
+            .filter((d) => d.key !== "(unassigned)")
+            .map((d) => ({ id: d.key, name: d.label })),
+        },
+        pdfAvailable: pdfRendererAvailable(),
+        notice: url.searchParams.get("ok")
+          ? { kind: "ok", text: "Portfolio snapshot recorded." }
+          : null,
+      })
+    );
+    return;
+  }
+  if (method === "GET" && pathname === "/executive/entities") {
+    sendHtml(
+      res,
+      renderExecutiveEntities({
+        nav: navFor(user!, "executive"),
+        contractors: portfolioIntel.contractors(user!),
+        inspectors: portfolioIntel.inspectors(user!),
+        vendors: portfolioIntel.vendors(user!),
+      })
+    );
+    return;
+  }
+  if (method === "GET" && pathname === "/executive/forecast") {
+    sendHtml(
+      res,
+      renderExecutiveForecast({ nav: navFor(user!, "executive"), forecast: portfolioIntel.forecast(user!) })
+    );
+    return;
+  }
+  if (method === "GET" && pathname === "/executive/summary") {
+    const raw = (url.searchParams.get("period") ?? "weekly").toUpperCase();
+    const period = ["WEEKLY", "MONTHLY", "BRIEFING"].includes(raw) ? raw : "WEEKLY";
+    sendHtml(
+      res,
+      renderExecutiveSummaryPage({
+        nav: navFor(user!, "executive"),
+        summary: portfolioIntel.summary(user!, period as portfolioIntel.SummaryPeriod),
+      })
+    );
+    return;
+  }
+
   if (method === "GET" && pathname === "/map") {
     sendHtml(res, renderMap({ nav: navFor(user!, "map"), scope: "global" }));
     return;
@@ -5784,7 +5970,7 @@ const server = http.createServer((req, res) => {
     // "Internal server error", which is both a worse experience and a weak
     // existence oracle — 500 here, 404 there, tells an attacker they hit
     // something real. ComplianceError is the DMV layer's typed error.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";

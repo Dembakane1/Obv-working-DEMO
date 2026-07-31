@@ -3579,3 +3579,18 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
 }
 .lender-form label { min-width: 140px; flex: 1 1 160px; }
 .lender-form .row .btn { flex: 0 0 auto; }
+
+/* =====================================================================
+   v16 — Executive Command Center (portfolio intelligence)
+   ===================================================================== */
+.exec-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 var(--sp-4); }
+.exec-tabs .btn.exec-tab-active { background: var(--action-soft); border-color: var(--action); color: var(--action); }
+.exec-attention { margin-bottom: var(--sp-4); }
+.exec-advisory { margin-top: var(--sp-3); font-size: 11px; color: var(--ink-4); border-top: 1px solid var(--line); padding-top: var(--sp-2); }
+.exec-headline { font-size: 15px; line-height: 1.55; color: var(--ink); margin: 0; }
+.tr-row .bar .fl.exec-fl-2 { background: #7a8493; }
+.exec-tabs + .metric-strip { margin-top: 0; }
+@media (max-width: 640px) {
+  .exec-tabs { gap: 6px; }
+  .exec-tabs .btn { flex: 1 1 45%; justify-content: center; }
+}
