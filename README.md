@@ -190,6 +190,36 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Production Integrations Platform (v24)
+
+**Integrations observe the system of record. They never author it.**
+Provider-neutral connections to a lender's daily systems: an email
+abstraction (8 message kinds, deterministic templates, development
+outbox active; Microsoft 365 / SendGrid / Mailgun / Amazon SES /
+Postmark as disabled-boundary adapters, credential-bearing bodies
+redacted at rest); Outlook readiness via active RFC 5545 ICS export for
+inspections, draw reviews, meetings, and permit deadlines (Microsoft
+Graph adapter is a boundary — no Microsoft credentials required);
+Adaptive Card 1.5 payload builders for seven Teams event kinds with the
+advisory statement baked into fraud/portfolio/summary cards; an
+e-signature platform (internal tracking active with pending / signed /
+declined / expired lifecycle, guarded one-shot settlement, append-only
+trail; DocuSign / Dropbox Sign / Adobe Acrobat Sign boundaries);
+EXPORT-only accounting synchronization (CSV active, QuickBooks / Xero /
+Sage boundaries — no import path exists, so accounting can never modify
+verified evidence); untouched mock-default banking with Unit / Treasury
+Prime / Qolo adapter readiness; and a signed outbound webhook framework
+(HMAC signatures with replay-bounding timestamps, idempotent enqueue,
+atomic claim, exponential backoff, dead-letter queue with audited
+requeue, tenant-scoped fan-out). The `/integrations` dashboard shows
+providers, status, last sync, failures, retry queue, and health with no
+secrets in any view model; every action appends the immutable
+`integration_events` audit (provider, operation, actor, organization,
+request id, outcome). Vendor selection requires double consent
+(`OBV_INTEGRATIONS_PRODUCTION_ENABLE`) and refuses at startup otherwise.
+146-checkpoint suite (`scripts/integrations-test.js`) — see
+`docs/INTEGRATIONS_PLATFORM.md`.
+
 ## Production Identity Platform (v23)
 
 **One email, one identity. Sessions are revocable rows, not bearer
