@@ -2827,3 +2827,120 @@ export type LineEligibilityStatus =
   | "OFFICIAL_STATUS_PENDING" | "EXCEPTION_OPEN" | "OVER_BUDGET_REVIEW_REQUIRED"
   | "ELIGIBLE_FOR_LENDER_REVIEW" | "INELIGIBLE"
   | "HELD_BY_DISPUTE" | "HELD_BY_LEGAL_HOLD";
+
+// ==================== Production Identity Platform ====================
+
+/** A durable person. One row per email address; org participation lives in
+ *  IdentityMembership, which links to the existing per-org users rows. */
+export interface Identity {
+  id: string;
+  email: string;
+  displayName: string;
+  emailVerifiedAt: string | null;
+  status: "ACTIVE" | "SUSPENDED" | "DEACTIVATED";
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Links one identity to one users row (= one organization membership).
+ *  An identity in three organizations has three memberships and three
+ *  users rows; the authorization model is unchanged. */
+export interface IdentityMembership {
+  id: string;
+  identityId: string;
+  userId: string;
+  organizationId: string;
+  status: "ACTIVE" | "SUSPENDED" | "DEACTIVATED";
+  isOwner: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AuthTokenPurpose = "MAGIC_LINK" | "EMAIL_VERIFY";
+
+/** Single-use sign-in secret. Only the sha256 of the raw token is stored. */
+export interface AuthToken {
+  id: string;
+  identityId: string;
+  purpose: AuthTokenPurpose;
+  tokenHash: string;
+  createdAt: string;
+  expiresAt: string;
+  consumedAt: string | null;
+  requestIp: string | null;
+  requestAgent: string | null;
+}
+
+/** Server-side session record. The cookie carries <id>.<secret>; only the
+ *  sha256 of the secret half is stored here. secretHash and csrfToken are
+ *  server-internal and MUST never be serialized to a client. */
+export interface AuthSession {
+  id: string;
+  identityId: string;
+  userId: string;
+  secretHash: string;
+  csrfToken: string;
+  createdAt: string;
+  lastSeenAt: string;
+  idleExpiresAt: string;
+  absoluteExpiresAt: string;
+  trustedDevice: boolean;
+  deviceLabel: string | null;
+  ip: string | null;
+  userAgent: string | null;
+  revokedAt: string | null;
+  revokedReason: string | null;
+  rotatedTo: string | null;
+}
+
+/** Append-only authentication audit event. Never updated, never deleted. */
+export interface AuthEvent {
+  id: string;
+  occurredAt: string;
+  kind: string;
+  identityId: string | null;
+  userId: string | null;
+  organizationId: string | null;
+  sessionId: string | null;
+  actorIdentityId: string | null;
+  email: string | null;
+  ip: string | null;
+  userAgent: string | null;
+  detail: string | null;
+}
+
+/** Brute-force counter for one scope ('email:<addr>' or 'ip:<addr>'). */
+export interface AuthLockout {
+  scope: string;
+  failureCount: number;
+  firstFailureAt: string | null;
+  lastFailureAt: string | null;
+  lockedUntil: string | null;
+}
+
+export type IdentityProviderKind =
+  | "ENTRA_ID" | "OKTA" | "GOOGLE_WORKSPACE" | "AUTH0" | "PING"
+  | "GENERIC_OIDC" | "GENERIC_SAML2";
+
+/** SSO readiness record — DISABLED is the only admissible status and no
+ *  write path exists; see the schema notes. */
+export interface IdentityProviderRecord {
+  id: string;
+  kind: IdentityProviderKind;
+  protocol: "OIDC" | "SAML2";
+  displayName: string;
+  organizationId: string | null;
+  issuer: string | null;
+  status: "DISABLED";
+  createdAt: string;
+}
+
+/** MFA/passkey readiness record — DISABLED only, no enrollment path. */
+export interface MfaMethodRecord {
+  id: string;
+  identityId: string;
+  kind: "TOTP" | "WEBAUTHN" | "FIDO2";
+  label: string | null;
+  status: "DISABLED";
+  createdAt: string;
+}
