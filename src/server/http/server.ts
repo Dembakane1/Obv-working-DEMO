@@ -20,6 +20,7 @@ import {
   demoAuthEnabled,
   isSeededDemoUserId,
   readSessionToken,
+  requestIsSecure,
   sessionCookieHeader,
   sessionStartupNotice,
 } from "./session";
@@ -136,6 +137,9 @@ import { renderProjectCompliance, renderDrawControl } from "../view/compliancePa
 import { handlePortfolioRoutes } from "./portfolioRoutes";
 import * as portfolioIntel from "../services/portfolio";
 import { PortfolioError } from "../services/portfolio";
+import { handleIdentityRoutes } from "./identityRoutes";
+import * as identitySvc from "../services/identity";
+import { IdentityError } from "../services/identity";
 import {
   renderExecutive,
   renderExecutiveEntities,
@@ -311,12 +315,26 @@ function parseCookies(req: http.IncomingMessage): Record<string, string> {
 /**
  * The authenticated identity, or null.
  *
- * The cookie is a signed token, not a raw user id: a forged or edited value
- * fails verification and yields null, exactly like no cookie at all.
+ * Two credential sources, in order:
+ *  1. The production identity platform's server-side session (obv_auth):
+ *     revocable, idle/absolute-expiring, secret verified in constant time
+ *     against a stored hash. This is THE sign-in path under production
+ *     posture, replacing the demo switcher.
+ *  2. The signed demo cookie (obv_user) minted by the seeded role
+ *     switcher and legacy invitation acceptance — a forged or edited
+ *     value fails verification and yields null, exactly like no cookie.
  */
 function currentUser(req: http.IncomingMessage): User | null {
+  const resolved = identitySvc.resolveSession(parseCookies(req)[identitySvc.AUTH_COOKIE]);
+  if (resolved) return resolved.user;
   const id = readSessionToken(parseCookies(req)[SESSION_COOKIE]);
   return id ? repo.getUser(id) : null;
+}
+
+/** Where an unauthenticated page GET goes: the seeded role picker while
+ *  the demo switcher exists, the production sign-in page otherwise. */
+function signInPath(): string {
+  return demoAuthEnabled() ? "/demo" : "/signin";
 }
 
 function readBody(req: http.IncomingMessage, limitBytes = 16 * 1024 * 1024): Promise<Buffer> {
@@ -1305,7 +1323,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     pathname !== "/api/whatsapp/webhook" &&
     // Invitation activation carries its own one-time secret token.
     !pathname.startsWith("/invite/") &&
-    pathname !== "/api/invitations/accept"
+    pathname !== "/api/invitations/accept" &&
+    // Production sign-in: the magic link carries its own one-time secret
+    // token (same rationale as invitations), and the sign-in page itself
+    // must be reachable so that emailed links have somewhere to start.
+    pathname !== "/signin" &&
+    pathname !== "/auth/complete" &&
+    pathname !== "/api/auth/magic-link" &&
+    pathname !== "/api/auth/complete"
   ) {
     if (method === "POST" && pathname === "/api/access") {
       const body = (await readBody(req, 4 * 1024)).toString("utf8");
@@ -2748,6 +2773,28 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   ) {
     return;
   }
+
+  // ============== Production identity platform (sign-in, sessions) ==============
+  if (
+    await handleIdentityRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      searchParams: url.searchParams,
+      readParams,
+      isForm: () => isFormPost(req),
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+      sendHtml: (html, status) => sendHtml(res, html, status ?? 200),
+      secure: requestIsSecure(req),
+      origin: `${requestIsSecure(req) ? "https" : "http"}://${req.headers.host ?? `localhost:${PORT}`}`,
+      demoAvailable: demoAuthEnabled(),
+    })
+  ) {
+    return;
+  }
+
   const loanApi = /^\/api\/projects\/([^/]+)\/(loan|parties|jurisdiction|memberships|lender-policy)$/.exec(pathname);
   if (loanApi) {
     const user = lenderUser();
@@ -3495,7 +3542,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (method === "GET" && previewMatch) {
     const user = currentUser(req);
     if (!user) {
-      redirect(res, "/demo");
+      redirect(res, signInPath());
       return;
     }
     const data = await assembleReportData(previewMatch[1], user);
@@ -3581,7 +3628,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (method === "GET" && fileMatch) {
     const user = currentUser(req);
     if (!user) {
-      redirect(res, "/demo");
+      redirect(res, signInPath());
       return;
     }
     const report = repo.getReport(fileMatch[1]);
@@ -3736,7 +3783,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (method === "GET" && apDownloadMatch) {
     const user = currentUser(req);
     if (!user) {
-      redirect(res, "/demo");
+      redirect(res, signInPath());
       return;
     }
     const { pkg, filePath, filename } = auditPackages.resolvePackageDownload(user, apDownloadMatch[1]);
@@ -4151,11 +4198,25 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
   if (method === "POST" && pathname === "/api/invitations/accept") {
     const params = await pilotForm(16 * 1024);
-    const { user: newUser } = pilot.acceptInvitation(params.get("token") ?? "", {
-      name: params.get("name") ?? "",
-      title: params.get("title") ?? "",
-    });
-    res.setHeader("Set-Cookie", sessionCookieHeader(req, newUser.id));
+    // Acceptance attaches to the durable identity for the invitation's
+    // email: an existing member of the organization is reused (never
+    // duplicated), a new organization gets a new users row linked to the
+    // SAME identity. The response carries both the production session
+    // cookie and the legacy signed demo cookie so either resolution path
+    // recognizes the new session.
+    const accepted = identitySvc.acceptInvitationWithIdentity(
+      params.get("token") ?? "",
+      { name: params.get("name") ?? "", title: params.get("title") ?? "" },
+      {
+        ip: String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() || req.socket.remoteAddress || null,
+        userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) || null,
+      }
+    );
+    const newUser = accepted.user;
+    res.setHeader("Set-Cookie", [
+      sessionCookieHeader(req, newUser.id),
+      ...identitySvc.authCookieHeaders(requestIsSecure(req), accepted.cookieValue, accepted.session),
+    ]);
     if (isFormPost(req)) redirect(res, newUser.role === "FIELD" ? "/field" : "/overview");
     else sendJson(res, { user: newUser }, 201);
     return;
@@ -4575,11 +4636,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // null user and failed as a TypeError instead of redirecting to sign-in.
     "/disputes", "/dispute/",
     "/executive",
+    "/account",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
   if (method === "GET" && isPage && !user) {
-    redirect(res, "/demo");
+    redirect(res, signInPath());
     return;
   }
 
@@ -5970,7 +6032,7 @@ const server = http.createServer((req, res) => {
     // "Internal server error", which is both a worse experience and a weak
     // existence oracle — 500 here, 404 there, tells an attacker they hit
     // something real. ComplianceError is the DMV layer's typed error.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError || err instanceof IdentityError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";
@@ -6032,14 +6094,19 @@ function startupCheck(label: string, fn: () => void): void {
 startupCheck("database", () => void getDb());
 startupCheck("banking provider", () => resolveBankingProvider());
 startupCheck("session configuration", () => assertSessionConfig());
+startupCheck("identity configuration", () => identitySvc.assertIdentityConfig());
+// First-admin bootstrap: only ever acts when the identities table is empty
+// and OBV_BOOTSTRAP_ADMIN_EMAIL is set; a populated table makes it a no-op.
+startupCheck("identity bootstrap", () => void identitySvc.ensureBootstrapIdentity());
 server.listen(PORT, () => {
   console.log(`OBV running at http://localhost:${PORT}`);
   // Session posture is disclosed at boot: a reader must never have to guess
   // whether identity cookies are signed with a durable secret.
   console.log(sessionStartupNotice());
+  console.log(identitySvc.identityStartupNotice());
   if (demoAuthEnabled()) {
     console.log(`Demo sign-in: http://localhost:${PORT}/  (pick a seeded role)`);
   } else {
-    console.log("Demo role switcher: DISABLED (production posture)");
+    console.log(`Production sign-in: http://localhost:${PORT}/signin  (emailed one-time link)`);
   }
 });

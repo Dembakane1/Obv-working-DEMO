@@ -3594,3 +3594,25 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
   .exec-tabs { gap: 6px; }
   .exec-tabs .btn { flex: 1 1 45%; justify-content: center; }
 }
+
+/* =====================================================================
+   v17 — Production Identity Platform (sign-in, account security)
+   ===================================================================== */
+.idp-narrow { max-width: 420px; }
+.idp-wide { max-width: 880px; }
+.idp-check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+.idp-check input { width: auto; }
+.idp-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.idp-head-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.idp-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 0 0 14px; }
+.idp-card h2 { font-size: 13px; margin: 0 0 4px; }
+.idp-card .sub { font-size: 12px; margin: 0 0 10px; }
+.idp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.idp-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-4); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.idp-table td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.idp-table tr:last-child td { border-bottom: none; }
+.idp-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .idp-head { flex-direction: column; align-items: flex-start; }
+  .idp-table { display: block; overflow-x: auto; }
+}
