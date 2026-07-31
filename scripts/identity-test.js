@@ -118,8 +118,17 @@ async function issueLink(email) {
   return tokenOf(lastLinkFor(DATA_DIR, email));
 }
 
-async function completeLink(token, extra = {}) {
-  return api("POST", "/api/auth/complete", { body: { token, ...extra } });
+/** Complete sign-in the way a browser does: GET the confirmation page
+ *  (arming the anti-login-CSRF obv_confirm cookie), then POST echoing
+ *  that cookie's value. */
+async function completeLink(token, extra = {}, base = BASE) {
+  const g = await req(base, "GET", `/auth/complete?token=${token}`, {});
+  const confirmCookie = (g.setCookies ?? []).find((c) => c.startsWith("obv_confirm="));
+  const confirm = confirmCookie ? confirmCookie.split(";")[0].split("=")[1] : "";
+  return req(base, "POST", "/api/auth/complete", {
+    cookie: `obv_confirm=${confirm}`,
+    body: { token, confirm, ...extra },
+  });
 }
 
 async function me(cookie) {
@@ -203,6 +212,16 @@ function staticGuards() {
   assert(/GENERIC_LINK_RESPONSE/.test(readSrc("src/server/services/identity/core.ts")), "link requests share one generic response");
   const coreSrc = readSrc("src/server/services/identity/core.ts");
   assert(/timingSafeEqual/.test(coreSrc), "secret comparison is constant-time");
+
+  const routesSrc = readSrc("src/server/http/identityRoutes.ts");
+  assert(
+    /obv_confirm/.test(routesSrc) && /safeStringEqual\(confirmField, confirmCookie\)/.test(routesSrc),
+    "sign-in completion requires the confirmation-page cookie (anti login-CSRF)"
+  );
+  assert(
+    /split\(","\)\.pop\(\)/.test(routesSrc),
+    "forwarded-for parsing uses the trusted proxy's hop, not the client-supplied first entry"
+  );
 
   const ssoSrc = readSrc("src/server/services/identity/ssoReadiness.ts");
   assert(/return false/.test(ssoSrc) && /IdentityError\("Not found", 404\)/.test(ssoSrc),
@@ -326,6 +345,10 @@ async function main() {
   assert(usersInOrgA() === before, "NO duplicate users row was created");
   assert(JSON.parse(r.text).user.id === danaUserA.id, "acceptance resolved to the existing users row");
   assert(
+    authCookieFrom(r.setCookies) === null && JSON.parse(r.text).signInRequired === true,
+    "acceptance for an EXISTING account attaches only — the admin-visible activation link never becomes a session"
+  );
+  assert(
     q1("SELECT COUNT(*) AS c FROM identities WHERE email = ?", "dana@meridian.example").c === 1,
     "still exactly one identity for the email"
   );
@@ -347,7 +370,8 @@ async function main() {
     q1("SELECT COUNT(*) AS c FROM identities WHERE email = ?", "dana@meridian.example").c === 1,
     "…linked to the SAME single identity"
   );
-  const danaOrgBCookie = authCookieFrom(r.setCookies);
+  assert(authCookieFrom(r.setCookies) === null, "cross-org acceptance also requires the person's own sign-in");
+  const danaOrgBCookie = authCookieFrom((await completeLink(await issueLink("dana@meridian.example"))).setCookies);
   r = await me(danaOrgBCookie);
   const meBody = JSON.parse(r.text);
   assert(meBody.memberships.length === 2, "identity reports both memberships");
@@ -372,6 +396,12 @@ async function main() {
   assert(r.status === 200 && r.text.includes("Confirm sign-in"), "GET renders the confirmation form");
   r = await req(BASE, "GET", `/auth/complete?token=${magicToken}`, {});
   assert(r.status === 200, "GET is repeatable — it never consumes the token (scanner-safe)");
+  r = await req(BASE, "POST", "/api/auth/complete", { body: { token: magicToken } });
+  assert(r.status === 403, "a bare cross-site POST cannot complete sign-in (login-CSRF confirm required)");
+  assert(
+    q1("SELECT consumed_at FROM auth_tokens WHERE token_hash = ?", sha256(magicToken)).consumed_at === null,
+    "…and the rejected request did not consume the token"
+  );
   r = await completeLink(magicToken);
   assert(r.status === 201, "POST completes sign-in");
   const magicCookie = authCookieFrom(r.setCookies);
@@ -536,6 +566,10 @@ async function main() {
   const spanG = Date.parse(rowG.absolute_expires_at) - Date.parse(rowG.created_at);
   assert(spanF <= 13 * 3600_000, "standard session absolute window is short (≤ ~12h)");
   assert(spanG >= 20 * 86400_000, "trusted device window is long (≥ 20 days)");
+  assert(
+    rowG.idle_expires_at === rowG.absolute_expires_at,
+    "trusted devices do not idle-expire — only the absolute deadline bounds them"
+  );
 
   // ------------------------------------------------------------ section 14
   console.log("\n== 14. Brute force → lockout ==");
@@ -706,19 +740,35 @@ async function main() {
 
   // ------------------------------------------------------------ section 19
   console.log("\n== 19. Production posture ==");
+  const prodSecret = crypto.randomBytes(32).toString("hex");
+  const prodEnv = {
+    PORT: String(PROD_PORT),
+    OBV_BANKING_MODE: "production",
+    OBV_BANKING_PROVIDER: "mock",
+    OBV_SESSION_SECRET: prodSecret,
+    OBV_BOOTSTRAP_ADMIN_EMAIL: "ops@obv.example",
+    OBV_BOOTSTRAP_ORG_NAME: "OBV Pilot Operations",
+  };
+  // Refuse-rather-than-degrade: production must CHOOSE a delivery mode.
+  const noDelivery = spawnSync(
+    process.execPath,
+    [path.join(ROOT, "dist/server/http/server.js")],
+    {
+      env: { ...process.env, ...prodEnv, OBV_DATA_DIR: PROD_DATA_DIR, OBV_AUTH_LINK_DELIVERY: "" },
+      encoding: "utf8",
+      timeout: 20_000,
+    }
+  );
+  assert(
+    noDelivery.status === 1 && /OBV_AUTH_LINK_DELIVERY/.test(String(noDelivery.stderr)),
+    "production posture refuses to start without an explicit link-delivery choice"
+  );
   prodServer = await boot(
     PROD_BASE,
-    {
-      PORT: String(PROD_PORT),
-      OBV_BANKING_MODE: "production",
-      OBV_BANKING_PROVIDER: "mock",
-      OBV_SESSION_SECRET: crypto.randomBytes(32).toString("hex"),
-      OBV_BOOTSTRAP_ADMIN_EMAIL: "ops@obv.example",
-      OBV_BOOTSTRAP_ORG_NAME: "OBV Pilot Operations",
-    },
+    { ...prodEnv, OBV_AUTH_LINK_DELIVERY: "file" },
     PROD_DATA_DIR
   );
-  pass("production-posture server healthy");
+  pass("production-posture server healthy (delivery mode explicitly chosen)");
   r = await req(PROD_BASE, "POST", "/api/session", { body: { userId: "user-funder" } });
   assert(r.status === 404, "demo switcher is dead under production posture");
   r = await req(PROD_BASE, "GET", "/overview", { headers: { accept: "text/html" } });
@@ -731,9 +781,28 @@ async function main() {
   assert(r.status === 200, "bootstrap admin can request a link");
   const prodLink = lastLinkFor(PROD_DATA_DIR, "ops@obv.example");
   assert(prodLink !== null, "bootstrap identity was created at startup (link delivered)");
-  r = await req(PROD_BASE, "POST", "/api/auth/complete", { body: { token: tokenOf(prodLink) } });
+  r = await completeLink(tokenOf(prodLink), {}, PROD_BASE);
   assert(r.status === 201, "bootstrap admin completes sign-in");
   const prodCookie = authCookieFrom(r.setCookies);
+  // The legacy signed demo cookie is a non-revocable bearer statement, so
+  // production posture must reject it outright — even correctly signed.
+  const forgePayload = Buffer.from(
+    JSON.stringify({ u: "user-funder", iat: Date.now(), exp: Date.now() + 3600_000 }),
+    "utf8"
+  ).toString("base64url");
+  const forgeMac = crypto
+    .createHmac("sha256", prodSecret)
+    .update(`v1.${forgePayload}`)
+    .digest()
+    .toString("base64url");
+  r = await req(PROD_BASE, "GET", "/overview", {
+    cookie: `obv_user=v1.${forgePayload}.${forgeMac}`,
+    headers: { accept: "text/html" },
+  });
+  assert(
+    [302, 303].includes(r.status),
+    "a correctly signed legacy demo cookie does NOT authenticate under production posture"
+  );
   r = await req(PROD_BASE, "GET", "/api/auth/me", { cookie: prodCookie });
   const prodMe = JSON.parse(r.text);
   assert(prodMe.user.role === "PROJECT_MANAGER", "bootstrap admin lands as PROJECT_MANAGER");

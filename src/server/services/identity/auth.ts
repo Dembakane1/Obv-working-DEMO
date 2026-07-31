@@ -310,9 +310,11 @@ export function createSession(
   const absolute = inheritFrom
     ? inheritFrom.absoluteExpiresAt
     : new Date(now + (trusted ? cfg.trustedDeviceDays * DAY : cfg.sessionAbsoluteHours * HOUR)).toISOString();
-  const idle = new Date(
-    Math.min(now + cfg.sessionIdleMinutes * MINUTE, Date.parse(absolute))
-  ).toISOString();
+  // "Trust this device" means the session survives inactivity: the idle
+  // window equals the absolute deadline, which alone bounds its life.
+  const idle = trusted
+    ? absolute
+    : new Date(Math.min(now + cfg.sessionIdleMinutes * MINUTE, Date.parse(absolute))).toISOString();
   const session: AuthSession = {
     id,
     identityId: identity.id,
@@ -393,9 +395,12 @@ export function resolveSession(cookieValue: string | undefined): ResolvedSession
   if (!user) return null;
   if (now - Date.parse(session.lastSeenAt) > TOUCH_THROTTLE_MS) {
     const cfg = identityConfig();
-    const idle = new Date(
-      Math.min(now + cfg.sessionIdleMinutes * MINUTE, Date.parse(session.absoluteExpiresAt))
-    ).toISOString();
+    // Trusted devices keep idle == absolute (a touch must never shrink it).
+    const idle = session.trustedDevice
+      ? session.absoluteExpiresAt
+      : new Date(
+          Math.min(now + cfg.sessionIdleMinutes * MINUTE, Date.parse(session.absoluteExpiresAt))
+        ).toISOString();
     identityRepo.touchAuthSession(session.id, new Date(now).toISOString(), idle);
     session.lastSeenAt = new Date(now).toISOString();
     session.idleExpiresAt = idle;

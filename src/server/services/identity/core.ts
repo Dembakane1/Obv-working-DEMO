@@ -68,8 +68,30 @@ export interface IdentityConfig {
   deliveryMode: "file" | "off";
 }
 
+/** Same explicit-declaration rule the session layer uses: production
+ *  posture is OBV_BANKING_MODE=production or OBV_SESSION_REQUIRE_SECRET,
+ *  never NODE_ENV. */
+function productionPosture(): boolean {
+  return (
+    process.env.OBV_BANKING_MODE === "production" ||
+    /^(1|true)$/i.test(process.env.OBV_SESSION_REQUIRE_SECRET ?? "")
+  );
+}
+
 export function identityConfig(): IdentityConfig {
-  const mode = (process.env.OBV_AUTH_LINK_DELIVERY ?? "file").trim().toLowerCase() || "file";
+  const configured = (process.env.OBV_AUTH_LINK_DELIVERY ?? "").trim().toLowerCase();
+  if (!configured && productionPosture()) {
+    // The file outbox writes live (single-use, short-TTL) sign-in links to
+    // the data volume. That is a deliberate development affordance — a
+    // production operator must CHOOSE it, not inherit it silently.
+    throw new IdentityError(
+      "OBV_AUTH_LINK_DELIVERY must be set explicitly in production ('file' for the data-directory outbox, " +
+        "'off' to mint without delivering). The file outbox stores live sign-in links on the data volume, " +
+        "so production must opt into it deliberately — or plug an email provider into deliverSignInLink.",
+      500
+    );
+  }
+  const mode = configured || "file";
   if (mode !== "file" && mode !== "off") {
     throw new IdentityError(
       `OBV_AUTH_LINK_DELIVERY must be "file" (development outbox under the data directory) or "off" (got "${mode}"). ` +

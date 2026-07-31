@@ -96,13 +96,26 @@ export function ensureBootstrapIdentity(): Identity | null {
  *    and a membership links it to the identity (created on first contact).
  *
  * Either way the accepted invitation proves mailbox control, so the
- * identity's email becomes verified, and a signed-in session is created.
+ * identity's email becomes verified.
+ *
+ * SESSION RULE: a signed-in session is minted ONLY when this acceptance
+ * CREATED the identity. Invitation activation links are visible to the
+ * inviting administrator, so for a pre-existing identity the link must
+ * not become a bridge into that person's account (and through org
+ * switching, their OTHER organizations) — the membership is attached and
+ * the person signs in through their own email instead.
  */
 export function acceptInvitationWithIdentity(
   rawToken: string,
   profile: { name: string; title: string },
   meta: RequestMeta
-): { user: User; identity: Identity; session: AuthSession; cookieValue: string } {
+): {
+  user: User;
+  identity: Identity;
+  session: AuthSession | null;
+  cookieValue: string | null;
+  signInRequired: boolean;
+} {
   const inv = pilot.findInvitationForToken(rawToken);
   if (!inv) throw new SubmissionError("Invitation not found", 404);
   if (inv.status === "EXPIRED") throw new SubmissionError("This invitation has expired", 410);
@@ -114,6 +127,7 @@ export function acceptInvitationWithIdentity(
   if (!email) throw new SubmissionError("Invitation email is invalid", 422);
 
   let identity = identityRepo.findIdentityByEmail(email);
+  const identityCreatedNow = !identity;
   if (!identity) {
     identity = {
       id: repo.newId(),
@@ -223,6 +237,27 @@ export function acceptInvitationWithIdentity(
     identityRepo.updateIdentityFields(identity.id, { emailVerifiedAt: nowIso() });
     recordAuthEvent({ kind: "EMAIL_VERIFIED", identityId: identity.id, email, detail: "via invitation acceptance" });
   }
+  if (!identityCreatedNow) {
+    // Pre-existing identity: attach only. The activation link (which the
+    // inviting administrator has seen) must never become a session for an
+    // account that already exists — the person signs in with their email.
+    recordAuthEvent({
+      kind: "INVITATION_ATTACH_SIGNIN_REQUIRED",
+      identityId: identity.id,
+      userId: user.id,
+      organizationId: membership.organizationId,
+      email,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+    });
+    return {
+      user,
+      identity: identityRepo.getIdentity(identity.id)!,
+      session: null,
+      cookieValue: null,
+      signInRequired: true,
+    };
+  }
   const { session, cookieValue } = createSession(
     identityRepo.getIdentity(identity.id)!,
     membership,
@@ -241,7 +276,7 @@ export function acceptInvitationWithIdentity(
     userAgent: meta.userAgent,
     detail: "via invitation acceptance",
   });
-  return { user, identity: identityRepo.getIdentity(identity.id)!, session, cookieValue };
+  return { user, identity: identityRepo.getIdentity(identity.id)!, session, cookieValue, signInRequired: false };
 }
 
 // ------------------------------------------- membership administration

@@ -49,7 +49,7 @@ function AuthDoc(props: { title: string; wide?: boolean; children?: unknown }) {
 
 // ================================================================ sign-in
 
-export function renderSignIn(input: { sent: boolean; demoAvailable: boolean }): string {
+export function renderSignIn(input: { sent: boolean; linked?: boolean; demoAvailable: boolean }): string {
   return renderDocument(
     <AuthDoc title="Sign in">
       {input.sent ? (
@@ -66,6 +66,12 @@ export function renderSignIn(input: { sent: boolean; demoAvailable: boolean }): 
       ) : (
         <Fragment>
           <h1 style="font-size:16px;margin:14px 0 4px">Sign in to OBV</h1>
+          {input.linked ? (
+            <p className="sub" style="font-size:12.5px;margin:0 0 8px">
+              <b>Organization access added to your existing account.</b> Sign in
+              with your email to continue.
+            </p>
+          ) : null}
           <p className="sub" style="font-size:12.5px;margin:0 0 14px">
             Enter your work email. We send a one-time sign-in link — no password.
           </p>
@@ -89,9 +95,11 @@ export function renderSignIn(input: { sent: boolean; demoAvailable: boolean }): 
 // ==================================================== link confirmation
 
 /** The GET landing for a magic link. It never consumes the token — the
- *  explicit POST below does — so inbox link-scanners cannot burn it. */
+ *  explicit POST below does — so inbox link-scanners cannot burn it.
+ *  `confirm` echoes the anti-login-CSRF cookie this page just set. */
 export function renderAuthComplete(input: {
   token: string;
+  confirm: string;
   usable: boolean;
   email: string | null;
 }): string {
@@ -105,6 +113,7 @@ export function renderAuthComplete(input: {
           </p>
           <form method="POST" action="/api/auth/complete" className="fo-form">
             <input type="hidden" name="token" value={input.token} />
+            <input type="hidden" name="confirm" value={input.confirm} />
             <label className="idp-check">
               <input type="checkbox" name="trust" value="1" />
               <span>Trust this device (stay signed in longer)</span>

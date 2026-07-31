@@ -8,6 +8,7 @@
  * session and its synchronizer CSRF token.
  */
 import type * as http from "node:http";
+import { randomBytes } from "node:crypto";
 import * as identity from "../services/identity";
 import * as repo from "../db/repo";
 import * as identityRepo from "../db/identityRepo";
@@ -35,11 +36,40 @@ export interface IdentityRouteContext {
 }
 
 function requestMeta(req: http.IncomingMessage): identity.RequestMeta {
-  const forwarded = String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim();
+  // LAST forwarded hop: appended by the trusted proxy. The first entry is
+  // client-supplied, so keying lockouts on it would let an attacker both
+  // dodge the ip: scope (rotate the header) and poison it for a victim.
+  const forwarded = String(req.headers["x-forwarded-for"] ?? "").split(",").pop()?.trim() ?? "";
   return {
     ip: forwarded || req.socket.remoteAddress || null,
     userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) || null,
   };
+}
+
+/** Anti login-CSRF: the completion POST must present the value of a
+ *  cookie our own GET confirmation page set. A cross-site page can post
+ *  a token, but it can neither read nor set our cookie, so it cannot
+ *  sign the victim's browser into an attacker-chosen account. */
+const CONFIRM_COOKIE = "obv_confirm";
+
+function confirmCookieHeader(secure: boolean, value: string): string {
+  const flags = ["Path=/", "SameSite=Lax", "HttpOnly", "Max-Age=900"];
+  if (secure) flags.push("Secure");
+  return `${CONFIRM_COOKIE}=${value}; ${flags.join("; ")}`;
+}
+
+function clearConfirmCookieHeader(secure: boolean): string {
+  const flags = ["Path=/", "SameSite=Lax", "HttpOnly", "Max-Age=0"];
+  if (secure) flags.push("Secure");
+  return `${CONFIRM_COOKIE}=; ${flags.join("; ")}`;
+}
+
+/** Expire the legacy signed demo cookie alongside the identity session:
+ *  logout must not leave a second working credential in the browser. */
+function clearLegacyCookieHeader(secure: boolean): string {
+  const flags = ["Path=/", "SameSite=Lax", "HttpOnly", "Max-Age=0"];
+  if (secure) flags.push("Secure");
+  return `obv_user=; ${flags.join("; ")}`;
 }
 
 /** Session view model — the ONLY session shape that ever leaves the
@@ -78,7 +108,11 @@ export async function handleIdentityRoutes(ctx: IdentityRouteContext): Promise<b
       return true;
     }
     ctx.sendHtml(
-      renderSignIn({ sent: ctx.searchParams.get("sent") === "1", demoAvailable: ctx.demoAvailable })
+      renderSignIn({
+        sent: ctx.searchParams.get("sent") === "1",
+        linked: ctx.searchParams.get("linked") === "1",
+        demoAvailable: ctx.demoAvailable,
+      })
     );
     return true;
   }
@@ -94,20 +128,40 @@ export async function handleIdentityRoutes(ctx: IdentityRouteContext): Promise<b
   if (method === "GET" && pathname === "/auth/complete") {
     const token = ctx.searchParams.get("token") ?? "";
     const preview = identity.previewMagicLink(token);
-    // The GET never consumes the token; the rendered POST form does.
-    ctx.sendHtml(renderAuthComplete({ token, usable: preview.usable, email: preview.email }), preview.usable ? 200 : 400);
+    // The GET never consumes the token; the rendered POST form does. It
+    // also arms the anti-login-CSRF confirm cookie the POST must echo.
+    const confirm = randomBytes(16).toString("hex");
+    ctx.res.setHeader("Set-Cookie", confirmCookieHeader(ctx.secure, confirm));
+    ctx.sendHtml(
+      renderAuthComplete({ token, confirm, usable: preview.usable, email: preview.email }),
+      preview.usable ? 200 : 400
+    );
     return true;
   }
 
   if (method === "POST" && pathname === "/api/auth/complete") {
     const params = await ctx.readParams();
+    const cookies = parseAllCookies(req);
+    const confirmCookie = cookies[CONFIRM_COOKIE] ?? "";
+    const confirmField = String(params.confirm ?? "");
+    if (!confirmCookie || !confirmField || !identity.safeStringEqual(confirmField, confirmCookie)) {
+      // Not a token-validity oracle: this rejects the REQUEST SHAPE (no
+      // browser round-trip through our confirmation page), never the token.
+      throw new identity.IdentityError(
+        "Sign-in must be confirmed from the sign-in link page. Open the link again.",
+        403
+      );
+    }
     const trust = ["1", "true", "on"].includes(String(params.trust ?? "").toLowerCase());
     const result = identity.completeMagicLink(
       params.token ?? "",
       { trustDevice: trust, deviceLabel: params.deviceLabel?.trim() || null },
       meta
     );
-    ctx.res.setHeader("Set-Cookie", identity.authCookieHeaders(ctx.secure, result.cookieValue, result.session));
+    ctx.res.setHeader("Set-Cookie", [
+      ...identity.authCookieHeaders(ctx.secure, result.cookieValue, result.session),
+      clearConfirmCookieHeader(ctx.secure),
+    ]);
     if (ctx.isForm()) ctx.redirect(result.user.role === "FIELD" ? "/field" : "/overview");
     else
       ctx.sendJson(
@@ -198,7 +252,10 @@ export async function handleIdentityRoutes(ctx: IdentityRouteContext): Promise<b
   if (method === "POST" && pathname === "/api/auth/logout") {
     await csrfCheck();
     identity.logout(resolved, meta);
-    ctx.res.setHeader("Set-Cookie", identity.clearAuthCookieHeaders(ctx.secure));
+    ctx.res.setHeader("Set-Cookie", [
+      ...identity.clearAuthCookieHeaders(ctx.secure),
+      clearLegacyCookieHeader(ctx.secure),
+    ]);
     if (ctx.isForm()) ctx.redirect("/signin");
     else ctx.sendJson({ ok: true });
     return true;
@@ -207,7 +264,10 @@ export async function handleIdentityRoutes(ctx: IdentityRouteContext): Promise<b
   if (method === "POST" && pathname === "/api/auth/logout-all") {
     await csrfCheck();
     const revoked = identity.logoutEverywhere(resolved, meta);
-    ctx.res.setHeader("Set-Cookie", identity.clearAuthCookieHeaders(ctx.secure));
+    ctx.res.setHeader("Set-Cookie", [
+      ...identity.clearAuthCookieHeaders(ctx.secure),
+      clearLegacyCookieHeader(ctx.secure),
+    ]);
     if (ctx.isForm()) ctx.redirect("/signin");
     else ctx.sendJson({ ok: true, revoked });
     return true;
@@ -293,13 +353,24 @@ export async function handleIdentityRoutes(ctx: IdentityRouteContext): Promise<b
   return true;
 }
 
-function readAuthCookie(req: http.IncomingMessage): string | undefined {
-  const header = req.headers.cookie ?? "";
-  for (const part of header.split(";")) {
+function parseAllCookies(req: http.IncomingMessage): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (req.headers.cookie ?? "").split(";")) {
     const eq = part.indexOf("=");
-    if (eq > 0 && part.slice(0, eq).trim() === identity.AUTH_COOKIE) {
-      return decodeURIComponent(part.slice(eq + 1).trim());
+    if (eq > 0) {
+      const raw = part.slice(eq + 1).trim();
+      // Malformed percent-encoding reads as the raw value — a corrupt
+      // cookie must mean "not signed in", never a URIError-driven 500.
+      try {
+        out[part.slice(0, eq).trim()] = decodeURIComponent(raw);
+      } catch {
+        out[part.slice(0, eq).trim()] = raw;
+      }
     }
   }
-  return undefined;
+  return out;
+}
+
+function readAuthCookie(req: http.IncomingMessage): string | undefined {
+  return parseAllCookies(req)[identity.AUTH_COOKIE];
 }

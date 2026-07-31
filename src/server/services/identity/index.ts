@@ -15,6 +15,7 @@ export {
   identityStartupNotice,
   normalizeEmail,
   authOutboxPath,
+  safeStringEqual,
 } from "./core";
 export {
   AUTH_COOKIE,

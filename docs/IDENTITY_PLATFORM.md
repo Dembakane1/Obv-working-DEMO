@@ -42,6 +42,12 @@ received.
   `users` row and links it to the same identity.
 - Invitation acceptance proves mailbox control, so it also verifies the
   identity's email.
+- **Acceptance signs the browser in only when it CREATED the identity.**
+  Activation links are visible to the inviting administrator, so for a
+  pre-existing account the link attaches the membership and then requires
+  the person's own email sign-in — it can never become a bridge into an
+  existing account or, through org switching, that person's other
+  organizations.
 
 ## Authentication flow
 
@@ -53,11 +59,16 @@ received.
    delivery seam (below). Only the sha256 of the token is stored; TTL is
    15 minutes (configurable).
 3. `GET /auth/complete` renders a **confirmation form and never consumes
-   the token** — inbox scanners that prefetch links cannot burn them.
-4. `POST /api/auth/complete` consumes the token via a guarded single-use
-   update (`WHERE consumed_at IS NULL`): under a race exactly one request
-   wins; replays fail. Every failure — unknown, malformed, expired,
-   consumed, tampered — returns the **byte-identical generic 400**.
+   the token** — inbox scanners that prefetch links cannot burn them. It
+   also arms a short-lived `obv_confirm` cookie.
+4. `POST /api/auth/complete` must echo the `obv_confirm` value (anti
+   **login-CSRF**: a cross-site page can post a token but can neither
+   read nor set our cookie, so it cannot sign a victim's browser into an
+   attacker-chosen account). It then consumes the token via a guarded
+   single-use update (`WHERE consumed_at IS NULL`): under a race exactly
+   one request wins; replays fail. Every token failure — unknown,
+   malformed, expired, consumed, tampered — returns the **byte-identical
+   generic 400**.
 5. A server-side session is created. The cookie is
    `obv_auth=<sessionId>.<secret>`; the database stores sha256(secret),
    compared in constant time on every request. HttpOnly, SameSite=Lax,
@@ -70,7 +81,8 @@ received.
   fixed at sign-in and **never extends** — org switching rotates the
   session but inherits the original deadline.
 - **Trusted devices** ("stay signed in longer") extend the absolute
-  window to 30 days, recorded per session.
+  window to 30 days and do not idle-expire — only the absolute deadline
+  bounds them; recorded per session.
 - **Concurrent sessions** are first-class rows: `/account/security`
   lists every device with sign-in time, last activity, and expiry.
 - **Revocation** is immediate and server-side: per-device revoke,
@@ -90,7 +102,10 @@ received.
 - Failed completions count against `email:` and `ip:` scopes; 5 failures
   inside a 15-minute window lock the scope for 15 minutes (audited as
   `ACCOUNT_LOCKED`). While locked, even a valid token fails with the same
-  generic message, and link requests silently stop delivering.
+  generic message, and link requests silently stop delivering. The `ip:`
+  scope reads the **last** X-Forwarded-For hop (the trusted proxy's
+  append) — the client-supplied first entry could otherwise be rotated
+  to dodge the lockout or spoofed to poison it for a victim.
 - Link issuance is throttled per identity (5 per 15-minute window);
   throttled requests still answer generically.
 - Successful sign-in clears the failure counters.
@@ -127,7 +142,11 @@ are additionally mirrored into the existing `config_audit` register.
 | Demo role switcher (`/demo`, `POST /api/session`) | Active (seeded identities only) | **404 — dead** |
 | Magic-link sign-in (`/signin`) | Active alongside the switcher | The only sign-in |
 | Unauthenticated page GETs | Redirect to `/demo` | Redirect to `/signin` |
-| Session cookies | `obv_user` (signed) or `obv_auth` | `obv_auth` (invitation acceptance also sets the signed legacy cookie) |
+| Session cookies | `obv_user` (signed) or `obv_auth` | **`obv_auth` only** — the legacy signed cookie is rejected even when correctly signed, because it is a bearer statement no revocation can reach |
+| Link delivery | `file` outbox by default | `OBV_AUTH_LINK_DELIVERY` must be set **explicitly** or startup refuses |
+
+Logout and logout-everywhere also expire the legacy `obv_user` cookie in
+the browser, so signing out never leaves a second working credential.
 
 Production posture is declared with `OBV_BANKING_MODE=production` or
 `OBV_SESSION_REQUIRE_SECRET=1`, exactly as before.
@@ -212,7 +231,15 @@ hashed at rest, so there is nothing to configure and nothing to commit.
 ## Known limitations
 
 - Link delivery ships with the development file outbox only; production
-  email requires plugging a provider into the single delivery seam.
+  email requires plugging a provider into the single delivery seam (and
+  production posture refuses to start until a mode is chosen
+  explicitly — the outbox stores live single-use links on the data
+  volume, which an operator must opt into knowingly).
+- Response **timing** on `POST /api/auth/magic-link` is not equalized:
+  a known address does more work (token mint + delivery) than an unknown
+  one, so a patient attacker measuring latency could infer address
+  existence even though the response body is identical. This residual is
+  shared by most magic-link systems; the audit log records every probe.
 - Organization "owner" is an identity-platform stewardship concept for
   membership administration; it does not change any project-level
   authorization rule.

@@ -307,7 +307,17 @@ function parseCookies(req: http.IncomingMessage): Record<string, string> {
   const out: Record<string, string> = {};
   for (const part of header.split(";")) {
     const eq = part.indexOf("=");
-    if (eq > 0) out[part.slice(0, eq).trim()] = decodeURIComponent(part.slice(eq + 1).trim());
+    if (eq > 0) {
+      const raw = part.slice(eq + 1).trim();
+      // A cookie with malformed percent-encoding must read as its raw
+      // value, not throw: an unhandled URIError here would turn one
+      // corrupt cookie into a persistent 500 for that browser.
+      try {
+        out[part.slice(0, eq).trim()] = decodeURIComponent(raw);
+      } catch {
+        out[part.slice(0, eq).trim()] = raw;
+      }
+    }
   }
   return out;
 }
@@ -328,7 +338,14 @@ function currentUser(req: http.IncomingMessage): User | null {
   const resolved = identitySvc.resolveSession(parseCookies(req)[identitySvc.AUTH_COOKIE]);
   if (resolved) return resolved.user;
   const id = readSessionToken(parseCookies(req)[SESSION_COOKIE]);
-  return id ? repo.getUser(id) : null;
+  if (!id) return null;
+  // The signed demo cookie is a bearer statement: valid until it expires,
+  // with no server-side row to revoke. That is acceptable for the demo and
+  // unacceptable in production, where logout/suspension/revocation must be
+  // final — so under production posture the identity platform's revocable
+  // sessions are the ONLY credential.
+  if (!demoAuthEnabled()) return null;
+  return repo.getUser(id);
 }
 
 /** Where an unauthenticated page GET goes: the seeded role picker while
@@ -4208,11 +4225,23 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       params.get("token") ?? "",
       { name: params.get("name") ?? "", title: params.get("title") ?? "" },
       {
-        ip: String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() || req.socket.remoteAddress || null,
+        // Take the LAST forwarded hop: the entry appended by the trusted
+        // proxy. The first entry is client-supplied and spoofable.
+        ip:
+          String(req.headers["x-forwarded-for"] ?? "").split(",").pop()?.trim() ||
+          req.socket.remoteAddress ||
+          null,
         userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) || null,
       }
     );
     const newUser = accepted.user;
+    if (accepted.signInRequired || !accepted.session || !accepted.cookieValue) {
+      // Existing account: the membership is attached, but the activation
+      // link never becomes a session — the person signs in by email.
+      if (isFormPost(req)) redirect(res, "/signin?linked=1");
+      else sendJson(res, { user: newUser, signInRequired: true }, 201);
+      return;
+    }
     res.setHeader("Set-Cookie", [
       sessionCookieHeader(req, newUser.id),
       ...identitySvc.authCookieHeaders(requestIsSecure(req), accepted.cookieValue, accepted.session),
