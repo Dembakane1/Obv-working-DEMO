@@ -1957,6 +1957,298 @@ CREATE TABLE IF NOT EXISTS gov_program_links (
   UNIQUE (gov_program_id, project_id)
 );
 
+-- ==================== Pilot Readiness operations (additive) ================
+-- Production/customer-readiness records: organization settings, user
+-- administration, notifications, email outbox, integration frameworks,
+-- operations, backups, feedback, and pilot analytics. NOTHING here touches
+-- verification, approvals, banking, packages, or the evidence ledger; the
+-- users and organizations tables themselves are NOT altered — per-user and
+-- per-org operational state lives in side tables. Every administrative
+-- action is additionally recorded in the existing config_audit trail.
+
+CREATE TABLE IF NOT EXISTS organization_settings (
+  organization_id TEXT PRIMARY KEY REFERENCES organizations(id),
+  display_name TEXT,
+  legal_name TEXT,
+  website TEXT,
+  phone TEXT,
+  logo_path TEXT,
+  brand_color TEXT,
+  timezone TEXT,
+  locale TEXT,
+  default_notification_channel TEXT NOT NULL DEFAULT 'IN_APP'
+    CHECK (default_notification_channel IN ('IN_APP','EMAIL','BOTH')),
+  onboarding_started_at TEXT,
+  onboarding_completed_at TEXT,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+
+-- Guided-onboarding progress: one row per completed step (complete-only).
+CREATE TABLE IF NOT EXISTS onboarding_steps (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  step_key TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  completed_by TEXT NOT NULL,
+  UNIQUE (organization_id, step_key)
+);
+
+-- Per-user administrative state (ACTIVE/SUSPENDED, MFA readiness). A
+-- missing row means ACTIVE. Suspension takes effect on the next request:
+-- session resolution refuses suspended users.
+CREATE TABLE IF NOT EXISTS user_admin_state (
+  user_id TEXT PRIMARY KEY REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','SUSPENDED')),
+  suspended_at TEXT,
+  suspended_by TEXT,
+  suspension_reason TEXT,
+  restored_at TEXT,
+  restored_by TEXT,
+  mfa_ready INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
+-- Append-only sign-in / device history (user agent only — never secrets).
+CREATE TABLE IF NOT EXISTS user_access_events (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  event TEXT NOT NULL CHECK (event IN ('SIGN_IN','SIGN_IN_REFUSED')),
+  user_agent TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_access_events_user ON user_access_events(user_id, created_at);
+
+-- Customer-success workspace (internal operator console; never exposed to
+-- lender-side users — the routes 404 for non-operator roles).
+CREATE TABLE IF NOT EXISTS cs_accounts (
+  organization_id TEXT PRIMARY KEY REFERENCES organizations(id),
+  pilot_status TEXT NOT NULL DEFAULT 'PROSPECT'
+    CHECK (pilot_status IN ('PROSPECT','ONBOARDING','LIVE','PAUSED','COMPLETED','CHURNED')),
+  go_live_date TEXT,
+  success_manager TEXT,
+  health_score INTEGER,
+  renewal_probability INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cs_checklist_items (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  title TEXT NOT NULL,
+  sort INTEGER NOT NULL DEFAULT 0,
+  done INTEGER NOT NULL DEFAULT 0,
+  done_at TEXT,
+  done_by TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cs_notes (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  kind TEXT NOT NULL CHECK (kind IN ('NOTE','ISSUE','FEATURE_REQUEST')),
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','RESOLVED')),
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+-- Notification center: per-user preferences plus per-user read state over
+-- a feed DERIVED from existing governed records (never a second source of
+-- truth for any event).
+CREATE TABLE IF NOT EXISTS user_notification_prefs (
+  user_id TEXT PRIMARY KEY REFERENCES users(id),
+  in_app INTEGER NOT NULL DEFAULT 1,
+  email INTEGER NOT NULL DEFAULT 1,
+  daily_digest INTEGER NOT NULL DEFAULT 0,
+  weekly_digest INTEGER NOT NULL DEFAULT 1,
+  muted_types TEXT NOT NULL DEFAULT '[]', -- JSON string[]
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_notification_reads (
+  user_id TEXT NOT NULL REFERENCES users(id),
+  notification_key TEXT NOT NULL,
+  read_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, notification_key)
+);
+
+-- Transactional email outbox. The provider abstraction records every send
+-- here; in demo/log mode nothing leaves the machine. Never stores secrets.
+CREATE TABLE IF NOT EXISTS email_outbox (
+  id TEXT PRIMARY KEY,
+  to_user_id TEXT REFERENCES users(id),
+  to_address TEXT NOT NULL,
+  template TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  body TEXT NOT NULL,
+  ref_type TEXT,
+  ref_id TEXT,
+  provider TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED','SENT','FAILED','SKIPPED')),
+  created_at TEXT NOT NULL,
+  sent_at TEXT,
+  failure_category TEXT -- sanitized, never provider payloads or secrets
+);
+
+-- E-signature integration layer (provider-neutral). No provider SDK, no
+-- credentials; provider adapters are registered by name and the default
+-- 'mock' adapter simulates the lifecycle for pilots.
+CREATE TABLE IF NOT EXISTS esign_requests (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  provider TEXT NOT NULL DEFAULT 'MOCK',
+  provider_reference TEXT,
+  title TEXT NOT NULL,
+  document_path TEXT,
+  document_hash TEXT,
+  signer_name TEXT NOT NULL,
+  signer_email TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'DRAFT'
+    CHECK (status IN ('DRAFT','SENT','VIEWED','SIGNED','DECLINED','VOIDED')),
+  requested_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  completed_document_path TEXT,
+  completed_document_hash TEXT
+);
+
+-- Append-only e-signature audit trail (OBV actions + webhook deliveries).
+CREATE TABLE IF NOT EXISTS esign_events (
+  id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL REFERENCES esign_requests(id),
+  source TEXT NOT NULL CHECK (source IN ('OBV','WEBHOOK')),
+  type TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- Accounting integration framework: provider-neutral connections plus an
+-- append-only run log. Imports land ONLY in a staging table — nothing an
+-- accounting adapter does can create or modify verified records.
+CREATE TABLE IF NOT EXISTS accounting_connections (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  provider TEXT NOT NULL CHECK (provider IN ('QUICKBOOKS','XERO','SAGE','CSV')),
+  status TEXT NOT NULL DEFAULT 'AVAILABLE' CHECK (status IN ('AVAILABLE','CONNECTED','DISABLED')),
+  external_reference TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (organization_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS accounting_runs (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL REFERENCES accounting_connections(id),
+  direction TEXT NOT NULL CHECK (direction IN ('EXPORT','IMPORT')),
+  dataset TEXT NOT NULL CHECK (dataset IN ('PROJECTS','BUDGETS','INVOICES','PAYMENTS','CONTRACTORS')),
+  row_count INTEGER NOT NULL DEFAULT 0,
+  file_path TEXT,
+  status TEXT NOT NULL CHECK (status IN ('COMPLETED','FAILED')),
+  detail TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS accounting_import_rows (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES accounting_runs(id),
+  dataset TEXT NOT NULL,
+  payload TEXT NOT NULL, -- JSON row exactly as imported (staged, never applied)
+  state TEXT NOT NULL DEFAULT 'STAGED' CHECK (state IN ('STAGED','DISMISSED')),
+  created_at TEXT NOT NULL
+);
+
+-- Backup management: records + verification + recovery-test log. There is
+-- deliberately NO restore code path anywhere in the application.
+CREATE TABLE IF NOT EXISTS backup_records (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL DEFAULT 'FULL',
+  file_path TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT,
+  status TEXT NOT NULL CHECK (status IN ('COMPLETED','FAILED')),
+  taken_by TEXT NOT NULL,
+  taken_at TEXT NOT NULL,
+  retention_until TEXT,
+  verified_at TEXT,
+  verify_status TEXT CHECK (verify_status IN ('VERIFIED','MISMATCH')),
+  notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS recovery_tests (
+  id TEXT PRIMARY KEY,
+  backup_id TEXT NOT NULL REFERENCES backup_records(id),
+  outcome TEXT NOT NULL CHECK (outcome IN ('PASSED','FAILED')),
+  detail TEXT NOT NULL,
+  tested_by TEXT NOT NULL,
+  tested_at TEXT NOT NULL
+);
+
+-- Integrated feedback portal.
+CREATE TABLE IF NOT EXISTS feedback_items (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  kind TEXT NOT NULL CHECK (kind IN ('BUG','FEATURE','IMPROVEMENT','PAIN_POINT')),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'MEDIUM' CHECK (severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+  status TEXT NOT NULL DEFAULT 'OPEN'
+    CHECK (status IN ('OPEN','TRIAGED','IN_PROGRESS','RESOLVED','CLOSED')),
+  page_path TEXT,
+  screenshot_path TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feedback_events (
+  id TEXT PRIMARY KEY,
+  feedback_id TEXT NOT NULL REFERENCES feedback_items(id),
+  kind TEXT NOT NULL CHECK (kind IN ('INTERNAL_NOTE','CUSTOMER_RESPONSE','STATUS_CHANGE')),
+  body TEXT NOT NULL,
+  actor_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+-- Pilot adoption analytics. Rows are written ONLY when usage analytics is
+-- explicitly enabled (OBV_USAGE_ANALYTICS=1) — GET requests never write
+-- by default, preserving the read-only guarantees the rest of the test
+-- battery proves.
+CREATE TABLE IF NOT EXISTS usage_events (
+  id TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id),
+  organization_id TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('PAGE_VIEW','API_CALL','ACTION')),
+  path TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_time ON usage_events(created_at);
+
+-- Production configuration: system banners + named feature flags.
+CREATE TABLE IF NOT EXISTS system_banners (
+  id TEXT PRIMARY KEY,
+  message TEXT NOT NULL,
+  level TEXT NOT NULL DEFAULT 'INFO' CHECK (level IN ('INFO','WARN','CRITICAL')),
+  active INTEGER NOT NULL DEFAULT 1,
+  starts_at TEXT,
+  ends_at TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feature_flags (
+  key TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  description TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+
 `;
 
 export function getDb(): DatabaseSync {
