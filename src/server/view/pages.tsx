@@ -3025,6 +3025,9 @@ export function renderMore(input: { nav: NavContext }): string {
     {
       title: "Portfolio & analysis",
       items: [
+        { href: "/notifications", label: "Notifications", icon: icons.activity, desc: "Your notification center and digests" },
+        { href: "/admin", label: "Administration", icon: icons.user, desc: "Users, onboarding, integrations and analytics" },
+        { href: "/feedback", label: "Feedback", icon: icons.chat, desc: "Report bugs and request features" },
         { href: "/executive", label: "Executive", icon: icons.insights, desc: "Portfolio command center, risk and forecasts" },
         { href: "/map", label: "Map / Satellite", icon: icons.map, desc: "Spatial project intelligence" },
         { href: "/insights", label: "OBV Intelligence", icon: icons.insights, desc: "Deterministic intelligence from recorded data" },

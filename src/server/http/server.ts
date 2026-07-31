@@ -143,6 +143,18 @@ import {
   renderExecutiveSummaryPage,
 } from "../view/portfolioPages";
 import { renderExecutiveReportDoc } from "../view/executiveReport";
+import { handlePilotOpsRoutes } from "./pilotOpsRoutes";
+import * as pilotOpsSvc from "../services/pilotOps";
+import { PilotOpsError } from "../services/pilotOps";
+import { isUserSuspended, insertAccessEvent, insertUsageEvent, listAllFeedback } from "../db/pilotOpsRepo";
+import {
+  renderOnboardingWizard,
+  renderOrgAdmin,
+  renderNotificationCenter,
+  renderFeedbackPortal,
+  renderInternalConsole,
+  renderMaintenancePage,
+} from "../view/pilotOpsPages";
 import * as disputesSvc from "../services/disputes";
 import { renderDisputeWorkspace, renderProjectDisputes } from "../view/disputePages";
 import { renderProjectAccountPage } from "../view/bankingPages";
@@ -316,7 +328,11 @@ function parseCookies(req: http.IncomingMessage): Record<string, string> {
  */
 function currentUser(req: http.IncomingMessage): User | null {
   const id = readSessionToken(parseCookies(req)[SESSION_COOKIE]);
-  return id ? repo.getUser(id) : null;
+  if (!id) return null;
+  // Suspension takes effect immediately: a suspended user's otherwise
+  // valid session token stops resolving on their next request.
+  if (isUserSuspended(id)) return null;
+  return repo.getUser(id);
 }
 
 function readBody(req: http.IncomingMessage, limitBytes = 16 * 1024 * 1024): Promise<Buffer> {
@@ -437,6 +453,10 @@ function navFor(user: User, active: string): NavContext {
       ).length,
     orgName: org?.name,
     orgKind: org?.kind,
+    // Active system banners (Pilot Readiness) — message + level only.
+    banners: pilotOpsSvc.operations
+      .activeBanners()
+      .map((banner) => ({ message: banner.message, level: banner.level })),
   };
 }
 
@@ -1262,6 +1282,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         // Deployed commit (Render injects RENDER_GIT_COMMIT) so the live
         // version is verifiable from the outside. Short hash only.
         version: (process.env.RENDER_GIT_COMMIT ?? process.env.OBV_GIT_COMMIT ?? "").slice(0, 7) || "unknown",
+        deployVersion: pilotOpsSvc.operations.deployVersion(),
         timestamp: new Date().toISOString(),
       },
       database === "connected" ? 200 : 503
@@ -1293,6 +1314,26 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       }
       if (serveStatic(res, WORM_DIR, pathname.slice("/worm/".length))) return;
     } else if (pathname !== "/" && serveStatic(res, PUBLIC_DIR, pathname.slice(1))) {
+      return;
+    }
+  }
+
+  // ---- maintenance mode (Pilot Readiness) ----
+  // Everything except /api/health and public static assets answers 503.
+  // Internal operators pass through so they can manage the system; the
+  // render-token report cache stays reachable so an in-flight PDF finishes.
+  if (
+    pilotOpsSvc.operations.maintenanceMode() &&
+    pathname !== "/api/health" &&
+    !pathname.startsWith("/report-cache/")
+  ) {
+    const maintenanceUser = currentUser(req);
+    if (!maintenanceUser || maintenanceUser.role !== "COMPLIANCE_REVIEWER") {
+      if ((req.headers.accept ?? "").includes("text/html")) {
+        sendHtml(res, renderMaintenancePage(), 503);
+      } else {
+        sendJson(res, { error: "OBV is undergoing scheduled maintenance — try again shortly" }, 503);
+      }
       return;
     }
   }
@@ -1340,6 +1381,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sendJson(res, { error: "Not found" }, 404);
       return;
     }
+    // Sign-in rate limiting (disabled unless OBV_RATE_LIMIT_PER_MINUTE
+    // is set). Keyed per source address; fixed one-minute window.
+    if (pilotOpsSvc.operations.rateLimitExceeded(`session:${req.socket.remoteAddress ?? "unknown"}`)) {
+      sendJson(res, { error: "Too many sign-in attempts — try again shortly" }, 429);
+      return;
+    }
     const body = await readBody(req, 64 * 1024);
     const text = body.toString("utf8");
     let userId = "";
@@ -1359,6 +1406,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sendJson(res, { error: "Not found" }, 404);
       return;
     }
+    // Suspended users cannot sign in; the refusal is recorded in the
+    // append-only access history. The response matches unknown ids so the
+    // switcher stays a non-oracle.
+    const userAgent = String(req.headers["user-agent"] ?? "").slice(0, 200) || null;
+    if (isUserSuspended(user.id)) {
+      insertAccessEvent(user.id, "SIGN_IN_REFUSED", userAgent);
+      sendJson(res, { error: "Not found" }, 404);
+      return;
+    }
+    insertAccessEvent(user.id, "SIGN_IN", userAgent);
     res.setHeader("Set-Cookie", sessionCookieHeader(req, user.id));
     redirect(res, user.role === "FIELD" ? "/field" : "/overview");
     return;
@@ -2738,6 +2795,28 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       getUser: () => {
         const u = currentUser(req);
         if (!u) throw new PortfolioError("Select a demo user first", 401);
+        return u;
+      },
+      readParams,
+      isForm: () => isFormPost(req),
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+    })
+  ) {
+    return;
+  }
+
+  // ============== Pilot Readiness (onboarding, admin, internal console) ==============
+  if (
+    await handlePilotOpsRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      searchParams: url.searchParams,
+      getUser: () => {
+        const u = currentUser(req);
+        if (!u) throw new PilotOpsError("Select a demo user first", 401);
         return u;
       },
       readParams,
@@ -4188,6 +4267,23 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // Mock delivery for the pilot demo build: the activation link is
     // surfaced ONCE to the administrator; no real email is sent and the
     // raw token is never logged or stored.
+    // Pilot Readiness: additionally record the invitation notice in the
+    // transactional email outbox (log provider by default — nothing
+    // leaves the machine, and the RAW TOKEN IS NEVER put in the email).
+    try {
+      pilotOpsSvc.email.sendTemplatedEmail(
+        "INVITATION",
+        { address: invitation.email, userId: null },
+        {
+          recipientName: invitation.email,
+          inviterName: actor.name,
+          organizationName: repo.getOrganization(invitation.organizationId)?.name ?? "your organization",
+        },
+        { type: "invitation", id: invitation.id }
+      );
+    } catch (emailErr) {
+      console.error("[pilot-ops] invitation email queue failed:", (emailErr as Error).message);
+    }
     const link = `${req.headers.host ? `http://${req.headers.host}` : ""}/invite/${rawToken}`;
     if (isFormPost(req)) {
       redirect(res, `/setup?invited=${encodeURIComponent(invitation.email)}&link=${encodeURIComponent(link)}`);
@@ -4575,6 +4671,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // null user and failed as a TypeError instead of redirecting to sign-in.
     "/disputes", "/dispute/",
     "/executive",
+    "/onboarding", "/admin", "/notifications", "/feedback", "/internal",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -5586,6 +5683,81 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ---- Pilot Readiness pages ----
+  if (method === "GET" && pathname === "/onboarding") {
+    sendHtml(
+      res,
+      renderOnboardingWizard({
+        nav: navFor(user!, "admin"),
+        status: pilotOpsSvc.onboarding.onboardingStatus(user!),
+        notice: url.searchParams.get("ok") ? { kind: "ok", text: "Saved." } : null,
+      })
+    );
+    return;
+  }
+  if (method === "GET" && pathname === "/admin") {
+    sendHtml(
+      res,
+      renderOrgAdmin({
+        nav: navFor(user!, "admin"),
+        directory: pilotOpsSvc.userAdmin.userDirectory(user!),
+        matrix: pilotOpsSvc.userAdmin.PERMISSION_MATRIX,
+        analytics: pilotOpsSvc.success.pilotAnalytics(user!),
+        esign: pilotOpsSvc.integrations.listSignatureRequests(user!),
+        accounting: {
+          connections: pilotOpsSvc.integrations.listConnections(user!),
+          runs: pilotOpsSvc.integrations.listRuns(user!).slice(0, 10),
+        },
+        notice: url.searchParams.get("ok") ? { kind: "ok", text: "Done." } : null,
+      })
+    );
+    return;
+  }
+  if (method === "GET" && pathname === "/notifications") {
+    sendHtml(
+      res,
+      renderNotificationCenter({
+        nav: navFor(user!, "notifications"),
+        feed: pilotOpsSvc.notifications.notificationFeed(user!),
+        prefs: pilotOpsSvc.notifications.preferences(user!),
+        notice: url.searchParams.get("ok") ? { kind: "ok", text: "Saved." } : null,
+      })
+    );
+    return;
+  }
+  if (method === "GET" && pathname === "/feedback") {
+    sendHtml(
+      res,
+      renderFeedbackPortal({
+        nav: navFor(user!, "feedback"),
+        feedback: pilotOpsSvc.success.feedbackForUser(user!).items,
+        notice: url.searchParams.get("ok") ? { kind: "ok", text: "Thank you — your feedback was recorded." } : null,
+      })
+    );
+    return;
+  }
+  if (method === "GET" && pathname === "/internal") {
+    // Internal operator console: nondisclosing 404 for lender-side roles.
+    if (user!.role !== "COMPLIANCE_REVIEWER") {
+      sendHtml(res, renderError(navFor(user!, ""), "Not found", `No page at ${pathname}.`), 404);
+      return;
+    }
+    sendHtml(
+      res,
+      renderInternalConsole({
+        nav: navFor(user!, "admin"),
+        workspace: pilotOpsSvc.success.csWorkspace(user!),
+        ops: pilotOpsSvc.operations.opsDashboard(user!),
+        backups: pilotOpsSvc.operations.backupOverview(user!),
+        config: pilotOpsSvc.operations.productionConfig(user!),
+        feedback: listAllFeedback(),
+        demoDataExists: pilotOpsSvc.demoData.demoDataExists(),
+        notice: url.searchParams.get("ok") ? { kind: "ok", text: "Done." } : null,
+      })
+    );
+    return;
+  }
+
   if (method === "GET" && pathname === "/map") {
     sendHtml(res, renderMap({ nav: navFor(user!, "map"), scope: "global" }));
     return;
@@ -5961,6 +6133,31 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 }
 
 const server = http.createServer((req, res) => {
+  // Pilot Readiness monitoring: request timing + opt-in page-view usage
+  // analytics. In-memory only by default; usage rows are written ONLY
+  // when OBV_USAGE_ANALYTICS=1, so GET requests stay write-free for the
+  // rest of the battery's read-only guarantees.
+  const monitoringStartedAt = Date.now();
+  res.on("finish", () => {
+    try {
+      const pathOnly = (req.url ?? "/").split("?")[0];
+      pilotOpsSvc.operations.recordRequest(pathOnly, Date.now() - monitoringStartedAt, res.statusCode);
+      if (
+        pilotOpsSvc.success.usageAnalyticsEnabled() &&
+        req.method === "GET" &&
+        res.statusCode === 200 &&
+        !pathOnly.startsWith("/api/") &&
+        !pathOnly.includes(".")
+      ) {
+        const viewer = currentUser(req);
+        if (viewer) {
+          insertUsageEvent(viewer.id, viewer.organizationId, "PAGE_VIEW", pathOnly.slice(0, 120));
+        }
+      }
+    } catch {
+      /* monitoring must never break a request */
+    }
+  });
   handle(req, res).catch((err) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
@@ -5970,10 +6167,16 @@ const server = http.createServer((req, res) => {
     // "Internal server error", which is both a worse experience and a weak
     // existence oracle — 500 here, 404 there, tells an attacker they hit
     // something real. ComplianceError is the DMV layer's typed error.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError || err instanceof PilotOpsError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";
+    try {
+      // Sanitized ring-buffer sample for the operations dashboard.
+      pilotOpsSvc.operations.recordError((req.url ?? "/").split("?")[0], status, message);
+    } catch {
+      /* monitoring must never break error handling */
+    }
     if (res.headersSent) {
       res.end();
       return;

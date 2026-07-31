@@ -195,6 +195,8 @@ export interface NavContext {
   /** Organization identity shown at the bottom of the sidebar. */
   orgName?: string;
   orgKind?: string;
+  /** Active system banners (Pilot Readiness) rendered across the shell. */
+  banners?: { message: string; level: string }[];
 }
 
 interface NavItem { key: string; href: string; label: string; icon: () => VNode; badge?: "approvals" | "issues" | "exceptions" }
@@ -248,6 +250,14 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: "integrations", href: "/communications/integrations", label: "Integrations", icon: icons.refresh },
     ],
   },
+  {
+    title: "Organization",
+    items: [
+      { key: "notifications", href: "/notifications", label: "Notifications", icon: icons.activity },
+      { key: "admin", href: "/admin", label: "Administration", icon: icons.user },
+      { key: "feedback", href: "/feedback", label: "Feedback", icon: icons.chat },
+    ],
+  },
 ];
 
 const ALL_NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
@@ -295,6 +305,9 @@ export function AppShell(props: {
       </head>
       <body>
         <PreviewBanner />
+        {(props.nav.banners ?? []).map((banner) => (
+          <div className={`sys-banner ${banner.level.toLowerCase()}`} role="status">{banner.message}</div>
+        ))}
         <div className="shell">
           <aside className="sidebar">
             <div className="sidebar-brand">

@@ -3594,3 +3594,26 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
   .exec-tabs { gap: 6px; }
   .exec-tabs .btn { flex: 1 1 45%; justify-content: center; }
 }
+
+/* =====================================================================
+   v17 — Pilot Readiness (onboarding, admin, notifications, internal)
+   ===================================================================== */
+.sys-banner { padding: 8px 16px; font-size: 12.5px; font-weight: 600; text-align: center; border-bottom: 1px solid var(--line); }
+.sys-banner.info { background: var(--info-bg, #eef4ff); color: var(--ink); }
+.sys-banner.warn { background: #fdf6e3; color: #6b4e00; }
+.sys-banner.critical { background: #fdecec; color: #8a1f24; }
+.po-form { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.po-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--ink-2); min-width: 0; }
+.po-form input, .po-form select, .po-form textarea {
+  border: 1px solid var(--line-2); border-radius: var(--r-s); padding: 7px 9px; font: inherit;
+  font-size: 13px; background: var(--surface); min-width: 0; max-width: 100%;
+}
+.po-form textarea { resize: vertical; }
+.po-form .btn { align-self: flex-start; }
+.po-form.po-inline { flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-bottom: 10px; }
+.po-form.po-inline label { flex: 1 1 140px; }
+.po-check { flex-direction: row !important; align-items: center; gap: 8px !important; }
+.po-check input { width: 15px; height: 15px; }
+.po-note { margin-top: 10px; font-size: 11.5px; border-top: 1px solid var(--line); padding-top: 8px; }
+.queue-row.po-read { opacity: 0.6; }
+@media (max-width: 640px) { .po-form.po-inline { flex-direction: column; align-items: stretch; } .po-form.po-inline label { flex: 1 1 auto; } }
