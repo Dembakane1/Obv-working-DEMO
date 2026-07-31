@@ -190,6 +190,36 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Pilot Readiness Platform (v23)
+
+**Production and customer readiness for real hard-money lender pilots** —
+layered additively, with the users/organizations tables untouched and
+every governed record byte-identical. Guided onboarding (`/onboarding`:
+profile, branding/logo, settings, team, portfolio; derived + recorded
+completion tracking); user administration (`/admin`: suspend/restore
+enforced at session resolution with refusals recorded, MFA readiness,
+sign-in/device history, permission matrix, invitation readouts — every
+action audited via `config_audit`); a derived per-user Notification
+Center (`/notifications`: draws, inspections, permits, fraud/risk
+alerts, executive summaries; preferences, read receipts, daily/weekly
+digests); a provider-neutral transactional email abstraction (log
+adapter default, outbox audit, banking-style production posture);
+e-signature and accounting integration frameworks (MOCK/CSV adapters,
+guarded webhook lifecycle with append-only audit, staging-only imports —
+adapters for DocuSign/Dropbox Sign/Adobe Sign and QuickBooks/Xero/Sage
+implement the same interfaces later); an internal operator console
+(`/internal`, nondisclosing 404 for lender roles: customer-success
+workspace with health scores and checklists, operations dashboard from
+in-memory rings — no request-path writes, backup management via VACUUM
+INTO with hash verification, recovery-test log and deliberately NO
+restore code path, production configuration with a value-free env
+checklist, feature flags, system banners, maintenance mode, sign-in
+rate limiting); an org-scoped feedback portal (internal notes never
+shown to customers); pilot adoption analytics (opt-in usage tracking);
+a clearly-marked demo data generator; and eight administrator guides
+(`docs/PILOT_DEPLOYMENT_GUIDE.md` … `docs/DISASTER_RECOVERY_GUIDE.md`).
+123-checkpoint suite (`scripts/pilotops-test.js`).
+
 ## Portfolio Intelligence Platform (v22)
 
 **Every verified project continuously produces intelligence.** The

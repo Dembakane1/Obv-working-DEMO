@@ -108,6 +108,7 @@ const STANDALONE = [
   "dispute-test.js",
   "dmv-test.js",
   "portfolio-test.js",
+  "pilotops-test.js",
   "authz-test.js",
   "toolchain-test.js",
 ];
