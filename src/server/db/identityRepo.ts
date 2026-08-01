@@ -130,14 +130,14 @@ export function findMembershipForOrg(identityId: string, organizationId: string)
 
 export function listMembershipsForIdentity(identityId: string): IdentityMembership[] {
   return getDb()
-    .prepare("SELECT * FROM identity_users WHERE identity_id = ? ORDER BY created_at ASC")
+    .prepare("SELECT * FROM identity_users WHERE identity_id = ? ORDER BY created_at ASC, rowid ASC")
     .all(identityId)
     .map((r) => toMembership(r as Row));
 }
 
 export function listMembershipsForOrganization(organizationId: string): IdentityMembership[] {
   return getDb()
-    .prepare("SELECT * FROM identity_users WHERE organization_id = ? ORDER BY created_at ASC")
+    .prepare("SELECT * FROM identity_users WHERE organization_id = ? ORDER BY created_at ASC, rowid ASC")
     .all(organizationId)
     .map((r) => toMembership(r as Row));
 }
@@ -256,8 +256,8 @@ export function getAuthSession(id: string): AuthSession | null {
 
 export function listSessionsForIdentity(identityId: string, includeRevoked = false): AuthSession[] {
   const sql = includeRevoked
-    ? "SELECT * FROM auth_sessions WHERE identity_id = ? ORDER BY created_at DESC"
-    : "SELECT * FROM auth_sessions WHERE identity_id = ? AND revoked_at IS NULL ORDER BY created_at DESC";
+    ? "SELECT * FROM auth_sessions WHERE identity_id = ? ORDER BY created_at DESC, rowid DESC"
+    : "SELECT * FROM auth_sessions WHERE identity_id = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC";
   return getDb().prepare(sql).all(identityId).map((r) => toAuthSession(r as Row));
 }
 
@@ -335,14 +335,14 @@ export function insertAuthEvent(e: AuthEvent): void {
 
 export function listAuthEventsForIdentity(identityId: string, limit = 50): AuthEvent[] {
   return getDb()
-    .prepare("SELECT * FROM auth_events WHERE identity_id = ? ORDER BY occurred_at DESC, id DESC LIMIT ?")
+    .prepare("SELECT * FROM auth_events WHERE identity_id = ? ORDER BY occurred_at DESC, rowid DESC LIMIT ?")
     .all(identityId, limit)
     .map((r) => toAuthEvent(r as Row));
 }
 
 export function listAuthEventsByKind(kind: string, limit = 50): AuthEvent[] {
   return getDb()
-    .prepare("SELECT * FROM auth_events WHERE kind = ? ORDER BY occurred_at DESC, id DESC LIMIT ?")
+    .prepare("SELECT * FROM auth_events WHERE kind = ? ORDER BY occurred_at DESC, rowid DESC LIMIT ?")
     .all(kind, limit)
     .map((r) => toAuthEvent(r as Row));
 }
@@ -386,7 +386,7 @@ export function clearLockout(scope: string): void {
 
 export function listIdentityProviders(): IdentityProviderRecord[] {
   return getDb()
-    .prepare("SELECT * FROM identity_providers ORDER BY created_at ASC")
+    .prepare("SELECT * FROM identity_providers ORDER BY created_at ASC, rowid ASC")
     .all()
     .map((r) => {
       const row = r as Row;
@@ -405,7 +405,7 @@ export function listIdentityProviders(): IdentityProviderRecord[] {
 
 export function listMfaMethodsForIdentity(identityId: string): MfaMethodRecord[] {
   return getDb()
-    .prepare("SELECT * FROM mfa_methods WHERE identity_id = ? ORDER BY created_at ASC")
+    .prepare("SELECT * FROM mfa_methods WHERE identity_id = ? ORDER BY created_at ASC, rowid ASC")
     .all(identityId)
     .map((r) => {
       const row = r as Row;

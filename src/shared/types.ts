@@ -2944,3 +2944,162 @@ export interface MfaMethodRecord {
   status: "DISABLED";
   createdAt: string;
 }
+
+// ==================== Production Integrations Platform ====================
+
+export type IntegrationCategory =
+  | "EMAIL" | "OUTLOOK" | "TEAMS" | "ESIGN" | "ACCOUNTING" | "BANKING"
+  | "CALENDAR" | "WEBHOOK";
+
+export type IntegrationOutcome =
+  | "SUCCESS" | "FAILURE" | "QUEUED" | "RETRY" | "DEAD_LETTER" | "SKIPPED";
+
+/** Append-only integration audit event. Never updated, never deleted. */
+export interface IntegrationEvent {
+  id: string;
+  occurredAt: string;
+  category: IntegrationCategory;
+  provider: string;
+  operation: string;
+  actorUserId: string | null;
+  organizationId: string | null;
+  requestId: string;
+  outcome: IntegrationOutcome;
+  subjectType: string | null;
+  subjectId: string | null;
+  detail: string | null;
+}
+
+export type EmailKind =
+  | "INVITATION" | "MAGIC_LINK" | "PASSWORD_RESET" | "DRAW_NOTIFICATION"
+  | "APPROVAL_REQUEST" | "DISPUTE_NOTIFICATION" | "EXECUTIVE_SUMMARY"
+  | "WEEKLY_PORTFOLIO_REPORT";
+
+/** One outbound email record. Credential-bearing kinds store a REDACTED
+ *  body — raw sign-in links never land here. */
+export interface EmailOutboxEntry {
+  id: string;
+  kind: EmailKind;
+  provider: string;
+  toEmail: string;
+  subject: string;
+  bodyText: string;
+  organizationId: string | null;
+  projectId: string | null;
+  status: "QUEUED" | "SENT" | "FAILED" | "SUPPRESSED";
+  error: string | null;
+  createdAt: string;
+  sentAt: string | null;
+}
+
+export type EsignKind =
+  | "CONTRACTOR_AGREEMENT" | "LIEN_WAIVER" | "APPROVAL_ACKNOWLEDGEMENT"
+  | "COMPLETION_CERTIFICATE" | "OTHER";
+export type EsignStatus = "PENDING" | "SIGNED" | "DECLINED" | "EXPIRED" | "CANCELLED";
+
+export interface EsignRequest {
+  id: string;
+  provider: string;
+  kind: EsignKind;
+  title: string;
+  organizationId: string;
+  projectId: string | null;
+  signerName: string;
+  signerEmail: string;
+  documentRef: string | null;
+  status: EsignStatus;
+  requestedBy: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string | null;
+  completedAt: string | null;
+}
+
+export interface EsignEvent {
+  id: string;
+  requestId: string;
+  occurredAt: string;
+  actorUserId: string | null;
+  kind: "CREATED" | "SENT" | "REMINDED" | "SIGNED" | "DECLINED" | "EXPIRED" | "CANCELLED";
+  detail: string | null;
+}
+
+export type CalendarKind =
+  | "INSPECTION" | "DRAW_REVIEW" | "LENDER_MEETING" | "CONTRACTOR_MEETING"
+  | "PERMIT_DEADLINE" | "REMINDER";
+
+export interface CalendarEvent {
+  id: string;
+  kind: CalendarKind;
+  title: string;
+  organizationId: string;
+  projectId: string | null;
+  subjectType: string | null;
+  subjectId: string | null;
+  startsAt: string;
+  endsAt: string | null;
+  location: string | null;
+  notes: string | null;
+  status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Outbound webhook endpoint. `secret` is server-internal — surfaced once
+ *  at registration and never serialized afterwards. */
+export interface WebhookEndpoint {
+  id: string;
+  organizationId: string;
+  url: string;
+  description: string | null;
+  secret: string;
+  events: string[];
+  active: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
+export type WebhookDeliveryStatus = "QUEUED" | "RETRY" | "DELIVERED" | "DEAD_LETTER" | "DISABLED";
+
+export interface WebhookDelivery {
+  id: string;
+  endpointId: string;
+  eventKind: string;
+  eventId: string;
+  payload: string;
+  status: WebhookDeliveryStatus;
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  lastAttemptAt: string | null;
+  lastStatusCode: number | null;
+  lastError: string | null;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
+export type AccountingEntityType = "PROJECT" | "BUDGET_LINE" | "CONTRACTOR" | "INVOICE" | "PAYMENT";
+
+export interface AccountingSyncRun {
+  id: string;
+  provider: string;
+  organizationId: string;
+  direction: "EXPORT";
+  status: "RUNNING" | "SUCCEEDED" | "FAILED";
+  entityCounts: Record<string, number> | null;
+  error: string | null;
+  startedBy: string;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface AccountingLink {
+  id: string;
+  provider: string;
+  entityType: AccountingEntityType;
+  entityId: string;
+  externalRef: string;
+  organizationId: string;
+  syncRunId: string;
+  syncedAt: string;
+}

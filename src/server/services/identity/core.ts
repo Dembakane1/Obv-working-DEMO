@@ -20,6 +20,7 @@ import path from "node:path";
 import { DATA_DIR } from "../../db/index";
 import * as identityRepo from "../../db/identityRepo";
 import * as repo from "../../db/repo";
+import { composeEmail, sendEmail } from "../integrations/email";
 import type { AuthEvent } from "../../../shared/types";
 
 export class IdentityError extends Error {
@@ -199,9 +200,19 @@ export function authOutboxPath(): string {
  * knows or cares how the link travels. The raw link is passed through —
  * it is never logged, never written to the database, and in "off" mode it
  * is simply dropped (minted but undeliverable, stated at startup).
+ *
+ * The integrations email layer records a REDACTED companion entry so the
+ * dashboard sees that a sign-in mail happened — the raw link itself
+ * still travels only through this seam.
  */
 export function deliverSignInLink(email: string, link: string, purpose: string): void {
   const cfg = identityConfig();
+  try {
+    const composed = composeEmail("MAGIC_LINK", {});
+    sendEmail({ kind: "MAGIC_LINK", to: email, subject: composed.subject, text: composed.text, containsCredential: true });
+  } catch {
+    // The redacted record is observability, never a delivery dependency.
+  }
   if (cfg.deliveryMode === "off") return;
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.appendFileSync(

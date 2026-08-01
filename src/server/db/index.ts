@@ -2102,6 +2102,179 @@ CREATE TABLE IF NOT EXISTS mfa_methods (
   created_at TEXT NOT NULL
 );
 
+-- ================= Production Integrations Platform (additive) =================
+-- Provider-NEUTRAL connections to outside business systems. Providers are
+-- declared by environment configuration (like the banking registry); the
+-- tables below hold only operational state and the append-only audit.
+-- Nothing in this layer may write to evidence, verification, ledger,
+-- approval, banking, or package tables — integrations OBSERVE the
+-- verified system of record, they never author it.
+
+-- Append-only integration audit. No UPDATE or DELETE path exists.
+CREATE TABLE IF NOT EXISTS integration_events (
+  id TEXT PRIMARY KEY,
+  occurred_at TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (category IN
+    ('EMAIL','OUTLOOK','TEAMS','ESIGN','ACCOUNTING','BANKING','CALENDAR','WEBHOOK')),
+  provider TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  actor_user_id TEXT,
+  organization_id TEXT,
+  request_id TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN
+    ('SUCCESS','FAILURE','QUEUED','RETRY','DEAD_LETTER','SKIPPED')),
+  subject_type TEXT,
+  subject_id TEXT,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_integration_events_cat
+  ON integration_events(category, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_integration_events_org
+  ON integration_events(organization_id, occurred_at);
+
+-- Outbound email records. MAGIC_LINK (and any future credential-bearing
+-- kind) stores a REDACTED body — raw sign-in links never land in this
+-- table; the identity layer's delivery seam handles them separately.
+CREATE TABLE IF NOT EXISTS email_outbox (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN
+    ('INVITATION','MAGIC_LINK','PASSWORD_RESET','DRAW_NOTIFICATION','APPROVAL_REQUEST',
+     'DISPUTE_NOTIFICATION','EXECUTIVE_SUMMARY','WEEKLY_PORTFOLIO_REPORT')),
+  provider TEXT NOT NULL,
+  to_email TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  body_text TEXT NOT NULL,
+  organization_id TEXT,
+  project_id TEXT,
+  status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED','SENT','FAILED','SUPPRESSED')),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  sent_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_email_outbox_status ON email_outbox(status, created_at);
+
+-- E-signature requests: lifecycle state + append-only per-request trail.
+-- document_ref points at EXISTING artifacts (reports, draw documents);
+-- e-sign never creates or alters evidence.
+CREATE TABLE IF NOT EXISTS esign_requests (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN
+    ('CONTRACTOR_AGREEMENT','LIEN_WAIVER','APPROVAL_ACKNOWLEDGEMENT','COMPLETION_CERTIFICATE','OTHER')),
+  title TEXT NOT NULL,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  signer_name TEXT NOT NULL,
+  signer_email TEXT NOT NULL,
+  document_ref TEXT,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN
+    ('PENDING','SIGNED','DECLINED','EXPIRED','CANCELLED')),
+  requested_by TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_esign_requests_org ON esign_requests(organization_id, created_at);
+
+CREATE TABLE IF NOT EXISTS esign_events (
+  id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL REFERENCES esign_requests(id),
+  occurred_at TEXT NOT NULL,
+  actor_user_id TEXT,
+  kind TEXT NOT NULL CHECK (kind IN
+    ('CREATED','SENT','REMINDED','SIGNED','DECLINED','EXPIRED','CANCELLED')),
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_esign_events_request ON esign_events(request_id, occurred_at);
+
+-- Provider-neutral scheduling records; ICS text is derived on demand.
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN
+    ('INSPECTION','DRAW_REVIEW','LENDER_MEETING','CONTRACTOR_MEETING','PERMIT_DEADLINE','REMINDER')),
+  title TEXT NOT NULL,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  subject_type TEXT,
+  subject_id TEXT,
+  starts_at TEXT NOT NULL,
+  ends_at TEXT,
+  location TEXT,
+  notes TEXT,
+  status TEXT NOT NULL DEFAULT 'SCHEDULED' CHECK (status IN ('SCHEDULED','COMPLETED','CANCELLED')),
+  created_by TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_org ON calendar_events(organization_id, starts_at);
+
+-- Outbound webhook endpoints. The signing secret is generated server-side,
+-- surfaced exactly once at registration, and NEVER serialized afterwards.
+CREATE TABLE IF NOT EXISTS webhook_endpoints (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  url TEXT NOT NULL,
+  description TEXT,
+  secret TEXT NOT NULL,
+  events TEXT NOT NULL,                 -- JSON array of subscribed event kinds
+  active INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+-- Delivery queue: retries with backoff, idempotency (one delivery per
+-- endpoint+event), and a terminal dead-letter state after max attempts.
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id TEXT PRIMARY KEY,
+  endpoint_id TEXT NOT NULL REFERENCES webhook_endpoints(id),
+  event_kind TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN
+    ('QUEUED','RETRY','DELIVERED','DEAD_LETTER','DISABLED')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
+  last_attempt_at TEXT,
+  last_status_code INTEGER,
+  last_error TEXT,
+  delivered_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (endpoint_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status
+  ON webhook_deliveries(status, next_attempt_at);
+
+-- Accounting synchronization is EXPORT-ONLY: OBV is the system of record
+-- and accounting mirrors it. No import path exists, so accounting can
+-- never modify verified evidence or any other primary record.
+CREATE TABLE IF NOT EXISTS accounting_sync_runs (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  direction TEXT NOT NULL DEFAULT 'EXPORT' CHECK (direction IN ('EXPORT')),
+  status TEXT NOT NULL DEFAULT 'RUNNING' CHECK (status IN ('RUNNING','SUCCEEDED','FAILED')),
+  entity_counts TEXT,                   -- JSON {projects, budgets, contractors, invoices, payments}
+  error TEXT,
+  started_by TEXT NOT NULL REFERENCES users(id),
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS accounting_links (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  entity_type TEXT NOT NULL CHECK (entity_type IN
+    ('PROJECT','BUDGET_LINE','CONTRACTOR','INVOICE','PAYMENT')),
+  entity_id TEXT NOT NULL,
+  external_ref TEXT NOT NULL,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  sync_run_id TEXT NOT NULL REFERENCES accounting_sync_runs(id),
+  synced_at TEXT NOT NULL,
+  UNIQUE (provider, entity_type, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_accounting_links_org ON accounting_links(organization_id, entity_type);
+
 `;
 
 export function getDb(): DatabaseSync {
