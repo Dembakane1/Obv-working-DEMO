@@ -38,6 +38,13 @@ export interface EmailProvider {
 
 const REDACTION = "[credential-bearing body withheld — delivered through the identity delivery seam]";
 
+/**
+ * Kinds whose bodies carry a credential. Redaction is enforced by KIND,
+ * not by caller opt-in: a future caller that forgets the flag must not be
+ * able to write a live sign-in link into the outbox table.
+ */
+const CREDENTIAL_KINDS = new Set<EmailKind>(["MAGIC_LINK", "PASSWORD_RESET"]);
+
 function disabledEmailProvider(name: string, displayName: string): EmailProvider {
   return {
     name,
@@ -96,7 +103,10 @@ export function sendEmail(message: EmailMessage, actor: User | null = null): Ema
     provider: provider.name,
     toEmail: to,
     subject: message.subject.slice(0, 300),
-    bodyText: message.containsCredential ? REDACTION : message.text.slice(0, 20_000),
+    bodyText:
+      message.containsCredential || CREDENTIAL_KINDS.has(message.kind)
+        ? REDACTION
+        : message.text.slice(0, 20_000),
     organizationId: message.organizationId ?? null,
     projectId: message.projectId ?? null,
     status: "QUEUED",

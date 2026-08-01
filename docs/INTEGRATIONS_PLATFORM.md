@@ -112,6 +112,20 @@ modify verified evidence.
   **dead-letter** state, audited and visible on the dashboard, with an
   administrative audited requeue.
 - **Atomic claim**: overlapping dispatch passes can never double-send.
+- **Egress boundary (SSRF)**: the customer supplies the destination and
+  the *server* makes the request, so loopback, private, link-local,
+  carrier-NAT, multicast, credential-embedding, and cloud-metadata
+  destinations are refused — at registration *and* again at dispatch, so
+  the guard also covers rows written before it existed. Stored failure
+  text is a coarse class (`connection refused or unreachable`), never a
+  verbatim socket read-out, because it surfaces on the dashboard.
+  `OBV_WEBHOOK_ALLOW_PRIVATE_HOSTS=1` re-enables loopback for local
+  development and the test battery only.
+- **Tenant-scoped dispatch**: the manual dispatch route drains only the
+  caller's own queue and reports only its own counts; the optional
+  background interval drains everything.
+- **Requeue restores a full attempt budget** (the counter resets), so an
+  administrative retry is a real retry rather than one last attempt.
 - The signing secret is generated server-side, returned exactly once at
   registration, and never serialized again.
 - Event kinds: draw.submitted, draw.approved, dispute.opened,
@@ -129,7 +143,11 @@ modify verified evidence.
 
 `/integrations` shows configured providers, connection status, last
 sync, failures, the retry queue, and provider health — **no secrets
-anywhere in its view models**. Every integration action appends
+anywhere in its view models**, and **every aggregate is tenant-scoped**:
+the audit feed, failure feed, email counters, last-failure timestamp,
+webhook queue depth, and last accounting sync are all filtered to the
+caller's organization, because even bare counters would otherwise leak
+another lender's activity volume. Every integration action appends
 `integration_events` (provider, operation, actor, organization, request
 id, outcome, subject); no update or delete path exists. Administrative
 membership of the page: viewer roles read, PROJECT_MANAGER mutates,

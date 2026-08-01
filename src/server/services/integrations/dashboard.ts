@@ -112,18 +112,23 @@ export function integrationsDashboard(actor: User): IntegrationsDashboard {
       alternatives: [],
     },
   ];
+  // EVERY aggregate below is scoped to the caller's organization. An
+  // unscoped count here would be a cross-tenant activity oracle: audit
+  // rows carry foreign entity ids and operation detail, and even bare
+  // counters leak another lender's email volume and queue depth.
+  const org = actor.organizationId;
   const failures = integrationsRepo
-    .listIntegrationEvents({ limit: 200 })
+    .listIntegrationEvents({ organizationId: org, limit: 200 })
     .filter((e) => e.outcome === "FAILURE" || e.outcome === "DEAD_LETTER")
     .slice(0, 25);
-  const emailStats = integrationsRepo.emailStats();
-  const lastFailure = integrationsRepo.listEmails({ status: "FAILED", limit: 1 })[0] ?? null;
-  const lastSync = integrationsRepo.listSyncRunsForOrgs([actor.organizationId], 1)[0] ?? null;
+  const emailStats = integrationsRepo.emailStatsForOrg(org);
+  const lastFailure = integrationsRepo.listEmailsForOrg(org, { status: "FAILED", limit: 1 })[0] ?? null;
+  const lastSync = integrationsRepo.listSyncRunsForOrgs([org], 1)[0] ?? null;
   return {
     providers,
     email: { ...emailStats, lastFailureAt: lastFailure?.createdAt ?? null },
-    webhooks: integrationsRepo.webhookQueueStats(),
-    lastEvents: integrationsRepo.listIntegrationEvents({ limit: 25 }),
+    webhooks: integrationsRepo.webhookQueueStatsForOrg(org),
+    lastEvents: integrationsRepo.listIntegrationEvents({ organizationId: org, limit: 25 }),
     failures,
     lastAccountingSync: lastSync
       ? { provider: lastSync.provider, status: lastSync.status, startedAt: lastSync.startedAt }

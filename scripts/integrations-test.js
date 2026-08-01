@@ -231,6 +231,10 @@ async function boot(extraEnv = {}) {
       PORT: String(PORT),
       OBV_BANKING_PROVIDER: "mock",
       OBV_BANKING_MODE: "demo",
+      // The battery's webhook receiver runs on loopback, which the SSRF
+      // egress guard refuses by default. This is the documented local
+      // escape hatch; section 8 proves the guard is on without it.
+      OBV_WEBHOOK_ALLOW_PRIVATE_HOSTS: "1",
       ...extraEnv,
     },
     stdio: "ignore",
@@ -586,6 +590,30 @@ async function main() {
     q1("SELECT status AS s FROM webhook_deliveries WHERE id = ?", delivery.id).s === "DELIVERED",
     "a requeued dead-letter delivers once the receiver recovers"
   );
+  // A requeue must restore a FULL attempt budget: with the counter left
+  // at the maximum, one more failure would immediately re-dead-letter.
+  receiverFailures = 99;
+  await j("pm", "POST", "/api/integrations/webhooks/emit-test", { eventKind: "draw.approved", eventId: "evt-budget" });
+  for (let i = 0; i < 6; i += 1) {
+    run("UPDATE webhook_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE event_id = 'evt-budget' AND status IN ('QUEUED','RETRY')");
+    await j("pm", "POST", "/api/integrations/webhooks/dispatch", {});
+    if (q1("SELECT status AS s FROM webhook_deliveries WHERE event_id = 'evt-budget'").s === "DEAD_LETTER") break;
+  }
+  const budgetRow = q1("SELECT * FROM webhook_deliveries WHERE event_id = 'evt-budget'");
+  assert(budgetRow.status === "DEAD_LETTER", "second delivery dead-letters after its budget");
+  await j("pm", "POST", `/api/integrations/webhooks/deliveries/${budgetRow.id}/requeue`, {});
+  const requeued = q1("SELECT * FROM webhook_deliveries WHERE id = ?", budgetRow.id);
+  assert(
+    requeued.status === "RETRY" && requeued.attempt_count === 0,
+    "requeue resets the attempt counter — a fresh budget, not one last try"
+  );
+  run("UPDATE webhook_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE id = ?", budgetRow.id);
+  await j("pm", "POST", "/api/integrations/webhooks/dispatch", {});
+  assert(
+    q1("SELECT status AS s FROM webhook_deliveries WHERE id = ?", budgetRow.id).s === "RETRY",
+    "…so one further failure retries rather than re-dead-lettering"
+  );
+  receiverFailures = 0;
   // claim atomicity: the same due delivery cannot be claimed twice
   await j("pm", "POST", "/api/integrations/webhooks/emit-test", { eventKind: "draw.submitted", eventId: "evt-claim" });
   const claimRow = q1("SELECT * FROM webhook_deliveries WHERE event_id = 'evt-claim'");
@@ -625,6 +653,57 @@ async function main() {
   assert(badHook.status === 400, "non-http(s) endpoint URLs are rejected");
   const badEvent = await api("pm", "POST", "/api/integrations/webhooks/emit-test", { eventKind: "not.a.kind" });
   assert(badEvent.status === 400, "unknown webhook event kinds are rejected");
+
+  // ---- SSRF egress boundary (server-side request forgery) ----
+  const guard = require(path.join(ROOT, "dist/server/services/integrations/webhooks.js"));
+  const blocked = [
+    "http://127.0.0.1:6379/", "http://localhost/hook", "http://169.254.169.254/latest/meta-data/",
+    "http://10.0.0.5/x", "http://192.168.1.10/x", "http://172.16.4.4/x", "http://[::1]/x",
+    "http://0.0.0.0/x", "http://100.64.1.1/x", "http://svc.internal/x",
+  ];
+  const savedFlag = process.env.OBV_WEBHOOK_ALLOW_PRIVATE_HOSTS;
+  delete process.env.OBV_WEBHOOK_ALLOW_PRIVATE_HOSTS; // guard ON, as in production
+  let allBlocked = true;
+  for (const u of blocked) {
+    try {
+      guard.assertDeliverableUrl(u);
+      allBlocked = false;
+      console.error(`      (not blocked: ${u})`);
+    } catch {
+      /* expected */
+    }
+  }
+  assert(allBlocked, `every loopback / private / link-local / metadata destination is refused (${blocked.length} forms)`);
+  let publicOk = true;
+  try {
+    guard.assertDeliverableUrl("https://hooks.example.com/obv");
+  } catch {
+    publicOk = false;
+  }
+  assert(publicOk, "a public https receiver is accepted");
+  let credsBlocked = false;
+  try {
+    guard.assertDeliverableUrl("https://user:pass@hooks.example.com/obv");
+  } catch {
+    credsBlocked = true;
+  }
+  assert(credsBlocked, "endpoint URLs embedding credentials are refused");
+  if (savedFlag !== undefined) process.env.OBV_WEBHOOK_ALLOW_PRIVATE_HOSTS = savedFlag;
+  // The running server has the dev flag set, so registration succeeds
+  // there; without it the same URL is refused at the route.
+  const guardedServer = spawnSync(
+    process.execPath,
+    ["-e", `process.env.OBV_WEBHOOK_ALLOW_PRIVATE_HOSTS='';const w=require(${JSON.stringify(path.join(ROOT, "dist/server/services/integrations/webhooks.js"))});try{w.assertDeliverableUrl('http://127.0.0.1:6379/');process.exit(0)}catch(e){process.exit(7)}`],
+    { encoding: "utf8", env: { ...process.env, OBV_WEBHOOK_ALLOW_PRIVATE_HOSTS: "" } }
+  );
+  assert(guardedServer.status === 7, "with the dev flag unset, loopback registration is refused in a fresh process");
+  // Delivery failures reach the dashboard, so their text must be a coarse
+  // class, never a verbatim socket read-out of the host network.
+  const failedDelivery = q1("SELECT last_error AS e FROM webhook_deliveries WHERE last_error IS NOT NULL LIMIT 1");
+  assert(
+    !failedDelivery || !/ECONN|EHOSTUNREACH|ENOTFOUND|127\.0\.0\.1|:\d{2,5}\b/.test(failedDelivery.e),
+    "stored delivery errors are coarse labels — no socket codes, hosts, or ports"
+  );
 
   // ------------------------------------------------------------ section 9
   console.log("\n== 9. Banking adapter selection ==");
@@ -670,6 +749,78 @@ async function main() {
   assert(fieldDash.status === 403, "FIELD role cannot read the integrations dashboard");
   const fieldPage = await api("pm", "GET", "/integrations");
   assert(fieldPage.status === 200, "viewer roles load the dashboard page");
+
+  // ---- dashboard tenant isolation (aggregates, not just detail rows) ----
+  const pmDash = await j("pm", "GET", "/api/integrations/dashboard");
+  const otherDash = await j("dmvpm", "GET", "/api/integrations/dashboard");
+  const pmOrgId = q1("SELECT organization_id AS o FROM users WHERE id = 'user-pm'").o;
+  const otherOrgId = q1("SELECT organization_id AS o FROM users WHERE id = 'user-dmv-pm'").o;
+  assert(pmOrgId !== otherOrgId, "the two dashboard callers are in different organizations");
+  assert(
+    pmDash.lastEvents.every((e) => e.organizationId === pmOrgId || e.organizationId === null),
+    "dashboard audit feed contains only the caller's organization"
+  );
+  assert(
+    otherDash.lastEvents.every((e) => e.organizationId === otherOrgId || e.organizationId === null),
+    "…and the same holds for the other tenant"
+  );
+  const pmEventIds = new Set(pmDash.lastEvents.map((e) => e.id));
+  assert(
+    otherDash.lastEvents.every((e) => !pmEventIds.has(e.id)),
+    "the two tenants' audit feeds share no events (no cross-tenant leak)"
+  );
+  assert(
+    pmDash.failures.every((e) => e.organizationId === pmOrgId || e.organizationId === null),
+    "failure feed is tenant-scoped"
+  );
+  const globalSent = q1("SELECT COUNT(*) AS c FROM email_outbox WHERE status = 'SENT'").c;
+  const pmSent = q1(
+    "SELECT COUNT(*) AS c FROM email_outbox WHERE status = 'SENT' AND organization_id = ?", pmOrgId
+  ).c;
+  assert(globalSent > pmSent, "the database holds email outside the caller's organization (scoping is observable)");
+  assert(pmDash.email.sent === pmSent, `email counters are tenant-scoped (${pmSent}, not the global ${globalSent})`);
+  const globalQueue = q1("SELECT COUNT(*) AS c FROM webhook_deliveries WHERE status = 'DELIVERED'").c;
+  const pmQueue = q1(
+    `SELECT COUNT(*) AS c FROM webhook_deliveries d JOIN webhook_endpoints e ON e.id = d.endpoint_id
+     WHERE d.status = 'DELIVERED' AND e.organization_id = ?`, pmOrgId
+  ).c;
+  assert(pmDash.webhooks.delivered === pmQueue, `webhook queue depth is tenant-scoped (${pmQueue} of ${globalQueue})`);
+  assert(
+    otherDash.webhooks.delivered !== pmDash.webhooks.delivered || pmQueue === 0,
+    "the other tenant sees its own queue depth, not this one's"
+  );
+  // Manual dispatch must not drain (or report on) another tenant's queue.
+  receiverFailures = 0;
+  await j("dmvpm", "POST", "/api/integrations/webhooks/emit-test", { eventKind: "portfolio.alert", eventId: "evt-otherorg" });
+  run("UPDATE webhook_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE event_id = 'evt-otherorg'");
+  await j("pm", "POST", "/api/integrations/webhooks/emit-test", { eventKind: "portfolio.alert", eventId: "evt-ownorg" });
+  run("UPDATE webhook_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE event_id = 'evt-ownorg'");
+  const otherBefore = q1("SELECT * FROM webhook_deliveries WHERE event_id = 'evt-otherorg'");
+  await j("pm", "POST", "/api/integrations/webhooks/dispatch", {});
+  const otherAfter = q1("SELECT * FROM webhook_deliveries WHERE event_id = 'evt-otherorg'");
+  const ownAfter = q1("SELECT * FROM webhook_deliveries WHERE event_id = 'evt-ownorg'");
+  assert(ownAfter.attempt_count === 1, "manual dispatch attempted the caller's own due delivery");
+  assert(
+    otherAfter.attempt_count === otherBefore.attempt_count && otherAfter.status === otherBefore.status,
+    "…and never touched the other organization's due delivery (dispatch is tenant-scoped)"
+  );
+
+  // ---- email redaction is enforced by kind, not caller opt-in ----
+  const emailSvc = require(path.join(ROOT, "dist/server/services/integrations/email.js"));
+  const beforeRows = q1("SELECT COUNT(*) AS c FROM email_outbox").c;
+  emailSvc.sendEmail({
+    kind: "MAGIC_LINK",
+    to: "forgetful@lender.example",
+    subject: "s",
+    text: "https://obv.example/auth/complete?token=deadbeefdeadbeef",
+    // containsCredential deliberately omitted — the KIND must still redact
+  });
+  assert(q1("SELECT COUNT(*) AS c FROM email_outbox").c === beforeRows + 1, "credential-kind email recorded");
+  const forgetful = q1("SELECT * FROM email_outbox WHERE to_email = 'forgetful@lender.example'");
+  assert(
+    !/token=/.test(forgetful.body_text) && /withheld/.test(forgetful.body_text),
+    "a caller that forgets the credential flag still cannot write a live link into the outbox"
+  );
 
   // ------------------------------------------------------------ section 12
   console.log("\n== 12. Primary records untouched ==");

@@ -73,6 +73,12 @@ export function listIntegrationEvents(
       .all(filter.category, filter.organizationId, limit)
       .map((r) => toIntegrationEvent(r as Row));
   }
+  if (filter.organizationId) {
+    return getDb()
+      .prepare("SELECT * FROM integration_events WHERE organization_id = ? ORDER BY occurred_at DESC, id DESC LIMIT ?")
+      .all(filter.organizationId, limit)
+      .map((r) => toIntegrationEvent(r as Row));
+  }
   if (filter.category) {
     return getDb()
       .prepare("SELECT * FROM integration_events WHERE category = ? ORDER BY occurred_at DESC, id DESC LIMIT ?")
@@ -160,6 +166,36 @@ export function emailStats(): { queued: number; sent: number; failed: number } {
   const row = (status: string) =>
     (getDb().prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE status = ?").get(status) as Row).n as number;
   return { queued: row("QUEUED"), sent: row("SENT"), failed: row("FAILED") };
+}
+
+/** Tenant-scoped counters for the dashboard. Mail with no organization
+ *  (e.g. the redacted magic-link record, which precedes any org context)
+ *  belongs to no tenant and is counted for none. */
+export function emailStatsForOrg(organizationId: string): { queued: number; sent: number; failed: number } {
+  const row = (status: string) =>
+    (getDb()
+      .prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE status = ? AND organization_id = ?")
+      .get(status, organizationId) as Row).n as number;
+  return { queued: row("QUEUED"), sent: row("SENT"), failed: row("FAILED") };
+}
+
+export function listEmailsForOrg(
+  organizationId: string,
+  filter: { status?: string; limit?: number } = {}
+): EmailOutboxEntry[] {
+  const limit = Math.min(500, Math.max(1, filter.limit ?? 50));
+  if (filter.status) {
+    return getDb()
+      .prepare(
+        "SELECT * FROM email_outbox WHERE organization_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?"
+      )
+      .all(organizationId, filter.status, limit)
+      .map((r) => toEmail(r as Row));
+  }
+  return getDb()
+    .prepare("SELECT * FROM email_outbox WHERE organization_id = ? ORDER BY created_at DESC LIMIT ?")
+    .all(organizationId, limit)
+    .map((r) => toEmail(r as Row));
 }
 
 // ---------- e-signature ----------
@@ -431,6 +467,37 @@ export function webhookQueueStats(): { queued: number; retry: number; delivered:
   return { queued: n("QUEUED"), retry: n("RETRY"), delivered: n("DELIVERED"), deadLetter: n("DEAD_LETTER") };
 }
 
+/** Tenant-scoped queue depth: deliveries belonging to the given
+ *  organization's endpoints only. */
+export function webhookQueueStatsForOrg(
+  organizationId: string
+): { queued: number; retry: number; delivered: number; deadLetter: number } {
+  const n = (status: string) =>
+    (getDb()
+      .prepare(
+        `SELECT COUNT(*) AS n FROM webhook_deliveries d
+         JOIN webhook_endpoints e ON e.id = d.endpoint_id
+         WHERE d.status = ? AND e.organization_id = ?`
+      )
+      .get(status, organizationId) as Row).n as number;
+  return { queued: n("QUEUED"), retry: n("RETRY"), delivered: n("DELIVERED"), deadLetter: n("DEAD_LETTER") };
+}
+
+/** Due deliveries for ONE organization's endpoints — the dispatch route
+ *  works only on the caller's own queue. */
+export function listDueDeliveriesForOrg(organizationId: string, nowIso: string, limit = 20): WebhookDelivery[] {
+  return getDb()
+    .prepare(
+      `SELECT d.* FROM webhook_deliveries d
+       JOIN webhook_endpoints e ON e.id = d.endpoint_id
+       WHERE e.organization_id = ? AND d.status IN ('QUEUED','RETRY')
+         AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
+       ORDER BY d.created_at ASC LIMIT ?`
+    )
+    .all(organizationId, nowIso, limit)
+    .map((r) => toDelivery(r as Row));
+}
+
 /** Claim a due delivery for one attempt: atomically bumps the attempt
  *  counter and pushes next_attempt_at forward, so a concurrent dispatch
  *  pass sees the delivery as no longer due — exactly one claimer wins. */
@@ -443,6 +510,21 @@ export function claimWebhookDelivery(id: string, attemptAt: string, provisionalN
          AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`
     )
     .run(attemptAt, provisionalNextAttemptAt, id, attemptAt);
+  return result.changes === 1;
+}
+
+/** Administrative requeue of a dead-lettered delivery. Resets the attempt
+ *  counter: a requeue grants a FRESH attempt budget, otherwise the
+ *  delivery would dead-letter again after a single failure. Guarded so
+ *  only a dead-lettered row can be revived. */
+export function requeueWebhookDelivery(id: string, nextAttemptAt: string): boolean {
+  const result = getDb()
+    .prepare(
+      `UPDATE webhook_deliveries
+       SET status = 'RETRY', attempt_count = 0, next_attempt_at = ?, last_error = NULL, last_status_code = NULL
+       WHERE id = ? AND status = 'DEAD_LETTER'`
+    )
+    .run(nextAttemptAt, id);
   return result.changes === 1;
 }
 

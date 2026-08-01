@@ -40,6 +40,85 @@ const DELIVERY_TIMEOUT_MS = 5_000;
 /** Signed-timestamp tolerance for receivers (replay window bound). */
 export const SIGNATURE_TOLERANCE_SECONDS = 300;
 
+// ------------------------------------------------------ egress boundary
+
+/**
+ * Server-side request forgery guard.
+ *
+ * A customer administrator registers the destination URL, and the SERVER
+ * makes the request — so without this an org admin could aim the
+ * dispatcher at loopback, private ranges, or a cloud metadata endpoint
+ * and read the outcome back off the dashboard (status code and error
+ * text are stored per attempt). Webhook receivers are public services by
+ * definition, so refusing internal destinations costs nothing real.
+ *
+ * `OBV_WEBHOOK_ALLOW_PRIVATE_HOSTS=1` re-enables loopback for local
+ * development and the test battery, which needs a receiver on 127.0.0.1.
+ */
+export function privateHostsAllowed(): boolean {
+  return /^(1|true)$/i.test(process.env.OBV_WEBHOOK_ALLOW_PRIVATE_HOSTS ?? "");
+}
+
+/** Literal IP forms we refuse outright (decimal-dotted IPv4 and IPv6). */
+function isBlockedIpLiteral(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal") || h.endsWith(".local")) return true;
+  // IPv6 loopback / unspecified / unique-local / link-local
+  if (h === "::1" || h === "::" || /^f[cd][0-9a-f]{2}:/.test(h) || /^fe80:/.test(h)) return true;
+  // IPv4-mapped IPv6 (::ffff:127.0.0.1) reduces to its IPv4 tail
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(h);
+  const v4 = mapped ? mapped[1] : h;
+  const octets = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(v4);
+  if (!octets) return false;
+  const [a, b] = [Number(octets[1]), Number(octets[2])];
+  if (octets.slice(1).some((o) => Number(o) > 255)) return true; // malformed → refuse
+  return (
+    a === 0 || a === 127 || a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254) || // link-local, incl. 169.254.169.254 metadata
+    (a === 100 && b >= 64 && b <= 127) || // carrier-grade NAT
+    a >= 224 // multicast / reserved
+  );
+}
+
+/** Validate a destination URL for egress. Throws IntegrationError. */
+export function assertDeliverableUrl(raw: string): URL {
+  let target: URL;
+  try {
+    target = new URL(raw);
+  } catch {
+    throw new IntegrationError("The endpoint URL is not a valid absolute URL");
+  }
+  if (target.protocol !== "http:" && target.protocol !== "https:") {
+    throw new IntegrationError("The endpoint URL must be http(s)");
+  }
+  if (target.username || target.password) {
+    throw new IntegrationError("The endpoint URL must not embed credentials");
+  }
+  if (isBlockedIpLiteral(target.hostname) && !privateHostsAllowed()) {
+    throw new IntegrationError(
+      "The endpoint URL must be a publicly reachable host — loopback, private, link-local, and metadata addresses are refused"
+    );
+  }
+  return target;
+}
+
+/** Delivery errors are surfaced on the dashboard, so they are reduced to
+ *  a coarse class: enough to diagnose, never a probe read-out. */
+function safeErrorLabel(err: unknown): string {
+  const code = (err as { code?: string })?.code;
+  if (code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EHOSTUNREACH" || code === "ENETUNREACH") {
+    return "connection refused or unreachable";
+  }
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "endpoint host could not be resolved";
+  if (code === "CERT_HAS_EXPIRED" || String(code ?? "").startsWith("ERR_TLS")) return "TLS handshake failed";
+  const message = err instanceof Error ? err.message : String(err);
+  if (/timed out/i.test(message)) return "delivery timed out";
+  if (/refused/i.test(message)) return "endpoint refused the request";
+  return "delivery failed";
+}
+
 // ------------------------------------------------------------ signatures
 
 export function signWebhookBody(secret: string, timestampSeconds: number, body: string): string {
@@ -87,9 +166,9 @@ export function registerEndpoint(
 ): { endpoint: Omit<WebhookEndpoint, "secret">; secret: string } {
   assertIntegrationManager(actor);
   const url = String(input.url ?? "").trim();
-  if (!/^https?:\/\/[^\s]+$/i.test(url)) {
-    throw new IntegrationError("The endpoint URL must be http(s)");
-  }
+  // Egress boundary: registration is where an internal destination gets
+  // rejected, before any delivery can probe the host network.
+  assertDeliverableUrl(url);
   const requested = Array.isArray(input.events)
     ? input.events
     : String(input.events ?? "*").split(",").map((s) => s.trim()).filter(Boolean);
@@ -214,9 +293,11 @@ function postJson(url: string, body: string, headers: Record<string, string>): P
   return new Promise((resolve, reject) => {
     let target: URL;
     try {
-      target = new URL(url);
+      // Re-validated at dispatch time, not only at registration: the
+      // guard must hold even for rows written before it existed.
+      target = assertDeliverableUrl(url);
     } catch {
-      reject(new Error("invalid endpoint URL"));
+      reject(new Error("endpoint URL is not deliverable"));
       return;
     }
     const lib = target.protocol === "https:" ? https : http;
@@ -247,10 +328,18 @@ function backoffMs(attempt: number): number {
  * interval timer) so tests and demos stay deterministic; each delivery is
  * claimed atomically, so overlapping passes never double-send.
  */
-export async function dispatchDueDeliveries(limit = 20): Promise<{ attempted: number; delivered: number; deadLettered: number }> {
+export async function dispatchDueDeliveries(
+  limit = 20,
+  organizationId: string | null = null
+): Promise<{ attempted: number; delivered: number; deadLettered: number }> {
   const cfg = integrationsConfig();
   const now = nowIso();
-  const due = integrationsRepo.listDueDeliveries(now, limit);
+  // A caller-triggered pass works ONLY on that organization's queue, so
+  // the route can never report another tenant's counts; the background
+  // interval (organizationId null) drains everything.
+  const due = organizationId
+    ? integrationsRepo.listDueDeliveriesForOrg(organizationId, now, limit)
+    : integrationsRepo.listDueDeliveries(now, limit);
   let attempted = 0;
   let delivered = 0;
   let deadLettered = 0;
@@ -302,8 +391,9 @@ export async function dispatchDueDeliveries(limit = 20): Promise<{ attempted: nu
         if (delivery.attemptCount + 1 >= cfg.webhookMaxAttempts) deadLettered += 1;
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      settleFailure(delivery, endpoint, cfg.webhookMaxAttempts, message, null);
+      // Coarse label only: the stored text reaches the dashboard, and a
+      // verbatim socket error would narrate the host network.
+      settleFailure(delivery, endpoint, cfg.webhookMaxAttempts, safeErrorLabel(err), null);
       if (delivery.attemptCount + 1 >= cfg.webhookMaxAttempts) deadLettered += 1;
     }
   }
@@ -349,13 +439,12 @@ export function requeueDeadLetter(actor: User, deliveryId: string): void {
   if (delivery.status !== "DEAD_LETTER") {
     throw new IntegrationError("Only dead-lettered deliveries can be requeued", 409);
   }
-  integrationsRepo.settleWebhookDelivery(delivery.id, {
-    status: "RETRY",
-    nextAttemptAt: nowIso(),
-    lastStatusCode: delivery.lastStatusCode,
-    lastError: delivery.lastError,
-    deliveredAt: null,
-  });
+  // The requeue grants a FRESH attempt budget. Leaving attempt_count at
+  // the maximum would dead-letter the delivery again after a single
+  // failure, which is not what an administrator asking for a retry means.
+  if (!integrationsRepo.requeueWebhookDelivery(delivery.id, nowIso())) {
+    throw new IntegrationError("This delivery was requeued concurrently", 409);
+  }
   recordIntegration({
     category: "WEBHOOK",
     provider: "internal",

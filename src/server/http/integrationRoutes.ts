@@ -222,7 +222,9 @@ export async function handleIntegrationRoutes(ctx: IntegrationRouteContext): Pro
   if (method === "POST" && pathname === "/api/integrations/webhooks/dispatch") {
     const user = ctx.getUser();
     integrations.assertIntegrationManager(user);
-    const result = await integrations.dispatchDueDeliveries();
+    // Scoped to the caller's own queue: the returned counts must never
+    // describe another tenant's traffic.
+    const result = await integrations.dispatchDueDeliveries(20, user.organizationId);
     if (ctx.isForm()) ctx.redirect("/integrations");
     else ctx.sendJson(result);
     return true;

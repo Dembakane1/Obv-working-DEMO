@@ -217,8 +217,11 @@ secrets in any view model; every action appends the immutable
 `integration_events` audit (provider, operation, actor, organization,
 request id, outcome). Vendor selection requires double consent
 (`OBV_INTEGRATIONS_PRODUCTION_ENABLE`) and refuses at startup otherwise.
-146-checkpoint suite (`scripts/integrations-test.js`) — see
-`docs/INTEGRATIONS_PLATFORM.md`.
+Webhook egress is bounded (loopback / private / link-local / metadata
+destinations refused at registration and dispatch), every dashboard
+aggregate is tenant-scoped, and credential-bearing email is redacted by
+kind rather than caller opt-in. 167-checkpoint suite
+(`scripts/integrations-test.js`) — see `docs/INTEGRATIONS_PLATFORM.md`.
 
 ## Production Identity Platform (v23)
 

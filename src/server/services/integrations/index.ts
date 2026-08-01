@@ -61,6 +61,8 @@ export {
   requeueDeadLetter,
   signWebhookBody,
   verifyWebhookSignature,
+  assertDeliverableUrl,
+  privateHostsAllowed,
   WEBHOOK_EVENT_KINDS,
   SIGNATURE_TOLERANCE_SECONDS,
 } from "./webhooks";
