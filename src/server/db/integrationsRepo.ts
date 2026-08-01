@@ -68,25 +68,25 @@ export function listIntegrationEvents(
   if (filter.category && filter.organizationId) {
     return getDb()
       .prepare(
-        "SELECT * FROM integration_events WHERE category = ? AND organization_id = ? ORDER BY occurred_at DESC, id DESC LIMIT ?"
+        "SELECT * FROM integration_events WHERE category = ? AND organization_id = ? ORDER BY occurred_at DESC, rowid DESC LIMIT ?"
       )
       .all(filter.category, filter.organizationId, limit)
       .map((r) => toIntegrationEvent(r as Row));
   }
   if (filter.organizationId) {
     return getDb()
-      .prepare("SELECT * FROM integration_events WHERE organization_id = ? ORDER BY occurred_at DESC, id DESC LIMIT ?")
+      .prepare("SELECT * FROM integration_events WHERE organization_id = ? ORDER BY occurred_at DESC, rowid DESC LIMIT ?")
       .all(filter.organizationId, limit)
       .map((r) => toIntegrationEvent(r as Row));
   }
   if (filter.category) {
     return getDb()
-      .prepare("SELECT * FROM integration_events WHERE category = ? ORDER BY occurred_at DESC, id DESC LIMIT ?")
+      .prepare("SELECT * FROM integration_events WHERE category = ? ORDER BY occurred_at DESC, rowid DESC LIMIT ?")
       .all(filter.category, limit)
       .map((r) => toIntegrationEvent(r as Row));
   }
   return getDb()
-    .prepare("SELECT * FROM integration_events ORDER BY occurred_at DESC, id DESC LIMIT ?")
+    .prepare("SELECT * FROM integration_events ORDER BY occurred_at DESC, rowid DESC LIMIT ?")
     .all(limit)
     .map((r) => toIntegrationEvent(r as Row));
 }
@@ -146,18 +146,18 @@ export function listEmails(filter: { status?: string; kind?: string; limit?: num
   const limit = Math.min(500, Math.max(1, filter.limit ?? 50));
   if (filter.status) {
     return getDb()
-      .prepare("SELECT * FROM email_outbox WHERE status = ? ORDER BY created_at DESC LIMIT ?")
+      .prepare("SELECT * FROM email_outbox WHERE status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?")
       .all(filter.status, limit)
       .map((r) => toEmail(r as Row));
   }
   if (filter.kind) {
     return getDb()
-      .prepare("SELECT * FROM email_outbox WHERE kind = ? ORDER BY created_at DESC LIMIT ?")
+      .prepare("SELECT * FROM email_outbox WHERE kind = ? ORDER BY created_at DESC, rowid DESC LIMIT ?")
       .all(filter.kind, limit)
       .map((r) => toEmail(r as Row));
   }
   return getDb()
-    .prepare("SELECT * FROM email_outbox ORDER BY created_at DESC LIMIT ?")
+    .prepare("SELECT * FROM email_outbox ORDER BY created_at DESC, rowid DESC LIMIT ?")
     .all(limit)
     .map((r) => toEmail(r as Row));
 }
@@ -187,13 +187,13 @@ export function listEmailsForOrg(
   if (filter.status) {
     return getDb()
       .prepare(
-        "SELECT * FROM email_outbox WHERE organization_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?"
+        "SELECT * FROM email_outbox WHERE organization_id = ? AND status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?"
       )
       .all(organizationId, filter.status, limit)
       .map((r) => toEmail(r as Row));
   }
   return getDb()
-    .prepare("SELECT * FROM email_outbox WHERE organization_id = ? ORDER BY created_at DESC LIMIT ?")
+    .prepare("SELECT * FROM email_outbox WHERE organization_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?")
     .all(organizationId, limit)
     .map((r) => toEmail(r as Row));
 }
@@ -245,7 +245,7 @@ export function listEsignRequestsForOrgs(orgIds: string[], limit = 100): EsignRe
   if (orgIds.length === 0) return [];
   const marks = orgIds.map(() => "?").join(",");
   return getDb()
-    .prepare(`SELECT * FROM esign_requests WHERE organization_id IN (${marks}) ORDER BY created_at DESC LIMIT ?`)
+    .prepare(`SELECT * FROM esign_requests WHERE organization_id IN (${marks}) ORDER BY created_at DESC, rowid DESC LIMIT ?`)
     .all(...orgIds, Math.min(500, limit))
     .map((r) => toEsign(r as Row));
 }
@@ -274,7 +274,7 @@ export function insertEsignEvent(e: EsignEvent): void {
 
 export function listEsignEvents(requestId: string): EsignEvent[] {
   return getDb()
-    .prepare("SELECT * FROM esign_events WHERE request_id = ? ORDER BY occurred_at ASC, id ASC")
+    .prepare("SELECT * FROM esign_events WHERE request_id = ? ORDER BY occurred_at ASC, rowid ASC")
     .all(requestId)
     .map((r) => {
       const row = r as Row;
@@ -334,7 +334,7 @@ export function listCalendarEventsForOrgs(orgIds: string[], limit = 200): Calend
   if (orgIds.length === 0) return [];
   const marks = orgIds.map(() => "?").join(",");
   return getDb()
-    .prepare(`SELECT * FROM calendar_events WHERE organization_id IN (${marks}) ORDER BY starts_at ASC LIMIT ?`)
+    .prepare(`SELECT * FROM calendar_events WHERE organization_id IN (${marks}) ORDER BY starts_at ASC, rowid ASC LIMIT ?`)
     .all(...orgIds, Math.min(500, limit))
     .map((r) => toCalendar(r as Row));
 }
@@ -379,7 +379,7 @@ export function listWebhookEndpointsForOrgs(orgIds: string[]): WebhookEndpoint[]
   if (orgIds.length === 0) return [];
   const marks = orgIds.map(() => "?").join(",");
   return getDb()
-    .prepare(`SELECT * FROM webhook_endpoints WHERE organization_id IN (${marks}) ORDER BY created_at ASC`)
+    .prepare(`SELECT * FROM webhook_endpoints WHERE organization_id IN (${marks}) ORDER BY created_at ASC, rowid ASC`)
     .all(...orgIds)
     .map((r) => toEndpoint(r as Row));
 }
@@ -446,7 +446,7 @@ export function listDueDeliveries(nowIso: string, limit = 20): WebhookDelivery[]
     .prepare(
       `SELECT * FROM webhook_deliveries
        WHERE status IN ('QUEUED','RETRY') AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-       ORDER BY created_at ASC LIMIT ?`
+       ORDER BY created_at ASC, rowid ASC LIMIT ?`
     )
     .all(nowIso, limit)
     .map((r) => toDelivery(r as Row));
@@ -456,7 +456,7 @@ export function listDeliveriesForEndpoints(endpointIds: string[], limit = 100): 
   if (endpointIds.length === 0) return [];
   const marks = endpointIds.map(() => "?").join(",");
   return getDb()
-    .prepare(`SELECT * FROM webhook_deliveries WHERE endpoint_id IN (${marks}) ORDER BY created_at DESC LIMIT ?`)
+    .prepare(`SELECT * FROM webhook_deliveries WHERE endpoint_id IN (${marks}) ORDER BY created_at DESC, rowid DESC LIMIT ?`)
     .all(...endpointIds, Math.min(500, limit))
     .map((r) => toDelivery(r as Row));
 }
@@ -595,7 +595,7 @@ export function listSyncRunsForOrgs(orgIds: string[], limit = 20): AccountingSyn
   if (orgIds.length === 0) return [];
   const marks = orgIds.map(() => "?").join(",");
   return getDb()
-    .prepare(`SELECT * FROM accounting_sync_runs WHERE organization_id IN (${marks}) ORDER BY started_at DESC LIMIT ?`)
+    .prepare(`SELECT * FROM accounting_sync_runs WHERE organization_id IN (${marks}) ORDER BY started_at DESC, rowid DESC LIMIT ?`)
     .all(...orgIds, Math.min(100, limit))
     .map((r) => toSyncRun(r as Row));
 }
@@ -620,7 +620,7 @@ export function listAccountingLinksForOrgs(orgIds: string[], limit = 200): Accou
   if (orgIds.length === 0) return [];
   const marks = orgIds.map(() => "?").join(",");
   return getDb()
-    .prepare(`SELECT * FROM accounting_links WHERE organization_id IN (${marks}) ORDER BY synced_at DESC LIMIT ?`)
+    .prepare(`SELECT * FROM accounting_links WHERE organization_id IN (${marks}) ORDER BY synced_at DESC, rowid DESC LIMIT ?`)
     .all(...orgIds, Math.min(1000, limit))
     .map((r) => {
       const row = r as Row;

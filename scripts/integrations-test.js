@@ -450,6 +450,25 @@ async function main() {
     detail0.trail.map((t) => t.kind).join(",") === "CREATED,SENT",
     "creation trail records CREATED then SENT"
   );
+  // Same-millisecond events must still read back in INSERTION order: ids
+  // are random UUIDs, so a timestamp tie broken by id would shuffle the
+  // trail on a fast machine (this is exactly what CI hit).
+  const tiedAt = "2030-01-01T00:00:00.000Z";
+  for (const kind of ["REMINDED", "SIGNED", "DECLINED"]) {
+    run(
+      "INSERT INTO esign_events (id, request_id, occurred_at, actor_user_id, kind, detail) VALUES (?, ?, ?, NULL, ?, 'tie')",
+      crypto.randomUUID(), waiver.id, tiedAt, kind
+    );
+  }
+  const tiedTrail = (await j("pm", "GET", `/api/integrations/esign/${waiver.id}`)).trail
+    .filter((t) => t.detail === "tie")
+    .map((t) => t.kind)
+    .join(",");
+  assert(
+    tiedTrail === "REMINDED,SIGNED,DECLINED",
+    "identical timestamps still read back in insertion order (stable trail, no id shuffle)"
+  );
+  run("DELETE FROM esign_events WHERE detail = 'tie'");
   const signed = (await j("pm", "POST", `/api/integrations/esign/${waiver.id}/signed`, {})).request;
   assert(signed.status === "SIGNED" && signed.completedAt !== null, "request settles SIGNED with completion time");
   const doubleSettle = await api("pm", "POST", `/api/integrations/esign/${waiver.id}/declined`, {});
