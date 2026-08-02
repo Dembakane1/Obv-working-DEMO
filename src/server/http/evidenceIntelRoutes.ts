@@ -6,7 +6,8 @@
  * is advisory — the only state-changing calls are analysis (which writes
  * signals + queue items) and reviewer queue actions (acknowledge /
  * dismiss / promote). Promotion delegates to the exceptions service and
- * its authorization; nothing here approves, rejects, or releases.
+ * its authorization; a route here never approves, rejects, or releases
+ * funds, and none changes an authoritative verification record.
  */
 import type * as http from "node:http";
 import * as ei from "../services/evidenceIntel";

@@ -110,6 +110,7 @@ const STANDALONE = [
   "portfolio-test.js",
   "identity-test.js",
   "integrations-test.js",
+  "evidence-intel-test.js",
   "authz-test.js",
   "toolchain-test.js",
 ];
