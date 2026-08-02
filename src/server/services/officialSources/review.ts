@@ -505,6 +505,26 @@ export function promoteToException(
   return { item: updated, exceptionId: exception.id };
 }
 
+/** Gated raw-snapshot read for the preview page: viewer role required;
+ *  a snapshot scoped to a project the caller cannot see is a plain 404
+ *  (an unscoped snapshot of public source data is viewer-visible). */
+export function snapshotPreview(user: User, snapshotId: string): {
+  snapshot: SourceSnapshot;
+  source: OfficialSource | null;
+  candidates: SourceCandidate[];
+} {
+  assertSourceViewer(user);
+  const snapshot = osRepo.getSnapshot(String(snapshotId ?? ""));
+  if (!snapshot || (snapshot.projectId && !authz.accessibleProjectIds(user).has(snapshot.projectId))) {
+    throw new OfficialSourceError("Not found", 404);
+  }
+  return {
+    snapshot,
+    source: osRepo.getSource(snapshot.sourceId),
+    candidates: osRepo.listCandidatesForSnapshot(snapshot.id),
+  };
+}
+
 // ============================================================ record views
 
 /** Source records visible on a project page: candidates + matches +

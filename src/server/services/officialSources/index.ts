@@ -53,6 +53,7 @@ export {
   recordDiscrepancy,
   promoteToException,
   projectSourceRecords,
+  snapshotPreview,
   enqueueFromRetrieval,
   type QueueItemDetail,
 } from "./review";
