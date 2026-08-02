@@ -190,6 +190,44 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Evidence Intelligence Platform (v25)
+
+**Evidence Intelligence analyzes the record. It never authors it.** An
+explainable, advisory layer that helps a reviewer answer *is this
+evidence complete and consistent, does it resemble prior evidence, does
+it deserve closer human review* — never *is this automatically fraud*.
+It consumes the existing evidence pipeline and draw documents (never a
+parallel store) and produces only advisory signals: it never approves a
+draw, rejects evidence, releases funds, changes progress, creates an
+exception on its own, or overrides a lender decision (statically
+asserted, and proven by authoritative tables being byte-identical before
+and after analysis). The engine does exact content-hash duplicate
+detection across files, projects, and contractors, plus device-pattern
+awareness; a metadata engine flags timestamp/GPS/upload-timing
+inconsistencies while treating **missing metadata as INFO, never an
+accusation**; a provider-neutral OCR framework (deterministic mock active;
+Azure Document Intelligence / AWS Textract / Google Document AI as
+disabled boundaries) fingerprints documents for reused-document,
+duplicate-invoice/permit-number, contractor-name, and total
+inconsistencies; and 0–100 completeness/quality/confidence scoring. Every
+finding is explainable — why it fired, which records it compared, a
+confidence, and a recommended action — with no black-box score. Actionable
+findings enqueue to an **Evidence Review Queue** where a reviewer can
+acknowledge, dismiss, or **promote** a finding into a governed exception
+(through the existing exceptions service and its authorization; promoted
+findings can't then be dismissed; every transition is append-only). The
+Evidence Intelligence dashboard, review queue, side-by-side duplicate /
+metadata / OCR viewer, and evidence timeline carry the advisory notice on
+every surface; the Executive command center gains an advisory *Evidence
+quality* band. Seven future engines (perceptual hashing, computer vision,
+drone, satellite, photogrammetry, volumetric, LiDAR) are provider-neutral
+interfaces only — disabled at the database level, no placeholder
+algorithms. Three viewer roles may view it (field refused `403`);
+everything is scoped by `authz.accessibleProjectIds` with same-`404`
+tenant isolation and no cross-tenant peer leakage. Vendor OCR requires
+double consent (`OBV_EVIDENCE_AI_PRODUCTION_ENABLE`). 68-checkpoint suite
+(`scripts/evidence-intel-test.js`) — see `docs/EVIDENCE_INTELLIGENCE.md`.
+
 ## Production Integrations Platform (v24)
 
 **Integrations observe the system of record. They never author it.**
