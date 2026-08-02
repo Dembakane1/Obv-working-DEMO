@@ -3678,6 +3678,8 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
 .evi-tl-item { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .evi-tl-item:last-child { border-bottom: none; }
 .evi-tl-body { display: flex; flex-direction: column; gap: 1px; }
+/* Evidence-quality band on the Executive command center (Portfolio Intelligence). */
+.exec-section { margin: 4px 0 18px; }
 @media (max-width: 720px) {
   .evi-split { grid-template-columns: 1fr; }
   .evi-table { display: block; overflow-x: auto; }

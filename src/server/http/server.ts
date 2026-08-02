@@ -5684,10 +5684,26 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // Filter options always come from the unfiltered scope so narrowing
     // one facet never hides the others' choices.
     const optionSource = filtersActive ? portfolioIntel.overview(user!) : overviewData;
+    // Advisory Evidence Intelligence summary — derived on read, viewer-scoped,
+    // and only when the caller may view it. Never a control decision.
+    const eviAnalytics = evidenceIntelSvc.canViewEvidenceIntel(user!)
+      ? evidenceIntelSvc.evidenceAnalytics(user!)
+      : null;
+    const evidenceQuality = eviAnalytics
+      ? {
+          averageCompleteness: eviAnalytics.averageCompleteness,
+          averageQuality: eviAnalytics.averageQuality,
+          averageConfidence: eviAnalytics.averageConfidence,
+          openReviews: eviAnalytics.reviewerWorkload.open,
+          duplicateFindings: eviAnalytics.duplicateTrend.reduce((sum, d) => sum + d.count, 0),
+          topRepeated: eviAnalytics.repeatedFindings[0] ?? null,
+        }
+      : null;
     sendHtml(
       res,
       renderExecutive({
         nav: navFor(user!, "executive"),
+        evidenceQuality,
         overview: overviewData,
         risk: portfolioIntel.risk(user!),
         fraud: portfolioIntel.fraud(user!),

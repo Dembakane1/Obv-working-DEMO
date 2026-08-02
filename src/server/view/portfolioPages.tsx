@@ -159,6 +159,16 @@ export function renderExecutive(input: {
   };
   pdfAvailable: boolean;
   notice: { kind: "ok" | "err"; text: string } | null;
+  /** Advisory Evidence Intelligence summary (derived, viewer-scoped).
+   *  Absent when the caller cannot view Evidence Intelligence. */
+  evidenceQuality?: {
+    averageCompleteness: number;
+    averageQuality: number;
+    averageConfidence: number;
+    openReviews: number;
+    duplicateFindings: number;
+    topRepeated: { category: string; count: number } | null;
+  } | null;
 }): string {
   const { overview, risk } = input;
   const t = overview.totals;
@@ -215,6 +225,38 @@ export function renderExecutive(input: {
             },
           ]}
         />
+
+        {input.evidenceQuality ? (
+          <section className="exec-section" aria-label="Evidence quality">
+            <SectionHead
+              title="Evidence quality"
+              hint="Advisory Evidence Intelligence — signals for reviewers; never a control decision."
+              right={<a className="btn ghost sm" href="/evidence-intelligence/analytics">Open analytics</a>}
+            />
+            <MetricStrip
+              metrics={[
+                { value: `${input.evidenceQuality.averageCompleteness}%`, label: "Documentation completeness", href: "/evidence-intelligence/analytics" },
+                { value: `${input.evidenceQuality.averageQuality}%`, label: "Average evidence quality" },
+                { value: `${input.evidenceQuality.averageConfidence}%`, label: "Average confidence" },
+                {
+                  value: String(input.evidenceQuality.openReviews),
+                  label: "Open advisory reviews",
+                  href: "/evidence-intelligence/queue",
+                  tone: input.evidenceQuality.openReviews > 0 ? "warn" : undefined,
+                  dim: input.evidenceQuality.openReviews === 0,
+                },
+                {
+                  value: String(input.evidenceQuality.duplicateFindings),
+                  label: "Duplicate-evidence findings",
+                  dim: input.evidenceQuality.duplicateFindings === 0,
+                },
+                input.evidenceQuality.topRepeated
+                  ? { value: String(input.evidenceQuality.topRepeated.count), label: `Most repeated: ${enumLabel(input.evidenceQuality.topRepeated.category)}` }
+                  : { value: "—", label: "Most repeated advisory", dim: true },
+              ]}
+            />
+          </section>
+        ) : null}
 
         <FilterBar
           action="/executive"
