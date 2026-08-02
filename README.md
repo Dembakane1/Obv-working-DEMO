@@ -190,6 +190,47 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Official Source Connectors Platform (v26)
+
+**Official sources inform the reviewer. They never decide for OBV.** A
+secure, provider-neutral connectors layer for government and licensing
+systems, built on one lifecycle: official-source retrieval -> immutable
+raw snapshot (append-only, SHA-256 hashed, secret-free) -> normalized
+candidate (the source's verbatim wording preserved beside OBV's
+normalized value) -> explainable match evaluation (EXACT / HIGH /
+POSSIBLE / AMBIGUOUS / NO_MATCH / CONFLICT with confidence, reason
+codes, fields compared, and differences; ambiguity and conflict are
+never auto-linked) -> reviewer confirmation -> authoritative OBV record
+**only through the existing governed commands**
+(`permits.recordOfficialSource`, `dmvCompliance.recordSourceVerification`,
+`exceptions.createManualException`). A connector never approves or
+rejects a draw, marks an inspection passed, alters a permit basis,
+clears an exception, releases a hold, creates a lender decision or
+payment, moves funds, or overwrites history — proven statically and by
+byte-identical authoritative tables under retrieval. The DC source map
+is classified by ACTUAL access method: Open Data DC datasets (DOB
+building permits, Certificates of Occupancy, DLCP Basic Business
+Licenses, parcels) behind operator-configured documented endpoints;
+DDOT TOPS via its documented Web API (registered license key); DOB
+inspections/enforcement and DLCP professional licenses as explicit
+MANUAL_VERIFICATION_REQUIRED boundaries (portals are never scraped);
+plus a deterministic mock labeled "not a government system". The egress
+client allowlists each source's hosts, pins validated DNS resolutions
+(rebinding defense), refuses cross-host redirects and embedded
+credentials, caps response sizes, fetches uncompressed, and redacts
+credentials from every error path. Deterministic change detection quotes
+verbatim wording and labels disappeared records UNAVAILABLE — never
+inferred revoked. Polling is explicit-request only (rate caps, retries
+with jitter, circuit breaker, dead-letter queue, pause) and scheduled
+polling refuses until `OBV_SOURCES_POLLING_ENABLE` is set. The
+`/official-sources` workspace shows the registry with secret-free config
+status, health, freshness labels that never call cached data "live", the
+review queue with side-by-side comparison, raw snapshot previews, and
+lookup; the Executive command center gains an advisory Official Sources
+band; Evidence Intelligence gains advisory SOURCE_* signals.
+144-checkpoint suite (`scripts/official-sources-test.js`) — see
+`docs/OFFICIAL_SOURCES.md`.
+
 ## Evidence Intelligence Platform (v25)
 
 **Evidence Intelligence analyzes the record. It never authors it.** An

@@ -166,7 +166,10 @@ export function recordUnavailable(
     organizationId: previous.organizationId,
     projectId: previous.projectId,
     createdAt: nowIso(),
-    changeKey: sha256Hex(`${sourceId}:${externalId}:${previous.id}:unavailable:${currentSnapshotId}`),
+    // Idempotent per (source, record, last-seen candidate): re-checking a
+    // still-missing record never duplicates the event; if the record
+    // reappears and vanishes again, the new candidate makes a new key.
+    changeKey: sha256Hex(`${sourceId}:${externalId}:${previous.id}:unavailable`),
   };
   return osRepo.insertChangeEvent(event) ? event : null;
 }

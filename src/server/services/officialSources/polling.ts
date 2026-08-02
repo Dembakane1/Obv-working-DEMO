@@ -193,6 +193,11 @@ function postProcess(output: RetrievalOutput, allowed: Set<string>): {
     }
     queued += enqueueFromRetrieval(candidate, evaluation, changeEvents);
   }
+  // Disappearances: previously-seen records the source stopped returning.
+  if (output.unavailableChanges.length > 0) {
+    changes += output.unavailableChanges.length;
+    queued += enqueueFromRetrieval(null, null, output.unavailableChanges);
+  }
   return { matches, changes, queued };
 }
 
@@ -275,6 +280,37 @@ export async function refreshSource(
     ...post,
     manualInstructions: output.manualInstructions,
     errorLabel: output.errorLabel,
+  };
+}
+
+/** Re-check ONE external record at its source (e.g. from a queue item):
+ *  a targeted fetch that also detects disappearance. */
+export async function refreshRecord(
+  user: User,
+  sourceId: string,
+  externalId: string,
+  opts: { projectId?: string | null } = {}
+): Promise<RefreshSummary> {
+  assertSourceViewer(user);
+  const source = osRepo.getSource(sourceId);
+  if (!source || !connectorFor(sourceId)) throw new OfficialSourceError("Not found", 404);
+  assertCircuitClosed(sourceId);
+  checkRateLimit(sourceId, source.rateLimitPerMinute);
+  const project = opts.projectId ? requireVisibleProject(user, opts.projectId) : null;
+  const scope = {
+    actorUserId: user.id,
+    organizationId: project?.organizationId ?? null,
+    projectId: project?.id ?? null,
+  };
+  const output = await retrieveWithRetries(
+    () => performRetrieval(sourceId, "FETCH_RECORD", { externalId }, scope),
+    sourceId, "FETCH_RECORD", { externalId }
+  );
+  const allowed = authz.accessibleProjectIds(user);
+  const post = output.kind === "OK" ? postProcess(output, allowed) : { matches: 0, changes: 0, queued: 0 };
+  return {
+    sourceId, kind: output.kind, snapshots: 1, candidates: output.candidates.length,
+    ...post, manualInstructions: output.manualInstructions, errorLabel: output.errorLabel,
   };
 }
 

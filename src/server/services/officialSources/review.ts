@@ -129,13 +129,14 @@ const CHANGE_KIND_TO_EVENT: Partial<Record<SourceChangeEvent["changeKind"], Sour
  *  signals) from one candidate's evaluation + any change events. Called
  *  by the polling pipeline after each retrieval. Returns items queued. */
 export function enqueueFromRetrieval(
-  candidate: SourceCandidate,
-  evaluation: CandidateEvaluation,
+  candidate: SourceCandidate | null,
+  evaluation: CandidateEvaluation | null,
   changeEvents: SourceChangeEvent[]
 ): number {
   let queued = 0;
 
-  for (const match of evaluation.matches) {
+  for (const match of evaluation?.matches ?? []) {
+    if (!candidate) break;
     if (match.verdict === "CONFLICT") {
       signalSourceConflict(candidate, match);
       if (pushItem({

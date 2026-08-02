@@ -31,6 +31,7 @@ export {
 
 export {
   refreshSource,
+  refreshRecord,
   refreshProject,
   refreshPortfolio,
   runScheduledPoll,

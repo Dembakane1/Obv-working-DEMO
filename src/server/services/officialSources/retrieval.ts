@@ -25,6 +25,8 @@ import type {
   SourceSearchQuery,
 } from "./connectors";
 import { connectorFor } from "./connectors";
+import { recordUnavailable } from "./changes";
+import type { SourceChangeEvent } from "../../../shared/types";
 import {
   OfficialSourceError,
   nowIso,
@@ -46,6 +48,9 @@ export interface RetrievalScope {
 export interface RetrievalOutput {
   snapshot: SourceSnapshot;
   candidates: SourceCandidate[];
+  /** RECORD_UNAVAILABLE events for previously-seen records the source no
+   *  longer returns (labeled missing — never inferred revoked). */
+  unavailableChanges: SourceChangeEvent[];
   kind: ConnectorResult["kind"];
   cursor: string | null;
   manualInstructions: string | null;
@@ -207,9 +212,19 @@ export async function performRetrieval(
     }
   }
 
+  // Disappearance: a targeted fetch of a record we had previously seen
+  // that the source no longer returns is labeled UNAVAILABLE — never
+  // inferred to be revoked.
+  const unavailableChanges: SourceChangeEvent[] = [];
+  if (requestType === "FETCH_RECORD" && snapshot.outcome === "EMPTY" && request.externalId) {
+    const change = recordUnavailable(source.id, String(request.externalId), snapshotId);
+    if (change) unavailableChanges.push(change);
+  }
+
   return {
     snapshot,
     candidates,
+    unavailableChanges,
     kind: result.kind,
     cursor: result.cursor ?? null,
     manualInstructions: result.manualInstructions ?? null,
