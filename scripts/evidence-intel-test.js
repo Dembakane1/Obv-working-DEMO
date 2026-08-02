@@ -202,7 +202,7 @@ async function main() {
   const dupHash = "dup" + crypto.randomBytes(20).toString("hex");
   makeEvidence(r47ms, dupHash);                          // r47 #1
   makeEvidence(r47ms, dupHash);                          // r47 #2 (same project -> DUPLICATE_FILE base)
-  makeEvidence(dmvms, dupHash);                          // dmv (cross-project + cross-contractor)
+  const dmvEvi = makeEvidence(dmvms, dupHash);           // dmv (cross-project + cross-contractor)
   const badTime = makeEvidence(r47ms, "t" + crypto.randomBytes(20).toString("hex"), {
     capturedAt: "2026-03-02T12:00:00.000Z", uploadedAt: "2026-03-02T10:00:00.000Z", // captured after upload
   });
@@ -252,6 +252,20 @@ async function main() {
   assert(ocrRows.length > 0 && ocrRows.every((e) => e.fingerprint), "OCR extractions recorded with fingerprints");
   const invField = q1("SELECT * FROM ocr_fields WHERE field_key='INVOICE_NUMBER' AND normalized_value='inv777' LIMIT 1");
   assert(Boolean(invField), "OCR extracted and normalized the invoice number field");
+  // A reused-document finding must describe the fields that actually formed
+  // the fingerprint — never assert fields both documents lack.
+  const reused = q1("SELECT * FROM evidence_signals WHERE category='REUSED_DOCUMENT' LIMIT 1");
+  const reusedCmp = reused ? JSON.parse(reused.comparison) : {};
+  assert(
+    Array.isArray(reusedCmp.matchedFields) && reusedCmp.matchedFields.length > 0,
+    "reused-document finding records exactly which fields matched"
+  );
+  assert(
+    !/vendor, number, amount, dates/.test(reused.explanation) &&
+      /line item/.test(reused.explanation) &&
+      !/invoice number/.test(reused.explanation), // the reused generic doc carries no invoice number
+    "reused-document explanation names the actual matched fields, not absent ones"
+  );
 
   // ------------------------------------------------------------ section 5
   console.log("\n== 5. Review queue + reviewer actions ==");
@@ -288,6 +302,23 @@ async function main() {
   // dmv-pm's own dashboard must not contain proj-r47 signals.
   const dmvSignals = ei.evidenceIntelDashboard(dmvpm).recentSignals;
   assert(dmvSignals.every((s) => s.projectId !== "proj-r47"), "another tenant's dashboard never shows this project's findings");
+
+  // The per-subject signal read must be role-gated AND tenant-scoped
+  // (same-404), never a raw unscoped lookup.
+  assert(Array.isArray(ei.signalsForSubject(funder, "EVIDENCE_ITEM", badTime.id)), "a viewer reads signals for a subject they can access");
+  let subjViewerErr = null;
+  try { ei.signalsForSubject(field, "EVIDENCE_ITEM", badTime.id); } catch (e) { subjViewerErr = e; }
+  assert(subjViewerErr && subjViewerErr.statusCode === 403, "FIELD role cannot read a subject's signals (403)");
+  let subjCrossErr = null;
+  try { ei.signalsForSubject(dmvpm, "EVIDENCE_ITEM", badTime.id); } catch (e) { subjCrossErr = e; }
+  assert(subjCrossErr && subjCrossErr.statusCode === 404, "a subject on an inaccessible project is a plain 404 (no cross-tenant signal leak)");
+  let subjProjErr = null;
+  try { ei.signalsForSubject(dmvpm, "PROJECT", "proj-r47"); } catch (e) { subjProjErr = e; }
+  assert(subjProjErr && subjProjErr.statusCode === 404, "a project subject outside the caller's access is a plain 404");
+  // A nonexistent subject is the SAME 404 — inaccessible is indistinguishable from absent.
+  let subjMissingErr = null;
+  try { ei.signalsForSubject(funder, "EVIDENCE_ITEM", "no-such-evidence"); } catch (e) { subjMissingErr = e; }
+  assert(subjMissingErr && subjMissingErr.statusCode === 404, "a nonexistent subject is the same 404 as an inaccessible one");
 
   // ------------------------------------------------------------ section 7
   console.log("\n== 7. Advisory-only: authoritative records untouched by analysis ==");
@@ -345,17 +376,59 @@ async function main() {
     const r = await fetch(`${BASE}${p}`, { headers: { cookie: ck ?? "", accept: "text/html" }, redirect: "manual" });
     return { status: r.status, html: await r.text() };
   };
+  const apiStatusVal = async (p, ck) => (await fetch(`${BASE}${p}`, { headers: { cookie: ck ?? "" }, redirect: "manual" })).status;
 
   await fetch(`${BASE}/api/evidence-intel/analyze`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: "{}" });
   const dash = await page("/evidence-intelligence", cookie);
   assert(dash.status === 200 && /Evidence Intelligence/.test(dash.html), "dashboard page renders");
   assert(/Advisory analysis only/.test(dash.html), "dashboard shows the advisory-only notice");
-  assert((await page("/evidence-intelligence/queue", cookie)).status === 200, "review queue page renders");
+  const queuePage = await page("/evidence-intelligence/queue", cookie);
+  assert(queuePage.status === 200 && /Advisory analysis only/.test(queuePage.html), "review queue page renders with the advisory-only notice");
   assert((await page("/evidence-intelligence/analytics", cookie)).status === 200, "analytics page renders");
 
-  const apiStatus = async (p, ck) => (await fetch(`${BASE}${p}`, { headers: { cookie: ck ?? "" }, redirect: "manual" })).status;
-  assert((await apiStatus("/api/evidence-intel/dashboard", fieldCookie)) === 403, "FIELD role gets 403 from the dashboard API");
-  assert((await apiStatus("/api/evidence-intel/dashboard")) === 401, "anonymous API access is 401");
+  // Pull real evidence ids from the running server's DB: one the caller can
+  // see (proj-r47, user-pm's project) and one they cannot (proj-dmv).
+  const dbB = new (require("node:sqlite").DatabaseSync)(path.join(DATA_B, "obv.db"));
+  const eviIdFor = (proj) => {
+    const r = dbB.prepare("SELECT ei.id AS id FROM evidence_items ei JOIN milestones m ON m.id = ei.milestone_id WHERE m.project_id = ? LIMIT 1").get(proj);
+    return r ? r.id : null;
+  };
+  const myEvi = eviIdFor("proj-r47");
+  const otherEvi = eviIdFor("proj-dmv");
+  dbB.close();
+
+  if (myEvi) {
+    const viewer = await page(`/evidence-intelligence/evidence/${myEvi}`, cookie);
+    assert(viewer.status === 200 && /Advisory analysis only/.test(viewer.html), "evidence viewer page renders with the advisory-only notice");
+    const tl = await page(`/evidence-intelligence/timeline/${myEvi}`, cookie);
+    assert(tl.status === 200 && /Advisory analysis only/.test(tl.html), "evidence timeline page renders with the advisory-only notice");
+    // A viewer role is required even to open the viewer page.
+    assert((await page(`/evidence-intelligence/evidence/${myEvi}`, fieldCookie)).status === 403, "FIELD role is refused the evidence viewer page (403)");
+    // The gated signals API returns this caller's own subject.
+    assert((await apiStatusVal(`/api/evidence-intel/signals/evidence_item/${myEvi}`, cookie)) === 200, "signals API returns a subject the caller can access (200)");
+    assert((await apiStatusVal(`/api/evidence-intel/signals/evidence_item/${myEvi}`, fieldCookie)) === 403, "signals API refuses a non-viewer role (403)");
+  } else {
+    pass("no proj-r47 evidence in seed to exercise the viewer (acceptable)");
+    pass("no proj-r47 evidence in seed to exercise the timeline (acceptable)");
+    pass("no proj-r47 evidence in seed to exercise viewer role gate (acceptable)");
+    pass("no proj-r47 evidence in seed to exercise scoped signals API access (acceptable)");
+    pass("no proj-r47 evidence in seed to exercise the signals API role gate (acceptable)");
+  }
+  if (otherEvi) {
+    // Cross-tenant: user-pm cannot see proj-dmv; both the viewer page and the
+    // signals API must 404 (same-404, no existence oracle, no content leak).
+    assert((await page(`/evidence-intelligence/evidence/${otherEvi}`, cookie)).status === 404, "cross-tenant evidence viewer is a plain 404");
+    assert((await apiStatusVal(`/api/evidence-intel/signals/evidence_item/${otherEvi}`, cookie)) === 404, "signals API does not leak another tenant's subject (404)");
+    // A fabricated id is the SAME 404 — inaccessible is indistinguishable from absent.
+    assert((await page("/evidence-intelligence/evidence/no-such-id", cookie)).status === 404, "a nonexistent evidence id is the same 404 as an inaccessible one");
+  } else {
+    pass("no proj-dmv evidence in seed to exercise cross-tenant viewer 404 (acceptable)");
+    pass("no proj-dmv evidence in seed to exercise cross-tenant signals 404 (acceptable)");
+    pass("no fixture to exercise nonexistent-vs-inaccessible 404 parity (acceptable)");
+  }
+
+  assert((await apiStatusVal("/api/evidence-intel/dashboard", fieldCookie)) === 403, "FIELD role gets 403 from the dashboard API");
+  assert((await apiStatusVal("/api/evidence-intel/dashboard")) === 401, "anonymous API access is 401");
   const anon = await page("/evidence-intelligence");
   assert([302, 303].includes(anon.status), "anonymous dashboard page redirects to sign-in");
 

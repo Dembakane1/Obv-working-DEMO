@@ -40,9 +40,12 @@ export function evidenceDuplicateFindings(
   if (peers.length === 0) return [];
 
   const myContractor = facts.projectId ? projectContext(facts.projectId).contractorOrgId : null;
+  // A peer only counts as "different contractor" when BOTH sides actually
+  // name a contractor and they differ — a null on either side is not a
+  // different contractor (mirrors the devicePatternFindings guard).
   const crossContractor = peers.filter((p) => {
     const c = p.projectId ? projectContext(p.projectId).contractorOrgId : null;
-    return p.projectId !== facts.projectId && c !== myContractor;
+    return p.projectId !== facts.projectId && !!myContractor && !!c && c !== myContractor;
   });
   const crossProject = peers.filter((p) => p.projectId !== facts.projectId);
   const base = {
@@ -51,9 +54,12 @@ export function evidenceDuplicateFindings(
     organizationId: facts.organizationId,
     projectId: facts.projectId,
   };
-  const related = peers.map((p) => ({ evidenceItemId: p.evidenceItemId, projectId: p.projectId }));
+  const asRecords = (list: typeof peers) =>
+    list.map((p) => ({ evidenceItemId: p.evidenceItemId, projectId: p.projectId }));
+  const related = asRecords(peers);
 
   if (crossContractor.length > 0) {
+    const matches = asRecords(crossContractor); // exactly the different-contractor peers
     return [{
       ...base,
       category: "CROSS_CONTRACTOR_DUPLICATE",
@@ -64,13 +70,14 @@ export function evidenceDuplicateFindings(
         "This photo's content hash is byte-for-byte identical to evidence recorded under a different contractor " +
         "in your portfolio. The same image standing in for two contractors' work is worth a close look — though it " +
         "can happen legitimately (shared subcontractor, re-used stock photo). This is advisory, not a determination.",
-      comparison: { contentHash: facts.contentHash, matches: related },
+      comparison: { contentHash: facts.contentHash, matches },
       recommendation: "Compare the two submissions side by side and confirm each contractor's work independently.",
-      relatedRecords: related,
+      relatedRecords: matches,
       signalKey: `evi-dup-crosscontractor:${evidence.id}`,
     }];
   }
   if (crossProject.length > 0) {
+    const matches = asRecords(crossProject); // exactly the other-project peers
     return [{
       ...base,
       category: "CROSS_PROJECT_DUPLICATE",
@@ -80,9 +87,9 @@ export function evidenceDuplicateFindings(
       explanation:
         "This photo's content hash matches evidence on a different project in your portfolio. Re-use across projects " +
         "is sometimes legitimate; it is surfaced so a reviewer can confirm the image actually depicts each project's work.",
-      comparison: { contentHash: facts.contentHash, matches: related },
+      comparison: { contentHash: facts.contentHash, matches },
       recommendation: "Confirm the image depicts this project specifically before relying on it.",
-      relatedRecords: related,
+      relatedRecords: matches,
       signalKey: `evi-dup-crossproject:${evidence.id}`,
     }];
   }
@@ -152,6 +159,18 @@ const DUP_CATEGORY_BY_KIND: Record<string, EvidenceSignalCategory> = {
   LIEN_WAIVER: "DUPLICATE_LIEN_WAIVER",
 };
 
+/** Human labels for the OCR fields that can form a document fingerprint, so
+ *  a reused-document explanation names exactly what was compared. */
+const OCR_FIELD_LABEL: Record<string, string> = {
+  CONTRACTOR_NAME: "contractor name",
+  INVOICE_NUMBER: "invoice number",
+  TOTAL: "total",
+  PERMIT_NUMBER: "permit number",
+  DATE: "date",
+  ADDRESS: "address",
+  LINE_ITEM: "line item",
+};
+
 /** Findings for one document, comparing its OCR fingerprint and salient
  *  fields against other documents in the same organization. */
 export function documentDuplicateFindings(
@@ -179,6 +198,16 @@ export function documentDuplicateFindings(
     if (twins.length > 0) {
       const kind = docKindFor(doc);
       const category = DUP_CATEGORY_BY_KIND[kind] ?? "REUSED_DOCUMENT";
+      // Name exactly the fields that formed the fingerprint, so the
+      // explanation never asserts a field both documents actually lack.
+      const matchedFieldKeys = evidenceIntelRepo
+        .listFields(extraction.id)
+        .filter((f) => f.normalizedValue)
+        .map((f) => f.fieldKey);
+      const fieldList = matchedFieldKeys.length
+        ? matchedFieldKeys.map((k) => OCR_FIELD_LABEL[k] ?? k.toLowerCase().replace(/_/g, " ")).join(", ")
+        : "extracted content";
+      const matches = twins.map((t) => ({ documentId: t.subjectId, projectId: t.projectId }));
       drafts.push({
         ...base,
         category,
@@ -186,12 +215,12 @@ export function documentDuplicateFindings(
         confidence: 0.88,
         title: `Document content matches ${twins.length} other document(s)`,
         explanation:
-          "The salient fields extracted from this document (vendor, number, amount, dates) are identical to " +
+          `The extracted fields that define this document's content fingerprint (${fieldList}) are identical to ` +
           `${twins.length} other document(s) in your portfolio, so the same document appears to have been submitted ` +
           "more than once. Legitimate re-submission happens; surfaced so a reviewer can avoid paying twice.",
-        comparison: { fingerprint: extraction.fingerprint, matches: twins.map((t) => ({ documentId: t.subjectId, projectId: t.projectId })) },
+        comparison: { fingerprint: extraction.fingerprint, matchedFields: matchedFieldKeys, matches },
         recommendation: "Confirm this is a distinct document before it supports a distinct payment.",
-        relatedRecords: twins.map((t) => ({ documentId: t.subjectId, projectId: t.projectId })),
+        relatedRecords: matches,
         signalKey: `doc-reused:${doc.id}`,
       });
     }
@@ -297,23 +326,31 @@ export function documentDuplicateFindings(
     }
   }
 
-  // Project-reference inconsistency: the document's own project vs. the
-  // project its draw belongs to should agree (structural sanity check).
-  const draw = repo.getDrawRequest(doc.drawRequestId);
-  if (draw && ctx.projectId && draw.projectId !== ctx.projectId) {
-    drafts.push({
-      ...base,
-      category: "PROJECT_REFERENCE_INCONSISTENCY",
-      severity: "LOW",
-      confidence: 0.55,
-      title: "Document project reference is inconsistent",
-      explanation:
-        "This document's resolved project does not match its draw request's project. Usually a data-entry artifact; " +
-        "surfaced so a reviewer can confirm the document is filed against the right project.",
-      comparison: { documentProject: ctx.projectId, drawProject: draw.projectId },
-      recommendation: "Confirm the document is attached to the correct project's draw.",
-      signalKey: `doc-project-inconsistency:${doc.id}`,
-    });
+  // Project-reference inconsistency: a document filed under one draw but
+  // citing a line item that lives under a draw on a DIFFERENT project is a
+  // structural data-entry artifact worth a reviewer's confirmation. The
+  // line item's own draw is the genuinely independent project reference —
+  // comparing the document's project to the project it was already resolved
+  // through would always agree and detect nothing.
+  if (doc.lineItemId && ctx.projectId) {
+    const line = repo.getDrawLine(doc.lineItemId);
+    const lineDraw = line ? repo.getDrawRequest(line.drawRequestId) : null;
+    if (lineDraw && lineDraw.projectId !== ctx.projectId) {
+      drafts.push({
+        ...base,
+        category: "PROJECT_REFERENCE_INCONSISTENCY",
+        severity: "LOW",
+        confidence: 0.55,
+        title: "Document project reference is inconsistent",
+        explanation:
+          "This document is filed under a draw on one project, but the line item it cites belongs to a draw on a " +
+          "different project. Usually a data-entry artifact; surfaced so a reviewer can confirm the document is filed " +
+          "against the right project.",
+        comparison: { documentProject: ctx.projectId, lineItemProject: lineDraw.projectId },
+        recommendation: "Confirm the document is attached to the correct project's draw.",
+        signalKey: `doc-project-inconsistency:${doc.id}`,
+      });
+    }
   }
 
   return drafts;

@@ -74,12 +74,14 @@ export async function handleEvidenceIntelRoutes(ctx: EvidenceIntelRouteContext):
       ctx.redirect(ctx.signInLocation);
       return true;
     }
-    const status = ctx.searchParams.get("status") || undefined;
+    // Default the applied filter to OPEN so it matches the highlighted tab
+    // (the landing view shows open findings, not every status mixed together).
+    const status = ctx.searchParams.get("status") || "OPEN";
     ctx.sendHtml(
       renderEvidenceReviewQueue({
         nav: ctx.navFor(user, "evidence-intel"),
         items: ei.listQueue(user, status),
-        activeStatus: status ?? "OPEN",
+        activeStatus: status,
         canReview: ei.canReviewEvidence(user),
       })
     );
@@ -145,18 +147,19 @@ export async function handleEvidenceIntelRoutes(ctx: EvidenceIntelRouteContext):
       ctx.redirect(ctx.signInLocation);
       return true;
     }
-    const evidence = repo.getEvidence(dupMatch[1]);
-    if (!evidence) {
-      ctx.sendHtml("<!doctype html><title>Not found</title><p>No such evidence.</p>", 404);
-      return true;
-    }
-    // Analyze this item on demand so the viewer is current, then render.
-    ei.analyzeEvidenceItem(user, evidence.id);
+    // Gate BEFORE disclosing existence. analyzeEvidenceItem asserts the
+    // viewer role and same-404s a subject the caller cannot see, so a
+    // nonexistent id and an inaccessible one are indistinguishable (no
+    // existence oracle), and no advisory row is written for an inaccessible
+    // target. The on-demand refresh keeps the viewer current; it is
+    // advisory + idempotent and writes only to the analysis tables.
+    ei.analyzeEvidenceItem(user, dupMatch[1]);
+    const evidence = repo.getEvidence(dupMatch[1])!; // exists — analyze would have 404'd
     ctx.sendHtml(
       renderDuplicateViewer({
         nav: ctx.navFor(user, "evidence-intel"),
         evidence,
-        signals: ei.listSignalsForSubject("EVIDENCE_ITEM", evidence.id),
+        signals: ei.signalsForSubject(user, "EVIDENCE_ITEM", evidence.id),
         metadata: ei.getMetadataFacts(evidence.id),
         score: ei.scoreEvidenceItem(evidence),
       })
@@ -184,8 +187,10 @@ export async function handleEvidenceIntelRoutes(ctx: EvidenceIntelRouteContext):
   }
   const signalsMatch = /^\/api\/evidence-intel\/signals\/([^/]+)\/([^/]+)$/.exec(pathname);
   if (method === "GET" && signalsMatch) {
-    ctx.getUser();
-    ctx.sendJson({ signals: ei.listSignalsForSubject(signalsMatch[1].toUpperCase(), signalsMatch[2]) });
+    const user = ctx.getUser();
+    // Gated + tenant-scoped: a subject in a project the caller cannot see
+    // is a plain 404, and no cross-tenant signal content is returned.
+    ctx.sendJson({ signals: ei.signalsForSubject(user, signalsMatch[1].toUpperCase(), signalsMatch[2]) });
     return true;
   }
   const timelineApi = /^\/api\/evidence-intel\/timeline\/([^/]+)$/.exec(pathname);

@@ -22,7 +22,10 @@ import {
   EvidenceIntelError,
   assertReviewer,
   assertViewer,
+  documentContext,
+  evidenceContext,
   nowIso,
+  projectContext,
 } from "./core";
 
 // ------------------------------------------------------------ enqueue
@@ -261,4 +264,32 @@ export function evidenceTimeline(user: User, evidenceItemId: string): { evidence
 
   entries.sort((a, b) => a.at.localeCompare(b.at));
   return { evidence, entries };
+}
+
+// --------------------------------------------------------- scoped signal read
+
+/** Advisory signals for one subject, gated and tenant-scoped. Resolves the
+ *  subject's project and refuses unless the caller may view Evidence
+ *  Intelligence AND can see that project — a subject in an inaccessible or
+ *  nonexistent project is a plain 404, indistinguishable from one that does
+ *  not exist. This is the ONLY read path the routes may use to fetch a
+ *  subject's signals; the raw repository read is never exposed to a request. */
+export function signalsForSubject(user: User, subjectType: string, subjectId: string): EvidenceSignal[] {
+  assertViewer(user);
+  const id = String(subjectId ?? "");
+  const projectId =
+    subjectType === "PROJECT"
+      ? projectContext(id).projectId
+      : subjectType === "EVIDENCE_ITEM"
+      ? evidenceContext(id)?.projectId ?? null
+      : subjectType === "DOCUMENT"
+      ? (() => {
+          const doc = repo.getDrawDocument(id);
+          return doc ? documentContext(doc).projectId : null;
+        })()
+      : null;
+  if (!projectId || !authz.accessibleProjectIds(user).has(projectId)) {
+    throw new EvidenceIntelError("Not found", 404);
+  }
+  return evidenceIntelRepo.listSignalsForSubject(subjectType, id);
 }

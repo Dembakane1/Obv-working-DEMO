@@ -49,15 +49,17 @@ export {
   dismiss,
   promote,
   evidenceTimeline,
+  signalsForSubject,
   type TimelineEntry,
 } from "./review";
 export { evidenceIntelDashboard, type EvidenceIntelDashboard } from "./dashboard";
 export { evidenceAnalytics, type EvidenceAnalytics } from "./analytics";
 
 // Direct repo re-exports the routes/pages need for read views.
+// NOTE: the raw listSignalsForSubject is intentionally NOT re-exported —
+// requests must go through the gated, tenant-scoped signalsForSubject.
 export {
   getSignal,
-  listSignalsForSubject,
   listExtractionsForSubject,
   listFields,
   getMetadataFacts,

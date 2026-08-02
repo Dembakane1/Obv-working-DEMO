@@ -288,14 +288,14 @@ export function getMetadataFacts(evidenceItemId: string): EvidenceMetadataFacts 
 
 export function listMetadataByHash(contentHash: string): EvidenceMetadataFacts[] {
   return getDb()
-    .prepare("SELECT * FROM evidence_metadata_facts WHERE content_hash = ? ORDER BY computed_at ASC")
+    .prepare("SELECT * FROM evidence_metadata_facts WHERE content_hash = ? ORDER BY computed_at ASC, rowid ASC")
     .all(contentHash)
     .map((r) => toFacts(r as Row));
 }
 
 export function listMetadataByFingerprint(fingerprint: string): EvidenceMetadataFacts[] {
   return getDb()
-    .prepare("SELECT * FROM evidence_metadata_facts WHERE device_fingerprint = ? ORDER BY computed_at ASC")
+    .prepare("SELECT * FROM evidence_metadata_facts WHERE device_fingerprint = ? ORDER BY computed_at ASC, rowid ASC")
     .all(fingerprint)
     .map((r) => toFacts(r as Row));
 }
@@ -364,14 +364,14 @@ export function getExtraction(id: string): OcrExtraction | null {
 
 export function listExtractionsForSubject(subjectType: string, subjectId: string): OcrExtraction[] {
   return getDb()
-    .prepare("SELECT * FROM ocr_extractions WHERE subject_type = ? AND subject_id = ? ORDER BY extracted_at DESC")
+    .prepare("SELECT * FROM ocr_extractions WHERE subject_type = ? AND subject_id = ? ORDER BY extracted_at DESC, rowid DESC")
     .all(subjectType, subjectId)
     .map((r) => toExtraction(r as Row));
 }
 
 export function listExtractionsByFingerprint(fingerprint: string): OcrExtraction[] {
   return getDb()
-    .prepare("SELECT * FROM ocr_extractions WHERE fingerprint = ? ORDER BY extracted_at ASC")
+    .prepare("SELECT * FROM ocr_extractions WHERE fingerprint = ? ORDER BY extracted_at ASC, rowid ASC")
     .all(fingerprint)
     .map((r) => toExtraction(r as Row));
 }
@@ -380,7 +380,7 @@ export function listExtractionsForOrgs(orgIds: string[], limit = 500): OcrExtrac
   if (orgIds.length === 0) return [];
   const marks = orgIds.map(() => "?").join(",");
   return getDb()
-    .prepare(`SELECT * FROM ocr_extractions WHERE organization_id IN (${marks}) ORDER BY extracted_at DESC LIMIT ?`)
+    .prepare(`SELECT * FROM ocr_extractions WHERE organization_id IN (${marks}) ORDER BY extracted_at DESC, rowid DESC LIMIT ?`)
     .all(...orgIds, Math.min(2000, limit))
     .map((r) => toExtraction(r as Row));
 }
@@ -421,7 +421,7 @@ export function findFieldMatches(
               e.overall_confidence AS e_conf, e.fingerprint AS e_fp, e.extracted_at AS e_at
        FROM ocr_fields f JOIN ocr_extractions e ON e.id = f.extraction_id
        WHERE e.organization_id IN (${marks}) AND f.field_key = ? AND f.normalized_value = ?
-       ORDER BY e.extracted_at ASC`
+       ORDER BY e.extracted_at ASC, e.rowid ASC`
     )
     .all(...orgIds, fieldKey, normalizedValue) as Row[];
   return rows.map((r) => ({

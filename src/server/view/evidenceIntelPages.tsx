@@ -7,6 +7,7 @@
  */
 import { h, Fragment, renderDocument } from "./jsx";
 import { AppShell, NavContext, PageHeader, enumLabel } from "./components";
+import { ADVISORY_NOTICE } from "../services/evidenceIntel";
 import type {
   EvidenceItem,
   EvidenceMetadataFacts,
@@ -139,6 +140,7 @@ export function renderEvidenceReviewQueue(input: {
       <PageHeader title="Evidence Review Queue" sub="Advisory findings a reviewer should look at. Acknowledging, dismissing, or promoting a finding is a reviewer decision — the platform never acts on your behalf.">
         <a className="btn ghost sm" href="/evidence-intelligence">← Dashboard</a>
       </PageHeader>
+      <AdvisoryBanner note={ADVISORY_NOTICE} />
       <div className="evi-tabs">{tab("OPEN", "Open")}{tab("ACKNOWLEDGED", "Acknowledged")}{tab("PROMOTED", "Promoted")}{tab("DISMISSED", "Dismissed")}</div>
       <section className="evi-card">
         <table className="evi-table">
@@ -180,6 +182,7 @@ export function renderReviewItemDetail(input: {
       <PageHeader title={signal?.title ?? "Advisory finding"} sub={signal ? enumLabel(signal.category) : ""}>
         <a className="btn ghost sm" href="/evidence-intelligence/queue">← Queue</a>
       </PageHeader>
+      <AdvisoryBanner note={ADVISORY_NOTICE} />
       <div className="evi-detail-head">
         {signal ? sevChip(signal.severity) : null}
         {chip(item.status)}
@@ -264,6 +267,7 @@ export function renderDuplicateViewer(input: {
         <a className="btn ghost sm" href={`/evidence-intelligence/timeline/${evidence.id}`}>Timeline →</a>
         <a className="btn ghost sm" href="/evidence-intelligence">← Dashboard</a>
       </PageHeader>
+      <AdvisoryBanner note={ADVISORY_NOTICE} />
 
       <section className="evi-summary">
         <div className="evi-stat"><b>{String(score.quality)}</b><span>Quality</span></div>
@@ -339,6 +343,7 @@ export function renderEvidenceTimeline(input: {
       <PageHeader title="Evidence timeline" sub="Every recorded moment for this evidence item, in order — capture, verification, ledger, draw references, and advisory review activity.">
         <a className="btn ghost sm" href={`/evidence-intelligence/evidence/${input.evidence.id}`}>← Evidence viewer</a>
       </PageHeader>
+      <AdvisoryBanner note={ADVISORY_NOTICE} />
       <section className="evi-card">
         <ol className="evi-timeline">
           {input.entries.length === 0 ? <li className="sub">No timeline entries.</li> : input.entries.map((e) => (
