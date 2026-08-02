@@ -2275,6 +2275,172 @@ CREATE TABLE IF NOT EXISTS accounting_links (
 );
 CREATE INDEX IF NOT EXISTS idx_accounting_links_org ON accounting_links(organization_id, entity_type);
 
+-- ================= Evidence Intelligence Platform (additive) =================
+-- EXPLAINABLE, ADVISORY analysis DERIVED from the authoritative evidence,
+-- verification, document, permit, and draw records. Every table below is
+-- an analysis OUTPUT: nothing here is evidence, and nothing here can
+-- approve a draw, reject evidence, release funds, change project progress,
+-- or override a lender decision. Findings become governed only when a
+-- REVIEWER promotes one into a formal exception (the existing exceptions
+-- service), never automatically. No row here is ever read as proof.
+
+-- One analysis pass over one subject (an evidence item, a document, a
+-- permit, a milestone). Advisory bookkeeping only.
+CREATE TABLE IF NOT EXISTS evidence_analysis_runs (
+  id TEXT PRIMARY KEY,
+  subject_type TEXT NOT NULL CHECK (subject_type IN
+    ('EVIDENCE_ITEM','DOCUMENT','PERMIT','MILESTONE','PROJECT')),
+  subject_id TEXT NOT NULL,
+  organization_id TEXT REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  trigger TEXT NOT NULL, -- ON_DEMAND | REANALYZE
+  status TEXT NOT NULL DEFAULT 'RUNNING' CHECK (status IN ('RUNNING','COMPLETED','FAILED')),
+  signal_count INTEGER NOT NULL DEFAULT 0,
+  started_by_user_id TEXT REFERENCES users(id),
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_evi_runs_subject ON evidence_analysis_runs(subject_type, subject_id);
+
+-- APPEND-ONLY advisory findings. No UPDATE or DELETE path exists anywhere.
+-- Each finding is self-explaining: why it fired, what records were
+-- compared, a confidence, and a recommended REVIEWER action. Severity is
+-- an attention hint, never an accusation and never an automatic control.
+CREATE TABLE IF NOT EXISTS evidence_signals (
+  id TEXT PRIMARY KEY,
+  run_id TEXT REFERENCES evidence_analysis_runs(id),
+  occurred_at TEXT NOT NULL,
+  category TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('INFO','LOW','MEDIUM','HIGH')),
+  confidence REAL NOT NULL,
+  subject_type TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  organization_id TEXT REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  title TEXT NOT NULL,
+  explanation TEXT NOT NULL,          -- plain-language "why this was generated"
+  comparison TEXT,                    -- JSON: exactly what records/values were compared
+  recommendation TEXT NOT NULL,       -- recommended REVIEWER action (advisory)
+  related_records TEXT,               -- JSON: linked record refs
+  signal_key TEXT UNIQUE              -- idempotency: one finding per (category+subjects)
+);
+CREATE INDEX IF NOT EXISTS idx_evi_signals_org ON evidence_signals(organization_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_evi_signals_subject ON evidence_signals(subject_type, subject_id);
+CREATE INDEX IF NOT EXISTS idx_evi_signals_category ON evidence_signals(category, occurred_at);
+
+-- Derived metadata facts per evidence item (recomputable cache; never a
+-- source of truth). Populated by the metadata engine on analysis.
+CREATE TABLE IF NOT EXISTS evidence_metadata_facts (
+  evidence_item_id TEXT PRIMARY KEY REFERENCES evidence_items(id),
+  organization_id TEXT REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  captured_at TEXT,
+  uploaded_at TEXT,
+  upload_delay_seconds INTEGER,
+  has_gps INTEGER NOT NULL DEFAULT 0,
+  latitude REAL,
+  longitude REAL,
+  mime_type TEXT,
+  file_size INTEGER,
+  width INTEGER,
+  height INTEGER,
+  device_fingerprint TEXT,            -- stable hash of device metadata (not identifying)
+  document_creation_date TEXT,
+  content_hash TEXT,                  -- the authoritative evidence hash, copied for comparison
+  computed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evi_meta_fingerprint ON evidence_metadata_facts(device_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_evi_meta_hash ON evidence_metadata_facts(content_hash);
+
+-- Provider-neutral OCR results. The provider is chosen by configuration
+-- (deterministic mock in this build); Azure Document Intelligence, AWS
+-- Textract, and Google Document AI are future adapters. Extracted text
+-- and fields are preserved verbatim with per-field confidence.
+CREATE TABLE IF NOT EXISTS ocr_extractions (
+  id TEXT PRIMARY KEY,
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('DOCUMENT','EVIDENCE_ITEM','PERMIT')),
+  subject_id TEXT NOT NULL,
+  organization_id TEXT REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  doc_kind TEXT NOT NULL,            -- INVOICE | RECEIPT | PERMIT | INSPECTION | LIEN_WAIVER | OTHER
+  provider TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'COMPLETED' CHECK (status IN ('COMPLETED','FAILED')),
+  raw_text TEXT,
+  overall_confidence REAL,
+  fingerprint TEXT,                  -- sha256 of the normalized canonical field string
+  extracted_at TEXT NOT NULL,
+  UNIQUE (subject_type, subject_id, provider)
+);
+CREATE INDEX IF NOT EXISTS idx_ocr_fingerprint ON ocr_extractions(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_ocr_subject ON ocr_extractions(subject_type, subject_id);
+
+CREATE TABLE IF NOT EXISTS ocr_fields (
+  id TEXT PRIMARY KEY,
+  extraction_id TEXT NOT NULL REFERENCES ocr_extractions(id),
+  field_key TEXT NOT NULL,          -- INVOICE_NUMBER | PERMIT_NUMBER | CONTRACTOR_NAME | ADDRESS | TOTAL | DATE | LINE_ITEM
+  field_value TEXT,
+  normalized_value TEXT,            -- casefolded / whitespace-collapsed / currency-normalized
+  confidence REAL,
+  sort INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ocr_fields_extraction ON ocr_fields(extraction_id, sort);
+CREATE INDEX IF NOT EXISTS idx_ocr_fields_lookup ON ocr_fields(field_key, normalized_value);
+
+-- The Evidence Review Queue. One queue item per advisory signal a
+-- reviewer should look at. Reviewer state lives HERE; the signal itself
+-- is immutable. Promotion to a governed exception is a REVIEWER action
+-- and records the created exception id — the platform never promotes
+-- automatically.
+CREATE TABLE IF NOT EXISTS evidence_review_queue (
+  id TEXT PRIMARY KEY,
+  signal_id TEXT NOT NULL UNIQUE REFERENCES evidence_signals(id),
+  organization_id TEXT REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  subject_type TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN
+    ('OPEN','ACKNOWLEDGED','DISMISSED','PROMOTED')),
+  recommendation TEXT NOT NULL,
+  resolution_note TEXT,
+  promoted_exception_id TEXT REFERENCES exceptions(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  resolved_by_user_id TEXT REFERENCES users(id),
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_evi_queue_org ON evidence_review_queue(organization_id, status, created_at);
+
+-- Append-only audit for every reviewer action on a queue item.
+CREATE TABLE IF NOT EXISTS evidence_review_events (
+  id TEXT PRIMARY KEY,
+  queue_item_id TEXT NOT NULL REFERENCES evidence_review_queue(id),
+  occurred_at TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  kind TEXT NOT NULL CHECK (kind IN
+    ('CREATED','ACKNOWLEDGED','DISMISSED','PROMOTED','REOPENED','NOTE')),
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_evi_review_events_item ON evidence_review_events(queue_item_id, occurred_at);
+
+-- ============== Future AI engines (DISABLED readiness registry) ==============
+-- FUTURE-READY ARCHITECTURE ONLY, following the government-foundation and
+-- SSO-readiness pattern: provider-neutral capability shapes with NO write
+-- path and a status constraint admitting only DISABLED. No perceptual
+-- hash, computer-vision, drone, satellite, photogrammetry, volumetric, or
+-- LiDAR engine is implemented; nothing here fabricates such analysis.
+CREATE TABLE IF NOT EXISTS evidence_ai_engines (
+  id TEXT PRIMARY KEY,
+  capability TEXT NOT NULL CHECK (capability IN
+    ('PERCEPTUAL_HASH','COMPUTER_VISION','DRONE_IMAGERY','SATELLITE_IMAGERY',
+     'PHOTOGRAMMETRY','VOLUMETRIC_ANALYSIS','LIDAR')),
+  display_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'DISABLED' CHECK (status IN ('DISABLED')),
+  created_at TEXT NOT NULL
+);
+
 `;
 
 export function getDb(): DatabaseSync {

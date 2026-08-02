@@ -3644,3 +3644,43 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
   .int-table { display: block; overflow-x: auto; }
   .int-actions { flex-direction: column; align-items: stretch; }
 }
+
+/* =====================================================================
+   v19 — Evidence Intelligence (advisory analysis)
+   ===================================================================== */
+.evi-advisory { background: var(--action-soft, #eef3fb); border: 1px solid var(--line); border-left: 3px solid var(--action, #2f6fed); border-radius: 8px; padding: 10px 14px; font-size: 12px; color: var(--ink-2); margin: 0 0 14px; }
+.evi-stats, .evi-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.evi-stat { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
+.evi-stat b { font-size: 20px; }
+.evi-stat span { font-size: 12px; color: var(--ink-2); }
+.evi-stat .sub { font-size: 11px; color: var(--ink-4); }
+.evi-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 0 0 14px; }
+.evi-card h2 { font-size: 13px; margin: 0 0 8px; }
+.evi-card .sub { font-size: 12px; }
+.evi-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.evi-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-4); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.evi-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.evi-table tr:last-child td { border-bottom: none; }
+.evi-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.evi-catgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.evi-catpill { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.evi-catpill b { font-size: 18px; }
+.evi-catpill span { font-size: 11px; color: var(--ink-4); }
+.evi-detail-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.evi-pre { background: var(--canvas); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 11.5px; overflow-x: auto; white-space: pre-wrap; }
+.evi-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.evi-actions form { display: flex; gap: 6px; align-items: center; }
+.evi-actions input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+.evi-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.evi-photo { width: 100%; max-height: 340px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
+.evi-dupblock { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+.evi-timeline { list-style: none; margin: 0; padding: 0; }
+.evi-tl-item { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.evi-tl-item:last-child { border-bottom: none; }
+.evi-tl-body { display: flex; flex-direction: column; gap: 1px; }
+/* Evidence-quality band on the Executive command center (Portfolio Intelligence). */
+.exec-section { margin: 4px 0 18px; }
+@media (max-width: 720px) {
+  .evi-split { grid-template-columns: 1fr; }
+  .evi-table { display: block; overflow-x: auto; }
+}

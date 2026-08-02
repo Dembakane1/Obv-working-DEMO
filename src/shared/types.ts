@@ -3103,3 +3103,148 @@ export interface AccountingLink {
   syncRunId: string;
   syncedAt: string;
 }
+
+// ==================== Evidence Intelligence Platform ====================
+
+export type EvidenceSubjectType =
+  | "EVIDENCE_ITEM" | "DOCUMENT" | "PERMIT" | "MILESTONE" | "PROJECT";
+
+export type EvidenceSignalSeverity = "INFO" | "LOW" | "MEDIUM" | "HIGH";
+
+/** Advisory signal categories. Every one is explainable and none is an
+ *  accusation or an automatic control. */
+export type EvidenceSignalCategory =
+  | "DUPLICATE_FILE" | "CROSS_PROJECT_DUPLICATE" | "CROSS_CONTRACTOR_DUPLICATE"
+  | "DUPLICATE_INVOICE" | "DUPLICATE_RECEIPT" | "DUPLICATE_PERMIT" | "DUPLICATE_LIEN_WAIVER"
+  | "MISSING_METADATA" | "TIMESTAMP_INCONSISTENCY" | "GPS_CONFLICT"
+  | "SUSPICIOUS_UPLOAD_TIMING" | "FILE_TRANSFORMATION" | "DUPLICATE_DEVICE_PATTERN"
+  | "DUPLICATE_INVOICE_NUMBER" | "REUSED_DOCUMENT" | "CONTRACTOR_NAME_CONFLICT"
+  | "TOTAL_INCONSISTENCY" | "SUSPICIOUS_EDIT" | "PROJECT_REFERENCE_INCONSISTENCY"
+  | "LOW_COMPLETENESS" | "LOW_QUALITY";
+
+/** An immutable advisory finding. */
+export interface EvidenceSignal {
+  id: string;
+  runId: string | null;
+  occurredAt: string;
+  category: EvidenceSignalCategory;
+  severity: EvidenceSignalSeverity;
+  confidence: number;
+  subjectType: EvidenceSubjectType;
+  subjectId: string;
+  organizationId: string | null;
+  projectId: string | null;
+  title: string;
+  explanation: string;
+  comparison: unknown | null;         // parsed JSON
+  recommendation: string;
+  relatedRecords: unknown | null;     // parsed JSON
+  signalKey: string | null;
+}
+
+export interface EvidenceAnalysisRun {
+  id: string;
+  subjectType: EvidenceSubjectType;
+  subjectId: string;
+  organizationId: string | null;
+  projectId: string | null;
+  trigger: string;
+  status: "RUNNING" | "COMPLETED" | "FAILED";
+  signalCount: number;
+  startedByUserId: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  detail: string | null;
+}
+
+export interface EvidenceMetadataFacts {
+  evidenceItemId: string;
+  organizationId: string | null;
+  projectId: string | null;
+  capturedAt: string | null;
+  uploadedAt: string | null;
+  uploadDelaySeconds: number | null;
+  hasGps: boolean;
+  latitude: number | null;
+  longitude: number | null;
+  mimeType: string | null;
+  fileSize: number | null;
+  width: number | null;
+  height: number | null;
+  deviceFingerprint: string | null;
+  documentCreationDate: string | null;
+  contentHash: string | null;
+  computedAt: string;
+}
+
+export type OcrDocKind = "INVOICE" | "RECEIPT" | "PERMIT" | "INSPECTION" | "LIEN_WAIVER" | "OTHER";
+export type OcrFieldKey =
+  | "INVOICE_NUMBER" | "PERMIT_NUMBER" | "CONTRACTOR_NAME" | "ADDRESS" | "TOTAL" | "DATE" | "LINE_ITEM";
+
+export interface OcrExtraction {
+  id: string;
+  subjectType: "DOCUMENT" | "EVIDENCE_ITEM" | "PERMIT";
+  subjectId: string;
+  organizationId: string | null;
+  projectId: string | null;
+  docKind: OcrDocKind;
+  provider: string;
+  status: "COMPLETED" | "FAILED";
+  rawText: string | null;
+  overallConfidence: number | null;
+  fingerprint: string | null;
+  extractedAt: string;
+}
+
+export interface OcrField {
+  id: string;
+  extractionId: string;
+  fieldKey: OcrFieldKey;
+  fieldValue: string | null;
+  normalizedValue: string | null;
+  confidence: number | null;
+  sort: number;
+}
+
+export type EvidenceReviewQueueStatus = "OPEN" | "ACKNOWLEDGED" | "DISMISSED" | "PROMOTED";
+
+export interface EvidenceReviewItem {
+  id: string;
+  signalId: string;
+  organizationId: string | null;
+  projectId: string | null;
+  subjectType: EvidenceSubjectType;
+  subjectId: string;
+  severity: EvidenceSignalSeverity;
+  confidence: number;
+  status: EvidenceReviewQueueStatus;
+  recommendation: string;
+  resolutionNote: string | null;
+  promotedExceptionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedByUserId: string | null;
+  resolvedAt: string | null;
+}
+
+export interface EvidenceReviewEvent {
+  id: string;
+  queueItemId: string;
+  occurredAt: string;
+  actorUserId: string | null;
+  kind: "CREATED" | "ACKNOWLEDGED" | "DISMISSED" | "PROMOTED" | "REOPENED" | "NOTE";
+  detail: string | null;
+}
+
+export type EvidenceAiCapability =
+  | "PERCEPTUAL_HASH" | "COMPUTER_VISION" | "DRONE_IMAGERY" | "SATELLITE_IMAGERY"
+  | "PHOTOGRAMMETRY" | "VOLUMETRIC_ANALYSIS" | "LIDAR";
+
+/** Future-AI readiness record — DISABLED only, no active analysis path. */
+export interface EvidenceAiEngine {
+  id: string;
+  capability: EvidenceAiCapability;
+  displayName: string;
+  status: "DISABLED";
+  createdAt: string;
+}
