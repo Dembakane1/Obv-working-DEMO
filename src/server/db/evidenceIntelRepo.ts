@@ -186,6 +186,34 @@ export function listSignalsForOrgs(
     .map((r) => toSignal(r as Row));
 }
 
+/** Project-scoped signal feed — the correct tenancy boundary for OBV's
+ *  multi-participant projects (a user sees projects they participate in,
+ *  which may belong to other organizations). */
+export function listSignalsForProjects(
+  projectIds: string[],
+  filter: { category?: string; limit?: number } = {}
+): EvidenceSignal[] {
+  if (projectIds.length === 0) return [];
+  const marks = projectIds.map(() => "?").join(",");
+  const limit = Math.min(2000, Math.max(1, filter.limit ?? 500));
+  if (filter.category) {
+    return getDb()
+      .prepare(
+        `SELECT * FROM evidence_signals WHERE project_id IN (${marks}) AND category = ?
+         ORDER BY occurred_at DESC, rowid DESC LIMIT ?`
+      )
+      .all(...projectIds, filter.category, limit)
+      .map((r) => toSignal(r as Row));
+  }
+  return getDb()
+    .prepare(
+      `SELECT * FROM evidence_signals WHERE project_id IN (${marks})
+       ORDER BY occurred_at DESC, rowid DESC LIMIT ?`
+    )
+    .all(...projectIds, limit)
+    .map((r) => toSignal(r as Row));
+}
+
 /** All signals for one org since a cutoff — the analytics trend feed. */
 export function listSignalsSince(organizationId: string, sinceIso: string): EvidenceSignal[] {
   return getDb()
@@ -524,11 +552,39 @@ export function updateReviewStatus(
   return result.changes === 1;
 }
 
-export function reviewStatsForOrg(organizationId: string): { open: number; acknowledged: number; dismissed: number; promoted: number } {
+/** Project-scoped review queue — the correct tenancy boundary. */
+export function listReviewForProjects(
+  projectIds: string[],
+  filter: { status?: string; limit?: number } = {}
+): EvidenceReviewItem[] {
+  if (projectIds.length === 0) return [];
+  const marks = projectIds.map(() => "?").join(",");
+  const limit = Math.min(2000, Math.max(1, filter.limit ?? 500));
+  if (filter.status) {
+    return getDb()
+      .prepare(
+        `SELECT * FROM evidence_review_queue WHERE project_id IN (${marks}) AND status = ?
+         ORDER BY created_at DESC, rowid DESC LIMIT ?`
+      )
+      .all(...projectIds, filter.status, limit)
+      .map((r) => toReviewItem(r as Row));
+  }
+  return getDb()
+    .prepare(
+      `SELECT * FROM evidence_review_queue WHERE project_id IN (${marks})
+       ORDER BY created_at DESC, rowid DESC LIMIT ?`
+    )
+    .all(...projectIds, limit)
+    .map((r) => toReviewItem(r as Row));
+}
+
+export function reviewStatsForProjects(projectIds: string[]): { open: number; acknowledged: number; dismissed: number; promoted: number } {
+  if (projectIds.length === 0) return { open: 0, acknowledged: 0, dismissed: 0, promoted: 0 };
+  const marks = projectIds.map(() => "?").join(",");
   const n = (status: string) =>
     (getDb()
-      .prepare("SELECT COUNT(*) AS n FROM evidence_review_queue WHERE organization_id = ? AND status = ?")
-      .get(organizationId, status) as Row).n as number;
+      .prepare(`SELECT COUNT(*) AS n FROM evidence_review_queue WHERE project_id IN (${marks}) AND status = ?`)
+      .get(...projectIds, status) as Row).n as number;
   return { open: n("OPEN"), acknowledged: n("ACKNOWLEDGED"), dismissed: n("DISMISSED"), promoted: n("PROMOTED") };
 }
 
