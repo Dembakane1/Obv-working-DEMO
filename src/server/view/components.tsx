@@ -227,6 +227,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: "Verification & records",
     items: [
       { key: "compliance", href: "/compliance", label: "Evidence Review", icon: icons.shield },
+      { key: "evidence-intel", href: "/evidence-intelligence", label: "Evidence Intelligence", icon: icons.insights },
       { key: "ledger", href: "/ledger", label: "Evidence Ledger", icon: icons.ledger },
       { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
     ],
