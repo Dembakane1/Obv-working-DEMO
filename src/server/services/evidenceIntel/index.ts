@@ -21,6 +21,12 @@ export {
   projectContext,
   documentContext,
   OCR_PROVIDERS,
+  // System-level advisory recording for sibling analysis layers (the
+  // official-source connectors). Callers must derive findings only from
+  // records they may legitimately read; reviewer authz applies to queue
+  // ACTIONS, not to appending advisory signals.
+  recordSignal,
+  type SignalDraft,
 } from "./core";
 export { computeMetadataFacts, metadataFindings } from "./metadata";
 export { extractDocument, resolveOcrProvider, OCR_PROVIDER_CATALOG, docKindFor } from "./ocr";
