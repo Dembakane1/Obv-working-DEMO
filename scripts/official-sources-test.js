@@ -332,6 +332,29 @@ async function main() {
   let fieldErr = null;
   try { osSvc.listQueue(field); } catch (e) { fieldErr = e; }
   assert(fieldErr?.statusCode === 403, "FIELD role cannot view Official Sources (403)");
+  // The interactive lookup is role-gated BEFORE any egress: a FIELD user
+  // triggers no retrieval and leaves no snapshot.
+  const snapsBeforeLookup = q1("SELECT COUNT(*) AS c FROM source_snapshots").c;
+  let lookupErr = null;
+  try { await osSvc.lookupSource(field, connectors.MOCK_SOURCE_ID, { permitNumber: "B2401001" }); } catch (e) { lookupErr = e; }
+  assert(lookupErr?.statusCode === 403, "FIELD role cannot run a source lookup (403, before any egress)");
+  assert(q1("SELECT COUNT(*) AS c FROM source_snapshots").c === snapsBeforeLookup,
+    "a refused lookup performs no retrieval and writes no snapshot");
+  // An interactive lookup without a project is stamped with the caller's
+  // organization; its snapshot (holding the search terms) is same-404 to
+  // other organizations.
+  osSvc.resetRateLimiters();
+  const orgLookup = await osSvc.lookupSource(funder, connectors.MOCK_SOURCE_ID, { permitNumber: "B2401001" });
+  assert(orgLookup.snapshot.organizationId === funder.organizationId,
+    "an unscoped lookup snapshot is stamped with the caller's organization");
+  const crraPm = pm; // org-crra
+  let orgSnapErr = null;
+  try { osSvc.snapshotPreview(crraPm, orgLookup.snapshot.id); } catch (e) { orgSnapErr = e; }
+  assert(orgSnapErr?.statusCode === 404, "another organization's lookup snapshot is a plain 404 (search terms stay private)");
+  // Dead letters can reference tenant search terms: reviewer-only.
+  let dlqErr = null;
+  try { osSvc.listDeadLetterQueue(dmvpm); } catch (e) { dlqErr = e; }
+  assert(dlqErr?.statusCode === 403, "the dead-letter queue is reviewer-only (a PM cannot read other tenants' lookup params)");
   // The ambiguous candidate matched permits in BOTH projects for the
   // funder (who sees both). A dmv-only viewer's own refresh must never
   // evaluate against r47 permits.

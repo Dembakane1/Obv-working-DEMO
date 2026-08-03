@@ -374,10 +374,44 @@ export async function runScheduledPoll(user: User): Promise<RefreshSummary[]> {
   return summaries;
 }
 
+/** Interactive lookup (the /official-sources/lookup form). Same guards
+ *  as every other retrieval: viewer role FIRST (before any egress),
+ *  circuit breaker, and the client-side rate cap. The snapshot is
+ *  stamped with the caller's organization even without a project, so
+ *  one tenant's search terms are never readable from another tenant's
+ *  snapshot preview. Results flow through matching + the queue like any
+ *  other retrieval. */
+export async function lookupSource(
+  user: User,
+  sourceId: string,
+  query: { permitNumber?: string; address?: string; party?: string; limit?: number },
+  projectId?: string | null
+): Promise<RetrievalOutput & { matches: number; queued: number }> {
+  assertSourceViewer(user);
+  const source = osRepo.getSource(sourceId);
+  if (!source || !connectorFor(sourceId)) throw new OfficialSourceError("Not found", 404);
+  assertCircuitClosed(sourceId);
+  checkRateLimit(sourceId, source.rateLimitPerMinute);
+  const project = projectId ? requireVisibleProject(user, projectId) : null;
+  const scope = {
+    actorUserId: user.id,
+    organizationId: project?.organizationId ?? user.organizationId,
+    projectId: project?.id ?? null,
+  };
+  const output = await performRetrieval(sourceId, "SEARCH", { query }, scope);
+  recordPollOutcome(sourceId, output.kind === "OK", output.kind);
+  const allowed = authz.accessibleProjectIds(user);
+  const post = output.kind === "OK" ? postProcess(output, allowed) : { matches: 0, changes: 0, queued: 0 };
+  return { ...output, matches: post.matches, queued: post.queued };
+}
+
 // ------------------------------------------------------ DLQ management
 
+/** Dead letters are operational records whose sanitized lookup params
+ *  can still reference one tenant's permit numbers or addresses, so the
+ *  listing is reviewer-only (matching the requeue/discard actions). */
 export function listDeadLetterQueue(user: User): ReturnType<typeof osRepo.listDeadLetters> {
-  assertSourceViewer(user);
+  assertSourceReviewer(user);
   return osRepo.listDeadLetters();
 }
 

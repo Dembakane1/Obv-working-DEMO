@@ -133,10 +133,11 @@ export async function handleOfficialSourceRoutes(ctx: OfficialSourceRouteContext
         projectId: params.projectId ?? "",
       };
       if (query.sourceId) {
-        const scopeProject = query.projectId
-          ? src.requireVisibleProject(user, query.projectId)
-          : null;
-        results = await src.searchSource(
+        // Gated + rate-limited: lookupSource asserts the viewer role
+        // BEFORE any egress, honors the circuit breaker and client-side
+        // rate cap, and stamps the caller's organization on the snapshot.
+        results = await src.lookupSource(
+          user,
           query.sourceId,
           {
             permitNumber: query.permitNumber || undefined,
@@ -144,11 +145,7 @@ export async function handleOfficialSourceRoutes(ctx: OfficialSourceRouteContext
             party: query.party || undefined,
             limit: 25,
           },
-          {
-            actorUserId: user.id,
-            organizationId: scopeProject?.organizationId ?? null,
-            projectId: scopeProject?.id ?? null,
-          }
+          query.projectId || null
         );
       }
     }

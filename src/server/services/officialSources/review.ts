@@ -519,6 +519,11 @@ export function snapshotPreview(user: User, snapshotId: string): {
   if (!snapshot || (snapshot.projectId && !authz.accessibleProjectIds(user).has(snapshot.projectId))) {
     throw new OfficialSourceError("Not found", 404);
   }
+  // A project-null snapshot stamped with an organization (an interactive
+  // lookup) carries that tenant's search terms: same-404 outside the org.
+  if (!snapshot.projectId && snapshot.organizationId && snapshot.organizationId !== user.organizationId) {
+    throw new OfficialSourceError("Not found", 404);
+  }
   return {
     snapshot,
     source: osRepo.getSource(snapshot.sourceId),
