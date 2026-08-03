@@ -2441,6 +2441,243 @@ CREATE TABLE IF NOT EXISTS evidence_ai_engines (
   created_at TEXT NOT NULL
 );
 
+-- ================== Official Source Connectors (v20) ==================
+-- External government and licensing systems are INFORMATION SOURCES, not
+-- OBV's source of truth. The lifecycle is: retrieval -> immutable raw
+-- snapshot -> normalized candidate -> match evaluation -> REVIEWER
+-- confirmation -> authoritative OBV record (through the existing governed
+-- DMV/permits commands — never by writing their tables from here).
+-- Nothing in this layer approves, rejects, releases, clears, decides, or
+-- moves funds. Secrets are NEVER stored: credential_env names an
+-- environment variable; snapshots persist only allowlisted headers.
+
+-- First-class Official Source Registry. One row per official source.
+CREATE TABLE IF NOT EXISTS official_sources (
+  id TEXT PRIMARY KEY,                       -- stable source identifier
+  jurisdiction TEXT NOT NULL,                -- e.g. 'US-DC'
+  agency TEXT NOT NULL,                      -- e.g. 'DOB', 'DLCP', 'DDOT', 'OCTO'
+  name TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (category IN
+    ('OFFICIAL_API','OFFICIAL_OPEN_DATA','OFFICIAL_DOWNLOAD',
+     'OFFICIAL_PORTAL_MANUAL','OFFICIAL_WEBHOOK','UNAVAILABLE')),
+  base_url TEXT,                             -- official base URL (portal URL for manual sources)
+  docs_url TEXT,                             -- official documentation reference
+  record_types TEXT NOT NULL,                -- JSON array of supported record types
+  auth_type TEXT NOT NULL DEFAULT 'NONE' CHECK (auth_type IN ('NONE','API_KEY','BEARER')),
+  credential_env TEXT,                       -- NAME of the env var holding the credential — never a secret
+  polling_supported INTEGER NOT NULL DEFAULT 0,
+  rate_limit_per_minute INTEGER,             -- conservative client-side cap
+  retention_notes TEXT,
+  terms_notes TEXT,                          -- acceptable-use / terms boundaries
+  expected_update_frequency TEXT,
+  source_timezone TEXT NOT NULL DEFAULT 'America/New_York',
+  operational_status TEXT NOT NULL DEFAULT 'ENABLED' CHECK (operational_status IN
+    ('ENABLED','PAUSED','MAINTENANCE','RETIRED')),
+  schema_version TEXT NOT NULL,
+  connector_version TEXT NOT NULL,
+  allowed_hosts TEXT NOT NULL,               -- JSON array: the ONLY hosts this connector may contact
+  last_success_at TEXT,
+  last_failure_at TEXT,
+  last_failure_reason TEXT,                  -- sanitized, never secrets
+  health TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (health IN
+    ('UNKNOWN','HEALTHY','DEGRADED','DOWN','MANUAL')),
+  maintenance_notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Immutable raw retrieval snapshots. APPEND-ONLY: a snapshot is never
+-- updated or overwritten; corrections are new snapshots.
+CREATE TABLE IF NOT EXISTS source_snapshots (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES official_sources(id),
+  connector_version TEXT NOT NULL,
+  external_id TEXT,
+  request_type TEXT NOT NULL CHECK (request_type IN
+    ('SEARCH','FETCH_RECORD','FETCH_CHANGES','HEALTH','MANUAL_IMPORT')),
+  lookup_params TEXT,                        -- JSON, sanitized (no credentials)
+  retrieved_at TEXT NOT NULL,
+  source_updated_at TEXT,                    -- source-reported update time
+  http_status INTEGER,
+  content_type TEXT,
+  payload TEXT,                              -- raw payload (bounded)
+  payload_path TEXT,                         -- larger payloads stored under uploads/
+  payload_sha256 TEXT NOT NULL,
+  response_headers TEXT,                     -- JSON: allowlisted provenance headers ONLY
+  cursor_info TEXT,                          -- JSON pagination/cursor state
+  actor_user_id TEXT REFERENCES users(id),
+  organization_id TEXT REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  retention_class TEXT NOT NULL DEFAULT 'STANDARD' CHECK (retention_class IN
+    ('STANDARD','RESTRICTED')),
+  outcome TEXT NOT NULL CHECK (outcome IN
+    ('SUCCESS','EMPTY','ERROR','REFUSED','MANUAL_VERIFICATION_REQUIRED'))
+);
+CREATE INDEX IF NOT EXISTS idx_snap_source ON source_snapshots(source_id, retrieved_at);
+CREATE INDEX IF NOT EXISTS idx_snap_external ON source_snapshots(source_id, external_id, retrieved_at);
+
+-- Normalized candidate records. The source's VERBATIM values are kept
+-- alongside OBV's normalized values — original terminology is never
+-- discarded.
+CREATE TABLE IF NOT EXISTS source_candidates (
+  id TEXT PRIMARY KEY,
+  snapshot_id TEXT NOT NULL REFERENCES source_snapshots(id),
+  source_id TEXT NOT NULL REFERENCES official_sources(id),
+  external_id TEXT NOT NULL,
+  jurisdiction TEXT NOT NULL,
+  agency TEXT NOT NULL,
+  record_type TEXT NOT NULL CHECK (record_type IN
+    ('PERMIT','INSPECTION','ENFORCEMENT','STOP_WORK','LICENSE',
+     'BUSINESS_REGISTRATION','OCCUPANCY_CERTIFICATE','PROPERTY_REFERENCE',
+     'OFFICIAL_DOCUMENT')),
+  normalized_status TEXT,
+  verbatim_status TEXT,                      -- the source's exact wording
+  address TEXT,
+  normalized_address TEXT,
+  permit_number TEXT,                        -- permit or license number
+  application_date TEXT,
+  issuance_date TEXT,
+  expiration_date TEXT,
+  inspection_date TEXT,
+  inspection_result TEXT,
+  enforcement_date TEXT,
+  party_name TEXT,                           -- contractor / licensee / business
+  source_url TEXT,
+  source_confidence REAL,
+  normalization_warnings TEXT,               -- JSON array
+  fields TEXT,                               -- JSON: {key:{value, verbatim}} full field map
+  schema_version TEXT NOT NULL,
+  connector_version TEXT NOT NULL,
+  organization_id TEXT REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  created_at TEXT NOT NULL,
+  candidate_key TEXT UNIQUE                  -- idempotency: source+external+payload hash
+);
+CREATE INDEX IF NOT EXISTS idx_cand_source ON source_candidates(source_id, external_id);
+CREATE INDEX IF NOT EXISTS idx_cand_number ON source_candidates(permit_number);
+CREATE INDEX IF NOT EXISTS idx_cand_org ON source_candidates(organization_id, created_at);
+
+-- Explainable match evaluations between a candidate and an OBV entity.
+CREATE TABLE IF NOT EXISTS source_matches (
+  id TEXT PRIMARY KEY,
+  candidate_id TEXT NOT NULL REFERENCES source_candidates(id),
+  organization_id TEXT REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  obv_entity_type TEXT NOT NULL CHECK (obv_entity_type IN
+    ('PERMIT','INSPECTION','PROJECT','ORGANIZATION','CONTRACTOR')),
+  obv_entity_id TEXT,
+  verdict TEXT NOT NULL CHECK (verdict IN
+    ('EXACT_MATCH','HIGH_CONFIDENCE_MATCH','POSSIBLE_MATCH','AMBIGUOUS',
+     'NO_MATCH','CONFLICT')),
+  confidence REAL NOT NULL,
+  reason_codes TEXT NOT NULL,                -- JSON array of reason codes
+  fields_compared TEXT NOT NULL,             -- JSON: what was compared
+  differences TEXT,                          -- JSON: where they differ
+  recommendation TEXT NOT NULL,              -- reviewer recommendation (advisory)
+  evaluated_at TEXT NOT NULL,
+  match_key TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_match_candidate ON source_matches(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_match_entity ON source_matches(obv_entity_type, obv_entity_id);
+
+-- Deterministic change events between successive snapshots of one
+-- external record. A disappeared record is labeled unavailable/missing —
+-- never inferred to be revoked.
+CREATE TABLE IF NOT EXISTS source_change_events (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES official_sources(id),
+  external_id TEXT NOT NULL,
+  previous_snapshot_id TEXT REFERENCES source_snapshots(id),
+  current_snapshot_id TEXT NOT NULL REFERENCES source_snapshots(id),
+  previous_candidate_id TEXT REFERENCES source_candidates(id),
+  current_candidate_id TEXT REFERENCES source_candidates(id),
+  change_kind TEXT NOT NULL,
+  changed_fields TEXT NOT NULL,              -- JSON [{field, previous, current}]
+  source_updated_at TEXT,
+  retrieved_at TEXT NOT NULL,
+  connector_version TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('INFO','LOW','MEDIUM','HIGH')),
+  explanation TEXT NOT NULL,
+  organization_id TEXT REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  created_at TEXT NOT NULL,
+  change_key TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_change_source ON source_change_events(source_id, external_id, created_at);
+
+-- Official Source Review Queue. Only a reviewer decision moves an item;
+-- the connector layer itself never writes an authoritative record.
+CREATE TABLE IF NOT EXISTS source_review_items (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT REFERENCES organizations(id),
+  project_id TEXT REFERENCES projects(id),
+  event_kind TEXT NOT NULL,
+  candidate_id TEXT REFERENCES source_candidates(id),
+  match_id TEXT REFERENCES source_matches(id),
+  change_event_id TEXT REFERENCES source_change_events(id),
+  affected_entity_type TEXT,
+  affected_entity_id TEXT,
+  severity TEXT NOT NULL CHECK (severity IN ('INFO','LOW','MEDIUM','HIGH')),
+  title TEXT NOT NULL,
+  explanation TEXT NOT NULL,
+  suggested_action TEXT NOT NULL,
+  blocking_implications TEXT,
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN
+    ('OPEN','CONFIRMED','REJECTED','DEFERRED','MANUAL_VERIFICATION',
+     'DISCREPANCY_RECORDED','PROMOTED')),
+  resolved_by_user_id TEXT REFERENCES users(id),
+  resolved_at TEXT,
+  resolution_note TEXT,
+  linked_official_source_record_id TEXT,     -- permits official_source_records id after confirm
+  linked_source_verification_id TEXT,        -- dmv source_verifications id when recorded
+  promoted_exception_id TEXT REFERENCES exceptions(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  item_key TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_srcreview_org ON source_review_items(organization_id, status, created_at);
+
+-- Append-only audit for every reviewer action on a review item.
+CREATE TABLE IF NOT EXISTS source_review_events (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES source_review_items(id),
+  occurred_at TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  kind TEXT NOT NULL CHECK (kind IN
+    ('CREATED','CONFIRMED','REJECTED','DEFERRED','MANUAL_VERIFICATION',
+     'DISCREPANCY_RECORDED','PROMOTED','NOTE')),
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_srcreview_events ON source_review_events(item_id, occurred_at);
+
+-- Per-source polling state: cursor, backoff, circuit breaker, pause.
+CREATE TABLE IF NOT EXISTS source_poll_state (
+  source_id TEXT PRIMARY KEY REFERENCES official_sources(id),
+  cursor TEXT,
+  last_poll_at TEXT,
+  last_poll_outcome TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  circuit_open_until TEXT,
+  paused INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
+-- Dead-letter queue for retrieval jobs that exhausted their retries.
+CREATE TABLE IF NOT EXISTS source_dead_letters (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES official_sources(id),
+  request_type TEXT NOT NULL,
+  lookup_params TEXT,                        -- sanitized JSON
+  first_failed_at TEXT NOT NULL,
+  last_failed_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL,
+  error_label TEXT NOT NULL,                 -- sanitized coarse error
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','REQUEUED','DISCARDED')),
+  resolved_by_user_id TEXT REFERENCES users(id),
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_srcdlq_source ON source_dead_letters(source_id, status);
+
 `;
 
 export function getDb(): DatabaseSync {

@@ -3684,3 +3684,11 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
   .evi-split { grid-template-columns: 1fr; }
   .evi-table { display: block; overflow-x: auto; }
 }
+
+/* =====================================================================
+   v20 — Official Source Connectors
+   Reuses the v19 .evi-* primitives for cards/tables/stats; adds only the
+   lookup form grid. */
+.osrc-lookup { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; align-items: center; }
+.osrc-lookup select, .osrc-lookup input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12.5px; min-width: 0; }
+@media (max-width: 720px) { .osrc-lookup { grid-template-columns: 1fr; } }

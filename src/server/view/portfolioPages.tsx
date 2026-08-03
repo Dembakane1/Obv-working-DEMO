@@ -169,6 +169,15 @@ export function renderExecutive(input: {
     duplicateFindings: number;
     topRepeated: { category: string; count: number } | null;
   } | null;
+  /** Advisory Official Sources summary (derived, viewer-scoped).
+   *  Absent when the caller cannot view Official Sources. */
+  officialSources?: {
+    coveragePct: number;
+    openReviews: number;
+    enforcementAlerts: number;
+    licenseAlerts: number;
+    conflictedProjects: number;
+  } | null;
 }): string {
   const { overview, risk } = input;
   const t = overview.totals;
@@ -253,6 +262,45 @@ export function renderExecutive(input: {
                 input.evidenceQuality.topRepeated
                   ? { value: String(input.evidenceQuality.topRepeated.count), label: `Most repeated: ${enumLabel(input.evidenceQuality.topRepeated.category)}` }
                   : { value: "—", label: "Most repeated advisory", dim: true },
+              ]}
+            />
+          </section>
+        ) : null}
+
+        {input.officialSources ? (
+          <section className="exec-section" aria-label="Official sources">
+            <SectionHead
+              title="Official sources"
+              hint="Advisory — retrieved government records for reviewer attention; never an OBV determination."
+              right={<a className="btn ghost sm" href="/official-sources">Open workspace</a>}
+            />
+            <MetricStrip
+              metrics={[
+                { value: `${input.officialSources.coveragePct}%`, label: "Permit official-record coverage", href: "/official-sources" },
+                {
+                  value: String(input.officialSources.openReviews),
+                  label: "Open source reviews",
+                  href: "/official-sources/queue",
+                  tone: input.officialSources.openReviews > 0 ? "warn" : undefined,
+                  dim: input.officialSources.openReviews === 0,
+                },
+                {
+                  value: String(input.officialSources.enforcementAlerts),
+                  label: "Enforcement-type alerts",
+                  tone: input.officialSources.enforcementAlerts > 0 ? "bad" : undefined,
+                  dim: input.officialSources.enforcementAlerts === 0,
+                },
+                {
+                  value: String(input.officialSources.licenseAlerts),
+                  label: "License alerts",
+                  tone: input.officialSources.licenseAlerts > 0 ? "warn" : undefined,
+                  dim: input.officialSources.licenseAlerts === 0,
+                },
+                {
+                  value: String(input.officialSources.conflictedProjects),
+                  label: "Projects with source conflicts",
+                  dim: input.officialSources.conflictedProjects === 0,
+                },
               ]}
             />
           </section>

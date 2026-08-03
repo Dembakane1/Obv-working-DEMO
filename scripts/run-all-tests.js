@@ -111,6 +111,7 @@ const STANDALONE = [
   "identity-test.js",
   "integrations-test.js",
   "evidence-intel-test.js",
+  "official-sources-test.js",
   "authz-test.js",
   "toolchain-test.js",
 ];

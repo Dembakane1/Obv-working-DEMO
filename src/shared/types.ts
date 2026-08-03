@@ -3120,7 +3120,10 @@ export type EvidenceSignalCategory =
   | "SUSPICIOUS_UPLOAD_TIMING" | "FILE_TRANSFORMATION" | "DUPLICATE_DEVICE_PATTERN"
   | "DUPLICATE_INVOICE_NUMBER" | "REUSED_DOCUMENT" | "CONTRACTOR_NAME_CONFLICT"
   | "TOTAL_INCONSISTENCY" | "SUSPICIOUS_EDIT" | "PROJECT_REFERENCE_INCONSISTENCY"
-  | "LOW_COMPLETENESS" | "LOW_QUALITY";
+  | "LOW_COMPLETENESS" | "LOW_QUALITY"
+  // Official-source advisory categories (connectors layer; still advisory)
+  | "SOURCE_STATUS_CONFLICT" | "SOURCE_RECORD_MISSING"
+  | "SOURCE_ENFORCEMENT_ALERT" | "SOURCE_LICENSE_INCONSISTENT";
 
 /** An immutable advisory finding. */
 export interface EvidenceSignal {
@@ -3247,4 +3250,260 @@ export interface EvidenceAiEngine {
   displayName: string;
   status: "DISABLED";
   createdAt: string;
+}
+
+// =====================================================================
+// Official Source Connectors (v20)
+// =====================================================================
+// External government and licensing systems are information sources, not
+// OBV's source of truth. Lifecycle: retrieval -> immutable raw snapshot
+// -> normalized candidate -> match evaluation -> reviewer confirmation
+// -> authoritative OBV record (via existing governed DMV commands only).
+
+export type SourceCategory =
+  | "OFFICIAL_API" | "OFFICIAL_OPEN_DATA" | "OFFICIAL_DOWNLOAD"
+  | "OFFICIAL_PORTAL_MANUAL" | "OFFICIAL_WEBHOOK" | "UNAVAILABLE";
+
+export type SourceAuthType = "NONE" | "API_KEY" | "BEARER";
+
+export type SourceOperationalStatus = "ENABLED" | "PAUSED" | "MAINTENANCE" | "RETIRED";
+
+export type SourceHealth = "UNKNOWN" | "HEALTHY" | "DEGRADED" | "DOWN" | "MANUAL";
+
+export type SourceRecordType =
+  | "PERMIT" | "INSPECTION" | "ENFORCEMENT" | "STOP_WORK" | "LICENSE"
+  | "BUSINESS_REGISTRATION" | "OCCUPANCY_CERTIFICATE" | "PROPERTY_REFERENCE"
+  | "OFFICIAL_DOCUMENT";
+
+/** One row of the Official Source Registry. `credentialEnv` names an
+ *  environment variable — a secret value is NEVER stored anywhere. */
+export interface OfficialSource {
+  id: string;
+  jurisdiction: string;
+  agency: string;
+  name: string;
+  category: SourceCategory;
+  baseUrl: string | null;
+  docsUrl: string | null;
+  recordTypes: SourceRecordType[];
+  authType: SourceAuthType;
+  credentialEnv: string | null;
+  pollingSupported: boolean;
+  rateLimitPerMinute: number | null;
+  retentionNotes: string | null;
+  termsNotes: string | null;
+  expectedUpdateFrequency: string | null;
+  sourceTimezone: string;
+  operationalStatus: SourceOperationalStatus;
+  schemaVersion: string;
+  connectorVersion: string;
+  allowedHosts: string[];
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastFailureReason: string | null;
+  health: SourceHealth;
+  maintenanceNotes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SnapshotRequestType =
+  | "SEARCH" | "FETCH_RECORD" | "FETCH_CHANGES" | "HEALTH" | "MANUAL_IMPORT";
+
+export type SnapshotOutcome =
+  | "SUCCESS" | "EMPTY" | "ERROR" | "REFUSED" | "MANUAL_VERIFICATION_REQUIRED";
+
+/** Immutable raw retrieval snapshot (append-only). */
+export interface SourceSnapshot {
+  id: string;
+  sourceId: string;
+  connectorVersion: string;
+  externalId: string | null;
+  requestType: SnapshotRequestType;
+  lookupParams: unknown | null;          // parsed JSON, sanitized
+  retrievedAt: string;
+  sourceUpdatedAt: string | null;
+  httpStatus: number | null;
+  contentType: string | null;
+  payload: string | null;
+  payloadPath: string | null;
+  payloadSha256: string;
+  responseHeaders: Record<string, string> | null;  // allowlisted only
+  cursorInfo: unknown | null;
+  actorUserId: string | null;
+  organizationId: string | null;
+  projectId: string | null;
+  retentionClass: "STANDARD" | "RESTRICTED";
+  outcome: SnapshotOutcome;
+}
+
+/** One normalized field with the source's verbatim value preserved. */
+export interface CandidateField {
+  value: string | null;      // OBV-normalized
+  verbatim: string | null;   // the source's exact wording — never discarded
+}
+
+/** Normalized candidate record derived from one snapshot. */
+export interface SourceCandidate {
+  id: string;
+  snapshotId: string;
+  sourceId: string;
+  externalId: string;
+  jurisdiction: string;
+  agency: string;
+  recordType: SourceRecordType;
+  normalizedStatus: string | null;
+  verbatimStatus: string | null;
+  address: string | null;
+  normalizedAddress: string | null;
+  permitNumber: string | null;
+  applicationDate: string | null;
+  issuanceDate: string | null;
+  expirationDate: string | null;
+  inspectionDate: string | null;
+  inspectionResult: string | null;
+  enforcementDate: string | null;
+  partyName: string | null;
+  sourceUrl: string | null;
+  sourceConfidence: number | null;
+  normalizationWarnings: string[];
+  fields: Record<string, CandidateField>;
+  schemaVersion: string;
+  connectorVersion: string;
+  organizationId: string | null;
+  projectId: string | null;
+  createdAt: string;
+  candidateKey: string | null;
+}
+
+export type MatchVerdict =
+  | "EXACT_MATCH" | "HIGH_CONFIDENCE_MATCH" | "POSSIBLE_MATCH"
+  | "AMBIGUOUS" | "NO_MATCH" | "CONFLICT";
+
+export type MatchEntityType =
+  | "PERMIT" | "INSPECTION" | "PROJECT" | "ORGANIZATION" | "CONTRACTOR";
+
+/** Explainable match evaluation between a candidate and an OBV entity. */
+export interface SourceMatch {
+  id: string;
+  candidateId: string;
+  organizationId: string | null;
+  projectId: string | null;
+  obvEntityType: MatchEntityType;
+  obvEntityId: string | null;
+  verdict: MatchVerdict;
+  confidence: number;
+  reasonCodes: string[];
+  fieldsCompared: unknown;
+  differences: unknown | null;
+  recommendation: string;
+  evaluatedAt: string;
+  matchKey: string | null;
+}
+
+export type SourceChangeKind =
+  | "STATUS_CHANGED" | "ISSUED" | "EXPIRED" | "EXPIRATION_CHANGED"
+  | "NEW_INSPECTION" | "INSPECTION_RESULT_CHANGED" | "REVOKED"
+  | "ENFORCEMENT_ACTION" | "STOP_WORK" | "LICENSE_EXPIRED"
+  | "LICENSE_SUSPENDED" | "PARTY_CHANGED" | "RECORD_UNAVAILABLE"
+  | "FIELD_CHANGED";
+
+/** Deterministic diff between two snapshots of one external record. */
+export interface SourceChangeEvent {
+  id: string;
+  sourceId: string;
+  externalId: string;
+  previousSnapshotId: string | null;
+  currentSnapshotId: string;
+  previousCandidateId: string | null;
+  currentCandidateId: string | null;
+  changeKind: SourceChangeKind;
+  changedFields: Array<{ field: string; previous: string | null; current: string | null }>;
+  sourceUpdatedAt: string | null;
+  retrievedAt: string;
+  connectorVersion: string;
+  severity: "INFO" | "LOW" | "MEDIUM" | "HIGH";
+  explanation: string;
+  organizationId: string | null;
+  projectId: string | null;
+  createdAt: string;
+  changeKey: string | null;
+}
+
+export type SourceReviewStatus =
+  | "OPEN" | "CONFIRMED" | "REJECTED" | "DEFERRED" | "MANUAL_VERIFICATION"
+  | "DISCREPANCY_RECORDED" | "PROMOTED";
+
+export type SourceReviewEventKind =
+  | "NEW_PERMIT_CANDIDATE" | "PERMIT_STATUS_CHANGED" | "INSPECTION_RESULT_CHANGED"
+  | "FAILED_INSPECTION" | "REINSPECTION_DETECTED" | "ENFORCEMENT_DETECTED"
+  | "STOP_WORK_DETECTED" | "LICENSE_EXPIRED" | "LICENSE_SUSPENDED"
+  | "LICENSE_NOT_FOUND" | "CONTRACTOR_NAME_MISMATCH" | "PROPERTY_MISMATCH"
+  | "RECORD_DISAPPEARED" | "SOURCE_CONFLICT" | "AMBIGUOUS_MATCH"
+  | "SOURCE_UNAVAILABLE" | "CONNECTOR_AUTH_FAILURE";
+
+/** One item in the Official Source Review Queue. */
+export interface SourceReviewItem {
+  id: string;
+  organizationId: string | null;
+  projectId: string | null;
+  eventKind: SourceReviewEventKind;
+  candidateId: string | null;
+  matchId: string | null;
+  changeEventId: string | null;
+  affectedEntityType: string | null;
+  affectedEntityId: string | null;
+  severity: "INFO" | "LOW" | "MEDIUM" | "HIGH";
+  title: string;
+  explanation: string;
+  suggestedAction: string;
+  blockingImplications: string | null;
+  status: SourceReviewStatus;
+  resolvedByUserId: string | null;
+  resolvedAt: string | null;
+  resolutionNote: string | null;
+  linkedOfficialSourceRecordId: string | null;
+  linkedSourceVerificationId: string | null;
+  promotedExceptionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  itemKey: string | null;
+}
+
+/** Append-only reviewer action on a source review item. */
+export interface SourceReviewEvent {
+  id: string;
+  itemId: string;
+  occurredAt: string;
+  actorUserId: string | null;
+  kind: "CREATED" | "CONFIRMED" | "REJECTED" | "DEFERRED" | "MANUAL_VERIFICATION"
+    | "DISCREPANCY_RECORDED" | "PROMOTED" | "NOTE";
+  detail: string | null;
+}
+
+/** Per-source polling state: cursor, backoff, circuit breaker. */
+export interface SourcePollState {
+  sourceId: string;
+  cursor: string | null;
+  lastPollAt: string | null;
+  lastPollOutcome: string | null;
+  consecutiveFailures: number;
+  circuitOpenUntil: string | null;
+  paused: boolean;
+  updatedAt: string;
+}
+
+/** Dead-lettered retrieval job. */
+export interface SourceDeadLetter {
+  id: string;
+  sourceId: string;
+  requestType: string;
+  lookupParams: unknown | null;
+  firstFailedAt: string;
+  lastFailedAt: string;
+  attempts: number;
+  errorLabel: string;
+  status: "OPEN" | "REQUEUED" | "DISCARDED";
+  resolvedByUserId: string | null;
+  resolvedAt: string | null;
 }
