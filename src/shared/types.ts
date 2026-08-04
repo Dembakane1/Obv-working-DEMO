@@ -3507,3 +3507,160 @@ export interface SourceDeadLetter {
   resolvedByUserId: string | null;
   resolvedAt: string | null;
 }
+
+// =====================================================================
+// Project Timeline & Site Intelligence (v21)
+// =====================================================================
+// A VISUALIZATION AND INTELLIGENCE LAYER over records that already
+// exist. The timeline engine owns NO tables: every event is derived on
+// read from an authoritative (or explicitly advisory) record that some
+// other governed subsystem authored. It never creates approvals,
+// changes project state, releases funds, or bypasses governance.
+
+/** Which subsystem a timeline event came from — also the filter axis
+ *  behind the timeline's "…only" views. */
+export type TimelineCategory =
+  | "PROJECT"        // creation, onboarding, configuration
+  | "BUDGET"         // budget lines, change orders, retainage
+  | "MILESTONE"      // milestone lifecycle
+  | "PERMIT"         // applications, issuance, basis versions, code
+  | "INSPECTION"     // scheduling, results, corrections, reinspections
+  | "EVIDENCE"       // uploads, reviews, verifications, ledger
+  | "EVIDENCE_INTEL" // advisory findings, OCR, reviewer queue actions
+  | "OFFICIAL_SOURCE"// retrievals, changes, source-review decisions
+  | "DISPUTE"        // disputes, responses, resolutions
+  | "EXCEPTION"      // exceptions and their lifecycle
+  | "DRAW"           // draw requests, reviews, packages
+  | "DECISION"       // lender approvals/rejections, approval records
+  | "PAYMENT"        // payment instructions, provider confirmations
+  | "REPORT"         // executive reports, audit packages
+  | "GOVERNANCE";    // configuration audit trail
+
+/** Whether the underlying record is a governed authoritative record or
+ *  an advisory observation. The UI must never present the two alike. */
+export type TimelineRecordStatus = "AUTHORITATIVE" | "ADVISORY";
+
+/** One derived event on the unified timeline. */
+export interface TimelineEvent {
+  /** Stable synthetic id: `${category}:${type}:${sourceRecordId}`. */
+  id: string;
+  /** ISO 8601. Events without a usable timestamp are never invented. */
+  at: string;
+  category: TimelineCategory;
+  /** Specific event type, e.g. "DRAW_SUBMITTED", "INSPECTION_RESULT". */
+  type: string;
+  /** Plain-language title a non-technical lender can read. */
+  title: string;
+  /** Why this happened / what it means, in plain language. */
+  explanation: string;
+  actorUserId: string | null;
+  actorName: string | null;
+  organizationId: string | null;
+  projectId: string;
+  milestoneId: string | null;
+  drawRequestId: string | null;
+  /** The authoritative record this event was derived from. */
+  sourceTable: string;
+  sourceRecordId: string;
+  /** Where a reader can go to see the record itself (may be null). */
+  href: string | null;
+  recordStatus: TimelineRecordStatus;
+  /** Optional severity for advisory/attention events. */
+  severity: "INFO" | "LOW" | "MEDIUM" | "HIGH" | null;
+  /** What changed, when the source record expresses a transition. */
+  change: { field: string; previous: string | null; current: string | null } | null;
+}
+
+/** A grouped bucket of events (grouped / milestone / week views). */
+export interface TimelineGroup {
+  key: string;
+  label: string;
+  from: string | null;
+  to: string | null;
+  events: TimelineEvent[];
+}
+
+/** Filters accepted by the timeline reads. */
+export interface TimelineFilters {
+  categories?: TimelineCategory[];
+  from?: string | null;
+  to?: string | null;
+  search?: string | null;
+  milestoneId?: string | null;
+  drawRequestId?: string | null;
+  actorUserId?: string | null;
+  limit?: number;
+}
+
+/** One step of the plain-language Project Story. */
+export interface StoryStep {
+  at: string;
+  headline: string;
+  detail: string;
+  category: TimelineCategory;
+  recordStatus: TimelineRecordStatus;
+  eventId: string;
+}
+
+/** One stage of a draw's playback (fixed canonical order). */
+export interface DrawPlaybackStage {
+  key: string;
+  label: string;
+  state: "NOT_REACHED" | "IN_PROGRESS" | "COMPLETE" | "BLOCKED";
+  at: string | null;
+  detail: string;
+  events: TimelineEvent[];
+}
+
+/** One frame of executive playback — cumulative project state at a date. */
+export interface PlaybackFrame {
+  label: string;
+  from: string;
+  to: string;
+  cumulativeEvents: number;
+  newEvents: number;
+  milestonesReleased: number;
+  drawsApproved: number;
+  openExceptions: number;
+  openDisputes: number;
+  narrative: string;
+}
+
+/** An advisory pattern the timeline noticed. NEVER a decision. */
+export type TimelineInsightKind =
+  | "LONG_APPROVAL_DELAY" | "REPEATED_FAILED_INSPECTIONS" | "REPEATED_DISPUTES"
+  | "EVIDENCE_GAP" | "REPEATED_REVIEWER_REQUESTS" | "PERMIT_DELAY"
+  | "CONTRACTOR_RESPONSE_DELAY" | "INSPECTION_BOTTLENECK";
+
+export interface TimelineInsight {
+  kind: TimelineInsightKind;
+  severity: "INFO" | "LOW" | "MEDIUM" | "HIGH";
+  title: string;
+  explanation: string;
+  recommendation: string;
+  projectId: string;
+  relatedEventIds: string[];
+  /** The measurement behind the insight, so it is never a black box. */
+  evidence: Record<string, unknown>;
+}
+
+/** Nodes/edges for the relationship graph view. */
+export interface RelationshipGraph {
+  nodes: Array<{ id: string; kind: string; label: string; href: string | null }>;
+  edges: Array<{ from: string; to: string; label: string }>;
+}
+
+/** Future spatial capability — declared interface only. No provider is
+ *  implemented and no imagery/vision analysis is performed. */
+export type SpatialCapability =
+  | "DRONE_IMAGERY" | "SATELLITE_IMAGERY" | "LIDAR" | "PHOTOGRAMMETRY"
+  | "VOLUMETRIC_MEASUREMENT" | "BIM_MODEL" | "GIS_LAYER";
+
+export interface SpatialProviderSpec {
+  capability: SpatialCapability;
+  displayName: string;
+  description: string;
+  status: "DISABLED";
+  /** What an implementation would need to supply, for planning only. */
+  requires: string[];
+}
