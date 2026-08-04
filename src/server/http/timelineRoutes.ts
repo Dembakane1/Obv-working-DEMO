@@ -290,7 +290,16 @@ export async function handleTimelineRoutes(ctx: TimelineRouteContext): Promise<b
     const format = (ctx.searchParams.get("format") ?? "json").toLowerCase();
     if (format === "csv") {
       const header = "at,category,type,title,actor,record_status,severity,source_table,source_record_id";
-      const escape = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+      // CSV formula injection: a spreadsheet executes a cell beginning
+      // with = + - @ (or a leading tab/CR) as a formula. Exported values
+      // include record-derived text such as actor names and titles, so
+      // every field is neutralized with a leading apostrophe before the
+      // normal quote-doubling.
+      const escape = (v: unknown) => {
+        const raw = String(v ?? "");
+        const safe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+        return `"${safe.replace(/"/g, '""')}"`;
+      };
       const rows = timeline.events.map((e) =>
         [e.at, e.category, e.type, e.title, e.actorName ?? "", e.recordStatus, e.severity ?? "", e.sourceTable, e.sourceRecordId]
           .map(escape)

@@ -29,13 +29,18 @@ function daysBetween(a: string, b: string): number {
   return Math.round((Date.parse(b) - Date.parse(a)) / MS_DAY);
 }
 
-/** Advisory insights for one project. */
-export function timelineInsights(user: User, projectId: string): {
+/** Advisory insights for one project. Callers that already hold the
+ *  project's timeline may pass it in to avoid recomputing it. */
+export function timelineInsights(
+  user: User,
+  projectId: string,
+  precomputed?: ReturnType<typeof projectTimeline>
+): {
   projectId: string;
   insights: TimelineInsight[];
   asOf: string;
 } {
-  const timeline = projectTimeline(user, projectId);
+  const timeline = precomputed ?? projectTimeline(user, projectId);
   const events = pastEvents(timeline.events, timeline.asOf);
   const insights: TimelineInsight[] = [];
   const pid = timeline.project.id;

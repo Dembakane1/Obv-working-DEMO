@@ -242,7 +242,8 @@ export function siteIntelligence(user: User, projectId: string): SiteIntelligenc
     href: null,
   });
 
-  const insights = safe(() => timelineInsights(user, project.id).insights, []);
+  // Reuse the timeline already computed above rather than rebuilding it.
+  const insights = safe(() => timelineInsights(user, project.id, timeline).insights, []);
   const executiveSummary =
     `${project.name} is ${project.status.toLowerCase()} with ${released} of ${milestones.length} milestones ` +
     `released and ${openExceptions.length} open exception${openExceptions.length === 1 ? "" : "s"}. ` +

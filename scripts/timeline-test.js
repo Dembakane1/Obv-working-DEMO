@@ -500,6 +500,13 @@ async function main() {
   const csvText = await csv.text();
   assert(csv.status === 200 && /^at,category,type,title/.test(csvText), "CSV export renders with a header row");
   assert(csvText.split("\n").length > 5, "CSV export contains event rows");
+  // CSV formula injection: no exported cell may begin with a character a
+  // spreadsheet would execute as a formula.
+  const cells = csvText.split("\n").slice(1).flatMap((line) => line.split('","'));
+  assert(
+    cells.every((c) => !/^"?[=+\-@\t\r]/.test(c)),
+    "no exported CSV cell begins with a spreadsheet formula character"
+  );
   const jsonExport = await (await fetch(`${BASE}/api/timeline/export/proj-r47`, { headers: { cookie } })).json();
   assert(jsonExport.notice && jsonExport.events.length > 0, "JSON export carries the notice and the events");
 
