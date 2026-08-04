@@ -15,7 +15,14 @@ import type {
   TimelineGroup,
   User,
 } from "../../../shared/types";
-import { ActorResolver, applyFilters, requireVisibleProject, sortEvents } from "./core";
+import {
+  ActorResolver,
+  TimelineError,
+  applyFilters,
+  assertTimelineViewer,
+  requireVisibleProject,
+  sortEvents,
+} from "./core";
 import { collectAll } from "./collectors";
 
 export interface ProjectTimeline {
@@ -58,7 +65,7 @@ export function projectTimeline(
   const project = requireVisibleProject(user, projectId);
   const asOf = new Date().toISOString();
   const actors = new ActorResolver();
-  const collected = collectAll(project, actors);
+  const collected = collectAll(project, actors, user);
   const all = sortEvents(collected.events);
   const counts: Record<string, number> = {};
   for (const e of all) counts[e.category] = (counts[e.category] ?? 0) + 1;
@@ -85,7 +92,11 @@ export function eventDetail(
 ): { event: TimelineEvent; previous: TimelineEvent | null; next: TimelineEvent | null; related: TimelineEvent[] } {
   const { events } = projectTimeline(user, projectId);
   const index = events.findIndex((e) => e.id === eventId);
-  if (index === -1) throw Object.assign(new Error("Not found"), { statusCode: 404, name: "TimelineError" });
+  // A real TimelineError, not a shaped plain Error: the server's known-error
+  // predicate tests `instanceof`, so a look-alike would surface as a 500
+  // "Internal server error" and break same-404 — an unknown event id and an
+  // event the caller may not see must be indistinguishable.
+  if (index === -1) throw new TimelineError("Not found", 404);
   const event = events[index];
   // "Related" = events sharing the same milestone or draw, which is how a
   // reader actually asks "what else happened around this?".
@@ -107,11 +118,27 @@ export function eventDetail(
 
 const MS_DAY = 86_400_000;
 
+/**
+ * ISO-8601 week key.
+ *
+ * The day is normalized to UTC midnight FIRST: without that, the raw
+ * millisecond difference carries a fractional day, so two events on the
+ * same calendar date could round into different weeks purely because one
+ * happened in the morning and one at night. The ISO year comes from the
+ * week's Thursday, which is what makes the last days of December and the
+ * first days of January land in the same week where they belong.
+ */
 function isoWeekKey(iso: string): string {
-  const d = new Date(iso);
-  const onejan = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((d.getTime() - onejan.getTime()) / MS_DAY + onejan.getUTCDay() + 1) / 7);
-  return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+  const parsed = new Date(iso);
+  const day = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
+  const dayNum = (day.getUTCDay() + 6) % 7; // Monday = 0 … Sunday = 6
+  const thursday = new Date(day.getTime());
+  thursday.setUTCDate(thursday.getUTCDate() - dayNum + 3);
+  const isoYear = thursday.getUTCFullYear();
+  const firstThursday = new Date(Date.UTC(isoYear, 0, 4));
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - ((firstThursday.getUTCDay() + 6) % 7) + 3);
+  const week = 1 + Math.round((thursday.getTime() - firstThursday.getTime()) / (7 * MS_DAY));
+  return `${isoYear}-W${String(week).padStart(2, "0")}`;
 }
 
 /** Group events for the grouped / milestone views. */
@@ -186,19 +213,53 @@ export interface PortfolioTimeline {
   entries: PortfolioTimelineEntry[];
   /** Portfolio-wide activity by ISO week, for the trend strip. */
   activityByWeek: Array<{ week: string; count: number }>;
+  /** Events counted AFTER the active filters — see `filtered`. */
   totalEvents: number;
+  /** Projects actually aggregated (see `projectsAvailable` when capped). */
   projects: number;
+  /** How many the caller can reach, whether or not all were aggregated. */
+  projectsAvailable: number;
+  /** True when any filter narrowed the counts, so the view can say the
+   *  totals are of the filtered set and not of the whole portfolio. */
+  filtered: boolean;
+  /** Any cap or omission that applied, stated openly. */
+  notes: string[];
 }
+
+/** Aggregating a portfolio runs the full per-project pipeline once per
+ *  project, so the breadth is bounded and the bound is reported. */
+export const PORTFOLIO_PROJECT_CAP = 50;
 
 /** Portfolio-wide timeline across the caller's accessible projects. */
 export function portfolioTimeline(user: User, filters: TimelineFilters = {}): PortfolioTimeline {
-  const projects = authz.accessibleProjects(user);
+  // Every other timeline entry point gates the role before doing work;
+  // the portfolio view must not be the one door that skips it.
+  assertTimelineViewer(user);
+  const available = authz.accessibleProjects(user);
+  const notes: string[] = [];
+  const projects = available.slice(0, PORTFOLIO_PROJECT_CAP);
+  if (available.length > projects.length) {
+    notes.push(
+      `Showing ${projects.length} of ${available.length} accessible projects — open a project for its full history.`
+    );
+  }
+  const filtered = Boolean(
+    (filters.categories && filters.categories.length > 0) ||
+      filters.from ||
+      filters.to ||
+      filters.search ||
+      filters.milestoneId ||
+      filters.drawRequestId ||
+      filters.actorUserId ||
+      filters.limit
+  );
+  if (filtered) notes.push("Counts below are of the filtered set, not of the whole portfolio.");
   const actors = new ActorResolver();
   const entries: PortfolioTimelineEntry[] = [];
   const byWeek = new Map<string, number>();
   let totalEvents = 0;
   for (const project of projects) {
-    const all = sortEvents(collectAll(project, actors).events);
+    const all = sortEvents(collectAll(project, actors, user).events);
     const scoped = applyFilters(all, filters);
     const counts: Record<string, number> = {};
     for (const e of scoped) {
@@ -230,6 +291,9 @@ export function portfolioTimeline(user: User, filters: TimelineFilters = {}): Po
       .sort((a, b) => (a.week < b.week ? -1 : 1)),
     totalEvents,
     projects: projects.length,
+    projectsAvailable: available.length,
+    filtered,
+    notes,
   };
 }
 
