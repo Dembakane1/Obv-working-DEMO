@@ -41,6 +41,18 @@ export interface TimelineRouteContext {
 
 const PAGE_PREFIX = "/timeline";
 
+/** A malformed percent-escape (`%`, `%zz`) makes decodeURIComponent throw
+ *  a URIError, which would surface as a 500 "Internal server error" on
+ *  what is really just an unknown event id. Returning the raw segment
+ *  lets the normal lookup miss and produce the ordinary 404. */
+function safeDecode(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /** Read the shared filter set from the query string. */
 function filtersFrom(searchParams: URLSearchParams) {
   const view = searchParams.get("view");
@@ -216,7 +228,7 @@ export async function handleTimelineRoutes(ctx: TimelineRouteContext): Promise<b
       renderEventDetail({
         nav: ctx.navFor(user, "timeline"),
         projectId: eventMatch[1],
-        detail: tl.eventDetail(user, eventMatch[1], decodeURIComponent(eventMatch[2])),
+        detail: tl.eventDetail(user, eventMatch[1], safeDecode(eventMatch[2])),
       })
     );
     return true;
@@ -231,6 +243,11 @@ export async function handleTimelineRoutes(ctx: TimelineRouteContext): Promise<b
       totalEvents: timeline.totalEvents,
       upcomingCount: timeline.upcomingCount,
       categoryCounts: timeline.categoryCounts,
+      // A caller reading JSON is as entitled to the doctrine and to any
+      // applied cap as a caller reading the page.
+      notice: tl.TIMELINE_NOTICE,
+      truncated: timeline.truncated,
+      sourceCaps: timeline.sourceCaps,
       asOf: timeline.asOf,
       events: timeline.events,
     });
@@ -305,6 +322,10 @@ export async function handleTimelineRoutes(ctx: TimelineRouteContext): Promise<b
           .map(escape)
           .join(",")
       );
+      // Served as a download with nosniff: a CSV rendered inline would
+      // let record-derived text be interpreted by the browser.
+      ctx.res.setHeader("Content-Disposition", `attachment; filename="timeline-${timeline.project.id}.csv"`);
+      ctx.res.setHeader("X-Content-Type-Options", "nosniff");
       ctx.sendText([header, ...rows].join("\n"), "text/csv; charset=utf-8");
       return true;
     }
@@ -313,6 +334,9 @@ export async function handleTimelineRoutes(ctx: TimelineRouteContext): Promise<b
       asOf: timeline.asOf,
       notice: tl.TIMELINE_NOTICE,
       totalEvents: timeline.totalEvents,
+      exportedEvents: timeline.events.length,
+      truncated: timeline.truncated,
+      sourceCaps: timeline.sourceCaps,
       events: timeline.events,
     });
     return true;
