@@ -142,9 +142,11 @@ export function siteIntelligence(user: User, projectId: string): SiteIntelligenc
     key: "contractor",
     label: "Contractor",
     value: contractorOrg ? contractorOrg.name : "Not assigned",
+    // The disclaimer is a statement about OBV, not about any particular
+    // contractor, so it appears whether or not one is assigned.
     detail: contractorOrg
       ? "The contractor of record for this project. OBV records participation; it never rates integrity."
-      : "No contractor organization is configured for this project.",
+      : "No contractor organization is configured. OBV records participation; it never rates integrity.",
     tone: "neutral",
     href: `/executive/entities`,
   });

@@ -32,6 +32,8 @@ export interface ProjectTimeline {
    *  permit expiry, a scheduled inspection). They belong on the timeline
    *  but have NOT happened — history and schedule are never conflated. */
   upcomingCount: number;
+  /** Any source-level read cap that applied, stated openly. */
+  sourceCaps: string[];
   /** The instant this view was computed, so "upcoming" is reproducible. */
   asOf: string;
 }
@@ -56,7 +58,8 @@ export function projectTimeline(
   const project = requireVisibleProject(user, projectId);
   const asOf = new Date().toISOString();
   const actors = new ActorResolver();
-  const all = sortEvents(collectAll(project, actors));
+  const collected = collectAll(project, actors);
+  const all = sortEvents(collected.events);
   const counts: Record<string, number> = {};
   for (const e of all) counts[e.category] = (counts[e.category] ?? 0) + 1;
   const filtered = applyFilters(all, filters);
@@ -69,6 +72,7 @@ export function projectTimeline(
     lastEventAt: all.length > 0 ? all[all.length - 1].at : null,
     truncated: filtered.length < all.length,
     upcomingCount: upcomingEvents(all, asOf).length,
+    sourceCaps: collected.caps,
     asOf,
   };
 }
@@ -194,7 +198,7 @@ export function portfolioTimeline(user: User, filters: TimelineFilters = {}): Po
   const byWeek = new Map<string, number>();
   let totalEvents = 0;
   for (const project of projects) {
-    const all = sortEvents(collectAll(project, actors));
+    const all = sortEvents(collectAll(project, actors).events);
     const scoped = applyFilters(all, filters);
     const counts: Record<string, number> = {};
     for (const e of scoped) {

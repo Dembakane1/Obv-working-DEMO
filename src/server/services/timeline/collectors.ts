@@ -26,6 +26,9 @@ export interface CollectorContext {
   project: Project;
   actors: ActorResolver;
   push: Push;
+  /** Report a source-level read cap so the view can say what it omitted
+   *  — a silently truncated history would misrepresent the record. */
+  noteCap: (note: string) => void;
 }
 
 function safe<T>(fn: () => T, fallback: T): T {
@@ -66,11 +69,19 @@ export function collectProject(ctx: CollectorContext): void {
   }
 }
 
+/** Per-source read cap. The audit trail is the highest-volume source, so
+ *  it is read generously — and when a cap is actually reached the
+ *  aggregate REPORTS it rather than silently showing a partial history. */
+export const AUDIT_READ_CAP = 20_000;
+
 /** The configuration audit trail — the cross-cutting record of who
  *  changed what, already written by the governed services. */
 export function collectGovernance(ctx: CollectorContext): void {
-  const { project, push } = ctx;
-  const entries = safe(() => repo.listConfigAudit(project.id, 500), []);
+  const { project, push, noteCap } = ctx;
+  const entries = safe(() => repo.listConfigAudit(project.id, AUDIT_READ_CAP), []);
+  if (entries.length >= AUDIT_READ_CAP) {
+    noteCap(`config_audit: showing the most recent ${AUDIT_READ_CAP} entries`);
+  }
   for (const e of entries) {
     push({
       at: e.createdAt,
@@ -847,16 +858,26 @@ export const COLLECTORS: Array<(ctx: CollectorContext) => void> = [
   collectReports,
 ];
 
-/** Run every collector for one project and return unsorted events. */
-export function collectAll(project: Project, actors: ActorResolver): TimelineEvent[] {
+/** Run every collector for one project. Returns unsorted events plus any
+ *  source-level caps that applied. */
+export function collectAll(
+  project: Project,
+  actors: ActorResolver
+): { events: TimelineEvent[]; caps: string[] } {
   const events: TimelineEvent[] = [];
+  const caps: string[] = [];
   const push: Push = (draft) => {
     const event = makeEvent(draft, actors);
     if (event) events.push(event);
   };
-  const ctx: CollectorContext = { project, actors, push };
+  const ctx: CollectorContext = {
+    project,
+    actors,
+    push,
+    noteCap: (note) => { if (!caps.includes(note)) caps.push(note); },
+  };
   for (const collector of COLLECTORS) {
     safe(() => collector(ctx), undefined);
   }
-  return events;
+  return { events, caps };
 }
