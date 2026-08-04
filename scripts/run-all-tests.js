@@ -112,6 +112,7 @@ const STANDALONE = [
   "integrations-test.js",
   "evidence-intel-test.js",
   "official-sources-test.js",
+  "timeline-test.js",
   "authz-test.js",
   "toolchain-test.js",
 ];

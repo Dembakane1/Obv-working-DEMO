@@ -190,6 +190,47 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Project Timeline & Site Intelligence (v27)
+
+**The timeline explains the record. It never changes it.** A read-only
+visualization and intelligence layer that assembles every governed event
+OBV already stores into one chronological project history: pilot launch
+and the configuration audit trail, budget lines and change orders,
+milestones, permits + governing code + basis versions and corrections,
+inspections, evidence capture/upload/verification, Evidence Intelligence
+findings and reviewer actions, Official Source retrievals/changes/
+decisions, disputes, exceptions, draws + approvals + lender decisions,
+payment instructions + provider confirmations, and audit packages. The
+layer **owns no tables and performs no writes** — it prepares no SQL,
+calls no approval/release/decision/payment path, and its route module
+has no POST handler at all (non-GET is refused 405); twenty-one
+authoritative tables are proven byte-identical after exercising the
+whole surface. Every event carries timestamp, actor, category, type,
+project/draw/milestone, the source record, a plain-language explanation,
+and an AUTHORITATIVE-or-ADVISORY label. Ordering breaks ties on time,
+category, type, then id, so same-millisecond writes never reorder.
+It never invents a timestamp: the projects table stores no creation time,
+so Story Mode opens with the earliest *recorded* activity and says so,
+and recorded future dates (permit expiry, scheduled inspections) render
+as "Upcoming — not yet happened" and are excluded from story and
+playback. Eight named views, search, date ranges, and week/month/
+category/milestone grouping; **Project Story Mode** narrates the project
+for non-technical lenders; **draw playback** walks requested → evidence →
+review → official sources → inspection → exceptions → disputes → lender
+decision → payment instruction → provider confirmation (resolving both
+draw→milestone linkages); **executive playback** replays it period by
+period; **Timeline Intelligence** raises eight advisory patterns, each
+publishing the measurement and threshold behind it and never a decision;
+**Site Intelligence** composes fourteen panels plus an executive summary;
+the **project map** places evidence only where a real GPS fix exists and
+never invents a coordinate; and seven future spatial capabilities (drone,
+satellite, LiDAR, photogrammetry, volumetric, BIM, GIS) are declared
+interfaces only — all DISABLED, with no imagery retrieved and no vision
+analysis performed. Portfolio timeline plus an advisory Project history
+band on the Executive command center. All reads are tenant-scoped with
+same-404. 157-checkpoint suite (`scripts/timeline-test.js`) — see
+`docs/PROJECT_TIMELINE.md`.
+
 ## Official Source Connectors Platform (v26)
 
 **Official sources inform the reviewer. They never decide for OBV.** A

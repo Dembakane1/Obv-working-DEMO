@@ -178,6 +178,14 @@ export function renderExecutive(input: {
     licenseAlerts: number;
     conflictedProjects: number;
   } | null;
+  /** Read-only project-history summary (derived, viewer-scoped). */
+  projectHistory?: {
+    totalEvents: number;
+    projects: number;
+    activeWeeks: number;
+    busiestProject: { projectId: string; projectName: string; totalEvents: number } | null;
+    lastActivityAt: string | null;
+  } | null;
 }): string {
   const { overview, risk } = input;
   const t = overview.totals;
@@ -300,6 +308,35 @@ export function renderExecutive(input: {
                   value: String(input.officialSources.conflictedProjects),
                   label: "Projects with source conflicts",
                   dim: input.officialSources.conflictedProjects === 0,
+                },
+              ]}
+            />
+          </section>
+        ) : null}
+
+        {input.projectHistory ? (
+          <section className="exec-section" aria-label="Project history">
+            <SectionHead
+              title="Project history"
+              hint="Read-only timeline of governed events — a view over existing records, never a decision."
+              right={<a className="btn ghost sm" href="/timeline">Open timeline</a>}
+            />
+            <MetricStrip
+              metrics={[
+                { value: String(input.projectHistory.totalEvents), label: "Recorded events", href: "/timeline" },
+                { value: String(input.projectHistory.projects), label: "Projects with history" },
+                { value: String(input.projectHistory.activeWeeks), label: "Weeks with activity" },
+                input.projectHistory.busiestProject
+                  ? {
+                      value: String(input.projectHistory.busiestProject.totalEvents),
+                      label: `Most activity: ${input.projectHistory.busiestProject.projectName}`,
+                      href: `/timeline/project/${input.projectHistory.busiestProject.projectId}`,
+                    }
+                  : { value: "—", label: "Most active project", dim: true },
+                {
+                  value: input.projectHistory.lastActivityAt ? input.projectHistory.lastActivityAt.slice(0, 10) : "—",
+                  label: "Last recorded activity",
+                  dim: !input.projectHistory.lastActivityAt,
                 },
               ]}
             />

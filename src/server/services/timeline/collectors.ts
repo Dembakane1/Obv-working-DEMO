@@ -1,0 +1,883 @@
+/**
+ * Timeline collectors — one function per subsystem, each turning
+ * already-stored authoritative (or explicitly advisory) records into
+ * TimelineEvents.
+ *
+ * READ-ONLY BY CONSTRUCTION. Every collector calls list/get functions
+ * only; this module contains no INSERT/UPDATE/DELETE and no call to any
+ * approval, release, decision, or payment path. Where a record carries
+ * several meaningful moments (requested / submitted / decided), each
+ * moment becomes its own event so the history reads as it happened.
+ */
+import * as repo from "../../db/repo";
+import * as evidenceIntelRepo from "../../db/evidenceIntelRepo";
+import * as officialSourcesRepo from "../../db/officialSourcesRepo";
+import * as disputeRepo from "../../db/disputeRepo";
+import * as lenderRepo from "../../db/lenderRepo";
+import * as bankingRepo from "../../db/bankingRepo";
+import * as dmvRepo from "../../db/dmvRepo";
+import type { Project, TimelineEvent } from "../../../shared/types";
+import { ActorResolver, makeEvent, type EventDraft } from "./core";
+
+type Push = (draft: EventDraft) => void;
+
+/** Every collector receives this context; `push` drops undated rows. */
+export interface CollectorContext {
+  project: Project;
+  actors: ActorResolver;
+  push: Push;
+  /** Report a source-level read cap so the view can say what it omitted
+   *  — a silently truncated history would misrepresent the record. */
+  noteCap: (note: string) => void;
+}
+
+function safe<T>(fn: () => T, fallback: T): T {
+  // A subsystem that is not configured for a given project must never
+  // break the whole history — the timeline degrades to what it can read.
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
+
+// ------------------------------------------------------------ project
+
+export function collectProject(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  const pilot = project.pilot;
+  // NOTE: the projects table stores no creation timestamp, so no
+  // PROJECT_CREATED event is emitted — a timeline never invents a time.
+  // Story Mode instead opens with the earliest RECORDED activity and
+  // says so explicitly.
+  if (pilot?.launchedAt) {
+    push({
+      at: pilot.launchedAt,
+      category: "PROJECT",
+      type: "PROJECT_LAUNCHED",
+      title: "Pilot launched",
+      explanation:
+        "Onboarding completed and the project was launched: participants, requirements, and the approval " +
+        "matrix became active for governed decisions.",
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "projects",
+      sourceRecordId: project.id,
+      href: `/pilot`,
+      recordStatus: "AUTHORITATIVE",
+    });
+  }
+}
+
+/** Per-source read cap. The audit trail is the highest-volume source, so
+ *  it is read generously — and when a cap is actually reached the
+ *  aggregate REPORTS it rather than silently showing a partial history. */
+export const AUDIT_READ_CAP = 20_000;
+
+/** The configuration audit trail — the cross-cutting record of who
+ *  changed what, already written by the governed services. */
+export function collectGovernance(ctx: CollectorContext): void {
+  const { project, push, noteCap } = ctx;
+  const entries = safe(() => repo.listConfigAudit(project.id, AUDIT_READ_CAP), []);
+  if (entries.length >= AUDIT_READ_CAP) {
+    noteCap(`config_audit: showing the most recent ${AUDIT_READ_CAP} entries`);
+  }
+  for (const e of entries) {
+    push({
+      at: e.createdAt,
+      category: "GOVERNANCE",
+      type: e.action,
+      title: `${e.action.replace(/_/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase())}`,
+      explanation:
+        `${e.afterSummary ?? e.entityType}${e.reason ? ` — reason: ${e.reason}` : ""}. ` +
+        "Recorded in the configuration audit trail by the governed service that made the change.",
+      actorUserId: e.actorUserId,
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "config_audit",
+      sourceRecordId: e.id,
+      recordStatus: "AUTHORITATIVE",
+      change: e.beforeSummary || e.afterSummary
+        ? { field: e.entityType, previous: e.beforeSummary ?? null, current: e.afterSummary ?? null }
+        : null,
+    });
+  }
+}
+
+// ------------------------------------------------------------ budget
+
+export function collectBudget(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const line of safe(() => repo.listBudgetLines(project.id), [])) {
+    push({
+      at: (line as { createdAt?: string }).createdAt,
+      category: "BUDGET",
+      type: "BUDGET_LINE_CREATED",
+      title: `Budget line added — ${line.description ?? line.id}`,
+      explanation: "A budget line was recorded, defining scheduled value against which draws are measured.",
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "budget_lines",
+      sourceRecordId: line.id,
+      href: `/projects/${project.id}`,
+      recordStatus: "AUTHORITATIVE",
+    });
+  }
+  for (const co of safe(() => repo.listChangeOrdersForProject(project.id), [])) {
+    push({
+      at: co.requestedAt ?? co.createdAt,
+      category: "BUDGET",
+      type: "CHANGE_ORDER_REQUESTED",
+      title: `Change order requested — ${co.title ?? co.id}`,
+      explanation: "A change order was raised to adjust scope or budget. It follows the governed approval path.",
+      actorUserId: co.requestedByUserId,
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "change_orders",
+      sourceRecordId: co.id,
+      href: `/change-orders`,
+      recordStatus: "AUTHORITATIVE",
+    });
+    if (co.appliedAt) {
+      push({
+        at: co.appliedAt,
+        category: "BUDGET",
+        type: "CHANGE_ORDER_APPLIED",
+        title: `Change order applied — ${co.title ?? co.id}`,
+        explanation: "The approved change order was applied to the budget.",
+        projectId: project.id,
+        organizationId: project.organizationId,
+        sourceTable: "change_orders",
+        sourceRecordId: co.id,
+        href: `/change-orders`,
+        recordStatus: "AUTHORITATIVE",
+        change: { field: "status", previous: "APPROVED", current: co.status },
+      });
+    }
+  }
+}
+
+// ------------------------------------------------------------ milestones
+
+export function collectMilestones(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const m of safe(() => repo.listMilestones(project.id), [])) {
+    const planned = (m as { plannedStart?: string | null }).plannedStart ?? null;
+    if (planned) {
+      push({
+        at: planned,
+        category: "MILESTONE",
+        type: "MILESTONE_PLANNED_START",
+        title: `Milestone scheduled to start — ${m.title}`,
+        explanation: `${m.title} was planned to begin on this date. Requirement: ${m.requirement}`,
+        projectId: project.id,
+        milestoneId: m.id,
+        organizationId: project.organizationId,
+        sourceTable: "milestones",
+        sourceRecordId: m.id,
+        href: `/projects/${project.id}`,
+        recordStatus: "AUTHORITATIVE",
+      });
+    }
+  }
+}
+
+// ------------------------------------------------------------ permits / DMV
+
+export function collectPermits(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const p of safe(() => repo.listPermitsForProject(project.id), [])) {
+    push({
+      at: p.createdAt,
+      category: "PERMIT",
+      type: "PERMIT_RECORDED",
+      title: `Permit recorded — ${p.permitNumber}`,
+      explanation:
+        `A ${p.permitType.toLowerCase()} permit (${p.permitNumber}) was recorded for this project` +
+        `${p.issuingAuthority ? ` from ${p.issuingAuthority}` : ""}. OBV records permits; it never issues them.`,
+      actorUserId: p.createdByUserId,
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "permits",
+      sourceRecordId: p.id,
+      href: `/permits`,
+      recordStatus: "AUTHORITATIVE",
+    });
+    if (p.issuedAt) {
+      push({
+        at: p.issuedAt,
+        category: "PERMIT",
+        type: "PERMIT_ISSUED",
+        title: `Permit issued — ${p.permitNumber}`,
+        explanation: `The issuing authority's recorded issuance date for ${p.permitNumber}.`,
+        projectId: project.id,
+        organizationId: project.organizationId,
+        sourceTable: "permits",
+        sourceRecordId: p.id,
+        href: `/permits`,
+        recordStatus: "AUTHORITATIVE",
+      });
+    }
+    if (p.codeDeterminedAt) {
+      push({
+        at: p.codeDeterminedAt,
+        category: "PERMIT",
+        type: "GOVERNING_CODE_DETERMINED",
+        title: `Governing code basis determined — ${p.permitNumber}`,
+        explanation:
+          `An authorized reviewer recorded the governing code basis` +
+          `${p.applicableCodeEdition ? ` (${p.applicableCodeEdition})` : ""}. This is a human determination ` +
+          "that OBV records — never an independent legal interpretation.",
+        actorUserId: p.codeDeterminedBy,
+        projectId: project.id,
+        organizationId: project.organizationId,
+        sourceTable: "permits",
+        sourceRecordId: p.id,
+        href: `/permits`,
+        recordStatus: "AUTHORITATIVE",
+      });
+    }
+    if (p.expiresAt) {
+      push({
+        at: p.expiresAt,
+        category: "PERMIT",
+        type: "PERMIT_EXPIRES",
+        title: `Permit expiry — ${p.permitNumber}`,
+        explanation: `The recorded expiration date for ${p.permitNumber}.`,
+        projectId: project.id,
+        organizationId: project.organizationId,
+        sourceTable: "permits",
+        sourceRecordId: p.id,
+        href: `/permits`,
+        recordStatus: "AUTHORITATIVE",
+      });
+    }
+  }
+
+  // Permit basis versions + corrections (DMV Draw Control).
+  for (const basis of safe(() => dmvRepo.listPermitBasisForProject(project.id), [])) {
+    push({
+      at: basis.createdAt,
+      category: "PERMIT",
+      type: basis.supersedesVersionId ? "PERMIT_BASIS_CORRECTED" : "PERMIT_BASIS_RECORDED",
+      title: basis.supersedesVersionId
+        ? `Permit basis corrected (v${basis.version}) — ${basis.permitNumber}`
+        : `Permit basis recorded (v${basis.version}) — ${basis.permitNumber}`,
+      explanation:
+        basis.supersedesVersionId
+          ? `A versioned correction superseded the prior authoritative basis. ${basis.correctionReason ?? ""}`.trim()
+          : `The governing permit basis was recorded for ${basis.permitNumber} (${basis.governingBasis}).`,
+      actorUserId: (basis as { recordedByUserId?: string | null }).recordedByUserId ?? null,
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "permit_basis_versions",
+      sourceRecordId: basis.id,
+      href: `/compliance`,
+      recordStatus: "AUTHORITATIVE",
+    });
+    if (basis.status === "AUTHORITATIVE" && basis.effectiveFrom) {
+      push({
+        at: basis.effectiveFrom,
+        category: "PERMIT",
+        type: "PERMIT_BASIS_FINALIZED",
+        title: `Permit basis became authoritative (v${basis.version})`,
+        explanation:
+          "An authorized reviewer finalized this basis version; draws pin to the authoritative basis in force.",
+        projectId: project.id,
+        organizationId: project.organizationId,
+        sourceTable: "permit_basis_versions",
+        sourceRecordId: basis.id,
+        href: `/compliance`,
+        recordStatus: "AUTHORITATIVE",
+        change: { field: "status", previous: "DRAFT", current: "AUTHORITATIVE" },
+      });
+    }
+  }
+
+  // Manual source verifications (governed record of an official lookup).
+  for (const v of safe(() => dmvRepo.listSourceVerificationsForProject(project.id), [])) {
+    push({
+      at: v.lookupAt,
+      category: "OFFICIAL_SOURCE",
+      type: "SOURCE_VERIFICATION_RECORDED",
+      title: `Official source verified — ${v.officialService}`,
+      explanation:
+        `${v.resultStatus.replace(/_/g, " ").toLowerCase()} via ${v.verificationMethod.replace(/_/g, " ").toLowerCase()}` +
+        `${v.resultSummary ? `: ${v.resultSummary}` : ""}`,
+      actorUserId: v.performedByUserId,
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "source_verifications",
+      sourceRecordId: v.id,
+      href: `/compliance`,
+      recordStatus: "AUTHORITATIVE",
+    });
+  }
+}
+
+// ------------------------------------------------------------ inspections
+
+export function collectInspections(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const i of safe(() => repo.listInspectionsForProject(project.id), [])) {
+    push({
+      at: (i as { createdAt?: string }).createdAt,
+      category: "INSPECTION",
+      type: "INSPECTION_REQUESTED",
+      title: `Inspection requested — ${i.inspectionType ?? "jurisdictional"}`,
+      explanation: "An inspection was recorded as required for this milestone.",
+      projectId: project.id,
+      milestoneId: i.milestoneId,
+      organizationId: project.organizationId,
+      sourceTable: "jurisdictional_inspections",
+      sourceRecordId: i.id,
+      href: `/compliance`,
+      recordStatus: "AUTHORITATIVE",
+    });
+    if (i.scheduledAt) {
+      push({
+        at: i.scheduledAt,
+        category: "INSPECTION",
+        type: "INSPECTION_SCHEDULED",
+        title: `Inspection scheduled — ${i.inspectionType ?? "jurisdictional"}`,
+        explanation: "The inspection was scheduled with the authority.",
+        projectId: project.id,
+        milestoneId: i.milestoneId,
+        organizationId: project.organizationId,
+        sourceTable: "jurisdictional_inspections",
+        sourceRecordId: i.id,
+        href: `/compliance`,
+        recordStatus: "AUTHORITATIVE",
+      });
+    }
+    if (i.completedAt) {
+      const result = (i as { result?: string | null }).result ?? i.status;
+      const failed = /FAIL|CORRECTION|REINSPECT/i.test(String(result));
+      push({
+        at: i.completedAt,
+        category: "INSPECTION",
+        type: "INSPECTION_RESULT",
+        title: `Inspection result — ${String(result).replace(/_/g, " ").toLowerCase()}`,
+        explanation:
+          `The official inspection outcome recorded by an authorized reviewer: ${String(result)}. ` +
+          "OBV records official results; it never performs government inspections.",
+        projectId: project.id,
+        milestoneId: i.milestoneId,
+        organizationId: project.organizationId,
+        sourceTable: "jurisdictional_inspections",
+        sourceRecordId: i.id,
+        href: `/compliance`,
+        recordStatus: "AUTHORITATIVE",
+        severity: failed ? "HIGH" : "INFO",
+        change: { field: "status", previous: null, current: String(result) },
+      });
+    }
+  }
+}
+
+// ------------------------------------------------------------ evidence
+
+export function collectEvidence(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const m of safe(() => repo.listMilestones(project.id), [])) {
+    for (const e of safe(() => repo.listEvidenceForMilestone(m.id), [])) {
+      push({
+        at: e.capturedAt,
+        category: "EVIDENCE",
+        type: "EVIDENCE_CAPTURED",
+        title: `Evidence captured — ${m.title}`,
+        explanation:
+          `A field photo was captured for ${m.title}` +
+          `${e.latitude !== null && e.longitude !== null ? " with a GPS fix" : " without a GPS fix"}.`,
+        actorUserId: e.userId,
+        projectId: project.id,
+        milestoneId: m.id,
+        organizationId: project.organizationId,
+        sourceTable: "evidence_items",
+        sourceRecordId: e.id,
+        href: `/evidence/${e.id}`,
+        recordStatus: "AUTHORITATIVE",
+      });
+      push({
+        at: e.uploadedAt,
+        category: "EVIDENCE",
+        type: "EVIDENCE_UPLOADED",
+        title: `Evidence uploaded — ${m.title}`,
+        explanation: "The captured evidence was uploaded and hash-anchored into the evidence ledger.",
+        actorUserId: e.userId,
+        projectId: project.id,
+        milestoneId: m.id,
+        organizationId: project.organizationId,
+        sourceTable: "evidence_items",
+        sourceRecordId: e.id,
+        href: `/evidence/${e.id}`,
+        recordStatus: "AUTHORITATIVE",
+      });
+      const v = safe(() => repo.getVerificationForEvidence(e.id), null);
+      if (v) {
+        push({
+          at: v.createdAt,
+          category: "EVIDENCE",
+          type: "EVIDENCE_VERIFIED",
+          title: `Evidence reviewed — ${v.verdict.replace(/_/g, " ").toLowerCase()}`,
+          explanation:
+            `Verification verdict ${v.verdict} at ${(v.confidence * 100).toFixed(0)}% confidence ` +
+            `(source: ${v.source}).`,
+          projectId: project.id,
+          milestoneId: m.id,
+          organizationId: project.organizationId,
+          sourceTable: "verifications",
+          sourceRecordId: v.id,
+          href: `/evidence/${e.id}`,
+          recordStatus: "AUTHORITATIVE",
+          severity: v.verdict === "REJECTED" ? "HIGH" : v.verdict === "NEEDS_REVIEW" ? "MEDIUM" : "INFO",
+          change: { field: "verdict", previous: null, current: v.verdict },
+        });
+      }
+    }
+  }
+}
+
+/** Evidence Intelligence — ADVISORY findings and reviewer queue actions. */
+export function collectEvidenceIntel(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  const signals = safe(() => evidenceIntelRepo.listSignalsForProjects([project.id], { limit: 500 }), []);
+  for (const s of signals) {
+    push({
+      at: s.occurredAt,
+      category: "EVIDENCE_INTEL",
+      type: `SIGNAL_${s.category}`,
+      title: `Advisory finding — ${s.title}`,
+      explanation: s.explanation,
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "evidence_signals",
+      sourceRecordId: s.id,
+      href: `/evidence-intelligence`,
+      recordStatus: "ADVISORY",
+      severity: s.severity,
+    });
+  }
+  const queue = safe(() => evidenceIntelRepo.listReviewForProjects([project.id], { limit: 500 }), []);
+  for (const item of queue) {
+    for (const ev of safe(() => evidenceIntelRepo.listReviewEvents(item.id), [])) {
+      if (ev.kind === "CREATED") continue; // the signal itself already appears
+      push({
+        at: ev.occurredAt,
+        category: "EVIDENCE_INTEL",
+        type: `REVIEW_${ev.kind}`,
+        title: `Reviewer ${ev.kind.toLowerCase()} an advisory finding`,
+        explanation:
+          `A reviewer ${ev.kind.toLowerCase()} this Evidence Intelligence finding` +
+          `${ev.detail ? `: ${ev.detail}` : ""}. Promotion to a governed exception is the only path from ` +
+          "advisory to governed, and it is always a human decision.",
+        actorUserId: ev.actorUserId,
+        projectId: project.id,
+        organizationId: project.organizationId,
+        sourceTable: "evidence_review_events",
+        sourceRecordId: ev.id,
+        href: `/evidence-intelligence/queue/${item.id}`,
+        recordStatus: "ADVISORY",
+      });
+    }
+  }
+}
+
+/** Official Source Connectors — retrievals, changes, reviewer decisions. */
+export function collectOfficialSources(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const c of safe(() => officialSourcesRepo.listCandidatesForProjects([project.id], 300), [])) {
+    push({
+      at: c.createdAt,
+      category: "OFFICIAL_SOURCE",
+      type: "SOURCE_RECORD_RETRIEVED",
+      title: `Official record retrieved — ${c.externalId}`,
+      explanation:
+        `${c.agency} record ${c.externalId} was retrieved and normalized` +
+        `${c.verbatimStatus ? ` (official status: "${c.verbatimStatus}")` : ""}. ` +
+        "Retrieved information is evidence for human review, never an OBV determination.",
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "source_candidates",
+      sourceRecordId: c.id,
+      href: `/official-sources/project/${project.id}`,
+      recordStatus: "ADVISORY",
+    });
+  }
+  for (const ch of safe(() => officialSourcesRepo.listChangesForProjects([project.id], 300), [])) {
+    push({
+      at: ch.createdAt,
+      category: "OFFICIAL_SOURCE",
+      type: `SOURCE_${ch.changeKind}`,
+      title: `Official source change — ${ch.changeKind.replace(/_/g, " ").toLowerCase()}`,
+      explanation: ch.explanation,
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "source_change_events",
+      sourceRecordId: ch.id,
+      href: `/official-sources/project/${project.id}`,
+      recordStatus: "ADVISORY",
+      severity: ch.severity,
+      change: ch.changedFields[0]
+        ? { field: ch.changedFields[0].field, previous: ch.changedFields[0].previous, current: ch.changedFields[0].current }
+        : null,
+    });
+  }
+  for (const item of safe(() => officialSourcesRepo.listReviewForProjects([project.id], { limit: 300 }), [])) {
+    for (const ev of safe(() => officialSourcesRepo.listReviewEvents(item.id), [])) {
+      if (ev.kind === "CREATED") continue;
+      push({
+        at: ev.occurredAt,
+        category: "OFFICIAL_SOURCE",
+        type: `SOURCE_REVIEW_${ev.kind}`,
+        title: `Reviewer ${ev.kind.replace(/_/g, " ").toLowerCase()} an official-source item`,
+        explanation:
+          `A reviewer resolved the official-source review item "${item.title}" as ${ev.kind}` +
+          `${ev.detail ? `: ${ev.detail}` : ""}. Confirmations attach through the governed permits and ` +
+          "DMV commands; the connector layer never writes those records itself.",
+        actorUserId: ev.actorUserId,
+        projectId: project.id,
+        organizationId: project.organizationId,
+        sourceTable: "source_review_events",
+        sourceRecordId: ev.id,
+        href: `/official-sources/queue/${item.id}`,
+        recordStatus: ev.kind === "CONFIRMED" || ev.kind === "PROMOTED" ? "AUTHORITATIVE" : "ADVISORY",
+      });
+    }
+  }
+  for (const rec of safe(() => repo.listOfficialSourcesForProject(project.id), [])) {
+    push({
+      at: rec.lookupPerformedAt,
+      category: "OFFICIAL_SOURCE",
+      type: "OFFICIAL_SOURCE_ATTACHED",
+      title: `Official source reference attached${rec.officialRecordNumber ? ` — ${rec.officialRecordNumber}` : ""}`,
+      explanation:
+        `An authorized reviewer attached an official source reference` +
+        `${rec.officialSystemName ? ` from ${rec.officialSystemName}` : ""}` +
+        `${rec.officialStatusText ? ` (official status: "${rec.officialStatusText}")` : ""}.`,
+      actorUserId: rec.lookupPerformedByUserId,
+      projectId: project.id,
+      milestoneId: rec.milestoneId,
+      organizationId: project.organizationId,
+      sourceTable: "official_source_records",
+      sourceRecordId: rec.id,
+      href: `/permits`,
+      recordStatus: "AUTHORITATIVE",
+    });
+  }
+}
+
+// ------------------------------------------------------------ disputes / exceptions
+
+export function collectDisputes(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const d of safe(() => disputeRepo.listDisputesForProject(project.id), [])) {
+    push({
+      at: (d as { openedAt?: string; createdAt?: string }).openedAt ?? (d as { createdAt?: string }).createdAt,
+      category: "DISPUTE",
+      type: "DISPUTE_OPENED",
+      title: `Dispute opened — ${(d as { title?: string }).title ?? d.id}`,
+      explanation:
+        "A dispute was opened against a governed record. Disputes follow their own resolution workflow and " +
+        "can place holds on releases.",
+      actorUserId: d.openedByUserId,
+      projectId: project.id,
+      milestoneId: d.milestoneId,
+      drawRequestId: d.drawRequestId,
+      organizationId: project.organizationId,
+      sourceTable: "disputes",
+      sourceRecordId: d.id,
+      href: `/disputes`,
+      recordStatus: "AUTHORITATIVE",
+      severity: "MEDIUM",
+    });
+    const resolvedAt = (d as { resolvedAt?: string | null }).resolvedAt ?? null;
+    if (resolvedAt) {
+      push({
+        at: resolvedAt,
+        category: "DISPUTE",
+        type: "DISPUTE_RESOLVED",
+        title: `Dispute resolved — ${d.status}`,
+        explanation: `The dispute reached status ${d.status} through its governed resolution workflow.`,
+        projectId: project.id,
+        milestoneId: d.milestoneId,
+        drawRequestId: d.drawRequestId,
+        organizationId: project.organizationId,
+        sourceTable: "disputes",
+        sourceRecordId: d.id,
+        href: `/disputes`,
+        recordStatus: "AUTHORITATIVE",
+        change: { field: "status", previous: "OPEN", current: d.status },
+      });
+    }
+  }
+}
+
+export function collectExceptions(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const x of safe(() => repo.listExceptionsForProject(project.id), [])) {
+    push({
+      at: x.createdAt,
+      category: "EXCEPTION",
+      type: "EXCEPTION_RAISED",
+      title: `Exception raised — ${x.title}`,
+      explanation:
+        `A ${x.severity.toLowerCase()} ${x.category.toLowerCase()} exception was recorded. Exceptions are ` +
+        "control records: they never release money, and they clear only when their source condition clears.",
+      projectId: project.id,
+      milestoneId: x.milestoneId,
+      drawRequestId: x.drawRequestId,
+      organizationId: project.organizationId,
+      sourceTable: "exceptions",
+      sourceRecordId: x.id,
+      href: `/exceptions`,
+      recordStatus: "AUTHORITATIVE",
+      severity: x.severity === "CRITICAL" ? "HIGH" : x.severity,
+    });
+    const resolvedAt = (x as { resolvedAt?: string | null }).resolvedAt ?? null;
+    if (resolvedAt) {
+      push({
+        at: resolvedAt,
+        category: "EXCEPTION",
+        type: "EXCEPTION_RESOLVED",
+        title: `Exception ${x.status.toLowerCase()} — ${x.title}`,
+        explanation: `The exception reached status ${x.status}.`,
+        projectId: project.id,
+        milestoneId: x.milestoneId,
+        drawRequestId: x.drawRequestId,
+        organizationId: project.organizationId,
+        sourceTable: "exceptions",
+        sourceRecordId: x.id,
+        href: `/exceptions`,
+        recordStatus: "AUTHORITATIVE",
+        change: { field: "status", previous: "OPEN", current: x.status },
+      });
+    }
+  }
+}
+
+// ------------------------------------------------------------ draws / money
+
+export function collectDraws(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const d of safe(() => repo.listDrawRequestsForProject(project.id), [])) {
+    push({
+      at: (d as { createdAt?: string | null }).createdAt,
+      category: "DRAW",
+      type: "DRAW_CREATED",
+      title: `Draw ${d.drawNumber} created`,
+      explanation: "A draw request was opened and began assembling its evidence and document package.",
+      actorUserId: d.requestedByUserId,
+      projectId: project.id,
+      drawRequestId: d.id,
+      organizationId: project.organizationId,
+      sourceTable: "draw_requests",
+      sourceRecordId: d.id,
+      href: `/draws/${d.id}`,
+      recordStatus: "AUTHORITATIVE",
+    });
+    if (d.submittedAt) {
+      push({
+        at: d.submittedAt,
+        category: "DRAW",
+        type: "DRAW_SUBMITTED",
+        title: `Draw ${d.drawNumber} submitted`,
+        explanation: "The draw request was submitted for lender review with its supporting package.",
+        actorUserId: d.requestedByUserId,
+        projectId: project.id,
+        drawRequestId: d.id,
+        organizationId: project.organizationId,
+        sourceTable: "draw_requests",
+        sourceRecordId: d.id,
+        href: `/draws/${d.id}`,
+        recordStatus: "AUTHORITATIVE",
+        change: { field: "status", previous: "DRAFT", current: "SUBMITTED" },
+      });
+    }
+  }
+
+  // Approval requests / records (the governed multi-party approval path).
+  for (const req of safe(() => repo.listApprovalRequestsForProject(project.id), [])) {
+    push({
+      at: req.createdAt,
+      category: "DECISION",
+      type: "APPROVAL_REQUESTED",
+      title: "Approval requested",
+      explanation: "A governed approval request was opened against the configured approval matrix.",
+      projectId: project.id,
+      milestoneId: req.milestoneId,
+      organizationId: project.organizationId,
+      sourceTable: "approval_requests",
+      sourceRecordId: req.id,
+      href: `/approvals`,
+      recordStatus: "AUTHORITATIVE",
+    });
+    for (const rec of safe(() => repo.listApprovalRecordsForRequest(req.id), [])) {
+      push({
+        at: rec.createdAt,
+        category: "DECISION",
+        type: "APPROVAL_RECORDED",
+        title: `Approval decision recorded — ${(rec as { decision?: string }).decision ?? "recorded"}`,
+        explanation: "An authorized approver recorded their decision on the governed approval request.",
+        actorUserId: rec.userId,
+        projectId: project.id,
+        milestoneId: req.milestoneId,
+        organizationId: project.organizationId,
+        sourceTable: "approval_records",
+        sourceRecordId: rec.id,
+        href: `/approvals`,
+        recordStatus: "AUTHORITATIVE",
+      });
+    }
+  }
+
+  // Lender draw decisions.
+  for (const dec of safe(() => lenderRepo.listLenderDecisionsForProject(project.id), [])) {
+    push({
+      at: dec.decisionAt,
+      category: "DECISION",
+      type: `LENDER_${dec.decision}`,
+      title: `Lender decision — ${String(dec.decision).replace(/_/g, " ").toLowerCase()}`,
+      explanation:
+        `The lender recorded a ${String(dec.decision).toLowerCase()} decision on this draw` +
+        `${dec.decisionReason ? `: ${dec.decisionReason}` : ""}.`,
+      actorUserId: dec.reviewerUserId,
+      projectId: project.id,
+      drawRequestId: dec.drawRequestId,
+      organizationId: project.organizationId,
+      sourceTable: "lender_draw_decisions",
+      sourceRecordId: dec.id,
+      href: `/draws/${dec.drawRequestId}`,
+      recordStatus: "AUTHORITATIVE",
+      severity: /REJECT|DECLINE/i.test(String(dec.decision)) ? "HIGH" : "INFO",
+    });
+  }
+}
+
+/** Payment instructions and banking provider confirmations. */
+export function collectPayments(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const ev of safe(() => bankingRepo.listBankingEventsForProject(project.id), [])) {
+    const kind = String((ev as { kind?: string; eventType?: string }).kind ?? (ev as { eventType?: string }).eventType ?? "BANKING_EVENT");
+    push({
+      at: (ev as { occurredAt?: string; createdAt?: string }).occurredAt ?? (ev as { createdAt?: string }).createdAt,
+      category: "PAYMENT",
+      type: kind,
+      title: `Banking event — ${kind.replace(/_/g, " ").toLowerCase()}`,
+      explanation:
+        "A banking-layer event recorded against this project. Money movement follows the governed release " +
+        "path with its own safeguards; the timeline only reports what was recorded.",
+      projectId: project.id,
+      drawRequestId: (ev as { drawRequestId?: string | null }).drawRequestId ?? null,
+      organizationId: project.organizationId,
+      sourceTable: "banking_events",
+      sourceRecordId: (ev as { id: string }).id,
+      href: `/banking`,
+      recordStatus: "AUTHORITATIVE",
+    });
+  }
+  // Payment instructions per draw (bounded by the project's draws).
+  for (const d of safe(() => repo.listDrawRequestsForProject(project.id), [])) {
+    for (const pi of safe(() => bankingRepo.listInstructionsForDraw(d.id), [])) {
+      push({
+        at: (pi as { createdAt?: string }).createdAt,
+        category: "PAYMENT",
+        type: "PAYMENT_INSTRUCTION_CREATED",
+        title: `Payment instruction created — draw ${d.drawNumber}`,
+        explanation:
+          "A payment instruction was created for an approved draw. Creation follows the governed release " +
+          "path; the timeline never creates or authorizes one.",
+        projectId: project.id,
+        drawRequestId: d.id,
+        organizationId: project.organizationId,
+        sourceTable: "payment_instructions",
+        sourceRecordId: (pi as { id: string }).id,
+        href: `/draws/${d.id}`,
+        recordStatus: "AUTHORITATIVE",
+      });
+      const settledAt = (pi as { settledAt?: string | null }).settledAt ?? null;
+      if (settledAt) {
+        push({
+          at: settledAt,
+          category: "PAYMENT",
+          type: "PAYMENT_CONFIRMED",
+          title: `Provider confirmed settlement — draw ${d.drawNumber}`,
+          explanation: "The banking provider confirmed settlement of this payment instruction.",
+          projectId: project.id,
+          drawRequestId: d.id,
+          organizationId: project.organizationId,
+          sourceTable: "payment_instructions",
+          sourceRecordId: (pi as { id: string }).id,
+          href: `/draws/${d.id}`,
+          recordStatus: "AUTHORITATIVE",
+          change: { field: "status", previous: "PENDING", current: "SETTLED" },
+        });
+      }
+    }
+  }
+}
+
+/** Executive reports and audit packages. */
+export function collectReports(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  for (const pkg of safe(() => repo.listAuditPackagesForProject(project.id), [])) {
+    push({
+      at: (pkg as { createdAt?: string; generatedAt?: string }).generatedAt ?? (pkg as { createdAt?: string }).createdAt,
+      category: "REPORT",
+      type: "AUDIT_PACKAGE_GENERATED",
+      title: "Audit package generated",
+      explanation:
+        "A point-in-time audit package was generated. Historical packages are immutable: later changes never " +
+        "alter what a generated package contains.",
+      actorUserId: (pkg as { generatedByUserId?: string | null }).generatedByUserId ?? null,
+      projectId: project.id,
+      organizationId: project.organizationId,
+      sourceTable: "audit_packages",
+      sourceRecordId: (pkg as { id: string }).id,
+      href: `/reports`,
+      recordStatus: "AUTHORITATIVE",
+    });
+  }
+}
+
+/** Every collector, in the order they are run. */
+export const COLLECTORS: Array<(ctx: CollectorContext) => void> = [
+  collectProject,
+  collectGovernance,
+  collectBudget,
+  collectMilestones,
+  collectPermits,
+  collectInspections,
+  collectEvidence,
+  collectEvidenceIntel,
+  collectOfficialSources,
+  collectDisputes,
+  collectExceptions,
+  collectDraws,
+  collectPayments,
+  collectReports,
+];
+
+/** Run every collector for one project. Returns unsorted events plus any
+ *  source-level caps that applied. */
+export function collectAll(
+  project: Project,
+  actors: ActorResolver
+): { events: TimelineEvent[]; caps: string[] } {
+  const events: TimelineEvent[] = [];
+  const caps: string[] = [];
+  const push: Push = (draft) => {
+    const event = makeEvent(draft, actors);
+    if (event) events.push(event);
+  };
+  const ctx: CollectorContext = {
+    project,
+    actors,
+    push,
+    noteCap: (note) => { if (!caps.includes(note)) caps.push(note); },
+  };
+  for (const collector of COLLECTORS) {
+    safe(() => collector(ctx), undefined);
+  }
+  return { events, caps };
+}
