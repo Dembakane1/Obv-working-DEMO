@@ -16,7 +16,10 @@ import * as disputeRepo from "../../db/disputeRepo";
 import * as lenderRepo from "../../db/lenderRepo";
 import * as bankingRepo from "../../db/bankingRepo";
 import * as dmvRepo from "../../db/dmvRepo";
-import type { Project, TimelineEvent } from "../../../shared/types";
+import { canViewEvidenceIntel } from "../evidenceIntel/core";
+import { canViewSources } from "../officialSources/core";
+import { hasBankingCapability } from "../banking/bankingAccess";
+import type { Project, TimelineEvent, User } from "../../../shared/types";
 import { ActorResolver, makeEvent, type EventDraft } from "./core";
 
 type Push = (draft: EventDraft) => void;
@@ -73,6 +76,14 @@ export function collectProject(ctx: CollectorContext): void {
  *  it is read generously — and when a cap is actually reached the
  *  aggregate REPORTS it rather than silently showing a partial history. */
 export const AUDIT_READ_CAP = 20_000;
+
+/** The other source-level caps. Every one of these is reported through
+ *  `noteCap` when it actually bites, so a capped history always says so
+ *  — a partial history presented as complete would misrepresent the
+ *  record just as badly as an invented event would. */
+export const SIGNAL_READ_CAP = 500;
+export const REVIEW_READ_CAP = 500;
+export const SOURCE_READ_CAP = 300;
 
 /** The configuration audit trail — the cross-cutting record of who
  *  changed what, already written by the governed services. */
@@ -440,8 +451,11 @@ export function collectEvidence(ctx: CollectorContext): void {
 
 /** Evidence Intelligence — ADVISORY findings and reviewer queue actions. */
 export function collectEvidenceIntel(ctx: CollectorContext): void {
-  const { project, push } = ctx;
-  const signals = safe(() => evidenceIntelRepo.listSignalsForProjects([project.id], { limit: 500 }), []);
+  const { project, push, noteCap } = ctx;
+  const signals = safe(() => evidenceIntelRepo.listSignalsForProjects([project.id], { limit: SIGNAL_READ_CAP }), []);
+  if (signals.length >= SIGNAL_READ_CAP) {
+    noteCap(`evidence_signals: showing the most recent ${SIGNAL_READ_CAP} advisory findings`);
+  }
   for (const s of signals) {
     push({
       at: s.occurredAt,
@@ -458,7 +472,10 @@ export function collectEvidenceIntel(ctx: CollectorContext): void {
       severity: s.severity,
     });
   }
-  const queue = safe(() => evidenceIntelRepo.listReviewForProjects([project.id], { limit: 500 }), []);
+  const queue = safe(() => evidenceIntelRepo.listReviewForProjects([project.id], { limit: REVIEW_READ_CAP }), []);
+  if (queue.length >= REVIEW_READ_CAP) {
+    noteCap(`evidence review queue: showing the most recent ${REVIEW_READ_CAP} items`);
+  }
   for (const item of queue) {
     for (const ev of safe(() => evidenceIntelRepo.listReviewEvents(item.id), [])) {
       if (ev.kind === "CREATED") continue; // the signal itself already appears
@@ -485,8 +502,12 @@ export function collectEvidenceIntel(ctx: CollectorContext): void {
 
 /** Official Source Connectors — retrievals, changes, reviewer decisions. */
 export function collectOfficialSources(ctx: CollectorContext): void {
-  const { project, push } = ctx;
-  for (const c of safe(() => officialSourcesRepo.listCandidatesForProjects([project.id], 300), [])) {
+  const { project, push, noteCap } = ctx;
+  const candidates = safe(() => officialSourcesRepo.listCandidatesForProjects([project.id], SOURCE_READ_CAP), []);
+  if (candidates.length >= SOURCE_READ_CAP) {
+    noteCap(`source_candidates: showing the most recent ${SOURCE_READ_CAP} retrieved records`);
+  }
+  for (const c of candidates) {
     push({
       at: c.createdAt,
       category: "OFFICIAL_SOURCE",
@@ -504,7 +525,11 @@ export function collectOfficialSources(ctx: CollectorContext): void {
       recordStatus: "ADVISORY",
     });
   }
-  for (const ch of safe(() => officialSourcesRepo.listChangesForProjects([project.id], 300), [])) {
+  const changes = safe(() => officialSourcesRepo.listChangesForProjects([project.id], SOURCE_READ_CAP), []);
+  if (changes.length >= SOURCE_READ_CAP) {
+    noteCap(`source_change_events: showing the most recent ${SOURCE_READ_CAP} changes`);
+  }
+  for (const ch of changes) {
     push({
       at: ch.createdAt,
       category: "OFFICIAL_SOURCE",
@@ -523,7 +548,11 @@ export function collectOfficialSources(ctx: CollectorContext): void {
         : null,
     });
   }
-  for (const item of safe(() => officialSourcesRepo.listReviewForProjects([project.id], { limit: 300 }), [])) {
+  const sourceQueue = safe(() => officialSourcesRepo.listReviewForProjects([project.id], { limit: SOURCE_READ_CAP }), []);
+  if (sourceQueue.length >= SOURCE_READ_CAP) {
+    noteCap(`source review queue: showing the most recent ${SOURCE_READ_CAP} items`);
+  }
+  for (const item of sourceQueue) {
     for (const ev of safe(() => officialSourcesRepo.listReviewEvents(item.id), [])) {
       if (ev.kind === "CREATED") continue;
       push({
@@ -840,7 +869,8 @@ export function collectReports(ctx: CollectorContext): void {
   }
 }
 
-/** Every collector, in the order they are run. */
+/** Collectors whose source records are readable by anyone who can reach
+ *  the project itself. */
 export const COLLECTORS: Array<(ctx: CollectorContext) => void> = [
   collectProject,
   collectGovernance,
@@ -849,20 +879,40 @@ export const COLLECTORS: Array<(ctx: CollectorContext) => void> = [
   collectPermits,
   collectInspections,
   collectEvidence,
-  collectEvidenceIntel,
-  collectOfficialSources,
   collectDisputes,
   collectExceptions,
   collectDraws,
-  collectPayments,
   collectReports,
 ];
 
-/** Run every collector for one project. Returns unsorted events plus any
- *  source-level caps that applied. */
+/**
+ * Collectors whose subsystem gates reads MORE NARROWLY than "can see the
+ * project". The timeline must never widen an existing gate, so each one
+ * is admitted only when that subsystem's own predicate says this caller
+ * could already read those records through its governed pages. The
+ * predicates are imported rather than restated so there is exactly one
+ * source of truth per gate.
+ */
+export const GATED_COLLECTORS: Array<{
+  collect: (ctx: CollectorContext) => void;
+  allowed: (user: User, project: Project) => boolean;
+}> = [
+  { collect: collectEvidenceIntel, allowed: (user) => canViewEvidenceIntel(user) },
+  { collect: collectOfficialSources, allowed: (user) => canViewSources(user) },
+  {
+    // Banking reads require VIEW_PROJECT_ACCOUNT, not merely project
+    // access — the governed banking surface shows nothing without it.
+    collect: collectPayments,
+    allowed: (user, project) => hasBankingCapability(user, project.id, "VIEW_PROJECT_ACCOUNT"),
+  },
+];
+
+/** Run every collector this caller is entitled to for one project.
+ *  Returns unsorted events plus any source-level caps that applied. */
 export function collectAll(
   project: Project,
-  actors: ActorResolver
+  actors: ActorResolver,
+  user: User
 ): { events: TimelineEvent[]; caps: string[] } {
   const events: TimelineEvent[] = [];
   const caps: string[] = [];
@@ -878,6 +928,11 @@ export function collectAll(
   };
   for (const collector of COLLECTORS) {
     safe(() => collector(ctx), undefined);
+  }
+  for (const gated of GATED_COLLECTORS) {
+    // A gate that cannot be evaluated denies rather than admits.
+    if (!safe(() => gated.allowed(user, project), false)) continue;
+    safe(() => gated.collect(ctx), undefined);
   }
   return { events, caps };
 }

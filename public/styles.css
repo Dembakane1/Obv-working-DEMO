@@ -3755,3 +3755,15 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
 .tl-spark-bar { flex: 1 1 auto; min-width: 3px; background: var(--action, #2f6fed); opacity: 0.75; border-radius: 2px 2px 0 0; }
 .tl-graph-list { margin: 0; padding-left: 18px; font-size: 12.5px; }
 .tl-graph-list li { padding: 2px 0; }
+
+/* A capped or bounded reading says so, in the reader's line of sight —
+   never styled as an error, because a partial view is a fact about the
+   query and not a fault. */
+.tl-caps {
+  margin: 6px 0 0;
+  padding: 7px 10px;
+  border-left: 3px solid var(--warn, #b7791f);
+  background: var(--surface-2, rgba(183, 121, 31, 0.06));
+  border-radius: 0 4px 4px 0;
+  font-size: 11.5px;
+}

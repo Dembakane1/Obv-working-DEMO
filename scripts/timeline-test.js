@@ -524,6 +524,164 @@ async function main() {
   assert(/Project history/.test(exec.html) && /Recorded events/.test(exec.html),
     "the executive command center shows the read-only project-history band");
 
+  // ---------------------------------------------------------- section 12
+  // Regressions from adversarial review. Each of these shipped as a real
+  // defect once; every one is pinned here so it cannot come back.
+  console.log("\n== 12. Adversarial-review regressions ==");
+
+  // (a) The timeline must never WIDEN a narrower governed gate. Keyed on
+  //     the owning TABLE, not the category: OFFICIAL_SOURCE is shared by
+  //     the Official Sources subsystem and the DMV compliance domain, and
+  //     DMV gates on tenancy alone, so a field engineer legitimately
+  //     reads source_verifications there.
+  const eiCore = require(path.join(ROOT, "dist/server/services/evidenceIntel/core.js"));
+  const osCore = require(path.join(ROOT, "dist/server/services/officialSources/core.js"));
+  const bankAccess = require(path.join(ROOT, "dist/server/services/banking/bankingAccess.js"));
+  const EI_TABLES = ["evidence_signals", "evidence_review_events"];
+  const OS_TABLES = ["source_candidates", "source_change_events", "source_review_events", "official_source_records"];
+  const BANK_TABLES = ["banking_events", "payment_instructions"];
+  const tablesFor = (user, projectId) =>
+    new Set(tl.projectTimeline(user, projectId).events.map((e) => e.sourceTable));
+
+  const fieldTables = tablesFor(field, "proj-r47");
+  assert(
+    !eiCore.canViewEvidenceIntel(field) && EI_TABLES.every((t) => !fieldTables.has(t)),
+    "a role Evidence Intelligence denies sees no Evidence Intelligence records on the timeline"
+  );
+  assert(
+    !osCore.canViewSources(field) && OS_TABLES.every((t) => !fieldTables.has(t)),
+    "a role Official Sources denies sees no Official Sources records on the timeline"
+  );
+  const pmTables = tablesFor(pm, "proj-r47");
+  assert(
+    !bankAccess.hasBankingCapability(pm, "proj-r47", "VIEW_PROJECT_ACCOUNT") &&
+      BANK_TABLES.every((t) => !pmTables.has(t)),
+    "banking records need VIEW_PROJECT_ACCOUNT, not merely project access"
+  );
+  const funderTables = tablesFor(funder, "proj-r47");
+  assert(
+    [...OS_TABLES, ...BANK_TABLES, ...EI_TABLES].some((t) => funderTables.has(t)),
+    "a permitted role still sees the gated records (the gates did not over-restrict)"
+  );
+
+  // (b) Same-404 depends on a REAL TimelineError: the server matches known
+  //     errors with instanceof, so a shaped plain object becomes a 500.
+  const { TimelineError } = require(path.join(ROOT, "dist/server/services/timeline/core.js"));
+  let detailErr = null;
+  try { tl.eventDetail(funder, "proj-r47", "NOPE:NOPE:NOPE"); } catch (e) { detailErr = e; }
+  assert(
+    detailErr instanceof TimelineError && detailErr.statusCode === 404,
+    "an unknown event id throws a real TimelineError 404, not a look-alike that would 500"
+  );
+  let foreignDraw = null;
+  try { tl.drawPlayback(funder, "proj-r47", "no-such-draw"); } catch (e) { foreignDraw = e; }
+  assert(
+    foreignDraw instanceof TimelineError && foreignDraw.statusCode === 404,
+    "an unknown draw throws a real TimelineError 404"
+  );
+
+  // (c) Every lender decision is named exactly. Treating "not a rejection"
+  //     as "approved" once told a lender that a WITHDRAWN draw was
+  //     approved — the most consequential sentence on the page, wrong.
+  const storySrc = fs.readFileSync(path.join(ROOT, "src/server/services/timeline/story.ts"), "utf8");
+  for (const decision of ["PENDING", "CONDITIONALLY_APPROVED", "REDUCED", "WITHDRAWN", "FUNDED"]) {
+    assert(
+      new RegExp(`LENDER_${decision}:`).test(storySrc),
+      `story mode names LENDER_${decision} explicitly rather than calling it an approval`
+    );
+  }
+  assert(
+    !/\/REJECT\|DECLINE\/i\.test\(e\.type\)\s*\?\s*"Lender declined/.test(storySrc),
+    "story mode no longer decides approval by 'not a rejection'"
+  );
+
+  // (d) A settled draw is not reported as still sitting at an empty stage.
+  const settledStages = tl.drawPlayback(funder, "proj-r47", draws[0].id).stages;
+  const lastComplete = settledStages.reduce((acc, s, i) => (s.state === "COMPLETE" ? i : acc), -1);
+  assert(
+    settledStages.every((s, i) => !(s.state === "IN_PROGRESS" && i < lastComplete)),
+    "no stage before the last completed one is reported as where the draw currently sits"
+  );
+
+  // (e) A date-only `to` bound includes the whole end date.
+  const mkEvent = (at, id) => ({
+    id, at, category: "EVIDENCE", type: "EVIDENCE_UPLOADED", title: "t", explanation: "e",
+    actorUserId: null, actorName: null, organizationId: null, projectId: "p",
+    milestoneId: null, drawRequestId: null, sourceTable: "x", sourceRecordId: id,
+    href: null, recordStatus: "AUTHORITATIVE", severity: null, change: null,
+  });
+  const dayEvents = [
+    mkEvent("2026-03-15T00:00:00.000Z", "a"),
+    mkEvent("2026-03-15T09:30:00.000Z", "b"),
+    mkEvent("2026-03-15T23:59:00.000Z", "c"),
+    mkEvent("2026-03-16T01:00:00.000Z", "d"),
+  ];
+  const core = require(path.join(ROOT, "dist/server/services/timeline/core.js"));
+  assert(
+    core.applyFilters(dayEvents, { to: "2026-03-15" }).length === 3,
+    "a date-only `to` bound keeps every event on that day instead of dropping it"
+  );
+  assert(
+    core.applyFilters(dayEvents, { to: "2026-03-15T09:30:00.000Z" }).length === 2,
+    "an explicit timestamp bound is still honoured exactly"
+  );
+
+  // (f) ISO weeks: time-of-day must not split one calendar day in two,
+  //     and the turn of the year must not split one week in two.
+  const weekOf = (iso) => tl.groupEvents([mkEvent(iso, "k")], "week")[0].key;
+  assert(
+    tl.groupEvents([mkEvent("2026-03-15T01:00:00.000Z", "m"), mkEvent("2026-03-15T23:00:00.000Z", "n")], "week").length === 1,
+    "two events on the same calendar day land in one week bucket"
+  );
+  assert(
+    weekOf("2026-12-31T12:00:00.000Z") === weekOf("2027-01-01T12:00:00.000Z"),
+    "2026-12-31 and 2027-01-01 share an ISO week across the year boundary"
+  );
+  assert(weekOf("2027-01-01T00:00:00.000Z") === "2026-W53", "ISO week carries the ISO year, not the calendar year");
+
+  // (g) Caps are reported, never silent — and the portfolio states its own
+  //     bound and whether its counts were filtered.
+  const collectors = require(path.join(ROOT, "dist/server/services/timeline/collectors.js"));
+  const collectorSrc = fs.readFileSync(path.join(ROOT, "src/server/services/timeline/collectors.ts"), "utf8");
+  const capConstants = (collectorSrc.match(/_READ_CAP\b/g) ?? []).length;
+  const capReports = (collectorSrc.match(/noteCap\(/g) ?? []).length;
+  assert(capReports >= 6, `every source-level cap reports itself (${capReports} noteCap call sites)`);
+  assert(capConstants > 0 && typeof collectors.SOURCE_READ_CAP === "number", "read caps are named constants, not inline magic numbers");
+  const portfolioFiltered = tl.portfolioTimeline(funder, { search: "zzz-no-such-text" });
+  assert(portfolioFiltered.filtered === true, "the portfolio view declares when its counts are of a filtered set");
+  assert(
+    typeof portfolioFiltered.projectsAvailable === "number" &&
+      portfolioFiltered.projectsAvailable >= portfolioFiltered.projects,
+    "the portfolio view reports how many projects it could reach, not just how many it aggregated"
+  );
+
+  // (h) The portfolio view gates the role like every other entry point.
+  const aggSrc = fs.readFileSync(path.join(ROOT, "src/server/services/timeline/aggregate.ts"), "utf8");
+  assert(
+    /export function portfolioTimeline[\s\S]{0,400}assertTimelineViewer\(user\)/.test(aggSrc),
+    "portfolioTimeline gates the caller's role before doing any work"
+  );
+
+  // (i) HTTP: the export honours the active filters, announces itself as a
+  //     download, and a malformed event id is a 404 rather than a 500.
+  const csvFiltered = await fetch(`${BASE}/api/timeline/export/proj-r47?format=csv&view=milestones`, { headers: { cookie } });
+  const csvAll = await fetch(`${BASE}/api/timeline/export/proj-r47?format=csv`, { headers: { cookie } });
+  const filteredRows = (await csvFiltered.text()).trim().split("\n").length;
+  const allRows = (await csvAll.text()).trim().split("\n").length;
+  assert(filteredRows < allRows, "the export applies the active view instead of silently returning everything");
+  assert(
+    /attachment/.test(csvFiltered.headers.get("content-disposition") ?? "") &&
+      csvFiltered.headers.get("x-content-type-options") === "nosniff",
+    "the CSV export is served as a download with nosniff"
+  );
+  assert(
+    (await status("/timeline/event/proj-r47/%", cookie)) === 404,
+    "a malformed percent-escape in an event id is a 404, not a 500"
+  );
+  const apiJson = await (await fetch(`${BASE}/api/timeline/project/proj-r47`, { headers: { cookie } })).json();
+  assert(typeof apiJson.notice === "string" && apiJson.notice.length > 0, "the JSON API carries the read-only doctrine notice");
+  assert(Array.isArray(apiJson.sourceCaps), "the JSON API reports any source-level caps that applied");
+
   console.log(`\nPROJECT TIMELINE TESTS PASSED — ${passed} checkpoints.`);
   console.log("THE TIMELINE EXPLAINS THE RECORD. IT NEVER CHANGES IT.");
 }

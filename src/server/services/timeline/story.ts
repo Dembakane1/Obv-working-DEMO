@@ -22,7 +22,7 @@ import type {
   User,
 } from "../../../shared/types";
 import { pastEvents, projectTimeline } from "./aggregate";
-import { requireVisibleProject } from "./core";
+import { TimelineError, requireVisibleProject } from "./core";
 
 /** A linkage table that is empty or absent must never break playback. */
 function safeList<T>(fn: () => T[]): T[] {
@@ -59,6 +59,42 @@ function isStoryEvent(e: TimelineEvent): boolean {
   if (e.category === "OFFICIAL_SOURCE" && e.severity === "HIGH") return true;
   return false;
 }
+
+/**
+ * Lender decisions, named exactly.
+ *
+ * `LenderDecisionType` is PENDING | APPROVED | CONDITIONALLY_APPROVED |
+ * REDUCED | REJECTED | WITHDRAWN | FUNDED. Treating "not a rejection" as
+ * "approved" would tell a lender that a WITHDRAWN or still-PENDING draw
+ * had been approved — the single most consequential sentence on the page,
+ * stated wrongly. Each decision therefore gets its own words, and an
+ * unrecognized one is reported verbatim rather than guessed at.
+ */
+const LENDER_HEADLINES: Record<string, string> = {
+  LENDER_PENDING: "Lender review is still pending",
+  LENDER_APPROVED: "Lender approved the draw",
+  LENDER_CONDITIONALLY_APPROVED: "Lender approved the draw with conditions",
+  LENDER_REDUCED: "Lender approved a reduced amount",
+  LENDER_REJECTED: "Lender rejected the draw",
+  LENDER_WITHDRAWN: "The draw was withdrawn",
+  LENDER_FUNDED: "Lender recorded the draw as funded",
+};
+
+function lenderHeadline(type: string): string {
+  const known = LENDER_HEADLINES[type];
+  if (known) return known;
+  const raw = type.replace(/^LENDER_/, "").replace(/_/g, " ").toLowerCase();
+  return `Lender decision recorded — ${raw}`;
+}
+
+/** The decisions that actually let a draw proceed. Counted explicitly so
+ *  a pending or withdrawn draw is never tallied as an approval. */
+const APPROVING_LENDER_TYPES = new Set([
+  "LENDER_APPROVED",
+  "LENDER_CONDITIONALLY_APPROVED",
+  "LENDER_REDUCED",
+  "LENDER_FUNDED",
+]);
 
 /** Turn one event into a sentence a non-technical lender can read. */
 function narrate(e: TimelineEvent): { headline: string; detail: string } {
@@ -107,10 +143,7 @@ function narrate(e: TimelineEvent): { headline: string; detail: string } {
       return { headline: "Audit package generated", detail: "A point-in-time package was produced; it is immutable once generated." };
     default:
       if (e.type.startsWith("LENDER_")) {
-        return {
-          headline: /REJECT|DECLINE/i.test(e.type) ? "Lender declined the draw" : "Lender approved the draw",
-          detail: e.explanation,
-        };
+        return { headline: lenderHeadline(e.type), detail: e.explanation };
       }
       if (e.category === "EVIDENCE_INTEL") {
         return { headline: `Advisory finding — ${e.title.replace(/^Advisory finding — /, "")}`, detail: e.explanation };
@@ -205,7 +238,11 @@ export function drawPlayback(user: User, projectId: string, drawRequestId: strin
   const timeline = projectTimeline(user, projectId);
   const draw = repo.getDrawRequest(String(drawRequestId ?? ""));
   if (!draw || draw.projectId !== timeline.project.id) {
-    throw Object.assign(new Error("Not found"), { statusCode: 404, name: "TimelineError" });
+    // A real TimelineError: the server matches known errors with
+    // `instanceof`, so a look-alike would become a 500 and make "this
+    // draw belongs to another project" distinguishable from "no such
+    // draw" — exactly what same-404 exists to prevent.
+    throw new TimelineError("Not found", 404);
   }
   const happened = pastEvents(timeline.events, timeline.asOf);
   // A draw's story includes its own events plus the milestone-level
@@ -258,12 +295,24 @@ export function drawPlayback(user: User, projectId: string, drawRequestId: strin
     return { key: stage.key, label: stage.label, state, at, detail, events };
   });
 
-  // The first stage with no record after a completed one is where the
-  // draw actually sits.
-  const firstGap = stages.findIndex((s) => s.state === "NOT_REACHED");
-  if (firstGap > 0 && stages.slice(0, firstGap).some((s) => s.state === "COMPLETE")) {
-    stages[firstGap].state = "IN_PROGRESS";
-    stages[firstGap].detail = "This is where the draw currently sits.";
+  // Where the draw actually sits = the first empty stage AFTER the last
+  // one that completed. Taking the first empty stage overall would point
+  // at a stage the draw has already moved past: a settled draw with no
+  // exceptions and no disputes leaves both of those empty, and would
+  // otherwise be reported as "currently sitting" at Exceptions while its
+  // payment was confirmed weeks earlier. A blocked stage is where the
+  // draw sits by definition, so nothing downstream is marked.
+  const blocked = stages.some((s) => s.state === "BLOCKED");
+  let lastComplete = -1;
+  stages.forEach((s, i) => {
+    if (s.state === "COMPLETE") lastComplete = i;
+  });
+  if (!blocked && lastComplete >= 0) {
+    const gap = stages.findIndex((s, i) => i > lastComplete && s.state === "NOT_REACHED");
+    if (gap !== -1) {
+      stages[gap].state = "IN_PROGRESS";
+      stages[gap].detail = "This is where the draw currently sits.";
+    }
   }
 
   return {
@@ -311,7 +360,7 @@ export function executivePlayback(user: User, projectId: string, maxFrames = 16)
       upTo.filter((e) => e.type === "MILESTONE_RELEASED").map((e) => e.milestoneId)
     ).size;
     const drawsApproved = new Set(
-      upTo.filter((e) => e.type.startsWith("LENDER_") && !/REJECT|DECLINE/i.test(e.type)).map((e) => e.drawRequestId)
+      upTo.filter((e) => APPROVING_LENDER_TYPES.has(e.type)).map((e) => e.drawRequestId)
     ).size;
     const openExceptions =
       upTo.filter((e) => e.type === "EXCEPTION_RAISED").length -

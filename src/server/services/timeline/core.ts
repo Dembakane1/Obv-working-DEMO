@@ -89,6 +89,19 @@ export function normalizeAt(value: unknown): string | null {
   return new Date(parsed).toISOString();
 }
 
+/**
+ * A bare `to=YYYY-MM-DD` means "through that day", not "up to midnight
+ * that morning". Normalizing it as-is would silently drop every event on
+ * the end date the reader explicitly asked to include, so a date-only
+ * bound is widened to the last instant of that UTC day. Values that
+ * already carry a time are left exactly as given.
+ */
+export function endOfDayIfDateOnly(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? `${trimmed}T23:59:59.999Z` : value;
+}
+
 export interface EventDraft {
   at: unknown;
   category: TimelineCategory;
@@ -158,7 +171,7 @@ export function applyFilters(events: TimelineEvent[], filters: TimelineFilters =
   }
   const from = normalizeAt(filters.from);
   if (from) out = out.filter((e) => e.at >= from);
-  const to = normalizeAt(filters.to);
+  const to = normalizeAt(endOfDayIfDateOnly(filters.to));
   if (to) out = out.filter((e) => e.at <= to);
   if (filters.milestoneId) out = out.filter((e) => e.milestoneId === filters.milestoneId);
   if (filters.drawRequestId) out = out.filter((e) => e.drawRequestId === filters.drawRequestId);

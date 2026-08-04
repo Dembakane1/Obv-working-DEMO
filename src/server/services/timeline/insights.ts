@@ -47,12 +47,34 @@ export function timelineInsights(
 
   const add = (i: Omit<TimelineInsight, "projectId">) => insights.push({ ...i, projectId: pid });
 
+  // Indexes built once. Each pattern below anchors on a subset of events
+  // and then asks "did the matching follow-up happen?" — answering that
+  // with a fresh scan per anchor made the whole pass quadratic in the
+  // event count, which bites exactly on the long histories that need
+  // these observations most. `events` is already in ascending order, so
+  // every bucket below inherits that order.
+  const decisionsByDraw = new Map<string, TimelineEvent[]>();
+  const byTypeAndRecord = new Map<string, TimelineEvent>();
+  let lastEvidenceAt: string | null = null;
+  for (const e of events) {
+    if (e.category === "DECISION" && e.drawRequestId) {
+      const list = decisionsByDraw.get(e.drawRequestId);
+      if (list) list.push(e);
+      else decisionsByDraw.set(e.drawRequestId, [e]);
+    }
+    const key = `${e.type}::${e.sourceRecordId}`;
+    if (!byTypeAndRecord.has(key)) byTypeAndRecord.set(key, e);
+    if (e.category === "EVIDENCE" && (lastEvidenceAt === null || e.at > lastEvidenceAt)) lastEvidenceAt = e.at;
+  }
+  const firstDecisionAfter = (drawId: string | null, after: string): TimelineEvent | undefined =>
+    drawId ? decisionsByDraw.get(drawId)?.find((d) => d.at > after) : undefined;
+  const followUp = (type: string, sourceRecordId: string): TimelineEvent | undefined =>
+    byTypeAndRecord.get(`${type}::${sourceRecordId}`);
+
   // 1. Long approval delays: submitted -> lender decision.
   const submissions = events.filter((e) => e.type === "DRAW_SUBMITTED");
   for (const sub of submissions) {
-    const decision = events.find(
-      (e) => e.drawRequestId === sub.drawRequestId && e.category === "DECISION" && e.at > sub.at
-    );
+    const decision = firstDecisionAfter(sub.drawRequestId, sub.at);
     const endpoint = decision ? decision.at : timeline.asOf;
     const days = daysBetween(sub.at, endpoint);
     if (days >= THRESHOLDS.approvalDelayDays) {
@@ -175,7 +197,7 @@ export function timelineInsights(
   // 6. Permit delays — permit recorded but not issued for a long time.
   const recorded = events.filter((e) => e.type === "PERMIT_RECORDED");
   for (const rec of recorded) {
-    const issued = events.find((e) => e.type === "PERMIT_ISSUED" && e.sourceRecordId === rec.sourceRecordId);
+    const issued = followUp("PERMIT_ISSUED", rec.sourceRecordId);
     if (!issued) {
       const days = daysBetween(rec.at, timeline.asOf);
       if (days >= THRESHOLDS.permitDelayDays) {
@@ -198,11 +220,9 @@ export function timelineInsights(
   //    subsequent evidence from the field.
   const openExceptionEvents = events.filter((e) => e.type === "EXCEPTION_RAISED");
   for (const ex of openExceptionEvents) {
-    const resolved = events.find(
-      (e) => e.type === "EXCEPTION_RESOLVED" && e.sourceRecordId === ex.sourceRecordId
-    );
+    const resolved = followUp("EXCEPTION_RESOLVED", ex.sourceRecordId);
     if (resolved) continue;
-    const responded = events.some((e) => e.category === "EVIDENCE" && e.at > ex.at);
+    const responded = lastEvidenceAt !== null && lastEvidenceAt > ex.at;
     const days = daysBetween(ex.at, timeline.asOf);
     if (!responded && days >= THRESHOLDS.contractorResponseDays) {
       add({
@@ -222,9 +242,7 @@ export function timelineInsights(
   // 8. Inspection bottleneck — scheduled but no result for a long time.
   const scheduled = events.filter((e) => e.type === "INSPECTION_SCHEDULED");
   for (const s of scheduled) {
-    const result = events.find(
-      (e) => e.type === "INSPECTION_RESULT" && e.sourceRecordId === s.sourceRecordId
-    );
+    const result = followUp("INSPECTION_RESULT", s.sourceRecordId);
     if (result) continue;
     const days = daysBetween(s.at, timeline.asOf);
     if (days >= THRESHOLDS.inspectionBottleneckDays) {

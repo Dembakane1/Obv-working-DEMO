@@ -93,6 +93,36 @@ const VIEWS: Array<{ key: string; label: string }> = [
   { key: "reviewer", label: "Reviewer activity" },
 ];
 
+/** The export must be of what the reader is actually looking at. Sending
+ *  a bare project id would silently hand back the UNFILTERED history
+ *  under a button placed next to an active filter — the reader would
+ *  reasonably believe the file matched the screen. */
+function exportHref(
+  projectId: string,
+  format: string,
+  view: string,
+  query: { q: string; from: string; to: string }
+): string {
+  const params = new URLSearchParams();
+  params.set("format", format);
+  if (view && view !== "all") params.set("view", view);
+  if (query.q) params.set("q", query.q);
+  if (query.from) params.set("from", query.from);
+  if (query.to) params.set("to", query.to);
+  return `/api/timeline/export/${projectId}?${params.toString()}`;
+}
+
+/** Source-level caps, stated on the page whenever one actually applied. */
+function SourceCaps({ caps }: { caps: string[] }) {
+  if (!caps || caps.length === 0) return null;
+  return (
+    <p className="sub tl-caps">
+      <strong>Not the complete record:</strong>{" "}
+      {caps.join(" · ")}. Everything else on this page is complete.
+    </p>
+  );
+}
+
 export function renderProjectTimeline(input: {
   nav: NavContext;
   timeline: ProjectTimeline;
@@ -123,15 +153,16 @@ export function renderProjectTimeline(input: {
       <PageHeader
         title={t.project.name}
         sub="Every governed event for this project, in the order it happened."
-        asOf={`${t.totalEvents} recorded events · computed ${when(t.asOf)} UTC`}
+        asOf={`${t.totalEvents} recorded events · computed ${when(t.asOf)} UTC${t.sourceCaps.length > 0 ? " · capped" : ""}`}
       >
         <a className="btn ghost sm" href={`/timeline/story/${pid}`}>Story →</a>
         <a className="btn ghost sm" href={`/timeline/site/${pid}`}>Site intelligence →</a>
         <a className="btn ghost sm" href={`/timeline/playback/${pid}`}>Playback →</a>
         <a className="btn ghost sm" href={`/timeline/map/${pid}`}>Map →</a>
-        <a className="btn ghost sm" href={`/api/timeline/export/${pid}?format=csv`}>Export CSV</a>
+        <a className="btn ghost sm" href={exportHref(pid, "csv", input.view, input.query)}>Export CSV</a>
       </PageHeader>
       <Notice />
+      <SourceCaps caps={t.sourceCaps} />
 
       <div className="evi-tabs">
         {VIEWS.map((v) => (
@@ -571,11 +602,15 @@ export function renderPortfolioTimeline(input: { nav: NavContext; portfolio: Por
       <PageHeader
         title="Portfolio timeline"
         sub="Activity across every project you can see, newest first."
-        asOf={`${p.totalEvents} events across ${p.projects} project${p.projects === 1 ? "" : "s"}`}
+        asOf={
+          `${p.totalEvents}${p.filtered ? " filtered" : ""} events across ` +
+          `${p.projects} of ${p.projectsAvailable} project${p.projectsAvailable === 1 ? "" : "s"}`
+        }
       >
         <a className="btn ghost sm" href="/executive">Executive command center →</a>
       </PageHeader>
       <Notice />
+      <SourceCaps caps={p.notes} />
 
       {p.activityByWeek.length > 0 ? (
         <section className="evi-card">
