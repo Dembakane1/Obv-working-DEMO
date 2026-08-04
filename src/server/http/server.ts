@@ -147,6 +147,9 @@ import { handleEvidenceIntelRoutes } from "./evidenceIntelRoutes";
 import * as evidenceIntelSvc from "../services/evidenceIntel";
 import { handleOfficialSourceRoutes } from "./officialSourceRoutes";
 import * as officialSourcesSvc from "../services/officialSources";
+import { handleTimelineRoutes } from "./timelineRoutes";
+import { TimelineError } from "../services/timeline";
+import * as timelineSvc from "../services/timeline";
 import { EvidenceIntelError } from "../services/evidenceIntel";
 import { OfficialSourceError } from "../services/officialSources";
 import {
@@ -2878,6 +2881,33 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ============== Project Timeline & Site Intelligence (read-only) ==============
+  if (
+    await handleTimelineRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      searchParams: url.searchParams,
+      getUser: () => {
+        const u = currentUser(req);
+        if (!u) throw new TimelineError("Select a demo user first", 401);
+        return u;
+      },
+      signInLocation: signInPath(),
+      navFor,
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+      sendHtml: (html, status) => sendHtml(res, html, status ?? 200),
+      sendText: (text, contentType, status) => {
+        res.writeHead(status ?? 200, { "Content-Type": contentType });
+        res.end(text);
+      },
+    })
+  ) {
+    return;
+  }
+
   // ============== Official Source Connectors (evidence retrieval) ==============
   if (
     await handleOfficialSourceRoutes({
@@ -4760,6 +4790,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     "/integrations",
     "/evidence-intelligence",
     "/official-sources",
+    "/timeline",
   ];
   const isPage = PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
   const user = currentUser(req);
@@ -5742,12 +5773,36 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           conflictedProjects: srcAnalytics.projectsWithUnresolvedConflicts.length,
         }
       : null;
+    // Read-only project-history summary for the executive band.
+    const historyView = (() => {
+      try {
+        const pt = timelineSvc.portfolioTimeline(user!);
+        const busiest = [...pt.entries].sort((a, b) => b.totalEvents - a.totalEvents)[0] ?? null;
+        const lastActivityAt = pt.entries
+          .map((e) => e.lastEventAt)
+          .filter((v): v is string => Boolean(v))
+          .sort()
+          .pop() ?? null;
+        return {
+          totalEvents: pt.totalEvents,
+          projects: pt.projects,
+          activeWeeks: pt.activityByWeek.length,
+          busiestProject: busiest
+            ? { projectId: busiest.projectId, projectName: busiest.projectName, totalEvents: busiest.totalEvents }
+            : null,
+          lastActivityAt,
+        };
+      } catch {
+        return null;
+      }
+    })();
     sendHtml(
       res,
       renderExecutive({
         nav: navFor(user!, "executive"),
         evidenceQuality,
         officialSources,
+        projectHistory: historyView,
         overview: overviewData,
         risk: portfolioIntel.risk(user!),
         fraud: portfolioIntel.fraud(user!),
@@ -6186,7 +6241,7 @@ const server = http.createServer((req, res) => {
     // "Internal server error", which is both a worse experience and a weak
     // existence oracle — 500 here, 404 there, tells an attacker they hit
     // something real. ComplianceError is the DMV layer's typed error.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError || err instanceof IdentityError || err instanceof IntegrationError || err instanceof EvidenceIntelError || err instanceof OfficialSourceError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError || err instanceof IdentityError || err instanceof IntegrationError || err instanceof EvidenceIntelError || err instanceof OfficialSourceError || err instanceof TimelineError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     const message = known ? err.message : "Internal server error";
