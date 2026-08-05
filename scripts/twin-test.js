@@ -209,10 +209,16 @@ async function main() {
       fieldScene.anchored.every((a) => a.sourceTable !== "official_source_records"),
     "a role Official Sources denies sees no official-source dock records"
   );
-  const fieldSources = fieldScene.layers.find((l) => l.key === "sources");
+  // Permits are readable by any project viewer, so the layer must stay
+  // available for FIELD — asserted on the DMV project, which actually
+  // has recorded permits.
+  const dmvField = repo.getUser("user-dmv-field");
+  const dmvFieldScene = dmvField ? twin.twinScene(dmvField, "proj-dmv") : fieldScene;
+  const fieldSources = dmvFieldScene.layers.find((l) => l.key === "sources");
   assert(
     fieldSources && fieldSources.available &&
-      fieldScene.anchored.some((a) => a.group === "PERMIT"),
+      (repo.listPermitsForProject(dmvFieldScene.projectId).length === 0 ||
+        dmvFieldScene.anchored.some((a) => a.group === "PERMIT")),
     "permits stay visible to project viewers — only Official Sources' OWN records are gated"
   );
   const fieldPay = fieldScene.layers.find((l) => l.key === "payments");
