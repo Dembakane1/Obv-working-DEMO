@@ -62,10 +62,6 @@
   };
 
   // ------------------------------------------------------------ layers
-  const CATEGORY_LAYER: Record<string, string> = {
-    DRAW: "draws", DECISION: "draws", PAYMENT: "payments",
-    DISPUTE: "disputes", EXCEPTION: "exceptions",
-  };
   const layerState = new Map<string, boolean>();
   for (const l of data.layers) layerState.set(l.key, l.available && l.defaultOn);
 
@@ -235,27 +231,46 @@
   });
 
   // Timeline synchronization: ?focus=<eventId> highlights the element
-  // that represents the event's record.
-  if (data.focus && data.sync[data.focus]) {
-    select(data.sync[data.focus], true);
+  // that represents the event's record. Own-property lookup only — a
+  // crafted focus value must not resolve Object.prototype keys, and an
+  // event with no scene representation is said so, not faked.
+  const focusTarget =
+    data.focus && Object.prototype.hasOwnProperty.call(data.sync, data.focus)
+      ? data.sync[data.focus]
+      : null;
+  if (typeof focusTarget === "string" && Object.prototype.hasOwnProperty.call(data.elements, focusTarget)) {
+    select(focusTarget, true);
   } else if (data.pin) {
+    // An unknown focus never suppresses an explicit pin request.
     const pinId = `EVIDENCE_PIN:${data.pin}`;
     document.querySelectorAll(`[data-el="${CSS.escape(pinId)}"]`).forEach((n) => n.classList.add("twin-selected"));
+  } else if (data.focus && detailBody) {
+    detailBody.textContent = "";
+    detailBody.appendChild(
+      el("p", "sub",
+        "This timeline event's record has no drawn or listed representation in the twin — open it on the Timeline for full detail.")
+    );
   }
 
   // ------------------------------------------------------------ playback
+  // Playback replays EVERY recorded step the server returned, in order,
+  // regardless of layer toggles — the history is the history; toggles
+  // affect what is drawn on the scene, never what happened. The
+  // truncation note (when the server capped a huge history) lives in its
+  // own element so per-step captions can never overwrite it.
   const playBtn = document.getElementById("twin-play") as HTMLButtonElement | null;
   const speedSel = document.getElementById("twin-speed") as HTMLSelectElement | null;
   const scrub = document.getElementById("twin-scrub") as HTMLInputElement | null;
   const caption = document.getElementById("twin-play-caption");
+  const playNote = document.getElementById("twin-play-note");
   let steps: PlaybackStep[] | null = null;
   let timer: number | null = null;
   let cursor = 0;
 
-  function visibleSteps(): PlaybackStep[] {
-    return (steps ?? []).filter((s) => {
-      const layer = CATEGORY_LAYER[s.category];
-      return !layer || layerState.get(layer) !== false;
+  function clearReplayState(): void {
+    document.querySelectorAll(".twin-appeared, .twin-step-active").forEach((n) => {
+      n.classList.remove("twin-appeared");
+      n.classList.remove("twin-step-active");
     });
   }
 
@@ -264,10 +279,20 @@
     timer = null;
     if (playBtn) playBtn.textContent = "▶ Play history";
     svg?.classList.remove("twin-dimmed");
-    document.querySelectorAll(".twin-appeared, .twin-step-active").forEach((n) => {
-      n.classList.remove("twin-appeared");
-      n.classList.remove("twin-step-active");
-    });
+    clearReplayState();
+  }
+
+  // Mark exactly the elements whose events have happened by step i:
+  // additive marking alone would misstate the scene after a backward
+  // scrub, so appearance is recomputed from zero each time.
+  function markAppearedUpTo(list: PlaybackStep[], i: number): void {
+    clearReplayState();
+    for (let k = 0; k <= i && k < list.length; k += 1) {
+      const s = list[k];
+      if (s.elementId) {
+        document.querySelectorAll(`[data-el="${CSS.escape(s.elementId)}"]`).forEach((n) => n.classList.add("twin-appeared"));
+      }
+    }
   }
 
   function showStep(list: PlaybackStep[], i: number): void {
@@ -293,6 +318,7 @@
         return;
       }
       svg?.classList.add("twin-dimmed");
+      clearReplayState();
       if (scrub) {
         scrub.max = String(list.length - 1);
         scrub.value = "0";
@@ -307,23 +333,25 @@
           if (timer !== null) window.clearInterval(timer);
           timer = null;
           if (playBtn) playBtn.textContent = "▶ Replay";
-          if (caption) caption.textContent = `${caption.textContent} · replay complete (${list.length} recorded events)`;
+          if (caption) caption.textContent = `${caption.textContent} · replay complete (all ${list.length} recorded events shown)`;
           svg?.classList.remove("twin-dimmed");
         }
       }, interval);
     };
     if (steps) {
-      run(visibleSteps());
+      run(steps);
       return;
     }
     fetch(`/api/twin/playback/${encodeURIComponent(data.projectId)}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((p: { steps: PlaybackStep[]; truncated: boolean; totalEvents: number }) => {
         steps = p.steps;
-        if (p.truncated && caption) {
-          caption.textContent = `Replaying the most recent ${p.steps.length} of ${p.totalEvents} recorded events.`;
+        if (p.truncated && playNote) {
+          playNote.textContent =
+            `Capped: replaying the most recent ${p.steps.length} of ${p.totalEvents} recorded events — the full history stays on the Timeline.`;
+          playNote.style.display = "";
         }
-        run(visibleSteps());
+        run(p.steps);
       })
       .catch(() => {
         if (caption) caption.textContent = "Playback unavailable.";
@@ -335,21 +363,16 @@
     else startPlayback();
   });
   scrub?.addEventListener("input", () => {
-    const list = visibleSteps();
+    if (!steps) return;
     const i = Number(scrub.value);
-    if (timer !== null && timer !== undefined) {
+    if (timer !== null) {
       window.clearInterval(timer);
       timer = null;
       if (playBtn) playBtn.textContent = "▶ Play history";
     }
     svg?.classList.add("twin-dimmed");
-    for (let k = 0; k <= i && k < list.length; k += 1) {
-      const s = list[k];
-      if (s.elementId) {
-        document.querySelectorAll(`[data-el="${CSS.escape(s.elementId)}"]`).forEach((n) => n.classList.add("twin-appeared"));
-      }
-    }
-    showStep(list, i);
+    markAppearedUpTo(steps, i);
+    showStep(steps, i);
   });
 
   // ------------------------------------------------------------ pan/zoom

@@ -54,7 +54,8 @@ export function twinSnapshots(user: User): { snapshots: TwinSnapshot[]; availabl
         (e) => e.latitude !== null && e.longitude !== null
       ).length;
     }
-    const bb = boundsOf([...boundary, ...stages.flatMap((s) => s.points)]);
+    const snapPoints = [...boundary, ...stages.flatMap((s) => s.points)];
+    const bb = snapPoints.length > 0 ? boundsOf(snapPoints, 0) : { widthM: 0, heightM: 0 };
     return {
       projectId: project.id,
       projectName: project.name,

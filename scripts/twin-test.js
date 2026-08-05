@@ -417,7 +417,13 @@ async function main() {
   let t0 = Date.now();
   const bigScene = twin.twinScene(funder, "proj-r47");
   const sceneMs = Date.now() - t0;
-  assert(bigScene.sync.length >= BULK, `large scene sync covers the bulk history (${bigScene.sync.length} entries)`);
+  // Governance audit events carry no milestone linkage and no drawn
+  // record, so under the honest sync contract they have NO entry — the
+  // map stays small and every entry it does have is real.
+  assert(
+    bigScene.sync.length > 0 && bigScene.sync.length < BULK,
+    `sync stays honest on a bulk history (${bigScene.sync.length} real correspondences, not a catch-all)`
+  );
   assert(sceneMs < 4000, `large scene built in ${sceneMs}ms (budget 4000ms)`);
   t0 = Date.now();
   const bigPlayback = twin.twinPlayback(funder, "proj-r47");
@@ -504,6 +510,131 @@ async function main() {
     "a malformed pin id is a 404, not a 500");
   assert((await status(`/api/twin/pin/proj-r47/${dmvCookie ? "no-such" : "x"}`, cookie)) === 404,
     "an unknown pin id is a plain 404");
+
+  // ---------------------------------------------------------- section 12
+  // Regressions from the adversarial review. Each shipped as a real
+  // defect once; every one is pinned here so it cannot come back.
+  console.log("\n== 12. Adversarial-review regressions ==");
+
+  // (a) Sync emits ONLY real correspondences: a direct record match or
+  //     the event's own milestone geometry — never a boundary catch-all
+  //     that would present the geofence as a lender decision.
+  const regScene = twin.twinScene(funder, "proj-r47");
+  const regTimeline = tl.projectTimeline(funder, "proj-r47");
+  const regEls = new Map(regScene.elements.map((e) => [e.id, e]));
+  const regAnch = new Map(regScene.anchored.map((a) => [a.id, a]));
+  const evById = new Map(regTimeline.events.map((e) => [e.id, e]));
+  for (const s of regScene.sync) {
+    const ev = evById.get(s.eventId);
+    const el = regEls.get(s.elementId) ?? regAnch.get(s.elementId);
+    const direct = el && el.sourceTable === ev.sourceTable && el.sourceRecordId === ev.sourceRecordId;
+    const viaMilestone = el && ev.milestoneId && el.milestoneId === ev.milestoneId;
+    if (!direct && !viaMilestone) fail(`sync entry ${s.eventId} → ${s.elementId} is not a real correspondence`);
+  }
+  pass("every sync entry is a direct record match or the event's own milestone geometry");
+  assert(
+    regTimeline.events.some((e) => !regScene.sync.some((s) => s.eventId === e.id)),
+    "events with no represented record have NO sync entry (no boundary catch-all)"
+  );
+
+  // (b) A derived advisory marker never outranks the record it derives
+  //     from. Force a permit into the expiring window and confirm its
+  //     governed events still sync to the permit's own dock row.
+  const dmvFunder = repo.getUser("user-dmv-funder") ?? funder;
+  const dmvPermits = repo.listPermitsForProject("proj-dmv");
+  if (dmvPermits.length > 0) {
+    const p0 = dmvPermits[0];
+    const soon = new Date(Date.now() + 10 * 86_400_000).toISOString().slice(0, 10);
+    const prevExpiry = db.prepare("SELECT expires_at FROM permits WHERE id = ?").get(p0.id).expires_at;
+    db.prepare("UPDATE permits SET expires_at = ?, status = 'ISSUED' WHERE id = ?").run(soon, p0.id);
+    const dmvScene = twin.twinScene(dmvFunder, "proj-dmv");
+    assert(
+      dmvScene.elements.some((e) => e.id === `ADVISORY_MARKER:permit-expiry:${p0.id}`),
+      "an expiring permit raises the plain-fact advisory marker"
+    );
+    const dmvEvents = tl.projectTimeline(dmvFunder, "proj-dmv").events
+      .filter((e) => e.sourceTable === "permits" && e.sourceRecordId === p0.id);
+    const targets = dmvScene.sync
+      .filter((s) => dmvEvents.some((e) => e.id === s.eventId))
+      .map((s) => s.elementId);
+    assert(
+      targets.length > 0 && targets.every((t) => t === `PERMIT:${p0.id}`),
+      "the permit's governed events sync to the permit's own record, not to the derived advisory marker"
+    );
+    db.prepare("UPDATE permits SET expires_at = ? WHERE id = ?").run(prevExpiry, p0.id);
+  } else {
+    pass("(no DMV permits seeded — advisory-precedence covered by (a))");
+  }
+
+  // (c) Element ids are unique even when a milestone carries two
+  //     SEGMENT features (schema-legal).
+  db.prepare(
+    "INSERT INTO spatial_features (id, project_id, milestone_id, kind, label, geometry) VALUES (?,?,?,?,?,?)"
+  ).run("sf-twin-dup", "proj-r47", milestones[1].id, "SEGMENT", "revised alignment",
+    JSON.stringify([[33.60, -11.86], [33.61, -11.855]]));
+  const dupScene = twin.twinScene(funder, "proj-r47");
+  const ids = dupScene.elements.map((e) => e.id);
+  assert(new Set(ids).size === ids.length, "element ids stay unique with two SEGMENT features on one milestone");
+  db.prepare("DELETE FROM spatial_features WHERE id = ?").run("sf-twin-dup");
+
+  // (d) Frame extent is a measurement of recorded points — never the
+  //     renderer's padding. A scene with no drawable points reports 0×0.
+  db.prepare(
+    "INSERT INTO projects (id, organization_id, name, description, location, site_boundary, total_budget, status) VALUES (?,?,?,?,?,?,?,?)"
+  ).run("proj-reg-bare", project.organizationId, "Bare2", "d", "loc", JSON.stringify([]), 1000, "ACTIVE");
+  const bare2 = twin.twinScene(funder, "proj-reg-bare");
+  assert(bare2.frame.degraded && bare2.frame.widthM === 0 && bare2.frame.heightM === 0,
+    "a degraded scene reports extent 0×0 — never an invented padding box");
+  db.prepare("DELETE FROM projects WHERE id = ?").run("proj-reg-bare");
+  assert(
+    regScene.frame.widthM > 0 && regScene.frame.widthM <= 13_000,
+    `a real scene reports the unpadded recorded extent (${regScene.frame.widthM} m)`
+  );
+
+  // (e) Antimeridian-straddling geometry is refused with a stated
+  //     reason, not drawn as a world-spanning sliver.
+  db.prepare(
+    "INSERT INTO projects (id, organization_id, name, description, location, site_boundary, total_budget, status) VALUES (?,?,?,?,?,?,?,?)"
+  ).run("proj-reg-am", project.organizationId, "AM", "d", "Fiji", JSON.stringify(
+    [[179.99, -16.80], [-179.99, -16.80], [-179.99, -16.79], [179.99, -16.79], [179.99, -16.80]]
+  ), 1000, "ACTIVE");
+  const amScene = twin.twinScene(funder, "proj-reg-am");
+  assert(amScene.frame.degraded, "an antimeridian-straddling site is refused rather than drawn wrong");
+  assert(amScene.caps.some((c) => /antimeridian/i.test(c)), "…and the refusal is stated in the caps");
+  db.prepare("DELETE FROM projects WHERE id = ?").run("proj-reg-am");
+
+  // (f) ringCentroid's degenerate fallback ignores the GeoJSON closing
+  //     vertex instead of double-counting it.
+  const geom = require(path.join(ROOT, "dist/server/services/twin/geometry.js"));
+  const degenerate = geom.ringCentroid([[0, 0], [2, 0], [4, 0], [0, 0]]);
+  assert(Math.abs(degenerate.lng - 2) < 1e-9, "degenerate-ring centroid is the distinct-vertex mean");
+
+  // (g) The boundary layer covers the recorded ROUTE too, so a project
+  //     with a route but no geofence never hides recorded coordinates.
+  const savedBoundary = db.prepare("SELECT site_boundary FROM projects WHERE id = ?").get("proj-r47").site_boundary;
+  db.prepare("UPDATE projects SET site_boundary = ? WHERE id = ?").run(JSON.stringify([]), "proj-r47");
+  const routeOnly = twin.twinScene(funder, "proj-r47");
+  const routeLayer = routeOnly.layers.find((l) => l.key === "boundary");
+  assert(
+    routeOnly.elements.some((e) => e.kind === "ROUTE") && routeLayer.available && routeLayer.defaultOn,
+    "a recorded ROUTE keeps the boundary layer available even with no geofence"
+  );
+  db.prepare("UPDATE projects SET site_boundary = ? WHERE id = ?").run(savedBoundary, "proj-r47");
+
+  // (h) No layer advertises itself as on while unavailable.
+  for (const sc of [regScene, routeOnly]) {
+    assert(sc.layers.every((l) => l.available || !l.defaultOn),
+      "no layer is default-on while unavailable (checkbox state is honest)");
+  }
+
+  // (i) The client replays the full recorded window: no category
+  //     filtering of history, own-property focus lookup, and appearance
+  //     recomputed from zero on scrub.
+  const clientSrc = fs.readFileSync(path.join(ROOT, "src/client/twin.ts"), "utf8");
+  assert(!/CATEGORY_LAYER/.test(clientSrc), "playback no longer filters recorded history by layer toggles");
+  assert(/hasOwnProperty\.call\(data\.sync/.test(clientSrc), "focus lookup rejects Object.prototype keys");
+  assert(/markAppearedUpTo/.test(clientSrc) && /clearReplayState\(\)/.test(clientSrc),
+    "scrubbing recomputes appearance from zero (backward scrub is honest)");
 
   console.log(`\nDIGITAL TWIN TESTS PASSED — ${passed} checkpoints.`);
   console.log("THE TWIN SHOWS THE RECORD. THE TIMELINE REMAINS AUTHORITATIVE.");

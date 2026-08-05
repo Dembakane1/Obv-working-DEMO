@@ -38,8 +38,16 @@ export function ringCentroid(ring: GeoPolygon): { lat: number; lng: number } | n
     cy += (y1 + y2) * cross;
   }
   if (Math.abs(area) < 1e-12) {
-    const mx = ring.reduce((s, [x]) => s + x, 0) / ring.length;
-    const my = ring.reduce((s, [, y]) => s + y, 0) / ring.length;
+    // Vertex mean over DISTINCT vertices: GeoJSON-style rings repeat the
+    // first vertex last, and counting it twice would bias the fallback
+    // centroid toward that vertex.
+    const closed =
+      ring.length > 1 &&
+      ring[0][0] === ring[ring.length - 1][0] &&
+      ring[0][1] === ring[ring.length - 1][1];
+    const verts = closed ? ring.slice(0, -1) : ring;
+    const mx = verts.reduce((s, [x]) => s + x, 0) / verts.length;
+    const my = verts.reduce((s, [, y]) => s + y, 0) / verts.length;
     return { lat: my, lng: mx };
   }
   area *= 0.5;

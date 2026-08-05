@@ -108,7 +108,7 @@ function SceneSvg(props: { scene: TwinScene }): VNode {
   const fit = fitScene(allPoints, W, H, { l: 80, r: 80, t: 70, b: 96 });
 
   const boundaryEl = drawables.find((e) => e.kind === "BOUNDARY");
-  const routeEl = drawables.find((e) => e.kind === "ROUTE");
+  const routeEls = drawables.filter((e) => e.kind === "ROUTE");
   const segments = drawables.filter((e) => e.kind === "SEGMENT");
   const markers = drawables
     .filter((e) => e.kind === "EVIDENCE_PIN" || e.kind === "INSPECTION_MARKER" || (e.kind === "ADVISORY_MARKER" && e.points.length > 0))
@@ -169,7 +169,7 @@ function SceneSvg(props: { scene: TwinScene }): VNode {
         </g>
       ) : null}
 
-      {routeEl ? (
+      {routeEls.map((routeEl) => (
         <g data-layer-group="boundary">
           <path d={pathOf(routeEl.points, fit, false)} className="twin-route-casing" />
           <path
@@ -181,7 +181,7 @@ function SceneSvg(props: { scene: TwinScene }): VNode {
             aria-label={routeEl.label}
           />
         </g>
-      ) : null}
+      ))}
 
       <g data-layer-group="progress">
         {segments.map((s) => {
@@ -520,7 +520,11 @@ export function renderDigitalTwin(input: {
       <PageHeader
         title={s.projectName}
         sub="An interactive visualization of the records OBV already holds — the Timeline remains authoritative."
-        asOf={`Scene ${s.frame.widthM}×${s.frame.heightM} m · computed ${s.asOf.replace("T", " ").slice(0, 16)} UTC`}
+        asOf={
+          (s.frame.widthM > 0 && s.frame.heightM > 0
+            ? `Recorded extent ${s.frame.widthM}×${s.frame.heightM} m · `
+            : "") + `computed ${s.asOf.replace("T", " ").slice(0, 16)} UTC`
+        }
       >
         <a className="btn ghost sm" href={`/timeline/story/${s.projectId}`}>Story →</a>
         <a className="btn ghost sm" href={`/timeline/site/${s.projectId}`}>Site intelligence →</a>
@@ -597,6 +601,7 @@ export function renderDigitalTwin(input: {
               <span className="sub" id="twin-play-caption">
                 Construction playback replays the recorded timeline — it never simulates.
               </span>
+              <span className="sub tl-caps" id="twin-play-note" style="display:none"></span>
             </div>
           </section>
         </div>

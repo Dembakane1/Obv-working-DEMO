@@ -84,6 +84,24 @@ interface SceneBasis {
   frame: LocalFrame | null;
   degraded: boolean;
   boundaryLocal: TwinPoint[];
+  /** A basis-level caveat to surface in the scene's caps, if any. */
+  note: string | null;
+}
+
+/** True when recorded longitudes straddle the antimeridian. The simple
+ *  equirectangular frame cannot represent that honestly (a ~2 km site
+ *  would project as a world-spanning sliver with a confidently wrong
+ *  scale bar), so such a scene is refused and the reason stated rather
+ *  than drawn wrong. */
+function straddlesAntimeridian(lngs: number[]): boolean {
+  if (lngs.length === 0) return false;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const l of lngs) {
+    min = Math.min(min, l);
+    max = Math.max(max, l);
+  }
+  return max - min > 180;
 }
 
 /** Choose the local origin from REAL recorded geometry: the boundary
@@ -91,23 +109,39 @@ interface SceneBasis {
  *  When nothing recorded carries a coordinate the scene is degraded —
  *  it says so and renders the dock only, inventing nothing. */
 function basisFor(project: Project, milestones: Milestone[], evidence: EvidenceItem[]): SceneBasis {
+  const features = safe(() => repo.listSpatialFeatures(project.id), []);
+  const lngs = [
+    ...project.siteBoundary.map(([lng]) => lng),
+    ...features.flatMap((f) => f.geometry.map(([lng]) => lng)),
+    ...evidence.filter((e) => e.longitude !== null).map((e) => e.longitude as number),
+  ];
+  if (straddlesAntimeridian(lngs)) {
+    return {
+      project,
+      frame: null,
+      degraded: true,
+      boundaryLocal: [],
+      note:
+        "Recorded coordinates straddle the antimeridian, which this scene projection cannot draw " +
+        "honestly — the scene is disabled rather than rendered wrong. Records remain listed below.",
+    };
+  }
   const centroid = ringCentroid(project.siteBoundary);
   if (centroid) {
     const frame = makeFrame(centroid.lat, centroid.lng);
-    return { project, frame, degraded: false, boundaryLocal: projectRing(frame, project.siteBoundary) };
+    return { project, frame, degraded: false, boundaryLocal: projectRing(frame, project.siteBoundary), note: null };
   }
-  const features = safe(() => repo.listSpatialFeatures(project.id), []);
   const firstVertex = features.find((f) => f.geometry.length > 0)?.geometry[0];
   if (firstVertex) {
     const frame = makeFrame(firstVertex[1], firstVertex[0]);
-    return { project, frame, degraded: false, boundaryLocal: [] };
+    return { project, frame, degraded: false, boundaryLocal: [], note: null };
   }
   const fix = evidence.find((e) => e.latitude !== null && e.longitude !== null);
   if (fix) {
     const frame = makeFrame(fix.latitude as number, fix.longitude as number);
-    return { project, frame, degraded: false, boundaryLocal: [] };
+    return { project, frame, degraded: false, boundaryLocal: [], note: null };
   }
-  return { project, frame: null, degraded: true, boundaryLocal: [] };
+  return { project, frame: null, degraded: true, boundaryLocal: [], note: null };
 }
 
 /** Build the full scene for one project. Same-404 and the timeline role
@@ -126,6 +160,7 @@ export function twinScene(user: User, projectId: string): TwinScene {
   const allEvidence = [...evidenceByMilestone.values()].flat();
   const basis = basisFor(project, milestones, allEvidence);
   const frame = basis.frame;
+  if (basis.note) caps.push(basis.note);
 
   const features = safe(() => repo.listSpatialFeatures(project.id), []);
   const inspections = safe(() => repo.listInspectionsForProject(project.id), []);
@@ -191,7 +226,10 @@ export function twinScene(user: User, projectId: string): TwinScene {
       if (f.geometry.length === 0) continue;
       const stage = f.milestoneId ? stages.find((s) => s.milestoneId === f.milestoneId) : undefined;
       elements.push({
-        id: f.kind === "ROUTE" ? `ROUTE:${f.id}` : `SEGMENT:${f.milestoneId ?? f.id}`,
+        // Keyed by the FEATURE's own id: a milestone may legally carry
+        // more than one SEGMENT row, and sharing an id would make two
+        // drawn paths claim one record.
+        id: f.kind === "ROUTE" ? `ROUTE:${f.id}` : `SEGMENT:${f.id}`,
         kind: f.kind === "ROUTE" ? "ROUTE" : "SEGMENT",
         label: stage ? `${stage.title}` : f.label,
         sourceTable: "spatial_features",
@@ -273,7 +311,7 @@ export function twinScene(user: User, projectId: string): TwinScene {
         severity: null,
         recordStatus: "AUTHORITATIVE",
         href: `/permits`,
-        detail: "Placed at the midpoint of its milestone's recorded geometry",
+        detail: "Placed on its milestone's recorded geometry",
       });
     } else {
       anchored.push({
@@ -418,9 +456,15 @@ export function twinScene(user: User, projectId: string): TwinScene {
   const bankingVisible = hasBankingCapability(user, project.id, "VIEW_PROJECT_ACCOUNT");
   const count = (k: TwinElement["kind"]) => elements.filter((e) => e.kind === k).length;
   const cat = (c: string) => timeline.categoryCounts[c] ?? 0;
+  // The boundary layer group also carries the recorded ROUTE, so its
+  // availability must reflect BOTH — otherwise a project with a route
+  // but no geofence would have its recorded route hidden by the layer
+  // toggle, which would suppress recorded coordinates.
+  const routeCount = count("ROUTE");
+  const boundaryAvailable = basis.boundaryLocal.length >= 3 || routeCount > 0;
   const layers: TwinLayer[] = [
-    { key: "boundary", label: "Project boundary", available: basis.boundaryLocal.length >= 3, defaultOn: true, count: basis.boundaryLocal.length >= 3 ? 1 : 0, note: basis.boundaryLocal.length >= 3 ? null : "No recorded site boundary" },
-    { key: "progress", label: "Construction progress", available: stages.length > 0, defaultOn: true, count: stages.length, note: "Recorded governance lifecycle, not a physical measurement" },
+    { key: "boundary", label: "Site boundary & route", available: boundaryAvailable, defaultOn: boundaryAvailable, count: (basis.boundaryLocal.length >= 3 ? 1 : 0) + routeCount, note: boundaryAvailable ? null : "No recorded site boundary or route" },
+    { key: "progress", label: "Construction progress", available: stages.length > 0, defaultOn: stages.length > 0, count: stages.length, note: "Recorded governance lifecycle, not a physical measurement" },
     { key: "evidence", label: "Evidence", available: true, defaultOn: true, count: pinCount, note: skippedNoGps > 0 ? `${skippedNoGps} without GPS listed per stage` : null },
     { key: "gps", label: "GPS pins", available: true, defaultOn: true, count: pinCount, note: "Only real recorded fixes are placed" },
     { key: "inspections", label: "Inspections", available: true, defaultOn: true, count: inspections.length, note: null },
@@ -448,8 +492,11 @@ export function twinScene(user: User, projectId: string): TwinScene {
     .reduce((s, m) => s + m.trancheAmount, 0);
   const pct = totalTranche > 0 ? Math.round((releasedTranche / totalTranche) * 100) : 0;
 
+  // Frame metadata reports the UNPADDED extent of the recorded points —
+  // a stated size must be a measurement, so an empty scene reports 0×0
+  // rather than the renderer's padding box.
   const allPoints = elements.flatMap((e) => e.points);
-  const bb = boundsOf(allPoints);
+  const bb = allPoints.length > 0 ? boundsOf(allPoints, 0) : { widthM: 0, heightM: 0 };
   return {
     projectId: project.id,
     projectName: project.name,
@@ -483,25 +530,37 @@ export function twinScene(user: User, projectId: string): TwinScene {
 
 /** Map each timeline event to the scene element (or dock record) that
  *  represents its source record. Only real correspondences are emitted:
- *  an event with no represented record simply has no sync entry. */
+ *  an event about a specific record maps to that record's own
+ *  representation (an ADVISORY marker derived FROM a record never
+ *  outranks the record itself), an event on a milestone with recorded
+ *  geometry maps to that geometry, and an event with neither simply has
+ *  no sync entry — the twin never pretends the site boundary "is" a
+ *  lender decision. */
 function buildSync(
   events: TimelineEvent[],
   elements: TwinElement[],
   anchored: TwinAnchoredRecord[]
 ): TwinSyncEntry[] {
   const byRecord = new Map<string, string>();
+  const claim = (table: string, recordId: string, elementId: string) => {
+    const key = `${table}:${recordId}`;
+    if (!byRecord.has(key)) byRecord.set(key, elementId);
+  };
+  // Authoritative representations claim their record key FIRST; derived
+  // advisory markers only represent a record no one else does.
   for (const el of elements) {
-    byRecord.set(`${el.sourceTable}:${el.sourceRecordId}`, el.id);
+    if (el.kind !== "ADVISORY_MARKER") claim(el.sourceTable, el.sourceRecordId, el.id);
   }
-  for (const a of anchored) {
-    const key = `${a.sourceTable}:${a.sourceRecordId}`;
-    if (!byRecord.has(key)) byRecord.set(key, a.id);
+  for (const a of anchored) claim(a.sourceTable, a.sourceRecordId, a.id);
+  for (const el of elements) {
+    if (el.kind === "ADVISORY_MARKER") claim(el.sourceTable, el.sourceRecordId, el.id);
   }
   const segmentByMilestone = new Map<string, string>();
   for (const el of elements) {
-    if (el.kind === "SEGMENT" && el.milestoneId) segmentByMilestone.set(el.milestoneId, el.id);
+    if (el.kind === "SEGMENT" && el.milestoneId && !segmentByMilestone.has(el.milestoneId)) {
+      segmentByMilestone.set(el.milestoneId, el.id);
+    }
   }
-  const boundaryId = elements.find((el) => el.kind === "BOUNDARY")?.id ?? null;
 
   const sync: TwinSyncEntry[] = [];
   for (const e of events) {
@@ -512,10 +571,6 @@ function buildSync(
     }
     if (e.milestoneId && segmentByMilestone.has(e.milestoneId)) {
       sync.push({ eventId: e.id, elementId: segmentByMilestone.get(e.milestoneId)! });
-      continue;
-    }
-    if (boundaryId) {
-      sync.push({ eventId: e.id, elementId: boundaryId });
     }
   }
   return sync;
