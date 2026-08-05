@@ -3664,3 +3664,261 @@ export interface SpatialProviderSpec {
   /** What an implementation would need to supply, for planning only. */
   requires: string[];
 }
+
+// ---------------------------------------------------------------------
+// Digital Twin (additive visualization layer)
+//
+// THE TWIN VISUALIZES. IT NEVER RECORDS. Every shape, pin, bar, and
+// frame below is derived on read from records the governed subsystems
+// already authored — the twin owns no tables, performs no writes, and
+// never becomes the system of record. The Timeline remains the
+// authoritative interface; the twin is a synchronized picture of it.
+// ---------------------------------------------------------------------
+
+/** A point in the scene's local frame: metres east/north of the site
+ *  origin, projected from REAL recorded coordinates. The twin never
+ *  places anything at a coordinate the records do not contain. */
+export interface TwinPoint {
+  x: number;
+  y: number;
+}
+
+export type TwinLayerKey =
+  | "evidence" | "inspections" | "sources" | "draws" | "payments"
+  | "advisory" | "disputes" | "exceptions" | "timeline" | "boundary"
+  | "gps" | "progress"
+  // Future boundaries — declared, never implemented here.
+  | "drone" | "lidar" | "satellite";
+
+export interface TwinLayer {
+  key: TwinLayerKey;
+  label: string;
+  /** False for future-capability layers that have no provider. */
+  available: boolean;
+  /** Whether the layer starts visible. Unavailable layers never do. */
+  defaultOn: boolean;
+  /** How many scene elements the layer carries right now. */
+  count: number;
+  note: string | null;
+}
+
+/** One milestone, read as a construction stage. `lifecycleStep` is the
+ *  milestone's position in the GOVERNANCE lifecycle (NOT_STARTED …
+ *  RELEASED) — a fact about recorded state, never an estimate of
+ *  physical completion. */
+export interface TwinStage {
+  milestoneId: string;
+  seq: number;
+  title: string;
+  spatialLabel: string | null;
+  status: MilestoneStatus;
+  accountStatus: AccountStatus;
+  lifecycleStep: number;
+  lifecycleTotal: number;
+  trancheAmount: number;
+  evidenceCount: number;
+  gpsEvidenceCount: number;
+  verifiedEvidenceCount: number;
+  inspectionCount: number;
+  openExceptionCount: number;
+  hasGeometry: boolean;
+  plannedStart: string | null;
+  plannedEnd: string | null;
+}
+
+export type TwinElementKind =
+  | "BOUNDARY" | "ROUTE" | "SEGMENT" | "EVIDENCE_PIN"
+  | "INSPECTION_MARKER" | "ADVISORY_MARKER";
+
+/** One drawable element. Geometry is present ONLY when the underlying
+ *  record carries real coordinates; records without coordinates are
+ *  listed in `anchored` instead of being invented onto the map. */
+export interface TwinElement {
+  id: string; // `${kind}:${sourceRecordId}` — stable across reads
+  kind: TwinElementKind;
+  label: string;
+  sourceTable: string;
+  sourceRecordId: string;
+  milestoneId: string | null;
+  points: TwinPoint[];
+  status: string | null;
+  severity: "INFO" | "LOW" | "MEDIUM" | "HIGH" | null;
+  recordStatus: TimelineRecordStatus;
+  href: string | null;
+  detail: string | null;
+}
+
+/** A record that belongs on the site but has NO recorded coordinates.
+ *  Shown in the anchored dock, never at a guessed position. */
+export interface TwinAnchoredRecord {
+  id: string;
+  group: "PERMIT" | "INSPECTION" | "OFFICIAL_SOURCE" | "SOURCE_CANDIDATE" | "VERIFICATION";
+  label: string;
+  status: string | null;
+  detail: string;
+  sourceTable: string;
+  sourceRecordId: string;
+  href: string | null;
+  recordStatus: TimelineRecordStatus;
+}
+
+/** Timeline event ↔ scene element synchronization entry. */
+export interface TwinSyncEntry {
+  eventId: string;
+  elementId: string;
+}
+
+export interface TwinFrameMeta {
+  originLat: number;
+  originLng: number;
+  /** Scene extent in metres (width = east–west, height = north–south). */
+  widthM: number;
+  heightM: number;
+  /** True when the project has no usable recorded geometry at all. */
+  degraded: boolean;
+}
+
+export interface TwinScene {
+  projectId: string;
+  projectName: string;
+  notice: string;
+  frame: TwinFrameMeta;
+  boundary: TwinPoint[];
+  route: TwinPoint[] | null;
+  stages: TwinStage[];
+  elements: TwinElement[];
+  anchored: TwinAnchoredRecord[];
+  layers: TwinLayer[];
+  sync: TwinSyncEntry[];
+  /** Governance-lifecycle completion, tranche-weighted. A statement
+   *  about recorded milestone state — never a physical measurement. */
+  completion: { released: number; total: number; pct: number; basis: string };
+  caps: string[];
+  asOf: string;
+}
+
+/** One step of construction playback — exactly one recorded timeline
+ *  event, never a simulated frame. */
+export interface TwinPlaybackStep {
+  eventId: string;
+  at: string;
+  category: TimelineCategory;
+  type: string;
+  title: string;
+  explanation: string;
+  elementId: string | null;
+  recordStatus: TimelineRecordStatus;
+}
+
+export interface TwinPlayback {
+  projectId: string;
+  steps: TwinPlaybackStep[];
+  totalEvents: number;
+  /** True when steps were capped; stated, never silent. */
+  truncated: boolean;
+  asOf: string;
+}
+
+/** Read-only detail for one evidence pin. Advisory sections are present
+ *  only when the caller's role can already read them on the governed
+ *  pages — the twin never widens a gate. */
+export interface TwinPinDetail {
+  evidence: {
+    id: string;
+    milestoneId: string;
+    milestoneTitle: string;
+    photoPath: string;
+    capturedAt: string;
+    uploadedAt: string;
+    capturedBy: string | null;
+    device: string;
+    hasGps: boolean;
+    latitude: number | null;
+    longitude: number | null;
+    isDemoFallback: boolean;
+  };
+  verification: {
+    verdict: Verdict;
+    confidence: number;
+    source: VerificationSource;
+    checks: VerificationCheck[];
+    reasoning: string;
+  } | null;
+  /** Distance from the pin's REAL GPS fix to the milestone's recorded
+   *  segment geometry / site boundary. Null when either side lacks real
+   *  coordinates — never guessed. */
+  distances: {
+    toPlannedGeometryM: number | null;
+    toSiteCentroidM: number | null;
+    insideBoundary: boolean | null;
+  };
+  /** Advisory findings for this item (role-gated; null = not visible to
+   *  this caller, [] = visible and none exist). */
+  advisorySignals: Array<{
+    id: string;
+    category: EvidenceSignalCategory;
+    severity: EvidenceSignalSeverity;
+    confidence: number;
+    title: string;
+    explanation: string;
+    recommendation: string;
+  }> | null;
+  /** Recorded metadata facts (role-gated like the advisory queue). */
+  metadataFacts: {
+    uploadDelaySeconds: number | null;
+    mimeType: string | null;
+    fileSize: number | null;
+    width: number | null;
+    height: number | null;
+    deviceFingerprint: string | null;
+  } | null;
+  /** Recorded OCR runs for this item (role-gated; confidence is the OCR
+   *  provider's own figure, reported verbatim). */
+  ocr: Array<{ docKind: string; status: string; overallConfidence: number | null; extractedAt: string }> | null;
+  timelineEventId: string | null;
+  stage: { milestoneId: string; title: string; status: MilestoneStatus } | null;
+  nearby: {
+    inspections: Array<{ id: string; status: string; label: string }>;
+    evidence: Array<{ id: string; label: string; distanceM: number | null }>;
+  };
+}
+
+/** Provider boundary for a future twin adapter. Declared interface
+ *  only: no provider is implemented, contacted, or simulated. */
+export interface TwinProviderSpec {
+  key: string;
+  displayName: string;
+  category: "GIS" | "IMAGERY" | "REALITY_CAPTURE" | "BIM";
+  status: "DISABLED";
+  description: string;
+  requires: string[];
+}
+
+/** Site-intelligence coverage additions — every figure derived from
+ *  recorded rows and stated with its numerator/denominator. */
+export interface TwinCoverage {
+  projectId: string;
+  completionPct: number;
+  completionBasis: string;
+  evidenceCoverage: { covered: number; total: number; pct: number };
+  gpsCoverage: { withGps: number; total: number; pct: number };
+  inspectionCoverage: { covered: number; required: number; pct: number };
+  sourceCoverage: { covered: number; total: number; pct: number };
+  /** Advisory findings per stage — density, not judgement. */
+  riskDensity: Array<{ milestoneId: string; title: string; advisoryCount: number }>;
+  /** Timeline activity by ISO week for the heat strip. */
+  activityByWeek: Array<{ week: string; count: number }>;
+  asOf: string;
+}
+
+/** Miniature twin for the portfolio band: boundary + stage states only. */
+export interface TwinSnapshot {
+  projectId: string;
+  projectName: string;
+  status: ProjectStatus;
+  boundary: TwinPoint[];
+  frame: TwinFrameMeta;
+  stages: Array<{ seq: number; status: MilestoneStatus; points: TwinPoint[] }>;
+  completionPct: number;
+  evidencePinCount: number;
+}

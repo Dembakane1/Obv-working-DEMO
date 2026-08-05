@@ -10,6 +10,7 @@
  */
 import type * as http from "node:http";
 import * as tl from "../services/timeline";
+import * as twin from "../services/twin";
 import type { NavContext } from "../view/components";
 import type { TimelineCategory, User } from "../../shared/types";
 import {
@@ -50,6 +51,16 @@ function safeDecode(segment: string): string {
     return decodeURIComponent(segment);
   } catch {
     return segment;
+  }
+}
+
+/** An optional enhancement that fails must never take down the page it
+ *  enhances — the twin additions degrade to absent, not to an error. */
+function safeRead<T>(fn: () => T): T | null {
+  try {
+    return fn();
+  } catch {
+    return null;
   }
 }
 
@@ -108,6 +119,7 @@ export async function handleTimelineRoutes(ctx: TimelineRouteContext): Promise<b
       renderPortfolioTimeline({
         nav: ctx.navFor(user, "timeline"),
         portfolio: tl.portfolioTimeline(user, filtersFrom(ctx.searchParams)),
+        twinSnapshots: safeRead(() => twin.twinSnapshots(user)),
       })
     );
     return true;
@@ -150,6 +162,7 @@ export async function handleTimelineRoutes(ctx: TimelineRouteContext): Promise<b
       renderSiteIntelligence({
         nav: ctx.navFor(user, "timeline"),
         site: tl.siteIntelligence(user, siteMatch[1]),
+        coverage: safeRead(() => twin.twinCoverage(user, siteMatch[1])),
       })
     );
     return true;

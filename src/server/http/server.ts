@@ -148,6 +148,7 @@ import * as evidenceIntelSvc from "../services/evidenceIntel";
 import { handleOfficialSourceRoutes } from "./officialSourceRoutes";
 import * as officialSourcesSvc from "../services/officialSources";
 import { handleTimelineRoutes } from "./timelineRoutes";
+import { handleTwinRoutes } from "./twinRoutes";
 import { TimelineError } from "../services/timeline";
 import * as timelineSvc from "../services/timeline";
 import { EvidenceIntelError } from "../services/evidenceIntel";
@@ -2873,6 +2874,29 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       navFor,
       readParams,
       isForm: () => isFormPost(req),
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+      sendHtml: (html, status) => sendHtml(res, html, status ?? 200),
+    })
+  ) {
+    return;
+  }
+
+  // ============== Digital Twin (read-only visualization layer) ==============
+  if (
+    await handleTwinRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      searchParams: url.searchParams,
+      getUser: () => {
+        const u = currentUser(req);
+        if (!u) throw new TimelineError("Select a demo user first", 401);
+        return u;
+      },
+      signInLocation: signInPath(),
+      navFor,
       redirect: (location) => redirect(res, location),
       sendJson: (data, status) => sendJson(res, data, status ?? 200),
       sendHtml: (html, status) => sendHtml(res, html, status ?? 200),
