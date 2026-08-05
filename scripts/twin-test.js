@@ -209,6 +209,12 @@ async function main() {
       fieldScene.anchored.every((a) => a.sourceTable !== "official_source_records"),
     "a role Official Sources denies sees no official-source dock records"
   );
+  const fieldSources = fieldScene.layers.find((l) => l.key === "sources");
+  assert(
+    fieldSources && fieldSources.available &&
+      fieldScene.anchored.some((a) => a.group === "PERMIT"),
+    "permits stay visible to project viewers — only Official Sources' OWN records are gated"
+  );
   const fieldPay = fieldScene.layers.find((l) => l.key === "payments");
   assert(
     !bankAccess.hasBankingCapability(field, "proj-r47", "VIEW_PROJECT_ACCOUNT") &&

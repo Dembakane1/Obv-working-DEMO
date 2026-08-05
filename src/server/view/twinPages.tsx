@@ -117,8 +117,11 @@ function SceneSvg(props: { scene: TwinScene }): VNode {
 
   // Real scale bar: the iso transform is length-preserving along the
   // ground axes, so L metres along east = L·scale px along (cos30, sin30).
-  const candidates = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
-  let barM = candidates[0];
+  // When even the smallest candidate would overflow (a scene fitted
+  // around a single recorded point), the bar is omitted rather than
+  // drawn wrong — a scale bar is a measurement or it is nothing.
+  const candidates = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
+  let barM = 0;
   for (const c of candidates) if (c * fit.scale <= 180) barM = c;
   const barPx = barM * fit.scale;
   const barX = 26;
@@ -269,15 +272,18 @@ function SceneSvg(props: { scene: TwinScene }): VNode {
         })}
       </g>
 
-      {/* Real scale bar along the east axis. */}
-      <g className="twin-scalebar" transform={`translate(${barX},${barY})`}>
-        <line x1="0" y1="0" x2={(barPx * C30).toFixed(1)} y2={(barPx * S30).toFixed(1)} />
-        <line x1="0" y1="-4" x2="0" y2="4" />
-        <line x1={(barPx * C30).toFixed(1)} y1={(barPx * S30 - 4).toFixed(1)} x2={(barPx * C30).toFixed(1)} y2={(barPx * S30 + 4).toFixed(1)} />
-        <text x={((barPx * C30) / 2).toFixed(1)} y={((barPx * S30) / 2 - 8).toFixed(1)} text-anchor="middle">
-          {barM >= 1000 ? `${barM / 1000} km` : `${barM} m`}
-        </text>
-      </g>
+      {/* Real scale bar along the east axis (omitted when no honest
+          length fits the frame). */}
+      {barM > 0 ? (
+        <g className="twin-scalebar" transform={`translate(${barX},${barY})`}>
+          <line x1="0" y1="0" x2={(barPx * C30).toFixed(1)} y2={(barPx * S30).toFixed(1)} />
+          <line x1="0" y1="-4" x2="0" y2="4" />
+          <line x1={(barPx * C30).toFixed(1)} y1={(barPx * S30 - 4).toFixed(1)} x2={(barPx * C30).toFixed(1)} y2={(barPx * S30 + 4).toFixed(1)} />
+          <text x={((barPx * C30) / 2).toFixed(1)} y={((barPx * S30) / 2 - 8).toFixed(1)} text-anchor="middle">
+            {barM >= 1000 ? `${barM / 1000} km` : `${barM} m`}
+          </text>
+        </g>
+      ) : null}
 
       {/* Real compass: north in this projection points up-right. */}
       <g className="twin-compass" transform={`translate(${W - 46},44)`}>

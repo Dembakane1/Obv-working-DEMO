@@ -424,7 +424,12 @@ export function twinScene(user: User, projectId: string): TwinScene {
     { key: "evidence", label: "Evidence", available: true, defaultOn: true, count: pinCount, note: skippedNoGps > 0 ? `${skippedNoGps} without GPS listed per stage` : null },
     { key: "gps", label: "GPS pins", available: true, defaultOn: true, count: pinCount, note: "Only real recorded fixes are placed" },
     { key: "inspections", label: "Inspections", available: true, defaultOn: true, count: inspections.length, note: null },
-    { key: "sources", label: "Official sources", available: sourcesVisible, defaultOn: sourcesVisible, count: sourcesVisible ? anchored.filter((a) => a.group === "OFFICIAL_SOURCE" || a.group === "PERMIT").length : 0, note: sourcesVisible ? "No recorded coordinates — shown in the dock" : "Not available for this role" },
+    // Permits are readable by any project viewer; only the Official
+    // Sources subsystem's own records are role-gated (and were already
+    // excluded from `anchored` above for denied roles) — so the layer
+    // itself stays available and its count reflects exactly what this
+    // caller's dock holds.
+    { key: "sources", label: "Permits & official sources", available: true, defaultOn: true, count: anchored.filter((a) => a.group === "OFFICIAL_SOURCE" || a.group === "PERMIT").length, note: sourcesVisible ? "No recorded coordinates — shown in the dock" : "Official Sources records require a reviewer role; permits are shown" },
     { key: "advisory", label: "Advisory signals", available: true, defaultOn: true, count: advisoryCount, note: advisoryVisible ? "Advisory only — never decisions" : "Evidence Intelligence findings are not available for this role; plain-record facts only" },
     { key: "draws", label: "Draws", available: true, defaultOn: false, count: cat("DRAW") + cat("DECISION"), note: "Highlights linked stages via the timeline" },
     { key: "payments", label: "Payments", available: bankingVisible, defaultOn: false, count: bankingVisible ? cat("PAYMENT") : 0, note: bankingVisible ? null : "Requires the VIEW_PROJECT_ACCOUNT capability" },
