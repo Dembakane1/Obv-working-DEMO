@@ -3767,3 +3767,117 @@ a.queue-row:hover { background: var(--surface-2); text-decoration: none; }
   border-radius: 0 4px 4px 0;
   font-size: 11.5px;
 }
+
+/* =====================================================================
+   v22 — Digital Twin
+   Reuses the v19 card primitives and v21 chip/section conventions; adds
+   the isometric scene, its layer/stage/detail panels, playback bar,
+   dock, coverage heat strip, and portfolio snapshot cards. The twin is
+   a visualization layer: nothing here styles a control that could
+   change governed state, because no such control exists on the page.
+   ===================================================================== */
+.twin-mode-tabs { margin: 10px 0 2px; }
+.twin-layout { display: grid; grid-template-columns: 265px minmax(0, 1fr) 300px; gap: 12px; margin-top: 12px; align-items: start; }
+.twin-panel h2 { margin-top: 0; }
+.twin-scene-card { padding: 10px; }
+#twin-scene { display: block; width: 100%; height: auto; border-radius: 10px; cursor: grab; touch-action: none; }
+#twin-scene:active { cursor: grabbing; }
+
+/* Scene palette (light/dark aware via vars with fallbacks). */
+:root {
+  --twin-bg-hi: #eef3f8; --twin-bg-lo: #dfe7ef; --twin-grid: #c9d4de;
+  --twin-slab-hi: #f7faf7; --twin-slab-lo: #e7efe8;
+}
+.twin-slab-side { fill: #b8c4ce; opacity: 0.8; }
+.twin-boundary { fill: url(#twin-slab); stroke: #7d8ea0; stroke-width: 1.4; stroke-dasharray: 7 4; }
+.twin-route-casing { fill: none; stroke: #93a3b3; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; opacity: 0.7; }
+.twin-route { fill: none; stroke: #f2f6fa; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+.twin-seg-shadow { fill: none; stroke: #8a97a5; stroke-width: 11; stroke-linecap: round; opacity: 0.35; }
+.twin-seg { fill: none; stroke-width: 9; stroke-linecap: round; stroke-linejoin: round; }
+.twin-seg-NOT_STARTED { stroke: #aab7c2; }
+.twin-seg-PENDING_EVIDENCE { stroke: var(--warn, #b7791f); }
+.twin-seg-UNDER_REVIEW { stroke: #b98a2b; }
+.twin-seg-VERIFIED { stroke: #4f86d8; }
+.twin-seg-APPROVED { stroke: #3f9d6a; }
+.twin-seg-RELEASED { stroke: var(--ok, #2f855a); }
+.twin-seg-NONE { stroke: #aab7c2; }
+.twin-seq-dot { fill: #ffffff; stroke-width: 2.5; }
+.twin-seq-dot.twin-seg-NOT_STARTED { stroke: #aab7c2; } .twin-seq-dot.twin-seg-PENDING_EVIDENCE { stroke: var(--warn, #b7791f); }
+.twin-seq-dot.twin-seg-UNDER_REVIEW { stroke: #b98a2b; } .twin-seq-dot.twin-seg-VERIFIED { stroke: #4f86d8; }
+.twin-seq-dot.twin-seg-APPROVED { stroke: #3f9d6a; } .twin-seq-dot.twin-seg-RELEASED { stroke: var(--ok, #2f855a); }
+.twin-seq text { font-size: 9.5px; font-weight: 700; fill: #33414f; }
+.twin-pin-shadow { fill: #33414f; opacity: 0.25; }
+.twin-pin-body { stroke: #ffffff; stroke-width: 1.4; }
+.twin-pin-ok .twin-pin-body { fill: var(--ok, #2f855a); } .twin-pin-warn .twin-pin-body { fill: var(--warn, #b7791f); }
+.twin-pin-bad .twin-pin-body { fill: var(--bad, #c53030); } .twin-pin-neutral .twin-pin-body { fill: #64748b; }
+.twin-pin-dot { fill: #ffffff; }
+.twin-insp-body { fill: #ffffff; stroke: #4f86d8; stroke-width: 1.8; }
+.twin-insp-PASSED .twin-insp-body { stroke: var(--ok, #2f855a); }
+.twin-insp-FAILED .twin-insp-body, .twin-insp-CORRECTIONS_REQUIRED .twin-insp-body { stroke: var(--bad, #c53030); }
+.twin-insp-glyph { font-size: 9px; font-weight: 700; fill: #33414f; font-style: italic; }
+.twin-adv-body { fill: #fff8ec; stroke: var(--warn, #b7791f); stroke-width: 1.6; }
+.twin-adv-high .twin-adv-body { fill: #fdeeee; stroke: var(--bad, #c53030); }
+.twin-adv-glyph { font-size: 10px; font-weight: 800; fill: var(--warn, #b7791f); }
+.twin-adv-high .twin-adv-glyph { fill: var(--bad, #c53030); }
+.twin-scalebar line { stroke: #4a5a6a; stroke-width: 1.6; }
+.twin-scalebar text, .twin-compass text { font-size: 10.5px; fill: #4a5a6a; font-weight: 600; }
+.twin-compass-face { fill: #ffffff; stroke: #9fb0c0; opacity: 0.9; }
+.twin-compass-needle { stroke: var(--bad, #c53030); stroke-width: 2; }
+
+/* Interactivity states — enhancement only. */
+.twin-el { cursor: pointer; outline: none; }
+.twin-el:focus-visible { filter: drop-shadow(0 0 3px var(--action, #2f6fed)); }
+.twin-selected { filter: drop-shadow(0 0 4px var(--action, #2f6fed)); }
+li.twin-selected, .twin-dock-item.twin-selected, .twin-stage.twin-selected { filter: none; outline: 2px solid var(--action, #2f6fed); outline-offset: 2px; border-radius: 6px; }
+.twin-dimmed [data-layer-group] .twin-el:not(.twin-appeared):not(.twin-boundary):not(.twin-route) { opacity: 0.18; transition: opacity 0.25s; }
+.twin-step-active { filter: drop-shadow(0 0 6px var(--action, #2f6fed)); }
+
+/* Panels. */
+.twin-layer-list, .twin-stage-list, .twin-dock-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.twin-layer label { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
+.twin-layer-count { margin-left: auto; font-size: 11px; color: var(--ink-4); }
+.twin-layer .sub, .twin-stage .sub, .twin-dock-item .sub { display: block; font-size: 11px; margin-left: 22px; }
+.twin-layer-off label { color: var(--ink-4); cursor: not-allowed; }
+.twin-stage { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; cursor: pointer; }
+.twin-stage-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; flex-wrap: wrap; }
+.twin-lifecycle { display: inline-flex; gap: 3px; margin: 5px 0 3px; }
+.twin-cell { width: 20px; height: 9px; border-radius: 2px; background: var(--line); display: inline-block; }
+.twin-cell-on { background: var(--ok, #2f855a); }
+.twin-stage .sub { margin-left: 0; }
+.twin-playbar { display: flex; align-items: center; gap: 9px; margin-top: 10px; flex-wrap: wrap; }
+.twin-playbar input[type="range"] { flex: 1 1 160px; }
+.twin-drawer-body { display: flex; flex-direction: column; gap: 8px; }
+.twin-photo { max-width: 100%; border-radius: 8px; border: 1px solid var(--line); }
+.twin-drawer-block { border-top: 1px solid var(--line); padding-top: 7px; }
+.twin-checks, .twin-facts { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.twin-check-ok::before { content: "✓ "; color: var(--ok, #2f855a); }
+.twin-check-warn::before { content: "! "; color: var(--warn, #b7791f); }
+.twin-chip-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 0; }
+.twin-dock-group { margin-top: 10px; }
+.twin-dock-item { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; }
+.twin-dock-label { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 12.5px; }
+.twin-providers { display: flex; gap: 6px; flex-wrap: wrap; }
+.twin-degraded { text-align: left; }
+
+/* Coverage heat strip. */
+.twin-heat { margin-top: 10px; }
+.twin-heat-row { display: flex; gap: 3px; margin-top: 5px; flex-wrap: wrap; }
+.twin-heat-cell { width: 16px; height: 16px; border-radius: 3px; background: var(--line); display: inline-block; }
+.twin-heat-1 { background: #cfe3d6; } .twin-heat-2 { background: #9cc7ab; }
+.twin-heat-3 { background: #5ea67d; } .twin-heat-4 { background: var(--ok, #2f855a); }
+
+/* Portfolio snapshots. */
+.twin-snap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.twin-snap-card { display: flex; flex-direction: column; gap: 5px; border: 1px solid var(--line); border-radius: 10px; padding: 9px; text-decoration: none; color: inherit; }
+.twin-snap-card:hover { border-color: var(--action, #2f6fed); }
+.twin-snap { width: 100%; height: auto; }
+.twin-snap-bg { fill: var(--twin-bg-hi, #eef3f8); stroke: var(--line); }
+.twin-snap-boundary { fill: var(--twin-slab-hi, #f7faf7); stroke: #7d8ea0; stroke-width: 1.2; stroke-dasharray: 5 3; }
+.twin-snap-seg { fill: none; stroke-width: 4; stroke-linecap: round; }
+.twin-snap-note { font-size: 10px; fill: var(--ink-4); }
+.twin-snap-title { font-size: 13px; font-weight: 650; }
+
+@media (max-width: 1080px) {
+  .twin-layout { grid-template-columns: minmax(0, 1fr); }
+  .twin-side { order: 2; } .twin-detail { order: 3; }
+}

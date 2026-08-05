@@ -258,6 +258,7 @@ export function renderDuplicateViewer(input: {
   signals: EvidenceSignal[];
   metadata: EvidenceMetadataFacts | null;
   score: { quality: number; confidence: number; hasGps: boolean };
+  twinHref?: string | null;
 }): string {
   const { evidence, metadata, score } = input;
   const dupSignals = input.signals.filter((s) => s.category.includes("DUPLICATE") || s.category.includes("CROSS"));
@@ -265,6 +266,7 @@ export function renderDuplicateViewer(input: {
     <AppShell title="Evidence viewer" nav={input.nav} context="Evidence Intelligence">
       <PageHeader title="Evidence viewer" sub="Metadata, quality, and any advisory findings for one evidence item. Everything shown is derived — the evidence record itself is unchanged.">
         <a className="btn ghost sm" href={`/evidence-intelligence/timeline/${evidence.id}`}>Timeline →</a>
+        {input.twinHref ? <a className="btn ghost sm" href={input.twinHref}>View in Digital Twin →</a> : null}
         <a className="btn ghost sm" href="/evidence-intelligence">← Dashboard</a>
       </PageHeader>
       <AdvisoryBanner note={ADVISORY_NOTICE} />

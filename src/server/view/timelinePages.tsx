@@ -10,6 +10,8 @@
 import { h, Fragment, renderDocument, VNode } from "./jsx";
 import { AppShell, NavContext, PageHeader, enumLabel } from "./components";
 import { TIMELINE_NOTICE } from "../services/timeline";
+import { TwinModeTabs, TwinSnapshotSvg } from "./twinPages";
+import type { TwinCoverage, TwinSnapshot } from "../../shared/types";
 import type {
   DrawPlaybackStage,
   PlaybackFrame,
@@ -74,6 +76,8 @@ function EventRow(props: { event: TimelineEvent; projectId: string; asOf: string
           {e.actorName ? `${e.actorName} · ` : ""}{e.sourceTable}
           {e.change ? ` · ${e.change.field}: ${e.change.previous ?? "—"} → ${e.change.current ?? "—"}` : ""}
           {e.href ? <> · <a href={e.href}>open record</a></> : null}
+          {" · "}
+          <a href={`/timeline/twin/${props.projectId}?focus=${encodeURIComponent(e.id)}`}>show in twin</a>
         </span>
       </span>
     </li>
@@ -161,6 +165,7 @@ export function renderProjectTimeline(input: {
         <a className="btn ghost sm" href={`/timeline/map/${pid}`}>Map →</a>
         <a className="btn ghost sm" href={exportHref(pid, "csv", input.view, input.query)}>Export CSV</a>
       </PageHeader>
+      <TwinModeTabs projectId={pid} active="timeline" />
       <Notice />
       <SourceCaps caps={t.sourceCaps} />
 
@@ -236,6 +241,9 @@ export function renderEventDetail(input: {
     <AppShell title="Event detail" nav={input.nav} context="Project history">
       <PageHeader title={event.title} sub={enumLabel(event.type)}>
         <a className="btn ghost sm" href={`/timeline/project/${input.projectId}`}>← Timeline</a>
+        <a className="btn ghost sm" href={`/timeline/twin/${input.projectId}?focus=${encodeURIComponent(event.id)}`}>
+          Show in Digital Twin →
+        </a>
       </PageHeader>
       <Notice />
       <div className="evi-detail-head">
@@ -342,8 +350,20 @@ function InsightCard(props: { insight: TimelineInsight }): VNode {
   );
 }
 
-export function renderSiteIntelligence(input: { nav: NavContext; site: SiteIntelligence }): string {
+/** Heat strip cell shading by relative volume — a count, visualized. */
+function heatLevel(count: number, peak: number): number {
+  if (peak <= 0 || count <= 0) return 0;
+  return Math.max(1, Math.min(4, Math.ceil((count / peak) * 4)));
+}
+
+export function renderSiteIntelligence(input: {
+  nav: NavContext;
+  site: SiteIntelligence;
+  coverage?: TwinCoverage | null;
+}): string {
   const s = input.site;
+  const cov = input.coverage ?? null;
+  const heatPeak = cov ? cov.activityByWeek.reduce((m, w) => Math.max(m, w.count), 0) : 0;
   return renderDocument(
     <AppShell title="Site intelligence" nav={input.nav} context="Project intelligence">
       <PageHeader
@@ -372,6 +392,61 @@ export function renderSiteIntelligence(input: { nav: NavContext; site: SiteIntel
           </div>
         ))}
       </section>
+
+      {cov ? (
+        <section className="evi-card">
+          <h2>Coverage (Digital Twin)</h2>
+          <p className="sub">
+            Counted facts with their numerator and denominator — nothing here is projected or
+            estimated. <a href={`/timeline/twin/${s.project.id}`}>Open the Digital Twin →</a>
+          </p>
+          <div className="si-grid">
+            <div className="si-panel si-neutral">
+              <span className="si-label">Construction completion</span>
+              <b className="si-value">{String(cov.completionPct)}%</b>
+              <span className="si-detail">{cov.completionBasis}</span>
+            </div>
+            <div className="si-panel si-neutral">
+              <span className="si-label">Evidence coverage</span>
+              <b className="si-value">{String(cov.evidenceCoverage.covered)} / {String(cov.evidenceCoverage.total)}</b>
+              <span className="si-detail">Stages with at least one evidence upload ({String(cov.evidenceCoverage.pct)}%).</span>
+            </div>
+            <div className="si-panel si-neutral">
+              <span className="si-label">GPS coverage</span>
+              <b className="si-value">{String(cov.gpsCoverage.withGps)} / {String(cov.gpsCoverage.total)}</b>
+              <span className="si-detail">Evidence items carrying a real GPS fix ({String(cov.gpsCoverage.pct)}%).</span>
+            </div>
+            <div className="si-panel si-neutral">
+              <span className="si-label">Inspection coverage</span>
+              <b className="si-value">{String(cov.inspectionCoverage.covered)} / {String(cov.inspectionCoverage.required)}</b>
+              <span className="si-detail">Required inspections with a recorded result ({String(cov.inspectionCoverage.pct)}%).</span>
+            </div>
+            <div className="si-panel si-neutral">
+              <span className="si-label">Official source coverage</span>
+              <b className="si-value">{String(cov.sourceCoverage.covered)} / {String(cov.sourceCoverage.total)}</b>
+              <span className="si-detail">Permits with an attached official source record ({String(cov.sourceCoverage.pct)}%).</span>
+            </div>
+            <div className="si-panel si-neutral">
+              <span className="si-label">Risk density</span>
+              <b className="si-value">{String(cov.riskDensity.reduce((n, r) => n + r.advisoryCount, 0))}</b>
+              <span className="si-detail">
+                Advisory findings mapped to stages — a count, not a judgement.
+                {cov.riskDensity.filter((r) => r.advisoryCount > 0).slice(0, 3).map((r) => ` ${r.title}: ${r.advisoryCount}.`).join("")}
+              </span>
+            </div>
+          </div>
+          {cov.activityByWeek.length > 0 ? (
+            <div className="twin-heat">
+              <span className="sub">Timeline activity heatmap (events per ISO week):</span>
+              <div className="twin-heat-row">
+                {cov.activityByWeek.map((w) => (
+                  <span className={`twin-heat-cell twin-heat-${heatLevel(w.count, heatPeak)}`} title={`${w.week}: ${w.count} events`} />
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section>
         <h2 className="tl-section-title">Advisory observations ({String(s.insights.length)})</h2>
@@ -594,8 +669,13 @@ export function renderProjectMap(input: {
 
 // ==================================================== portfolio timeline
 
-export function renderPortfolioTimeline(input: { nav: NavContext; portfolio: PortfolioTimeline }): string {
+export function renderPortfolioTimeline(input: {
+  nav: NavContext;
+  portfolio: PortfolioTimeline;
+  twinSnapshots?: { snapshots: TwinSnapshot[]; available: number; note: string | null } | null;
+}): string {
   const p = input.portfolio;
+  const twins = input.twinSnapshots ?? null;
   const peak = p.activityByWeek.reduce((max, w) => Math.max(max, w.count), 0);
   return renderDocument(
     <AppShell title="Portfolio timeline" nav={input.nav} context="Portfolio history">
@@ -611,6 +691,28 @@ export function renderPortfolioTimeline(input: { nav: NavContext; portfolio: Por
       </PageHeader>
       <Notice />
       <SourceCaps caps={p.notes} />
+
+      {twins && twins.snapshots.length > 0 ? (
+        <section className="evi-card">
+          <h2>Digital Twin snapshot</h2>
+          <p className="sub">
+            Recorded site geometry and governance-lifecycle state per project — miniature views of
+            the same records, never estimates.{twins.note ? ` ${twins.note}` : ""}
+          </p>
+          <div className="twin-snap-grid">
+            {twins.snapshots.map((snap) => (
+              <a className="twin-snap-card" href={`/timeline/project/${snap.projectId}`}>
+                <TwinSnapshotSvg snap={snap} />
+                <span className="twin-snap-title">{snap.projectName}</span>
+                <span className="sub">
+                  {String(snap.completionPct)}% released (governance) · {String(snap.evidencePinCount)} GPS pins ·{" "}
+                  {chip(snap.status, snap.status === "ACTIVE" ? "ok" : "neutral")}
+                </span>
+              </a>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {p.activityByWeek.length > 0 ? (
         <section className="evi-card">

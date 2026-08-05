@@ -155,6 +155,7 @@ export async function handleEvidenceIntelRoutes(ctx: EvidenceIntelRouteContext):
     // advisory + idempotent and writes only to the analysis tables.
     ei.analyzeEvidenceItem(user, dupMatch[1]);
     const evidence = repo.getEvidence(dupMatch[1])!; // exists — analyze would have 404'd
+    const twinProjectId = repo.getMilestone(evidence.milestoneId)?.projectId ?? null;
     ctx.sendHtml(
       renderDuplicateViewer({
         nav: ctx.navFor(user, "evidence-intel"),
@@ -162,6 +163,9 @@ export async function handleEvidenceIntelRoutes(ctx: EvidenceIntelRouteContext):
         signals: ei.signalsForSubject(user, "EVIDENCE_ITEM", evidence.id),
         metadata: ei.getMetadataFacts(evidence.id),
         score: ei.scoreEvidenceItem(evidence),
+        twinHref: twinProjectId
+          ? `/timeline/twin/${twinProjectId}?pin=${encodeURIComponent(evidence.id)}`
+          : null,
       })
     );
     return true;

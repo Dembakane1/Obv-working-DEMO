@@ -190,6 +190,31 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Digital Twin (v28)
+
+**The twin shows the record. The Timeline remains authoritative.** A
+strictly additive visualization layer inside the Timeline: an interactive
+isometric site scene rendered entirely from RECORDED geometry — the
+project's stored geofence, the ROUTE/SEGMENT stage features, and evidence
+items with a real GPS fix. Records without coordinates (permits, official
+source records) are listed in an anchored dock, never placed at invented
+positions. Stage fills show the recorded governance lifecycle
+(NOT_STARTED → RELEASED) and say "not a physical measurement";
+construction playback replays the recorded timeline events exactly —
+never simulated. Selecting a timeline event highlights its record in the
+twin (`?focus=`); pins open a read-only drawer with verification checks,
+gated advisory findings, OCR runs, metadata facts, and distances computed
+only between recorded coordinates. Site Intelligence gains coverage
+metrics (each with numerator/denominator) and an activity heatmap; the
+portfolio timeline gains miniature twins. Authorization is inherited from
+the owning subsystems, never widened; every route is GET-only (no POST
+handler exists), and tenancy is same-404. Nine future provider boundaries
+(Cesium, ArcGIS, Mapbox, Google Maps, DroneDeploy, Pix4D, Matterport,
+Bentley, Autodesk) are declared interfaces only — all DISABLED, none
+contacted, no imagery retrieved, no vision analysis performed. Docs:
+`docs/DIGITAL_TWIN.md`. Tests: `scripts/twin-test.js` (123 checkpoints,
+including a byte-identical read-only proof over 22 tables).
+
 ## Project Timeline & Site Intelligence (v27)
 
 **The timeline explains the record. It never changes it.** A read-only

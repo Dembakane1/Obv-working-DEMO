@@ -1136,6 +1136,7 @@ export function renderMilestoneDetail(input: {
             <button className="btn ghost sm" type="submit">{icons.chat(13)} Open thread</button>
           </form>
           <a className="btn ghost sm" href={`/project/${project.id}?tab=map`}>{icons.map(13)} View on map</a>
+          <a className="btn ghost sm" href={`/timeline/twin/${project.id}`}>{icons.map(13)} Digital Twin</a>
         </div>
       </div>
 
