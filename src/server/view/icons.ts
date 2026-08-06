@@ -46,6 +46,14 @@ export const icons = {
   chat: (size = 16) =>
     icon('<path d="M4 5.5h16v11H10l-4 3.5v-3.5H4z"/><path d="M8 9.5h8M8 12.5h5"/>', size),
   activity: () => icon('<path d="M3.5 12h4l2.5 6.5 4-13 2.5 6.5h4"/>'),
+  search: (size = 16) =>
+    icon('<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>', size),
+  moon: (size = 16) =>
+    icon('<path d="M20 13.5A8 8 0 0 1 10.5 4 7 7 0 1 0 20 13.5Z"/>', size),
+  sun: (size = 16) =>
+    icon('<circle cx="12" cy="12" r="4.4"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/>', size),
+  collapse: (size = 16) =>
+    icon('<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15M13.5 10l2.5 2-2.5 2"/>', size),
   check: (size = 16) => icon('<path d="M4.5 12.5 10 18 19.5 6.5"/>', size),
   x: (size = 16) => icon('<path d="M6 6l12 12M18 6 6 18"/>', size),
   alert: (size = 16) =>
