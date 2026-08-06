@@ -264,7 +264,7 @@ export const NAV_GROUPS: NavGroup[] = [
 
 const ALL_NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
 
-const BOTTOM_NAV = ["overview", "projects", "approvals", "ledger"];
+export const BOTTOM_NAV = ["overview", "projects", "approvals", "ledger"];
 
 export function AppShell(props: {
   title: string;

@@ -203,6 +203,21 @@ async function main() {
   assert(/Digital Twin/.test(shellPage.html), "the sidebar carries the Digital Twin entry");
   assert(/aria-current="page"/.test(shellPage.html), "the active nav item is announced to screen readers");
 
+  // Mobile parity: the phone navigation is bottom bar + /more, and /more
+  // derives from the SAME nav as the sidebar — every sidebar destination
+  // must be reachable on mobile. (The Timeline and Digital Twin pages
+  // once went missing on phones because /more was a hand-copied list.)
+  const morePage = await page("/more", funder);
+  assert(morePage.status === 200, "/more renders");
+  const bottomBar = ["/overview", "/projects", "/approvals", "/ledger"];
+  for (const href of PRESERVED) {
+    const onMobile = bottomBar.includes(href) || morePage.html.includes(`href="${href}"`);
+    if (!onMobile) fail(`mobile cannot reach ${href} (missing from /more and the bottom bar)`);
+  }
+  pass("every sidebar destination is reachable on mobile (bottom bar or /more)");
+  assert(/Timeline/.test(morePage.html) && /Digital Twin/.test(morePage.html),
+    "/more explicitly lists Timeline and Digital Twin");
+
   console.log("\n== 4. Role-based landings ==");
   const pm = await signIn("user-pm");
   const compliance = await signIn("user-compliance");
