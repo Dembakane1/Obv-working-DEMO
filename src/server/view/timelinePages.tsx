@@ -693,7 +693,7 @@ export function renderPortfolioTimeline(input: {
       <SourceCaps caps={p.notes} />
 
       {twins && twins.snapshots.length > 0 ? (
-        <section className="evi-card">
+        <section className="evi-card" id="twin-snapshots">
           <h2>Digital Twin snapshot</h2>
           <p className="sub">
             Recorded site geometry and governance-lifecycle state per project — miniature views of

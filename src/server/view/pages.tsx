@@ -421,15 +421,68 @@ export function renderOverview(input: {
   const queueEmpty =
     q.approvals === 0 && q.clarifications === 0 && q.highIssues === 0 &&
     q.evidenceReview === 0 && q.exceptionsOpen === 0;
+  // Role-focused landing: each role opens onto the work that is theirs,
+  // with the shared portfolio content below. Purely presentational —
+  // every destination is an existing page the role could already reach,
+  // and nothing is removed for any role.
+  const role = input.nav.user.role;
+  const roleHome =
+    role === "FUNDER_REP"
+      ? {
+          title: "Executive overview",
+          sub: "Portfolio position, risk, and the approvals waiting on you.",
+          links: [
+            { href: "/executive", label: "Executive Command Center" },
+            { href: "/approvals", label: `Approvals${q.approvals > 0 ? ` (${q.approvals})` : ""}` },
+            { href: "/insights", label: "Analytics" },
+            { href: "/timeline", label: "Portfolio timeline" },
+          ],
+        }
+      : role === "PROJECT_MANAGER"
+        ? {
+            title: "Delivery overview",
+            sub: "Timelines, evidence, and the draws your projects are carrying.",
+            links: [
+              { href: "/timeline", label: "Timeline & Digital Twin" },
+              { href: "/compliance", label: "Evidence review" },
+              { href: "/draws", label: "Draws" },
+              { href: "/issues", label: `Field issues${q.highIssues > 0 ? ` (${q.highIssues} high)` : ""}` },
+            ],
+          }
+        : role === "COMPLIANCE_REVIEWER"
+          ? {
+              title: "Assurance overview",
+              sub: "Audit trail, compliance registers, and reports — read the record end to end.",
+              links: [
+                { href: "/reports", label: "Reports & audit packages" },
+                { href: "/timeline", label: "Timeline" },
+                { href: "/compliance", label: "Compliance registers" },
+                { href: "/evidence-intelligence", label: "Evidence Intelligence" },
+              ],
+            }
+          : {
+              title: "Field overview",
+              sub: "Capture, uploads, and the milestones assigned to you.",
+              links: [
+                { href: "/field", label: "Capture evidence" },
+                { href: "/issues", label: "Field issues" },
+                { href: "/timeline", label: "Timeline" },
+              ],
+            };
   return renderDocument(
     <AppShell title="Overview" nav={input.nav} context="Portfolio control center">
-      <PageHeader title="Overview" sub="Portfolio control center">
+      <PageHeader title={roleHome.title} sub={roleHome.sub}>
         <form method="POST" action="/api/demo/reset" style="margin:0">
           <button className="btn ghost sm" type="submit" title="Restore the seeded demo state">
             Reset demo data
           </button>
         </form>
       </PageHeader>
+      <div className="role-quick" role="navigation" aria-label="Your focus areas">
+        {roleHome.links.map((l) => (
+          <a className="btn secondary sm" href={l.href}>{l.label} →</a>
+        ))}
+      </div>
 
       {/* ---- capital position ---- */}
       <div className="sec-label">Capital position</div>

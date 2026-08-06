@@ -272,8 +272,26 @@ export function renderDuplicateViewer(input: {
       <AdvisoryBanner note={ADVISORY_NOTICE} />
 
       <section className="evi-summary">
-        <div className="evi-stat"><b>{String(score.quality)}</b><span>Quality</span></div>
-        <div className="evi-stat"><b>{String(score.confidence)}%</b><span>Verification confidence</span></div>
+        <div className="evi-stat evi-stat-ring">
+          <span
+            className={`ring ring-sm`}
+            data-value={String(score.quality)}
+            style={`--ring-pct:${Math.max(0, Math.min(100, score.quality))};--ring-color:${score.quality >= 70 ? "var(--ok)" : score.quality >= 40 ? "var(--warn)" : "var(--bad)"}`}
+            role="img"
+            aria-label={`Evidence quality ${score.quality} of 100`}
+          ></span>
+          <span>Quality</span>
+        </div>
+        <div className="evi-stat evi-stat-ring">
+          <span
+            className={`ring ring-sm`}
+            data-value={`${score.confidence}%`}
+            style={`--ring-pct:${Math.max(0, Math.min(100, score.confidence))};--ring-color:${score.confidence >= 70 ? "var(--ok)" : score.confidence >= 40 ? "var(--warn)" : "var(--bad)"}`}
+            role="img"
+            aria-label={`Verification confidence ${score.confidence} percent`}
+          ></span>
+          <span>Verification confidence</span>
+        </div>
         <div className="evi-stat"><b>{score.hasGps ? "Yes" : "No"}</b><span>GPS present</span></div>
         <div className="evi-stat"><b>{String(input.signals.length)}</b><span>Advisory findings</span></div>
       </section>

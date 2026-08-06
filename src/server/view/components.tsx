@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { h, Fragment, VNode, Child } from "./jsx";
+import { h, Fragment, VNode, Child, raw } from "./jsx";
 import { brandMark, icons } from "./icons";
 import type {
   AccountStatus,
@@ -203,22 +203,23 @@ interface NavItem { key: string; href: string; label: string; icon: () => VNode;
  *  portfolio context → capital decisions → verification truth → field ops. */
 export interface NavGroup { title: string | null; items: NavItem[] }
 
+/** Regrouped for the enterprise shell: command → capital → verification
+ *  → portfolio intelligence → field → administration. Every pre-existing
+ *  destination is preserved; only grouping, order, and labels changed. */
 export const NAV_GROUPS: NavGroup[] = [
   {
     title: null,
     items: [
+      { key: "executive", href: "/executive", label: "Executive Command", icon: icons.insights },
       { key: "overview", href: "/overview", label: "Overview", icon: icons.overview },
       { key: "projects", href: "/projects", label: "Projects", icon: icons.projects },
-      { key: "executive", href: "/executive", label: "Executive", icon: icons.insights },
-      { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
-      { key: "insights", href: "/insights", label: "OBV Intelligence", icon: icons.insights },
     ],
   },
   {
     title: "Capital control",
     items: [
+      { key: "draws", href: "/draws", label: "Draws", icon: icons.dollar },
       { key: "approvals", href: "/approvals", label: "Approvals", icon: icons.approvals, badge: "approvals" },
-      { key: "draws", href: "/draws", label: "Draw Requests", icon: icons.dollar },
       { key: "change-orders", href: "/change-orders", label: "Change Orders", icon: icons.refresh },
       { key: "budget", href: "/budget", label: "Budget & Progress", icon: icons.ledger },
     ],
@@ -228,9 +229,17 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { key: "compliance", href: "/compliance", label: "Evidence Review", icon: icons.shield },
       { key: "evidence-intel", href: "/evidence-intelligence", label: "Evidence Intelligence", icon: icons.insights },
+      { key: "timeline", href: "/timeline", label: "Timeline", icon: icons.activity },
+      { key: "twin", href: "/timeline#twin-snapshots", label: "Digital Twin", icon: icons.map },
       { key: "official-sources", href: "/official-sources", label: "Official Sources", icon: icons.building },
-      { key: "timeline", href: "/timeline", label: "Project Timeline", icon: icons.activity },
       { key: "ledger", href: "/ledger", label: "Evidence Ledger", icon: icons.ledger },
+    ],
+  },
+  {
+    title: "Portfolio & analytics",
+    items: [
+      { key: "insights", href: "/insights", label: "Analytics", icon: icons.insights },
+      { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
       { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
     ],
   },
@@ -244,7 +253,7 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    title: "Pilot",
+    title: "Administration",
     items: [
       { key: "setup", href: "/setup", label: "Pilot Setup", icon: icons.projects },
       { key: "pilot", href: "/pilot", label: "Pilot Operations", icon: icons.activity },
@@ -291,21 +300,39 @@ export function AppShell(props: {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{props.title} — OBV</title>
+        {/* Theme boots BEFORE the stylesheet paints: dark is the primary
+            experience; an explicit light choice is honoured from
+            localStorage. No flash of the wrong theme. */}
+        {raw(
+          '<script>(function(){var t="dark";try{var s=localStorage.getItem("obv-theme");if(s==="light"||s==="dark")t=s}catch(e){}document.documentElement.setAttribute("data-theme",t)})();</script>'
+        )}
         <link rel="stylesheet" href={STYLESHEET_HREF} />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/icons/icon-192.png" />
-        <meta name="theme-color" content="#0B1323" />
+        <meta name="theme-color" content="#0A0E1A" />
       </head>
       <body>
         <PreviewBanner />
         <div className="shell">
-          <aside className="sidebar">
+          <aside className="sidebar" id="app-sidebar">
             <div className="sidebar-brand">
               <span className="mark">{brandMark(18)}</span>
               <span className="word">
                 <span className="n">OBV</span>
                 <span className="s">OpenBuild Verify</span>
               </span>
+              <button
+                className="sidebar-collapse"
+                id="sidebar-collapse"
+                type="button"
+                aria-label="Collapse or expand the sidebar"
+                title="Collapse sidebar"
+              >
+                {icons.collapse(14)}
+              </button>
+            </div>
+            <div className="sidebar-pins" id="sidebar-pins" hidden>
+              <div className="nav-group">Pinned &amp; recent</div>
             </div>
             <nav className="sidebar-nav" aria-label="Primary">
               {NAV_GROUPS.map((g) => (
@@ -340,6 +367,27 @@ export function AppShell(props: {
                 ) : null}
               </span>
               <span className="right">
+                <button
+                  className="topbar-btn"
+                  id="nav-search-btn"
+                  type="button"
+                  aria-label="Search projects and pages (press /)"
+                  title="Search — press /"
+                >
+                  {icons.search(14)}
+                  <span className="tb-label">Search</span>
+                  <kbd className="tb-kbd">/</kbd>
+                </button>
+                <button
+                  className="topbar-btn"
+                  id="theme-toggle"
+                  type="button"
+                  aria-label="Switch between dark and light theme"
+                  title="Switch theme"
+                >
+                  <span className="theme-ico theme-ico-moon">{icons.moon(14)}</span>
+                  <span className="theme-ico theme-ico-sun">{icons.sun(14)}</span>
+                </button>
                 <span className="env-tag">Demo environment</span>
                 <span className="id-block">
                   <span className="avatar" aria-hidden="true">{initials(user.name)}</span>
@@ -367,6 +415,28 @@ export function AppShell(props: {
             <div className="content">{props.children}</div>
           </div>
         </div>
+
+        {/* Command palette — client-enhanced global search over the
+            navigation, recent projects, and pinned favorites. Pure
+            navigation: selecting an entry only follows a link. */}
+        <div className="cmdk" id="cmdk" hidden role="dialog" aria-modal="true" aria-label="Global search">
+          <div className="cmdk-panel">
+            <div className="cmdk-input-row">
+              {icons.search(15)}
+              <input
+                id="cmdk-input"
+                type="text"
+                placeholder="Search pages and projects…"
+                aria-label="Search pages and projects"
+                autocomplete="off"
+              />
+              <kbd className="tb-kbd">Esc</kbd>
+            </div>
+            <ul className="cmdk-list" id="cmdk-list" role="listbox" aria-label="Search results"></ul>
+            <div className="cmdk-hint">↑↓ navigate · Enter open · Esc close</div>
+          </div>
+        </div>
+        <script src="/js/shell.js" defer></script>
 
         <nav className="bottom-nav" aria-label="Primary">
           {BOTTOM_NAV.map((key) => {

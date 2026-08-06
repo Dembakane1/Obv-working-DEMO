@@ -190,6 +190,25 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Enterprise Design System v2 (v29)
+
+**Same record. Same rules. A clearer face.** A frontend-only redesign:
+dark-first dual-theme token system (deep navy, slate, electric blue,
+emerald/amber/soft red — never pure black), a complete first-class light
+theme, print pinned light, and one component language across cards,
+tables, chips, tabs, buttons, skeletons, empty states, progress rings,
+and charts. Every text token is *computed* AA on its surfaces in both
+themes, and the categorical chart palettes passed a six-check CVD +
+contrast validator per surface. Shell: regrouped sidebar preserving every
+destination, smooth collapse, pinned + recent projects, a global search
+command palette (/ or Ctrl-K), theme toggle, keyboard shortcuts — all
+pure presentation (no fetches, no writes). Role-based landings on
+`/overview` (executive / delivery / assurance focus; field keeps
+capture-first `/field`) with the full portfolio content beneath every
+role. No backend, authorization, workflow, database, or API change.
+Docs: `docs/DESIGN_SYSTEM.md`. Tests: `scripts/design-test.js` (104
+checkpoints).
+
 ## Digital Twin (v28)
 
 **The twin shows the record. The Timeline remains authoritative.** A
