@@ -48,6 +48,8 @@ import {
   Timeline,
   enumLabel,
   PreviewBanner,
+  NAV_GROUPS,
+  BOTTOM_NAV,
 } from "./components";
 import type {
   ApprovalRecord,
@@ -3071,52 +3073,56 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
 
 // ----------------------------------------------------------------- more
 
+/** Per-destination descriptions for the mobile "More" page. Keyed by nav
+ *  key so the list itself comes from NAV_GROUPS — the mobile navigation
+ *  can never again drift behind the sidebar (which is exactly how the
+ *  Timeline and Digital Twin pages went missing on phones). */
+const MORE_DESCRIPTIONS: Record<string, string> = {
+  executive: "Portfolio command center, risk and forecasts",
+  overview: "Portfolio control center",
+  projects: "All projects and milestones",
+  draws: "Lender review of contractor draw requests",
+  approvals: "Governed release decisions",
+  "change-orders": "Governed budget and scope changes",
+  budget: "Verified physical vs financial progress",
+  compliance: "Flagged evidence awaiting human review",
+  "evidence-intel": "Advisory findings and evidence quality",
+  timeline: "Every governed event, in order — the authoritative history",
+  twin: "Interactive site visualization over the recorded geometry",
+  "official-sources": "Retrieved government records for reviewer attention",
+  ledger: "Hash-anchored evidence ledger",
+  insights: "Deterministic intelligence from recorded data",
+  map: "Spatial project intelligence",
+  reports: "Verification reports and audit packages",
+  issues: "Operational issues from field coordination",
+  exceptions: "Control-surveillance register",
+  field: "Mobile evidence capture",
+  comms: "Project-linked coordination threads",
+  setup: "Customer onboarding & project configuration",
+  pilot: "Pilot status across projects",
+  integrations: "Teams & WhatsApp bridge status",
+};
+
 export function renderMore(input: { nav: NavContext }): string {
   const { user } = input.nav;
   const openIssues = input.nav.openIssues ?? 0;
   const openExceptions = input.nav.openExceptions ?? 0;
-  const groups: Array<{ title: string; items: Array<{ href: string; label: string; icon: () => VNode; desc: string; badge?: number }> }> = [
-    {
-      title: "Portfolio & analysis",
-      items: [
-        { href: "/executive", label: "Executive", icon: icons.insights, desc: "Portfolio command center, risk and forecasts" },
-        { href: "/map", label: "Map / Satellite", icon: icons.map, desc: "Spatial project intelligence" },
-        { href: "/insights", label: "OBV Intelligence", icon: icons.insights, desc: "Deterministic intelligence from recorded data" },
-        { href: "/budget", label: "Budget & Progress", icon: icons.ledger, desc: "Verified physical vs financial progress" },
-      ],
-    },
-    {
-      title: "Capital control",
-      items: [
-        { href: "/draws", label: "Draw Requests", icon: icons.dollar, desc: "Lender review of contractor draw requests" },
-        { href: "/change-orders", label: "Change Orders", icon: icons.refresh, desc: "Governed budget and scope changes" },
-      ],
-    },
-    {
-      title: "Verification & records",
-      items: [
-        { href: "/compliance", label: "Evidence Review", icon: icons.shield, desc: "Flagged evidence awaiting human review" },
-        { href: "/reports", label: "Reports", icon: icons.reports, desc: "Verification reports and audit packages" },
-      ],
-    },
-    {
-      title: "Field operations",
-      items: [
-        { href: "/issues", label: "Field Issues", icon: icons.alert, desc: "Operational issues from field coordination", badge: openIssues },
-        { href: "/exceptions", label: "Exceptions", icon: icons.shield, desc: "Control-surveillance register", badge: openExceptions },
-        { href: "/field", label: "Field Capture", icon: icons.camera, desc: "Mobile evidence capture" },
-        { href: "/communications", label: "Communications", icon: icons.chat, desc: "Project-linked coordination threads" },
-      ],
-    },
-    {
-      title: "Pilot",
-      items: [
-        { href: "/setup", label: "Pilot Setup", icon: icons.projects, desc: "Customer onboarding & project configuration" },
-        { href: "/pilot", label: "Pilot Operations", icon: icons.activity, desc: "Pilot status across projects" },
-        { href: "/communications/integrations", label: "Integrations", icon: icons.refresh, desc: "Teams & WhatsApp bridge status" },
-      ],
-    },
-  ];
+  // Derived from the SAME navigation the sidebar renders: everything not
+  // already on the bottom bar appears here, so every destination —
+  // Timeline and Digital Twin included — is reachable on mobile.
+  const inBottomBar = new Set(BOTTOM_NAV);
+  const groups = NAV_GROUPS.map((g) => ({
+    title: g.title ?? "Command",
+    items: g.items
+      .filter((i) => !inBottomBar.has(i.key))
+      .map((i) => ({
+        href: i.href,
+        label: i.label,
+        icon: i.icon,
+        desc: MORE_DESCRIPTIONS[i.key] ?? "",
+        badge: i.badge === "issues" ? openIssues : i.badge === "exceptions" ? openExceptions : undefined,
+      })),
+  })).filter((g) => g.items.length > 0);
   return renderDocument(
     <AppShell title="More" nav={{ ...input.nav, active: "more" }}>
       <PageHeader title="More" sub="All destinations not shown in the bottom navigation." />
