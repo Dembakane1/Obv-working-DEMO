@@ -4228,3 +4228,7 @@ body.sidebar-collapsed .sidebar-brand .mark { display: none; }
   .chip { padding-top: 3px; padding-bottom: 3px; }
 }
 .cmdk[hidden] { display: none; }
+
+/* role-focused overview quick links + ring stat rows */
+.role-quick { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 14px; }
+.evi-stat-ring { display: flex; flex-direction: column; align-items: center; gap: 6px; }

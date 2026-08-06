@@ -203,22 +203,23 @@ interface NavItem { key: string; href: string; label: string; icon: () => VNode;
  *  portfolio context → capital decisions → verification truth → field ops. */
 export interface NavGroup { title: string | null; items: NavItem[] }
 
+/** Regrouped for the enterprise shell: command → capital → verification
+ *  → portfolio intelligence → field → administration. Every pre-existing
+ *  destination is preserved; only grouping, order, and labels changed. */
 export const NAV_GROUPS: NavGroup[] = [
   {
     title: null,
     items: [
+      { key: "executive", href: "/executive", label: "Executive Command", icon: icons.insights },
       { key: "overview", href: "/overview", label: "Overview", icon: icons.overview },
       { key: "projects", href: "/projects", label: "Projects", icon: icons.projects },
-      { key: "executive", href: "/executive", label: "Executive", icon: icons.insights },
-      { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
-      { key: "insights", href: "/insights", label: "OBV Intelligence", icon: icons.insights },
     ],
   },
   {
     title: "Capital control",
     items: [
+      { key: "draws", href: "/draws", label: "Draws", icon: icons.dollar },
       { key: "approvals", href: "/approvals", label: "Approvals", icon: icons.approvals, badge: "approvals" },
-      { key: "draws", href: "/draws", label: "Draw Requests", icon: icons.dollar },
       { key: "change-orders", href: "/change-orders", label: "Change Orders", icon: icons.refresh },
       { key: "budget", href: "/budget", label: "Budget & Progress", icon: icons.ledger },
     ],
@@ -228,9 +229,17 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { key: "compliance", href: "/compliance", label: "Evidence Review", icon: icons.shield },
       { key: "evidence-intel", href: "/evidence-intelligence", label: "Evidence Intelligence", icon: icons.insights },
+      { key: "timeline", href: "/timeline", label: "Timeline", icon: icons.activity },
+      { key: "twin", href: "/timeline#twin-snapshots", label: "Digital Twin", icon: icons.map },
       { key: "official-sources", href: "/official-sources", label: "Official Sources", icon: icons.building },
-      { key: "timeline", href: "/timeline", label: "Project Timeline", icon: icons.activity },
       { key: "ledger", href: "/ledger", label: "Evidence Ledger", icon: icons.ledger },
+    ],
+  },
+  {
+    title: "Portfolio & analytics",
+    items: [
+      { key: "insights", href: "/insights", label: "Analytics", icon: icons.insights },
+      { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
       { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
     ],
   },
@@ -244,7 +253,7 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    title: "Pilot",
+    title: "Administration",
     items: [
       { key: "setup", href: "/setup", label: "Pilot Setup", icon: icons.projects },
       { key: "pilot", href: "/pilot", label: "Pilot Operations", icon: icons.activity },
