@@ -826,6 +826,64 @@ export function buildDrawPackageFiles(d: DrawPackageData): {
   };
   const a = d.amounts;
 
+  // Lender Pilot RC1: a plain-language executive summary FIRST, readable
+  // by a lender executive without opening the application. Everything in
+  // it restates figures the detailed files below already carry — a
+  // summary, never a new determination.
+  const openExceptions = d.exceptions.filter((x) => !["RESOLVED", "CLOSED", "WAIVED"].includes(x.e.status));
+  const approvalsRecorded = d.approvalRecords.length;
+  const approvalsRequired = d.approval?.requiredRoles.length ?? 0;
+  add(
+    "00-EXECUTIVE-SUMMARY.txt",
+    [
+      `OBV DRAW PACKAGE — EXECUTIVE SUMMARY`,
+      `Generated ${d.generatedAt} by ${d.generatedBy.name} (${d.generatedBy.role})`,
+      ``,
+      `1. PROJECT AND DRAW`,
+      `   ${d.project.name}`,
+      `   Draw #${d.draw.drawNumber} · status ${d.draw.status} · period ${d.draw.periodStart ?? "—"} to ${d.draw.periodEnd ?? "—"}`,
+      `   Borrower: ${d.borrowerOrg} · Lender: ${d.lenderOrg}`,
+      ``,
+      `2. REQUESTED AMOUNT`,
+      `   $${a.currentRequested.toLocaleString("en-US")} requested this draw`,
+      ``,
+      `3. RELEASE ELIGIBILITY (RECORDED)`,
+      `   Supported by line review: $${a.currentSupported.toLocaleString("en-US")}`,
+      `   Retainage withheld: ${a.retainageWithheld === null ? "not yet computed" : `$${a.retainageWithheld.toLocaleString("en-US")}`}`,
+      `   Net release eligible: ${a.netReleaseEligible === null ? "not yet computed (pre-governance)" : `$${a.netReleaseEligible.toLocaleString("en-US")}`}`,
+      `   Net released to date (this draw): $${a.netReleased.toLocaleString("en-US")}`,
+      ``,
+      `4. BUDGET STATUS`,
+      `   Contract: $${d.contract.original.toLocaleString("en-US")} original + $${d.contract.approvedChanges.toLocaleString("en-US")} approved changes = $${d.contract.current.toLocaleString("en-US")} current`,
+      `   Cumulative requested $${a.cumulativeRequested.toLocaleString("en-US")} · approved $${a.cumulativeApproved.toLocaleString("en-US")} · released $${a.cumulativeReleased.toLocaleString("en-US")}`,
+      `   Remaining available budget: $${a.remainingAvailableBudget.toLocaleString("en-US")}`,
+      ``,
+      `5. EVIDENCE COMPLETENESS`,
+      `   ${d.evidenceRows.length} evidence record(s) attached; invoices ${d.invoiceRows.length}, lien waivers ${d.waiverRows.length}` +
+        (d.missingRequiredWaiver ? " — A REQUIRED LIEN WAIVER IS MISSING" : ""),
+      ``,
+      `6. PERMITS AND INSPECTIONS`,
+      `   ${d.permitRows.length} permit record(s); inspection recorded: ${d.inspectionRecorded ? "yes" : "no"}. ` +
+        `OBV records permit and inspection facts — it never issues or validates a government permit itself.`,
+      ``,
+      `7. EXCEPTIONS AND DISCREPANCIES`,
+      `   ${openExceptions.length} open exception(s); ${d.discrepancies.length} recorded discrepancy note(s).` +
+        (openExceptions.length > 0 ? ` Open: ${openExceptions.slice(0, 3).map((x) => x.e.title).join("; ")}.` : ""),
+      ``,
+      `8. LENDER DECISION STATUS`,
+      d.approval
+        ? `   Formal approval ${d.approval.status} — ${approvalsRecorded} of ${approvalsRequired} required role approvals recorded.`
+        : `   No formal approval request is open for this draw.`,
+      ``,
+      `9. AUDIT AND VERIFICATION`,
+      `   Full line reviews, evidence hashes, permit registers, exception detail, and the package`,
+      `   manifest follow in this package. Every figure above restates the governed records —`,
+      `   this summary authorizes nothing and is not a determination.`,
+      ``,
+      `All release eligibility is recorded through OBV's governed approval workflow.`,
+    ].join("\n")
+  );
+
   add(
     "draw-summary.json",
     JSON.stringify(

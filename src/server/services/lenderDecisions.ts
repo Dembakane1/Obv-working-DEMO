@@ -11,6 +11,7 @@
  * release remains the only financial state machine.
  */
 import * as repo from "../db/repo";
+import { notifyGovernedEvent } from "./pilot/notify";
 import * as lrepo from "../db/lenderRepo";
 import { teamsNotifier } from "./TeamsNotifier";
 import { LenderError, assertCapability, assertProjectAccess } from "./lenderAccess";
@@ -336,6 +337,15 @@ export function recordLenderDecision(
     `Lender decision ${input.decision} recorded for Draw #${draw.drawNumber}`,
     { projectId: project.id }
   );
+  notifyGovernedEvent("DRAW_DECISION_RECORDED", {
+    projectId: project.id,
+    drawRequestId: draw.id,
+    subject: `Lender decision recorded — draw #${draw.drawNumber}: ${input.decision.replace(/_/g, " ")}`,
+    body:
+      `The lender recorded a ${input.decision.replace(/_/g, " ").toLowerCase()} decision` +
+      `${decision.approvedAmount !== null ? ` (approved amount ${decision.approvedAmount})` : ""}. ` +
+      "Release eligibility follows the governed workflow, never this notification.",
+  });
   return decision;
 }
 

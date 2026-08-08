@@ -190,6 +190,22 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Lender Pilot RC1 (v30)
+
+**One workflow. Every safeguard. Lender-readable.** The composition
+milestone: a deterministic Next Action per draw (authoritative records
+only, never probabilistic), a pilot command center answering "what needs
+attention today" with real state and a measured median review time, a
+six-surface pilot navigation for funders with everything else preserved
+under Advanced, a Next Action banner on Draw Review, an opt-in golden
+demo project (fictional $860k DC rehab, six draws spanning the entire
+workflow), a plain-language executive summary leading every draw
+package, raw ROI measurements (no fabricated dollars), and governed-
+event notifications to the in-app feed + dev-safe email outbox that can
+never mutate the workflow. Docs: `docs/LENDER_PILOT_RC1.md`. Tests:
+`scripts/lender-pilot-test.js` (73 checkpoints, including the live
+golden path end to end).
+
 ## Enterprise Design System v2 (v29)
 
 **Same record. Same rules. A clearer face.** A frontend-only redesign:
