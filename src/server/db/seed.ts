@@ -2145,7 +2145,10 @@ function seedDemoBanking(): void {
     amount: 500_000, reference: "MOCK-DEP-SEED0001", createdAt: t("04T09:10:00.000Z"),
   });
   brepo.insertMockLedgerEntry({
-    id: "mockled-2", bankingProgramId: "bank-prog-1", entryType: "PAYMENT_SETTLED",
+    // The entry type carries the event's full original identity (normalized
+    // type + provider transaction reference) — the same shape processWebhook
+    // writes — so a later reuse of this eventId can be compared against it.
+    id: "mockled-2", bankingProgramId: "bank-prog-1", entryType: "PAYMENT_SETTLED:MOCK-TXN-SEED0001",
     amount: -80_000, reference: "EVT:seed-settle-1", createdAt: t("05T14:00:00.000Z"),
   });
 
