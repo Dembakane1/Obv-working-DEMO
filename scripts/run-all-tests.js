@@ -105,6 +105,7 @@ const STANDALONE = [
   "lender-test.js",
   "lender-ui-test.js",
   "vam-test.js",
+  "vam-adversarial-test.js",
   "dispute-test.js",
   "dmv-test.js",
   "portfolio-test.js",
