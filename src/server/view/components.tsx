@@ -263,6 +263,43 @@ export const NAV_GROUPS: NavGroup[] = [
 ];
 
 const ALL_NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
+const itemByKey = new Map(ALL_NAV_ITEMS.map((i) => [i.key, i]));
+const pick = (...keys: string[]): NavItem[] =>
+  keys.map((k) => itemByKey.get(k)).filter((i): i is NavItem => Boolean(i));
+
+/**
+ * Lender Pilot RC1: role-focused navigation. A first-time lender sees
+ * the six surfaces the pilot workflow lives on; EVERY other destination
+ * stays one group away under "Advanced & intelligence" — nothing is
+ * removed for any role, and no authorization changes (the nav only
+ * chooses what to emphasize; every page keeps its own gates).
+ */
+export function navGroupsFor(role: User["role"]): NavGroup[] {
+  if (role === "FUNDER_REP") {
+    const primary = [
+      { ...itemByKey.get("overview")!, label: "Portfolio" },
+      ...pick("projects", "draws"),
+      ...pick("compliance").map((i) => ({ ...i, label: "Evidence Review" })),
+      ...pick("approvals", "reports"),
+    ];
+    const primaryKeys = new Set(["overview", "projects", "draws", "compliance", "approvals", "reports"]);
+    return [
+      { title: null, items: primary },
+      {
+        title: "Advanced & intelligence",
+        items: ALL_NAV_ITEMS.filter((i) => !primaryKeys.has(i.key)),
+      },
+    ];
+  }
+  if (role === "FIELD") {
+    const primaryKeys = new Set(["projects", "field", "issues"]);
+    return [
+      { title: null, items: pick("projects", "field", "issues") },
+      { title: "More", items: ALL_NAV_ITEMS.filter((i) => !primaryKeys.has(i.key)) },
+    ];
+  }
+  return NAV_GROUPS;
+}
 
 export const BOTTOM_NAV = ["overview", "projects", "approvals", "ledger"];
 
@@ -335,7 +372,7 @@ export function AppShell(props: {
               <div className="nav-group">Pinned &amp; recent</div>
             </div>
             <nav className="sidebar-nav" aria-label="Primary">
-              {NAV_GROUPS.map((g) => (
+              {navGroupsFor(user.role).map((g) => (
                 <>
                   {g.title ? <div className="nav-group">{g.title}</div> : null}
                   {g.items.map(navLink)}

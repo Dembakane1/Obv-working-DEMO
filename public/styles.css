@@ -4232,3 +4232,26 @@ body.sidebar-collapsed .sidebar-brand .mark { display: none; }
 /* role-focused overview quick links + ring stat rows */
 .role-quick { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 14px; }
 .evi-stat-ring { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+
+/* =====================================================================
+   v24 — Lender Pilot RC1
+   The pilot command center and next-action surfaces. Reuses the metric
+   cards and chip primitives; adds only the bucket grid.
+   ===================================================================== */
+.pilot-center { margin: 6px 0 16px; }
+.pilot-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.pilot-buckets { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 12px; }
+.pilot-bucket { background: var(--surface); background-image: var(--grad-card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; border-top: 3px solid var(--line-2); }
+.pilot-ok { border-top-color: var(--ok); } .pilot-warn { border-top-color: var(--warn); }
+.pilot-bad { border-top-color: var(--bad); } .pilot-neutral { border-top-color: var(--line-2); }
+.pilot-bucket-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 13.5px; }
+.pilot-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pilot-row { display: flex; justify-content: space-between; gap: 10px; padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--r-s); text-decoration: none; color: inherit; }
+.pilot-row:hover { border-color: var(--action); background: var(--action-soft); }
+.pilot-row-id, .pilot-row-facts { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pilot-row-facts { text-align: right; flex-shrink: 0; }
+.pilot-row-facts .sub, .pilot-row-id .sub { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 210px; }
+.pilot-empty { margin: 4px 0; } .pilot-more { padding: 2px 9px; }
+.pilot-next { display: flex; align-items: center; gap: 9px; padding: 10px 13px; border: 1px solid var(--info-line); background: var(--info-bg); border-radius: var(--r); margin: 10px 0; font-size: 13.5px; }
+.pilot-next b { color: var(--ink); }
+.pilot-next .chip { flex-shrink: 0; }
