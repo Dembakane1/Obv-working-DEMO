@@ -326,7 +326,31 @@ recorded in PR #2):**
 
 ## 11. Test results from a clean state (§10 of the task)
 
-<!-- BATTERY_RESULTS -->
+Run on this branch from a clean state: `rm -rf node_modules && npm ci`
+(after which `git status` on the vendored type stubs stayed clean),
+then `npm run build` (TypeScript server + client builds, zero errors),
+then `npm test` (the authoritative unified runner), then
+`npm audit --omit=dev`.
+
+**Result: 40/40 suites passed — 2,688 checkpoints — and
+`npm audit --omit=dev` reports 0 vulnerabilities.**
+
+| Phase | Suites | Checkpoints |
+|---|---:|---:|
+| Standalone (own database + server) | 35 | 2,644 |
+| Server-based (shared seeded server, incl. Chromium acceptance) | 4 | 44 |
+| Deployment checks (`deploy-check.js`) | 1 | — |
+
+The battery includes the rebuilt `vam-adversarial-test.js`
+(59 checkpoints) alongside the pre-existing `vam-test.js`
+(87 checkpoints), the authorization suite (58), the identity suite
+(165), the integrations suite (168), evidence intelligence (83),
+official sources (149), portfolio (151), DMV (125), disputes (185),
+timeline (186), Digital Twin (140), design (107), lender pilot (73),
+toolchain (45), and the 19-step browser acceptance run. No assertion
+was removed or weakened to make anything pass; the two adversarial
+checkpoints adapted for architecture drift are documented in §8 and
+both became STRONGER.
 
 ---
 
