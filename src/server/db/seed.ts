@@ -702,6 +702,13 @@ export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<
   // number is fictional demo data.
   await seedDmvDemo();
 
+  // Lender Pilot RC1 golden project — OPT-IN so every existing suite
+  // keeps its exact baseline; enable with OBV_SEED_GOLDEN=1.
+  if (process.env.OBV_SEED_GOLDEN === "1") {
+    const { seedGoldenProject } = await import("./goldenSeed.js");
+    seedGoldenProject();
+  }
+
   // ---- unified exceptions: deterministic sweep over the seeded state ----
   // Creates the out-of-the-box register (HIGH field issue, missing lien
   // waiver, budget variance) from real conditions — nothing is invented.

@@ -79,7 +79,9 @@ async function main() {
   await waitForText(funder, "$2,175,000"); // held (R47 $1.68M + DMV pilot $495k)
   pass("overview summary shows portfolio value, released and held amounts");
 
-  await funder.getByRole("link", { name: /Mzimba–Kafukule/ }).first().click();
+  // Target the PROJECT link specifically: the pilot command center above
+  // the portfolio also names the project inside /draw/ links.
+  await funder.locator('a[href^="/project/"]').filter({ hasText: "Mzimba–Kafukule" }).first().click();
   await funder.waitForURL("**/project/**");
   await waitForText(funder, "About this project");
   const cards = await funder.locator(".ms-card").count();

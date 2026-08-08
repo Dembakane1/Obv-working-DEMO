@@ -432,6 +432,8 @@ export interface DrawDetailData {
   // capabilities for the signed-in user
   canEdit: boolean;
   canReview: boolean;
+  /** Deterministic next action derived from authoritative state. */
+  nextAction?: { code: string; label: string; actor: string; detail: string } | null;
   canDecide: boolean;
   alreadyDecided: boolean;
   isSubmitter: boolean;
@@ -482,6 +484,17 @@ export function renderDrawDetail(d: DrawDetailData): string {
       >
         <DrawStatusChip status={draw.status} />
       </PageHeader>
+
+      {d.nextAction ? (
+        <div className="pilot-next" role="status">
+          <span className={`chip ${d.nextAction.actor === "NONE" ? "ok" : d.nextAction.actor === "CONTRACTOR" || d.nextAction.actor === "INSPECTOR" ? "warn" : "info"}`}>
+            Next action
+          </span>
+          <span>
+            <b>{d.nextAction.label}.</b> {d.nextAction.detail}
+          </span>
+        </div>
+      ) : null}
 
       {/* header financial band — answers the page's core questions */}
       <div className="fin-band" style="margin-bottom:12px">

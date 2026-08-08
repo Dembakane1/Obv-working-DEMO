@@ -49,6 +49,7 @@ import {
   enumLabel,
   PreviewBanner,
   NAV_GROUPS,
+  navGroupsFor,
   BOTTOM_NAV,
 } from "./components";
 import type {
@@ -406,6 +407,72 @@ export interface OverviewQueue {
   exceptionsAwaiting: number;
 }
 
+/** One bucket of the pilot command center — real state, real
+ *  timestamps, and the deterministic next action per draw. */
+function PilotBucket(props: {
+  title: string;
+  tone: "ok" | "warn" | "bad" | "neutral";
+  rows: import("../services/pilot/lenderPilot").PilotDrawRow[];
+  empty: string;
+}): VNode {
+  return (
+    <div className={`pilot-bucket pilot-${props.tone}`}>
+      <div className="pilot-bucket-head">
+        <b>{props.title}</b>
+        <span className="chip neutral">{String(props.rows.length)}</span>
+      </div>
+      {props.rows.length === 0 ? (
+        <p className="sub pilot-empty">{props.empty}</p>
+      ) : (
+        <ul className="pilot-rows">
+          {props.rows.slice(0, 6).map((r) => (
+            <li>
+              <a className="pilot-row" href={`/draw/${r.drawRequestId}`}>
+                <span className="pilot-row-id">
+                  <b>Draw #{String(r.drawNumber)}</b>
+                  <span className="sub">{r.projectName}</span>
+                </span>
+                <span className="pilot-row-facts">
+                  <span className="num">{money(r.requested)}</span>
+                  <span className="sub">{r.ageDays}d · {r.nextAction.label}</span>
+                </span>
+              </a>
+            </li>
+          ))}
+          {props.rows.length > 6 ? <li className="sub pilot-more">+{props.rows.length - 6} more in Draws</li> : null}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** The Lender Pilot RC1 command center: what needs attention today. */
+function PilotCenter(props: { pilot: import("../services/pilot/lenderPilot").PilotCommandCenter }): VNode {
+  const p = props.pilot;
+  const m = p.metrics;
+  return (
+    <section className="pilot-center" aria-label="What needs attention today">
+      <div className="sec-label">What needs attention today</div>
+      <div className="pilot-metrics">
+        <div className="metric-card"><span className="mc-head">Open draws</span><span className="mc-v">{String(m.openDraws)}</span><span className="mc-sub">{money(m.totalRequestedOpen)} requested</span></div>
+        <div className="metric-card"><span className="mc-head">Currently eligible</span><span className="mc-v">{money(m.currentlyEligible)}</span><span className="mc-sub">Approved, not yet released</span></div>
+        <div className="metric-card"><span className="mc-head">Currently held</span><span className="mc-v">{money(m.currentlyHeld)}</span><span className="mc-sub">Requested beyond supported</span></div>
+        <div className="metric-card"><span className="mc-head">Median review time</span><span className="mc-v">{m.medianReviewDays === null ? "—" : `${m.medianReviewDays}d`}</span><span className="mc-sub">{m.medianReviewDays === null ? "No decided draws yet" : "Submission → recorded decision"}</span></div>
+        <div className="metric-card"><span className="mc-head">Missing documents</span><span className="mc-v">{String(m.missingDocumentCount)}</span><span className="mc-sub">Across open draws</span></div>
+        <div className="metric-card"><span className="mc-head">Approvals awaiting</span><span className="mc-v">{String(m.approvalsAwaiting)}</span><span className="mc-sub">{m.unresolvedExceptions} unresolved exception{m.unresolvedExceptions === 1 ? "" : "s"}</span></div>
+      </div>
+      <div className="pilot-buckets">
+        <PilotBucket title="Ready for lender decision" tone="ok" rows={p.readyForDecision} empty="Nothing is waiting on you right now." />
+        <PilotBucket title="Waiting on contractor" tone="warn" rows={p.waitingOnContractor} empty="No draws are waiting on the contractor." />
+        <PilotBucket title="Waiting on inspection" tone="warn" rows={p.waitingOnInspection} empty="No required inspections are outstanding." />
+        <PilotBucket title="Compliance exceptions" tone="bad" rows={p.complianceExceptions} empty="No open exceptions on draws." />
+        <PilotBucket title={`Aging beyond ${p.agingThresholdDays} days`} tone="bad" rows={p.aging} empty="No open draw has aged past target." />
+        <PilotBucket title="Recently approved" tone="neutral" rows={p.recentlyApproved} empty="No approvals recorded yet." />
+      </div>
+    </section>
+  );
+}
+
 export function renderOverview(input: {
   nav: NavContext;
   metrics: OverviewMetrics;
@@ -416,6 +483,8 @@ export function renderOverview(input: {
   nextReleases: Array<{ projectId: string; projectName: string; label: string; amount: number; awaiting: string }>;
   queue: OverviewQueue;
   openIssuesByProject: Map<string, number>;
+  /** Lender Pilot RC1 command center (funder representatives only). */
+  pilot?: import("../services/pilot/lenderPilot").PilotCommandCenter | null;
 }): string {
   const m = input.metrics;
   const releasedPct = m.totalBudget > 0 ? Math.round((m.released / m.totalBudget) * 100) : 0;
@@ -485,6 +554,8 @@ export function renderOverview(input: {
           <a className="btn secondary sm" href={l.href}>{l.label} →</a>
         ))}
       </div>
+
+      {input.pilot ? <PilotCenter pilot={input.pilot} /> : null}
 
       {/* ---- capital position ---- */}
       <div className="sec-label">Capital position</div>
@@ -3111,7 +3182,7 @@ export function renderMore(input: { nav: NavContext }): string {
   // already on the bottom bar appears here, so every destination —
   // Timeline and Digital Twin included — is reachable on mobile.
   const inBottomBar = new Set(BOTTOM_NAV);
-  const groups = NAV_GROUPS.map((g) => ({
+  const groups = navGroupsFor(user.role).map((g) => ({
     title: g.title ?? "Command",
     items: g.items
       .filter((i) => !inBottomBar.has(i.key))

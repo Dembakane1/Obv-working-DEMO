@@ -102,6 +102,17 @@ import { DrawError } from "../services/draws";
 import * as budget from "../services/budgetProgress";
 import { BudgetError } from "../services/budgetProgress";
 import * as exceptions from "../services/exceptions";
+import * as lenderPilot from "../services/pilot/lenderPilot";
+
+/** The pilot command center is an enhancement over the overview — it
+ *  degrades to absent rather than failing the page. */
+function safePilotCenter(u: import("../../shared/types").User) {
+  try {
+    return lenderPilot.pilotCommandCenter(u);
+  } catch {
+    return null;
+  }
+}
 import { ExceptionError } from "../services/exceptions";
 import * as changeOrders from "../services/changeOrders";
 import { ChangeOrderError } from "../services/changeOrders";
@@ -767,6 +778,13 @@ function assembleDrawDetail(
       ),
     canEdit: draws.canAccessDraw(user, draw) && user.role !== "FIELD",
     canReview: draws.canReviewDraw(user, draw),
+    nextAction: (() => {
+      try {
+        return lenderPilot.drawNextAction(draw.id);
+      } catch {
+        return null;
+      }
+    })(),
     canDecide: Boolean(
       approval &&
         approval.status === "PENDING" &&
@@ -4895,8 +4913,29 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           exceptionsAwaiting: openExceptionsOv.filter((e) => e.status === "AWAITING_RESPONSE").length,
         },
         openIssuesByProject,
+        // Lender Pilot RC1: the funder landing opens on "what needs
+        // attention today", derived on read from authoritative state.
+        pilot: user!.role === "FUNDER_REP" ? safePilotCenter(user!) : null,
       })
     );
+    return;
+  }
+
+  if (method === "GET" && pathname === "/api/pilot/next-action") {
+    // Deterministic next action for one draw — read-only restatement of
+    // authoritative state. Access-gated like the draw itself.
+    const u = currentUser(req);
+    if (!u) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    const drawId = url.searchParams.get("draw") ?? "";
+    const draw = repo.getDrawRequest(drawId);
+    if (!draw || !draws.canAccessDraw(u, draw)) { sendJson(res, { error: "Not found" }, 404); return; }
+    sendJson(res, lenderPilot.drawNextAction(draw.id));
+    return;
+  }
+  if (method === "GET" && pathname === "/api/pilot/roi") {
+    const u = currentUser(req);
+    if (!u) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    sendJson(res, lenderPilot.pilotRoiMeasurements(u));
     return;
   }
 

@@ -27,6 +27,7 @@ import { canAccessProjectFinance } from "./budgetProgress";
 import { makeWholeCurrency } from "./money";
 import { virtualAccountService } from "./VirtualAccountService";
 import { teamsNotifier } from "./TeamsNotifier";
+import { notifyGovernedEvent } from "./pilot/notify";
 import { mirrorEvent, ensureDrawThread } from "./chat";
 import { computeRetainage, rateForDraw } from "./retainage";
 import type {
@@ -874,6 +875,14 @@ export async function submitDraw(user: User, drawId: string): Promise<DrawReques
     `Draw #${draw.drawNumber} submitted for review on project ${draw.projectId} — ${money(draw.requestedAmount)} requested. Funds remain governed by the formal approval workflow.`,
     { projectId: draw.projectId }
   );
+  notifyGovernedEvent(resubmission ? "EVIDENCE_RESUBMITTED" : "DRAW_SUBMITTED", {
+    projectId: draw.projectId,
+    drawRequestId: draw.id,
+    subject: `Draw #${draw.drawNumber} ${resubmission ? "resubmitted" : "submitted"} — ${money(draw.requestedAmount)} requested`,
+    body: resubmission
+      ? "The requester resubmitted the draw after revision; review restarts from the recorded submission."
+      : "A draw was submitted for lender review. Nothing is released by submission.",
+  });
   return repo.getDrawRequest(draw.id)!;
 }
 
@@ -950,6 +959,12 @@ export function requestClarification(user: User, drawId: string, question: strin
   if (!q) throw new DrawError("A clarification question is required");
   repo.updateDrawRequest(draw.id, { status: "CLARIFICATION_REQUIRED" });
   event(draw.id, "CLARIFICATION_REQUESTED", `Clarification requested by ${user.name}: ${q}`, user.id);
+  notifyGovernedEvent("EVIDENCE_MISSING", {
+    projectId: draw.projectId,
+    drawRequestId: draw.id,
+    subject: `Information requested — draw #${draw.drawNumber}`,
+    body: `A reviewer asked the requester for clarification: ${q}`,
+  });
   mirrorDraw(draw, `Clarification requested on Draw #${draw.drawNumber}: ${q}`);
   return repo.getDrawRequest(draw.id)!;
 }
@@ -983,6 +998,12 @@ export function returnDraw(user: User, drawId: string, reason: string): DrawRequ
   if (!r) throw new DrawError("A return reason is required");
   repo.updateDrawRequest(draw.id, { status: "RETURNED" });
   event(draw.id, "RETURNED", `Draw returned to requester by ${user.name}: ${r}`, user.id);
+  notifyGovernedEvent("DRAW_RETURNED", {
+    projectId: draw.projectId,
+    drawRequestId: draw.id,
+    subject: `Draw #${draw.drawNumber} returned for additional evidence`,
+    body: `Returned by ${user.name}: ${r}`,
+  });
   mirrorDraw(draw, `Draw #${draw.drawNumber} returned to requester: ${r}`);
   return repo.getDrawRequest(draw.id)!;
 }
@@ -1249,6 +1270,14 @@ export async function sendToGovernance(
     `Draw #${draw.drawNumber} is ready for governance — recommended ${money(recommendation.supportedAmount)} of ${money(recommendation.requestedAmount)} requested. Requires ${approvalRequest.requiredRoles.join(" + ")}.`,
     { projectId: draw.projectId }
   );
+  notifyGovernedEvent("APPROVAL_REQUIRED", {
+    projectId: draw.projectId,
+    drawRequestId: draw.id,
+    subject: `Approval required — draw #${draw.drawNumber}`,
+    body:
+      `Formal approval opened; requires ${approvalRequest.requiredRoles.join(" + ")}. ` +
+      `Recommended ${money(recommendation.supportedAmount)} of ${money(recommendation.requestedAmount)} (advisory).`,
+  });
   return { draw: repo.getDrawRequest(draw.id)!, approvalRequest };
 }
 

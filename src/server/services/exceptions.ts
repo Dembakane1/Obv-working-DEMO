@@ -22,6 +22,7 @@
  * never silently overturned by the sweep.
  */
 import * as repo from "../db/repo";
+import { notifyGovernedEvent } from "./pilot/notify";
 import * as lrepo from "../db/lenderRepo";
 import * as brepo from "../db/bankingRepo";
 import * as dmvRepo from "../db/dmvRepo";
@@ -199,6 +200,13 @@ function ensureException(seed: ExceptionSeed): ObvException {
   };
   repo.insertException(exception);
   event(exception.id, "CREATED", `Auto-created by deterministic rule (${seed.sourceKey.split(":")[0]}). ${seed.description}`, null);
+  notifyGovernedEvent("EXCEPTION_OPENED", {
+    projectId: exception.projectId,
+    drawRequestId: exception.drawRequestId,
+    milestoneId: exception.milestoneId,
+    subject: `Exception opened — ${exception.title}`,
+    body: `${exception.severity} severity, ${exception.category.toLowerCase()} category. ${exception.description}`.slice(0, 600),
+  });
   return exception;
 }
 
@@ -259,6 +267,13 @@ export function createManualException(
   };
   repo.insertException(exception);
   event(exception.id, "CREATED", `Raised manually by ${user.name}: ${title}`, user.id);
+  notifyGovernedEvent("EXCEPTION_OPENED", {
+    projectId: exception.projectId,
+    drawRequestId: exception.drawRequestId,
+    milestoneId: exception.milestoneId,
+    subject: `Exception opened — ${exception.title}`,
+    body: `${exception.severity} severity, raised by ${user.name}. ${exception.description}`.slice(0, 600),
+  });
   return exception;
 }
 
