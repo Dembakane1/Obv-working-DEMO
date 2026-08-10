@@ -34,9 +34,21 @@ const fail = (m) => {
 const assert = (c, m) => (c ? pass(m) : fail(m));
 
 let server = null;
-process.on("exit", () => {
+const stopServer = () => {
   try { server?.kill(); } catch { /* already gone */ }
-});
+  server = null;
+};
+process.on("exit", stopServer);
+// A signalled termination (runner timeout, Ctrl-C, CI cancellation) skips
+// the exit handler's usual path — without these the spawned server
+// survives and squats the port, and the NEXT run's pre-flight guard
+// (correctly) refuses to produce misleading results.
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(sig, () => {
+    stopServer();
+    process.exit(130);
+  });
+}
 
 async function main() {
   console.log("Workstation composition suite — structure, not styling");
