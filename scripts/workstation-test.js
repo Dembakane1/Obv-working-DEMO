@@ -161,7 +161,7 @@ async function main() {
     "the workspace has an event stream, a canvas and a context inspector"
   );
   assert(twin.includes("Event stream"), "the event stream pane lists governed timeline events");
-  assert(twin.includes("Context inspector") || twin.includes("Selected evidence"), "the inspector pane is present");
+  assert(twin.includes("Context inspector") || twin.includes("Evidence detail"), "the inspector pane is present");
   assert(twin.includes('class="segmented"'), "mobile gets a Timeline | Twin segmented control");
   assert(
     /href="\/timeline\/twin\/proj-r47\?focus=/.test(twin),

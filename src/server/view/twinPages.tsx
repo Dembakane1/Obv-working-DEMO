@@ -634,7 +634,7 @@ export function renderDigitalTwin(input: {
           }
           inspector={
             <DensePanel
-              title={input.pinDetail ? "Selected evidence" : "Context inspector"}
+              title={input.pinDetail ? "Evidence detail" : "Context inspector"}
               right={<span id="twin-detail-title">{input.pinDetail ? "evidence" : "selection"}</span>}
               className="twin-detail"
               foot={<a href={`/timeline/project/${s.projectId}`}>Open the authoritative timeline →</a>}
@@ -699,6 +699,11 @@ export function renderDigitalTwin(input: {
             <p><strong>Not the complete record:</strong> {s.caps.join(" · ")}.</p>
           ) : null}
           <p>{input.providers.notice}</p>
+          <div className="twin-providers">
+            {input.providers.providers.map((pr) => (
+              <span className="chip dim" title={pr.description}>{pr.displayName} — disabled</span>
+            ))}
+          </div>
         </AboutView>
 
         <AnchoredDock anchored={s.anchored} />
