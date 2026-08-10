@@ -2971,7 +2971,17 @@ export function getDb(): DatabaseSync {
           "build, or restore the matching backup."
       );
     }
-    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    // Stamp only when needed, and tolerate losing the race: an
+    // unconditional write here would contend with a sibling process
+    // (test batteries open one database from several processes at once),
+    // and the stamp is a protection marker, not data.
+    if (uv !== SCHEMA_VERSION) {
+      try {
+        db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+      } catch {
+        /* a concurrent open is stamping the same value */
+      }
+    }
   }
   return db;
 }
