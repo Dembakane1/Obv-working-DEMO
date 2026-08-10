@@ -23,6 +23,7 @@ import { runVerificationPipeline } from "../services/verification/index";
 import { wormEvidenceStore, sha256 } from "../services/WormEvidenceStore";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { evaluateExceptions } from "../services/exceptions";
+import { environmentName, productionPosture } from "../services/posture";
 import type {
   ApprovalRequest,
   ChatMessage,
@@ -49,6 +50,18 @@ import type {
  *    removed by the demo reset.
  */
 export async function seedDemo(opts: { preservePilot?: boolean } = {}): Promise<void> {
+  // HARD WALL, checked at the service so EVERY caller is covered (the
+  // seed CLI, the container's seed-if-missing start command, the demo
+  // reset endpoint and the gated full reset alike): demo seeding never
+  // touches a pilot/production deployment. A pilot cold start is an
+  // EMPTY schema plus the bootstrap administrator — never fictional data.
+  if (productionPosture()) {
+    throw new Error(
+      `Demo seeding is disabled in the ${environmentName()} environment. ` +
+        "A pilot/production deployment starts from an empty database and the " +
+        "OBV_BOOTSTRAP_ADMIN_EMAIL bootstrap — it is never seeded with demo data."
+    );
+  }
   const scoped =
     Boolean(opts.preservePilot) &&
     (() => {

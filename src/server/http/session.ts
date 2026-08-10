@@ -20,6 +20,7 @@
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type http from "node:http";
+import { productionPosture } from "../services/posture";
 
 export const SESSION_COOKIE = "obv_user";
 
@@ -29,24 +30,12 @@ export const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 /** Shortest secret we will accept when one is required. */
 const MIN_SECRET_LENGTH = 32;
 
-/**
- * A deployment is treated as production when it says so. In that posture a
- * real secret is mandatory and the process refuses to start without one —
- * the same "refuse rather than silently degrade" rule the banking layer
- * already applies to non-mock providers.
- */
-function productionPosture(): boolean {
-  // Deliberately NOT keyed on NODE_ENV. The Dockerfile sets
-  // NODE_ENV=production for Node's own runtime behaviour, so treating it as
-  // a security posture signal would make every container refuse to start
-  // unless a secret happened to be supplied — turning a hardening change
-  // into a deploy outage. Posture is declared explicitly instead, using the
-  // same OBV_BANKING_MODE switch the banking layer already keys on.
-  return (
-    process.env.OBV_BANKING_MODE === "production" ||
-    /^(1|true)$/i.test(process.env.OBV_SESSION_REQUIRE_SECRET ?? "")
-  );
-}
+// A deployment is treated as production when it says so. In that posture a
+// real secret is mandatory and the process refuses to start without one —
+// the same "refuse rather than silently degrade" rule the banking layer
+// applies to non-mock providers. Posture resolution (the OBV_ENVIRONMENT
+// declaration plus its legacy-flag compatibility) lives in ONE place:
+// services/posture.ts. Deliberately NOT keyed on NODE_ENV.
 
 export class SessionConfigError extends Error {}
 

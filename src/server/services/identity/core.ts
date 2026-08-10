@@ -21,6 +21,7 @@ import { DATA_DIR } from "../../db/index";
 import * as identityRepo from "../../db/identityRepo";
 import * as repo from "../../db/repo";
 import { composeEmail, sendEmail } from "../integrations/email";
+import { productionPosture } from "../posture";
 import type { AuthEvent } from "../../../shared/types";
 
 export class IdentityError extends Error {
@@ -66,18 +67,11 @@ export interface IdentityConfig {
   lockoutThreshold: number;
   lockoutWindowMinutes: number;
   lockoutDurationMinutes: number;
-  deliveryMode: "file" | "off";
+  deliveryMode: "file" | "off" | "email";
 }
 
-/** Same explicit-declaration rule the session layer uses: production
- *  posture is OBV_BANKING_MODE=production or OBV_SESSION_REQUIRE_SECRET,
- *  never NODE_ENV. */
-function productionPosture(): boolean {
-  return (
-    process.env.OBV_BANKING_MODE === "production" ||
-    /^(1|true)$/i.test(process.env.OBV_SESSION_REQUIRE_SECRET ?? "")
-  );
-}
+// Production posture comes from the single resolver in services/posture.ts
+// (OBV_ENVIRONMENT plus legacy-flag compatibility), never NODE_ENV.
 
 export function identityConfig(): IdentityConfig {
   const configured = (process.env.OBV_AUTH_LINK_DELIVERY ?? "").trim().toLowerCase();
@@ -86,19 +80,36 @@ export function identityConfig(): IdentityConfig {
     // the data volume. That is a deliberate development affordance — a
     // production operator must CHOOSE it, not inherit it silently.
     throw new IdentityError(
-      "OBV_AUTH_LINK_DELIVERY must be set explicitly in production ('file' for the data-directory outbox, " +
-        "'off' to mint without delivering). The file outbox stores live sign-in links on the data volume, " +
-        "so production must opt into it deliberately — or plug an email provider into deliverSignInLink.",
+      "OBV_AUTH_LINK_DELIVERY must be set explicitly in production: 'email' delivers sign-in links " +
+        "through the configured OBV_EMAIL_PROVIDER (the pilot setting), 'file' writes them to the " +
+        "data-directory outbox (development only — live links land on the data volume), 'off' mints " +
+        "without delivering.",
       500
     );
   }
   const mode = configured || "file";
-  if (mode !== "file" && mode !== "off") {
+  if (mode !== "file" && mode !== "off" && mode !== "email") {
     throw new IdentityError(
-      `OBV_AUTH_LINK_DELIVERY must be "file" (development outbox under the data directory) or "off" (got "${mode}"). ` +
-        "A real deployment plugs its email provider into deliverSignInLink — that function is the single delivery seam.",
+      `OBV_AUTH_LINK_DELIVERY must be "email" (deliver through the configured email provider), ` +
+        `"file" (development outbox under the data directory) or "off" (got "${mode}").`,
       500
     );
+  }
+  if (mode === "email") {
+    // 'email' promises real delivery. The development outbox is not a
+    // wire — a magic link "sent" there is redacted and reaches no one —
+    // so this combination is a black hole and refuses to start. There is
+    // no silent fallback from a real provider to the outbox, in any
+    // posture.
+    const provider = (process.env.OBV_EMAIL_PROVIDER ?? "outbox").trim().toLowerCase() || "outbox";
+    if (provider === "outbox") {
+      throw new IdentityError(
+        "OBV_AUTH_LINK_DELIVERY=email requires a real email provider, but OBV_EMAIL_PROVIDER " +
+          "is 'outbox' (the development mailbox). Set OBV_EMAIL_PROVIDER=postmark with its " +
+          "credentials, or use OBV_AUTH_LINK_DELIVERY=file for development.",
+        500
+      );
+    }
   }
   return {
     magicLinkTtlMinutes: intEnv("OBV_AUTH_LINK_TTL_MINUTES", 15, 1, 120),
@@ -130,9 +141,11 @@ export function assertIdentityConfig(): void {
 
 export function identityStartupNotice(): string {
   const cfg = identityConfig();
-  return cfg.deliveryMode === "file"
-    ? "identity: magic-link sign-in active (link delivery: development file outbox under the data directory)"
-    : "identity: magic-link sign-in active (link delivery: OFF — links are minted but not delivered)";
+  return cfg.deliveryMode === "email"
+    ? "identity: magic-link sign-in active (link delivery: EMAIL through the configured provider)"
+    : cfg.deliveryMode === "file"
+      ? "identity: magic-link sign-in active (link delivery: development file outbox under the data directory)"
+      : "identity: magic-link sign-in active (link delivery: OFF — links are minted but not delivered)";
 }
 
 // ------------------------------------------------------------ helpers
@@ -195,18 +208,36 @@ export function authOutboxPath(): string {
 }
 
 /**
- * THE delivery seam. Production deployments replace the body of the
- * "file" branch with their email provider; nothing else in the platform
- * knows or cares how the link travels. The raw link is passed through —
- * it is never logged, never written to the database, and in "off" mode it
- * is simply dropped (minted but undeliverable, stated at startup).
+ * THE delivery seam. Every sign-in link leaves the process through here;
+ * nothing else in the platform knows or cares how the link travels.
  *
- * The integrations email layer records a REDACTED companion entry so the
- * dashboard sees that a sign-in mail happened — the raw link itself
- * still travels only through this seam.
+ *  - "email": the link goes to the configured REAL provider through
+ *    sendEmail. The outbox row is redacted BY KIND (MAGIC_LINK), so the
+ *    raw link reaches the wire but can never be read back out of the
+ *    database or an outbox dashboard. Startup already refused this mode
+ *    without a real provider — there is no fallback to the file outbox.
+ *  - "file": development. A redacted observability record is written via
+ *    sendEmail, and the raw link is appended to the data-directory
+ *    outbox file (deterministic capture for tests and local sign-in).
+ *  - "off": the redacted record only; the link is dropped.
+ *
+ * The raw link is never logged and never written to the database in any
+ * mode.
  */
 export function deliverSignInLink(email: string, link: string, purpose: string): void {
   const cfg = identityConfig();
+  if (cfg.deliveryMode === "email") {
+    // Provider failure is recorded on the outbox row and the integration
+    // audit trail; it never throws into the sign-in flow (the requester
+    // response stays the same non-oracle either way).
+    try {
+      const composed = composeEmail("MAGIC_LINK", { link });
+      sendEmail({ kind: "MAGIC_LINK", to: email, subject: composed.subject, text: composed.text, containsCredential: true });
+    } catch {
+      /* recorded by the email layer; sign-in flow is never interrupted */
+    }
+    return;
+  }
   try {
     const composed = composeEmail("MAGIC_LINK", {});
     sendEmail({ kind: "MAGIC_LINK", to: email, subject: composed.subject, text: composed.text, containsCredential: true });

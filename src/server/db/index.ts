@@ -161,7 +161,19 @@ CREATE TABLE IF NOT EXISTS notifications (
   delivery_mode TEXT NOT NULL DEFAULT 'MOCK',      -- TEAMS_WEBHOOK | MOCK
   delivery_status TEXT NOT NULL DEFAULT 'SKIPPED', -- SENT | FAILED | SKIPPED
   sent_at TEXT,
-  failure_category TEXT                            -- sanitized, never secrets
+  failure_category TEXT,                           -- sanitized, never secrets
+  recipient_user_id TEXT,                          -- addressed recipient (null = broadcast)
+  recipient_reason TEXT                            -- deterministic "why this user"
+);
+
+-- Per-user channel preferences for OPTIONAL delivery (email/Teams).
+-- In-app notifications are mandatory and never consult this table.
+CREATE TABLE IF NOT EXISTS notification_preferences (
+  user_id TEXT NOT NULL REFERENCES users(id),
+  channel TEXT NOT NULL CHECK (channel IN ('EMAIL','TEAMS')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, channel)
 );
 
 CREATE TABLE IF NOT EXISTS demo_fallback_photos (
@@ -2149,9 +2161,13 @@ CREATE TABLE IF NOT EXISTS email_outbox (
   status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED','SENT','FAILED','SUPPRESSED')),
   error TEXT,
   created_at TEXT NOT NULL,
-  sent_at TEXT
+  sent_at TEXT,
+  dedupe_key TEXT                               -- duplicate-send suppression (see sendEmail)
 );
 CREATE INDEX IF NOT EXISTS idx_email_outbox_status ON email_outbox(status, created_at);
+-- idx_email_outbox_dedupe is created in the additive-migration block in
+-- getDb(): creating it here would fail against databases that predate the
+-- dedupe_key column (the ALTER runs after this schema executes).
 
 -- E-signature requests: lifecycle state + append-only per-request trail.
 -- document_ref points at EXISTING artifacts (reports, draw documents);
@@ -2793,6 +2809,15 @@ export function getDb(): DatabaseSync {
       "ALTER TABLE inspection_requirements ADD COLUMN code_basis_required INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE inspection_requirements ADD COLUMN permit_must_be_active_before_draw_review INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE inspection_requirements ADD COLUMN permit_must_be_active_before_governance INTEGER NOT NULL DEFAULT 0",
+      // ---- email duplicate-send suppression (additive) ----
+      "ALTER TABLE email_outbox ADD COLUMN dedupe_key TEXT",
+      // The dedupe index lives here (not in SCHEMA) so databases that
+      // predate the column gain it right after the ALTER above.
+      "CREATE INDEX IF NOT EXISTS idx_email_outbox_dedupe ON email_outbox(dedupe_key, created_at)",
+      // ---- per-recipient notification routing (additive; legacy rows
+      // stay broadcast with NULL recipient) ----
+      "ALTER TABLE notifications ADD COLUMN recipient_user_id TEXT",
+      "ALTER TABLE notifications ADD COLUMN recipient_reason TEXT",
     ]) {
       try {
         db.exec(ddl);

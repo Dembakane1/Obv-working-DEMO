@@ -17,11 +17,19 @@
 import { MockBankingProvider } from "./mockProvider";
 import { QoloBankingProvider, TreasuryPrimeBankingProvider, UnitBankingProvider } from "./adapters";
 import { BankingProviderError, type BankingProvider } from "./provider";
+import { productionPosture } from "../posture";
 
 let cached: BankingProvider | null = null;
 
 export function bankingMode(): "demo" | "production" {
-  return (process.env.OBV_BANKING_MODE ?? "demo").toLowerCase() === "production" ? "production" : "demo";
+  const explicit = (process.env.OBV_BANKING_MODE ?? "").toLowerCase();
+  if (explicit === "production") return "production";
+  if (explicit === "demo") return "demo";
+  // Unset: follow the environment posture. A pilot/production deployment
+  // gets production banking mode (no simulation surface) without having to
+  // repeat itself; posture.ts refuses the contradictory combination of
+  // OBV_ENVIRONMENT=pilot with OBV_BANKING_MODE=demo at startup.
+  return productionPosture() ? "production" : "demo";
 }
 
 export function isDemoBankingMode(): boolean {

@@ -28,6 +28,7 @@ import { getDb, REPORTS_DIR, WORM_DIR, UPLOADS_DIR } from "../db/index";
 import * as repo from "../db/repo";
 import * as authz from "../services/authz";
 import { AccessError } from "../services/authz";
+import { assertPostureConfig, postureStartupNotice, productionPosture } from "../services/posture";
 import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { wormEvidenceStore } from "../services/WormEvidenceStore";
@@ -376,6 +377,51 @@ function currentUser(req: http.IncomingMessage): User | null {
  *  the demo switcher exists, the production sign-in page otherwise. */
 function signInPath(): string {
   return demoAuthEnabled() ? "/demo" : "/signin";
+}
+
+/** Canonical base for links that leave the process in email (invitation
+ *  activation, sign-in). The explicit public URL wins; the request host is
+ *  a development fallback only. */
+function invitationBaseUrl(req: http.IncomingMessage): string {
+  const configured = (process.env.OBV_PUBLIC_BASE_URL ?? process.env.RENDER_EXTERNAL_URL ?? "")
+    .trim()
+    .replace(/\/$/, "");
+  if (configured) return configured;
+  return req.headers.host ? `${requestIsSecure(req) ? "https" : "http"}://${req.headers.host}` : "";
+}
+
+/** Email an invitation's activation link to the invitee through the
+ *  configured provider. The INVITATION kind is credential-redacted in the
+ *  outbox, so the raw link reaches the wire but never the database. A
+ *  failing send is recorded by the email layer and never interrupts the
+ *  invitation itself. */
+function deliverInvitationEmail(
+  invitation: { email: string; organizationId: string; role: string },
+  link: string,
+  actor: User
+): void {
+  try {
+    const org = repo.getOrganization(invitation.organizationId);
+    const composed = integrationsSvc.composeEmail("INVITATION", {
+      orgName: org?.name ?? "your organization",
+      inviterName: actor.name,
+      role: invitation.role,
+      activationLink: link,
+    });
+    integrationsSvc.sendEmail(
+      {
+        kind: "INVITATION",
+        to: invitation.email,
+        subject: composed.subject,
+        text: composed.text,
+        organizationId: invitation.organizationId,
+        containsCredential: true,
+      },
+      actor
+    );
+  } catch {
+    /* recorded by the email layer; the invitation itself already exists */
+  }
 }
 
 function readBody(req: http.IncomingMessage, limitBytes = 16 * 1024 * 1024): Promise<Buffer> {
@@ -4311,10 +4357,48 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ---- notification preferences (self-scoped; in-app stays mandatory) ----
+  if (pathname === "/api/me/notification-preferences") {
+    const prefUser = currentUser(req);
+    if (!prefUser) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    if (method === "GET") {
+      sendJson(res, {
+        preferences: repo.listNotificationPreferences(prefUser.id),
+        note: "In-app notifications are mandatory; preferences affect optional email/Teams delivery only.",
+      });
+      return;
+    }
+    if (method === "POST") {
+      const body = (await readBody(req, 4 * 1024)).toString("utf8");
+      const params = isFormPost(req)
+        ? Object.fromEntries(new URLSearchParams(body))
+        : (JSON.parse(body || "{}") as Record<string, unknown>);
+      const channel = String(params.channel ?? "").toUpperCase();
+      if (channel !== "EMAIL" && channel !== "TEAMS") {
+        sendJson(res, { error: "channel must be EMAIL or TEAMS" }, 422);
+        return;
+      }
+      const enabled = /^(1|true|on)$/i.test(String(params.enabled ?? ""));
+      repo.setNotificationChannelEnabled(prefUser.id, channel, enabled, new Date().toISOString());
+      sendJson(res, { preferences: repo.listNotificationPreferences(prefUser.id) });
+      return;
+    }
+  }
+
   // Reset the DEMO data to its seeded state. Pilot projects created
   // through onboarding are preserved — wiping everything requires the
   // explicitly gated Development Full Reset below.
   if (method === "POST" && pathname === "/api/demo/reset") {
+    // Demo reset does not exist in pilot/production posture — same 404
+    // shape as the disabled role switcher (the seed service refuses too;
+    // this route gate keeps the surface unprobeable).
+    if (productionPosture()) {
+      sendJson(res, { error: "Not found" }, 404);
+      return;
+    }
     // Reseeding is destructive (it can remove uploads, WORM evidence,
     // reports and audit packages), so it requires a session. The blanket
     // page guard further down is GET-only and would never cover this.
@@ -4438,10 +4522,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       },
       actor
     );
-    // Mock delivery for the pilot demo build: the activation link is
-    // surfaced ONCE to the administrator; no real email is sent and the
-    // raw token is never logged or stored.
-    const link = `${req.headers.host ? `http://${req.headers.host}` : ""}/invite/${rawToken}`;
+    // The activation link is surfaced ONCE to the administrator AND
+    // emailed to the invitee through the configured provider (redacted
+    // by kind in the outbox — the raw token is never logged or stored).
+    const link = `${invitationBaseUrl(req)}/invite/${rawToken}`;
+    deliverInvitationEmail(invitation, link, actor);
     if (isFormPost(req)) {
       redirect(res, `/setup?invited=${encodeURIComponent(invitation.email)}&link=${encodeURIComponent(link)}`);
     } else {
@@ -4458,7 +4543,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       pilotRespond("/setup", { invitation });
     } else {
       const { invitation, rawToken } = pilot.resendInvitation(invActionMatch[1], actor);
-      const link = `${req.headers.host ? `http://${req.headers.host}` : ""}/invite/${rawToken}`;
+      const link = `${invitationBaseUrl(req)}/invite/${rawToken}`;
+      deliverInvitationEmail(invitation, link, actor);
       if (isFormPost(req)) {
         redirect(res, `/setup?invited=${encodeURIComponent(invitation.email)}&link=${encodeURIComponent(link)}`);
       } else {
@@ -4679,6 +4765,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   // including user-created pilot projects. Gated behind an authorized
   // role AND a typed confirmation phrase; never exposed casually.
   if (method === "POST" && pathname === "/api/dev/full-reset") {
+    // The development full reset does not exist outside the demo
+    // environment (defense in depth: seedDemo refuses there as well).
+    if (productionPosture()) {
+      sendJson(res, { error: "Not found" }, 404);
+      return;
+    }
     const resetUser = currentUser(req);
     if (!resetUser || resetUser.role !== "PROJECT_MANAGER") {
       sendJson(res, { error: "Not authorized" }, 403);
@@ -4896,7 +4988,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         nav: navFor(user!, "overview"),
         metrics: overviewMetrics(user!, projects),
         projects,
-        notifications: repo.listNotifications(),
+        notifications: repo.listBroadcastNotifications(),
         chainValid: chain.valid,
         teamsConfigured: TEAMS_CONFIG.configured(),
         nextReleases,
@@ -5236,7 +5328,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         ledger: repo.listLedgerEntries(),
         chainValid: chain.valid,
         accountEvents: repo.listAccountEventsForProject(data.project.id),
-        notifications: repo.listNotifications(30),
+        notifications: repo.listBroadcastNotifications(30),
         users: usersById(),
         threads: listThreadsForUser(user!)
           .filter((t) => t.projectId === data.project.id)
@@ -6363,6 +6455,7 @@ function startupCheck(label: string, fn: () => void): void {
   }
 }
 
+startupCheck("environment posture", () => assertPostureConfig());
 startupCheck("database", () => void getDb());
 startupCheck("banking provider", () => resolveBankingProvider());
 startupCheck("session configuration", () => assertSessionConfig());
@@ -6371,6 +6464,9 @@ startupCheck("identity configuration", () => identitySvc.assertIdentityConfig())
 // and OBV_BOOTSTRAP_ADMIN_EMAIL is set; a populated table makes it a no-op.
 startupCheck("identity bootstrap", () => void identitySvc.ensureBootstrapIdentity());
 startupCheck("integrations configuration", () => integrationsSvc.assertIntegrationsConfig());
+// The configured email provider's own requirements (e.g. Postmark's token
+// and sender signature) are validated at startup, never at first send.
+startupCheck("email provider", () => integrationsSvc.assertEmailProviderConfig());
 startupCheck("evidence intelligence configuration", () => evidenceIntelSvc.assertEvidenceIntelConfig());
 startupCheck("official sources configuration", () => officialSourcesSvc.assertOfficialSourcesConfig());
 startupCheck("official source registry", () => officialSourcesSvc.ensureSourceRegistry());
@@ -6386,8 +6482,9 @@ if (integrationsSvc.integrationsConfig().webhookDispatchIntervalMs > 0) {
 }
 server.listen(PORT, () => {
   console.log(`OBV running at http://localhost:${PORT}`);
-  // Session posture is disclosed at boot: a reader must never have to guess
-  // whether identity cookies are signed with a durable secret.
+  // Posture is disclosed at boot: a reader must never have to guess
+  // which environment this is or whether cookies use a durable secret.
+  console.log(postureStartupNotice());
   console.log(sessionStartupNotice());
   console.log(identitySvc.identityStartupNotice());
   console.log(integrationsSvc.integrationsStartupNotice());
