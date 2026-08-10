@@ -7,14 +7,21 @@
  */
 import { h, Fragment, renderDocument, VNode } from "./jsx";
 import {
+  AboutView,
   AppShell,
+  DensePanel,
+  DenseTable,
   EmptyStateV2,
   FilterBar,
+  KpiRail,
   Metric,
   MetricStrip,
   NavContext,
   PageHeader,
+  Readout,
   SectionHead,
+  SignalList,
+  WorkHeader,
   enumLabel,
   fmtDate,
   money,
@@ -200,26 +207,28 @@ export function renderExecutive(input: {
     </select>
   );
 
+  const bandCount = (b: string) => risk.bands[b as keyof typeof risk.bands] ?? 0;
+  const highRisk = risk.projects.filter((p) => p.band === "CRITICAL" || p.band === "ELEVATED");
+  const sevIcon = (sev: string) => (sev === "HIGH" ? "high" : sev === "MEDIUM" ? "med" : "low");
+
   return renderDocument(
     <AppShell title="Executive" nav={input.nav} context="Portfolio command center">
-      <div className="page-wrap">
-        <PageHeader
-          title="Executive command center"
-          sub="Continuous portfolio intelligence derived from verified project records."
-          asOf={`Portfolio · computed ${fmtDate(overview.generatedAt).slice(0, 16)} UTC`}
+      <div className="page-wrap ws">
+        <WorkHeader
+          title="Executive Command Center"
+          sub={`Real-time overview of portfolio health, risk, and intelligence · computed ${fmtDate(overview.generatedAt).slice(0, 16)} UTC`}
         >
-          <form method="POST" action="/api/portfolio/snapshots" style="display:inline">
-            <button className="btn secondary" type="submit" data-busy-label="Recording…">Record snapshot</button>
+          <form method="POST" action="/api/portfolio/snapshots" className="hide-mobile">
+            <button className="btn ghost sm" type="submit" data-busy-label="Recording…">Record snapshot</button>
           </form>
           {input.pdfAvailable ? (
-            <form method="POST" action="/api/reports/executive" style="display:inline">
-              <button className="btn" type="submit" data-busy-label="Generating…">Export executive PDF</button>
+            <form method="POST" action="/api/reports/executive">
+              <button className="btn sm" type="submit" data-busy-label="Generating…">Export PDF</button>
             </form>
           ) : (
-            <a className="btn" href="/executive/report/preview" target="_blank">Printable report</a>
+            <a className="btn sm" href="/executive/report/preview" target="_blank">Printable report</a>
           )}
-          <a className="btn ghost" href="/executive/report/preview" target="_blank">Preview HTML</a>
-        </PageHeader>
+        </WorkHeader>
 
         {input.notice ? (
           <div className={`banner ${input.notice.kind === "ok" ? "ok" : "warn"}`}>{input.notice.text}</div>
@@ -227,339 +236,356 @@ export function renderExecutive(input: {
 
         <ExecTabs active="overview" />
 
-        <MetricStrip
-          metrics={[
-            { value: String(t.activeProjects), label: "Active projects", sub: `${t.totalProjects} in scope` },
-            { value: money(t.totalBudget), label: "Portfolio budget" },
-            { value: money(t.releasedAmount), label: "Released to date", sub: `${t.fundingUtilizationPct}% of governed capital` },
-            { value: `${t.budgetUtilizationPct}%`, label: "Budget utilization", sub: `${money(t.paidToDate)} paid` },
-            { value: healthValue, label: "Portfolio health", tone: risk.attention.length > 0 ? "warn" : "ok" },
+        {/* ---------- ROW 1: headline KPI rail ---------- */}
+        <KpiRail
+          items={[
+            { label: "Total portfolio value", value: money(t.totalBudget), detail: `${t.activeProjects} active of ${t.totalProjects}` },
             {
+              label: "Projects at risk",
               value: String(risk.attention.length),
-              label: "Needs attention",
-              tone: risk.attention.length > 0 ? "bad" : undefined,
-              dim: risk.attention.length === 0,
+              detail: `${bandCount("CRITICAL")} critical · ${bandCount("ELEVATED")} elevated`,
+              tone: risk.attention.length > 0 ? "bad" : "ok",
+              href: "/executive/risk",
+            },
+            { label: "Active draws", value: String(t.drawsInReview), detail: "in review", href: "/draws" },
+            {
+              label: "Pending approvals",
+              value: String(t.pendingApprovals),
+              detail: t.pendingApprovals > 0 ? "awaiting decision" : "queue clear",
+              tone: t.pendingApprovals > 0 ? "warn" : undefined,
+              href: "/approvals",
+            },
+            {
+              label: "Open exceptions",
+              value: String(t.openExceptions),
+              detail: `${t.openDisputes} open dispute${t.openDisputes === 1 ? "" : "s"}`,
+              tone: t.openExceptions > 0 ? "warn" : undefined,
+              href: "/exceptions",
+            },
+            {
+              label: "Released to date",
+              value: money(t.releasedAmount),
+              detail: `${t.fundingUtilizationPct}% of governed capital`,
             },
           ]}
         />
 
-        {input.evidenceQuality ? (
-          <section className="exec-section" aria-label="Evidence quality">
-            <SectionHead
-              title="Evidence quality"
-              hint="Advisory Evidence Intelligence — signals for reviewers; never a control decision."
-              right={<a className="btn ghost sm" href="/evidence-intelligence/analytics">Open analytics</a>}
+        {/* ---------- ROW 2: intelligence modules, side by side ---------- */}
+        <div className="ws-row ws-row-3">
+          <DensePanel
+            title="Advisory signals"
+            right={<span className="chip warn">{String(input.fraud.signalCount)} open</span>}
+            flush
+            foot={<a href="/executive/risk">View all signals →</a>}
+          >
+            <SignalList
+              empty="No advisory anomaly signals in scope."
+              items={input.fraud.signals.slice(0, 6).map((sg) => ({
+                title: sg.label,
+                sub: sg.entity ?? sg.detail.slice(0, 70),
+                severity: sevIcon(sg.severity) as "high" | "med" | "low",
+                href: sg.projectId ? `/project/${sg.projectId}` : undefined,
+                meta: <span className={`chip ${sg.severity === "HIGH" ? "bad" : sg.severity === "MEDIUM" ? "warn" : ""}`}>{enumLabel(sg.severity)}</span>,
+              }))}
             />
-            <MetricStrip
-              metrics={[
-                { value: `${input.evidenceQuality.averageCompleteness}%`, label: "Documentation completeness", href: "/evidence-intelligence/analytics" },
-                { value: `${input.evidenceQuality.averageQuality}%`, label: "Average evidence quality" },
-                { value: `${input.evidenceQuality.averageConfidence}%`, label: "Average confidence" },
-                {
-                  value: String(input.evidenceQuality.openReviews),
-                  label: "Open advisory reviews",
-                  href: "/evidence-intelligence/queue",
-                  tone: input.evidenceQuality.openReviews > 0 ? "warn" : undefined,
-                  dim: input.evidenceQuality.openReviews === 0,
-                },
-                {
-                  value: String(input.evidenceQuality.duplicateFindings),
-                  label: "Duplicate-evidence findings",
-                  dim: input.evidenceQuality.duplicateFindings === 0,
-                },
-                input.evidenceQuality.topRepeated
-                  ? { value: String(input.evidenceQuality.topRepeated.count), label: `Most repeated: ${enumLabel(input.evidenceQuality.topRepeated.category)}` }
-                  : { value: "—", label: "Most repeated advisory", dim: true },
+          </DensePanel>
+
+          {input.evidenceQuality ? (
+            <DensePanel
+              title="Evidence intelligence overview"
+              right={<span>advisory</span>}
+              foot={<a href="/evidence-intelligence/analytics">Full intelligence →</a>}
+            >
+              <Readout
+                value={`${input.evidenceQuality.averageQuality}`}
+                caption="/100 average evidence quality"
+                scores={[
+                  { label: "Documentation completeness", value: `${input.evidenceQuality.averageCompleteness}/100`, pct: input.evidenceQuality.averageCompleteness, tone: input.evidenceQuality.averageCompleteness >= 70 ? "ok" : "warn" },
+                  { label: "Verification confidence", value: `${input.evidenceQuality.averageConfidence}/100`, pct: input.evidenceQuality.averageConfidence, tone: input.evidenceQuality.averageConfidence >= 70 ? "ok" : "warn" },
+                  { label: "Open advisory reviews", value: String(input.evidenceQuality.openReviews) },
+                  { label: "Duplicate findings", value: String(input.evidenceQuality.duplicateFindings) },
+                  input.evidenceQuality.topRepeated
+                    ? { label: `Most repeated: ${enumLabel(input.evidenceQuality.topRepeated.category)}`, value: String(input.evidenceQuality.topRepeated.count) }
+                    : { label: "Most repeated advisory", value: "—" },
+                ]}
+              />
+            </DensePanel>
+          ) : (
+            <DensePanel title="Evidence intelligence overview">
+              <p className="empty-mini">Not available for your role.</p>
+            </DensePanel>
+          )}
+
+          <DensePanel
+            title="Portfolio risk distribution"
+            right={<span>{risk.averageHealth === null ? "—" : `${Math.round(risk.averageHealth)}/100 health`}</span>}
+            flush
+            foot={<a href="/executive/risk">Risk register →</a>}
+          >
+            <SignalList
+              empty="No projects in scope."
+              items={(["CRITICAL", "ELEVATED", "WATCH", "STABLE"] as const).map((band) => ({
+                title: enumLabel(band),
+                sub: `${bandCount(band)} project${bandCount(band) === 1 ? "" : "s"}`,
+                severity: band === "CRITICAL" ? "high" : band === "ELEVATED" ? "med" : "low",
+                meta: (
+                  <span className="mini-bar" style="width:74px">
+                    <span
+                      className=""
+                      style={`width:${risk.projectCount ? Math.round((bandCount(band) / risk.projectCount) * 100) : 0}%;background:${band === "CRITICAL" ? "var(--bad)" : band === "ELEVATED" ? "var(--warn)" : band === "WATCH" ? "var(--action)" : "var(--ok)"}`}
+                    ></span>
+                  </span>
+                ),
+              }))}
+            />
+          </DensePanel>
+        </div>
+
+        {/* ---------- ROW 3: compact operational modules ---------- */}
+        <div className="ws-row ws-row-5">
+          <DensePanel
+            title="Projects needing attention"
+            right={<span>{String(risk.attention.length)}</span>}
+            flush
+            foot={<a href="/projects">All projects →</a>}
+          >
+            <SignalList
+              empty="No projects need executive attention."
+              items={risk.attention.slice(0, 5).map((p) => ({
+                title: p.projectName,
+                sub: p.topReasons[0]?.label ?? `${enumLabel(p.stage)} · ${p.state}`,
+                severity: p.band === "CRITICAL" ? "high" : "med",
+                href: `/project/${p.projectId}`,
+                meta: bandChip(p.band),
+              }))}
+            />
+          </DensePanel>
+
+          <DensePanel
+            title="Draws needing review"
+            right={<span>{String(t.drawsInReview)}</span>}
+            foot={<a href="/draws">Draw queue →</a>}
+          >
+            <Readout
+              value={String(t.drawsInReview)}
+              caption="submitted or under review"
+              scores={[
+                { label: "Pending approvals", value: String(t.pendingApprovals) },
+                { label: "Held capital", value: money(t.heldAmount) },
+                { label: "Paid to date", value: money(t.paidToDate) },
               ]}
             />
-          </section>
-        ) : null}
+          </DensePanel>
 
-        {input.officialSources ? (
-          <section className="exec-section" aria-label="Official sources">
-            <SectionHead
-              title="Official sources"
-              hint="Advisory — retrieved government records for reviewer attention; never an OBV determination."
-              right={<a className="btn ghost sm" href="/official-sources">Open workspace</a>}
-            />
-            <MetricStrip
-              metrics={[
-                { value: `${input.officialSources.coveragePct}%`, label: "Permit official-record coverage", href: "/official-sources" },
-                {
-                  value: String(input.officialSources.openReviews),
-                  label: "Open source reviews",
-                  href: "/official-sources/queue",
-                  tone: input.officialSources.openReviews > 0 ? "warn" : undefined,
-                  dim: input.officialSources.openReviews === 0,
-                },
-                {
-                  value: String(input.officialSources.enforcementAlerts),
-                  label: "Enforcement-type alerts",
-                  tone: input.officialSources.enforcementAlerts > 0 ? "bad" : undefined,
-                  dim: input.officialSources.enforcementAlerts === 0,
-                },
-                {
-                  value: String(input.officialSources.licenseAlerts),
-                  label: "License alerts",
-                  tone: input.officialSources.licenseAlerts > 0 ? "warn" : undefined,
-                  dim: input.officialSources.licenseAlerts === 0,
-                },
-                {
-                  value: String(input.officialSources.conflictedProjects),
-                  label: "Projects with source conflicts",
-                  dim: input.officialSources.conflictedProjects === 0,
-                },
-              ]}
-            />
-          </section>
-        ) : null}
+          {input.evidenceQuality ? (
+            <DensePanel title="Evidence integrity" foot={<a href="/ledger">Evidence ledger →</a>}>
+              <Readout
+                value={`${input.evidenceQuality.averageCompleteness}%`}
+                caption="documentation completeness"
+                scores={[
+                  { label: "Average quality", value: `${input.evidenceQuality.averageQuality}/100`, pct: input.evidenceQuality.averageQuality },
+                  { label: "Open reviews", value: String(input.evidenceQuality.openReviews) },
+                ]}
+              />
+            </DensePanel>
+          ) : (
+            <DensePanel title="Evidence integrity">
+              <p className="empty-mini">Not available for your role.</p>
+            </DensePanel>
+          )}
 
-        {input.projectHistory ? (
-          <section className="exec-section" aria-label="Project history">
-            <SectionHead
-              title="Project history"
-              hint="Read-only timeline of governed events — a view over existing records, never a decision."
-              right={<a className="btn ghost sm" href="/timeline">Open timeline</a>}
-            />
-            <MetricStrip
-              metrics={[
-                { value: String(input.projectHistory.totalEvents), label: "Recorded events", href: "/timeline" },
-                { value: String(input.projectHistory.projects), label: "Projects with history" },
-                { value: String(input.projectHistory.activeWeeks), label: "Weeks with activity" },
-                input.projectHistory.busiestProject
-                  ? {
-                      value: String(input.projectHistory.busiestProject.totalEvents),
-                      label: `Most activity: ${input.projectHistory.busiestProject.projectName}`,
-                      href: `/timeline/project/${input.projectHistory.busiestProject.projectId}`,
-                    }
-                  : { value: "—", label: "Most active project", dim: true },
-                {
-                  value: input.projectHistory.lastActivityAt ? input.projectHistory.lastActivityAt.slice(0, 10) : "—",
-                  label: "Last recorded activity",
-                  dim: !input.projectHistory.lastActivityAt,
-                },
-              ]}
-            />
-          </section>
-        ) : null}
+          {input.officialSources ? (
+            <DensePanel title="Official sources current" foot={<a href="/official-sources">Source workspace →</a>}>
+              <Readout
+                value={`${input.officialSources.coveragePct}%`}
+                caption="permit official-record coverage"
+                scores={[
+                  { label: "Open source reviews", value: String(input.officialSources.openReviews) },
+                  { label: "Enforcement alerts", value: String(input.officialSources.enforcementAlerts) },
+                  { label: "Projects with conflicts", value: String(input.officialSources.conflictedProjects) },
+                ]}
+              />
+            </DensePanel>
+          ) : (
+            <DensePanel title="Official sources current">
+              <p className="empty-mini">Not available for your role.</p>
+            </DensePanel>
+          )}
 
-        <FilterBar
-          action="/executive"
-          count={`${overview.scope.projectCount} of ${overview.scope.unfilteredProjectCount} project(s)${filtersActive ? " (filtered)" : ""}`}
-        >
-          {select("status", input.filters.status, "All statuses", [
-            { value: "ACTIVE", label: "Active" },
-            { value: "DRAFT", label: "Draft" },
-            { value: "COMPLETED", label: "Completed" },
-            { value: "SUSPENDED", label: "Suspended" },
-          ])}
-          {select("state", input.filters.state, "All states", input.filterOptions.states.map((s) => ({ value: s, label: s })))}
-          {select("stage", input.filters.stage, "All stages", input.filterOptions.stages.map((s) => ({ value: s, label: enumLabel(s) })))}
-          {select("risk", input.filters.risk, "All risk bands", [
-            { value: "STABLE", label: "Stable" },
-            { value: "WATCH", label: "Watch" },
-            { value: "ELEVATED", label: "Elevated" },
-            { value: "CRITICAL", label: "Critical" },
-          ])}
+          {input.projectHistory ? (
+            <DensePanel title="Project history" foot={<a href="/timeline">Open timeline →</a>}>
+              <Readout
+                value={String(input.projectHistory.totalEvents)}
+                caption="Recorded events"
+                scores={[
+                  { label: "Projects with history", value: String(input.projectHistory.projects) },
+                  { label: "Active weeks", value: String(input.projectHistory.activeWeeks) },
+                  input.projectHistory.busiestProject
+                    ? { label: `Busiest: ${input.projectHistory.busiestProject.projectName}`, value: String(input.projectHistory.busiestProject.totalEvents) }
+                    : { label: "Busiest project", value: "—" },
+                  {
+                    label: "Last activity",
+                    value: input.projectHistory.lastActivityAt ? fmtDate(input.projectHistory.lastActivityAt).slice(0, 10) : "—",
+                  },
+                ]}
+              />
+            </DensePanel>
+          ) : null}
+
+          <DensePanel
+            title="High-risk projects"
+            right={<span>{String(highRisk.length)}</span>}
+            flush
+            foot={<a href="/executive/risk">Risk register →</a>}
+          >
+            <SignalList
+              empty="No elevated or critical projects."
+              items={highRisk.slice(0, 5).map((p) => ({
+                title: p.projectName,
+                sub: `${enumLabel(p.stage)} · health ${Math.round(p.health)}/100`,
+                severity: p.band === "CRITICAL" ? "high" : "med",
+                href: `/project/${p.projectId}`,
+                meta: <b>{String(Math.round(p.overallRisk))}</b>,
+              }))}
+            />
+          </DensePanel>
+        </div>
+
+        {/* ---------- filters + register (dense work surface) ---------- */}
+        <FilterBar action="/executive" count={filtersActive ? "filtered" : undefined}>
+          {select("state", input.filters.state, "All states", input.filterOptions.states.map((st) => ({ value: st, label: st })))}
+          {select("stage", input.filters.stage, "All stages", input.filterOptions.stages.map((st) => ({ value: st, label: enumLabel(st) })))}
           {select("lender", input.filters.lender, "All lenders", input.filterOptions.lenders.map((l) => ({ value: l.id, label: l.name })))}
           {select("contractor", input.filters.contractor, "All contractors", input.filterOptions.contractors.map((c) => ({ value: c.id, label: c.name })))}
         </FilterBar>
 
-        {risk.attention.length > 0 ? (
-          <section className="panel exec-attention">
-            <div className="panel-head">
-              <h3>Projects requiring executive attention</h3>
-              <span className="hint">risk ≥ ELEVATED, most severe first</span>
-            </div>
-            <div className="queue">
-              {risk.attention.slice(0, 6).map((p) => (
-                <a className="queue-row" href={`/project/${p.projectId}`}>
-                  <span className={`q-ico ${p.band === "CRITICAL" ? "bad" : "warn"}`} aria-hidden="true">{icons.alert()}</span>
-                  <span className="q-body">
-                    <span className="q-t">{p.projectName}</span>
-                    <span className="q-s">{p.topReasons[0]?.label ?? "Multiple elevated risk dimensions"}</span>
+        <div className="ws-row ws-row-2">
+          <DensePanel
+            title="Project risk register"
+            right={<span>{String(risk.projects.length)} projects · deterministic weights</span>}
+            flush
+            foot={<a href="/executive/risk">Full register with dimension detail →</a>}
+          >
+            <DenseTable
+              empty="No projects in scope."
+              columns={[
+                { key: "p", label: "Project" },
+                { key: "band", label: "Band" },
+                { key: "health", label: "Health", num: true },
+                { key: "risk", label: "Risk", num: true },
+                { key: "fin", label: "Financial", num: true },
+                { key: "comp", label: "Compliance", num: true },
+                { key: "doc", label: "Docs", num: true },
+                { key: "fraud", label: "Fraud", num: true },
+              ]}
+              rows={risk.projects.slice(0, 12).map((p) => ({
+                p: (
+                  <span className="t-name">
+                    <a href={`/project/${p.projectId}`}>{p.projectName}</a>
+                    <span className="sub">{enumLabel(p.stage)} · {p.state}</span>
                   </span>
-                  <span className="q-meta">{bandChip(p.band)}<span className="num t-meta">risk {p.overallRisk}/100</span></span>
-                </a>
-              ))}
-            </div>
-          </section>
-        ) : (
-          <EmptyStateV2
-            icon={icons.shield()}
-            title="No projects need executive attention"
-            what="Every project in scope currently scores below the ELEVATED risk band."
-            condition="healthy"
-          />
-        )}
+                ),
+                band: bandChip(p.band),
+                health: String(Math.round(p.health)),
+                risk: String(Math.round(p.overallRisk)),
+                fin: String(p.dimensions.financial.score),
+                comp: String(p.dimensions.compliance.score),
+                doc: String(p.dimensions.documentation.score),
+                fraud: String(p.dimensions.fraud.score),
+              }))}
+            />
+          </DensePanel>
 
-        <div className="intel-tri">
-          <DistPanel title="Projects by state" entries={overview.distributions.byState} />
-          <DistPanel title="Projects by stage" entries={overview.distributions.byStage.map((d) => ({ ...d, label: enumLabel(d.label) }))} />
-          <DistPanel title="Projects by risk band" entries={overview.distributions.byRisk.map((d) => ({ ...d, label: enumLabel(d.label) }))} />
-        </div>
-        <div className="intel-tri">
-          <DistPanel title="Projects by lender" entries={overview.distributions.byLender} />
-          <DistPanel title="Projects by contractor" entries={overview.distributions.byContractor} />
-          <DistPanel title="Projects by inspector" entries={overview.distributions.byInspector} />
-        </div>
-        <div className="intel-tri">
-          <DistPanel title="Projects by jurisdiction" entries={overview.distributions.byJurisdiction} />
-          <TrendPanel title="Exception trend" entries={overview.trends.exceptions} />
-          <TrendPanel title="Dispute trend" entries={overview.trends.disputes} />
-        </div>
-        <div className="intel-tri">
-          <TrendPanel title="Draw pipeline" entries={overview.trends.draws} openedLabel="submitted" resolvedLabel="approved" />
-          <TrendPanel title="Permit activity" entries={overview.trends.permits} openedLabel="issued" resolvedLabel="closed" />
-          <section className="panel">
-            <div className="panel-head"><h3>Portfolio growth</h3><span className="hint">cumulative released capital</span></div>
-            <div className="panel-pad">
-              {overview.trends.growth.length === 0 ? (
-                <p className="t-quiet">No release history in scope.</p>
-              ) : (
-                overview.trends.growth.slice(-6).map((g) => (
-                  <div className="tr-row">
-                    <span className="m">{g.month}</span>
-                    <span className="bar">
-                      <span
-                        className="fl"
-                        style={`width:${Math.round((g.cumulativeReleased / Math.max(1, overview.trends.growth.at(-1)!.cumulativeReleased)) * 100)}%`}
-                      ></span>
-                    </span>
-                    <span className="c num">{money(g.cumulativeReleased)}</span>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-        </div>
+          <div style="display:flex;flex-direction:column;gap:var(--ws-gap);min-width:0">
+            <DensePanel
+              title="Portfolio distribution"
+              right={<span>by state · by lender</span>}
+              flush
+              foot={<a href="/executive/entities">Contractors, inspectors &amp; vendors →</a>}
+            >
+              <SignalList
+                empty="No distribution data."
+                items={[
+                  ...overview.distributions.byState.slice(0, 4).map((dist) => ({
+                    title: dist.label,
+                    sub: `${dist.count} project${dist.count === 1 ? "" : "s"} · by state`,
+                    severity: "low" as const,
+                    meta: money(dist.totalBudget),
+                  })),
+                  ...overview.distributions.byLender.slice(0, 4).map((dist) => ({
+                    title: dist.label,
+                    sub: `${dist.count} project${dist.count === 1 ? "" : "s"} · Projects by lender`,
+                    severity: "low" as const,
+                    meta: money(dist.totalBudget),
+                  })),
+                ]}
+              />
+            </DensePanel>
 
-        <SectionHead
-          title="Project risk register"
-          hint="eight deterministic dimensions per project"
-          right={<span className="t-meta num">avg draw approval {overview.timing.averageDrawApprovalDays ?? "—"} d · inspection turnaround {overview.timing.averageIndependentInspectionTurnaroundDays ?? overview.timing.averageGovernmentInspectionTurnaroundDays ?? "—"} d</span>}
-        />
-        <div className="register desktop-only">
-          <div className="reg-scroll">
-            <table className="reg">
-              <thead>
-                <tr>
-                  <th>Project</th>
-                  <th>Band</th>
-                  <th className="r">Health</th>
-                  <th className="r">Fin</th>
-                  <th className="r">Comp</th>
-                  <th className="r">Sched</th>
-                  <th className="r">Docs</th>
-                  <th className="r">Insp</th>
-                  <th className="r">Contr</th>
-                  <th className="r">Fraud</th>
-                  <th className="r">Ops</th>
-                  <th>Top signal</th>
-                </tr>
-              </thead>
-              <tbody>
-                {risk.projects.map((p) => (
-                  <tr>
-                    <td className="p"><a href={`/project/${p.projectId}`}>{p.projectName}</a><span className="s">{enumLabel(p.stage)} · {p.state}</span></td>
-                    <td>{bandChip(p.band)}</td>
-                    <td className="r num">{p.health}</td>
-                    <td className="r num">{p.dimensions.financial.score}</td>
-                    <td className="r num">{p.dimensions.compliance.score}</td>
-                    <td className="r num">{p.dimensions.schedule.score}</td>
-                    <td className="r num">{p.dimensions.documentation.score}</td>
-                    <td className="r num">{p.dimensions.inspection.score}</td>
-                    <td className="r num">{p.dimensions.contractor.score}</td>
-                    <td className="r num">{p.dimensions.fraud.score}</td>
-                    <td className="r num">{p.dimensions.operational.score}</td>
-                    <td className="s">{p.topReasons[0]?.label ?? "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DensePanel
+              title="Operational trends"
+              right={<span>opened vs resolved</span>}
+              flush
+            >
+              <SignalList
+                empty="No trend data in scope."
+                items={[
+                  ...overview.trends.exceptions.slice(-2).map((tr) => ({
+                    title: `Exceptions · ${tr.month}`,
+                    sub: `${tr.opened} opened · ${tr.resolved} resolved`,
+                    severity: "low" as const,
+                  })),
+                  ...overview.trends.disputes.slice(-1).map((tr) => ({
+                    title: `Disputes · ${tr.month}`,
+                    sub: `${tr.opened} opened · ${tr.resolved} resolved`,
+                    severity: "low" as const,
+                  })),
+                  ...overview.trends.draws.slice(-2).map((tr) => ({
+                    title: `Draws · ${tr.month}`,
+                    sub: `${tr.opened} submitted · ${tr.resolved} approved`,
+                    severity: "low" as const,
+                  })),
+                  ...overview.trends.permits.slice(-1).map((tr) => ({
+                    title: `Permits · ${tr.month}`,
+                    sub: `${tr.opened} issued · ${tr.resolved} closed`,
+                    severity: "low" as const,
+                  })),
+                ]}
+              />
+            </DensePanel>
+            <DensePanel
+              title="Recorded snapshots"
+              right={<span>{String(input.snapshots.length)}</span>}
+              flush
+              foot={<span className="t-quiet">Point-in-time records; never recomputed.</span>}
+            >
+              <SignalList
+                empty="No snapshots recorded yet."
+                items={input.snapshots.slice(-5).reverse().map((sn) => ({
+                  title: fmtDate(sn.takenAt).slice(0, 16),
+                  sub: `${sn.activeProjectCount}/${sn.projectCount} active · health ${Math.round(sn.averageHealth)}`,
+                  severity: "low",
+                  meta: money(sn.totalReleased),
+                }))}
+              />
+            </DensePanel>
           </div>
         </div>
-        <div className="mobile-only">
-          {risk.projects.map((p) => (
-            <a className="rec-card" href={`/project/${p.projectId}`}>
-              <div className="rc-top">
-                <span className="rc-title">{p.projectName}</span>
-                <span className="rc-side">{bandChip(p.band)}</span>
-              </div>
-              <div className="rc-kv">
-                <span>Health <b className="num">{p.health}/100</b></span>
-                <span>{enumLabel(p.stage)}</span>
-              </div>
-              <div className="rc-next">{p.topReasons[0]?.label ?? "No elevated signals"}</div>
-            </a>
-          ))}
-        </div>
 
-        <div className="intel-duo">
-          <section className="panel">
-            <div className="panel-head">
-              <h3>Fraud &amp; anomaly signals</h3>
-              <span className="hint">advisory only — {input.fraud.signalCount} signal(s)</span>
-            </div>
-            <div className="panel-pad">
-              {input.fraud.signals.length === 0 ? (
-                <p className="t-quiet">No anomaly patterns detected in the current records.</p>
-              ) : (
-                <ul className="tl">
-                  {input.fraud.signals.slice(0, 8).map((s) => (
-                    <li className={s.severity === "HIGH" ? "bad" : s.severity === "MEDIUM" ? "warn" : ""}>
-                      <span className="tl-t">{s.label}</span>
-                      <span className="tl-m">{s.detail}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <p className="t-quiet exec-advisory">{input.fraud.advisory}</p>
-            </div>
-          </section>
-          <section className="panel">
-            <div className="panel-head">
-              <h3>Snapshot history</h3>
-              <span className="hint">append-only observations · {input.snapshots.length} recorded</span>
-            </div>
-            <div className="panel-pad">
-              {input.snapshots.length === 0 ? (
-                <p className="t-quiet">
-                  No snapshots recorded yet. Record one to start the historical portfolio series.
-                </p>
-              ) : (
-                <div className="table-scroll">
-                  <table className="data">
-                    <thead>
-                      <tr><th>Taken</th><th className="r">Projects</th><th className="r">Released</th><th className="r">Health</th><th className="r">Attention</th></tr>
-                    </thead>
-                    <tbody>
-                      {input.snapshots.slice(-8).map((s) => (
-                        <tr>
-                          <td>{fmtDate(s.takenAt).slice(0, 16)}</td>
-                          <td className="r num">{s.activeProjectCount}/{s.projectCount}</td>
-                          <td className="r num">{money(s.totalReleased)}</td>
-                          <td className="r num">{Math.round(s.averageHealth)}</td>
-                          <td className="r num">{s.attentionCount}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <p className="t-quiet exec-advisory">
-                Government / infrastructure / donor / grant portfolio architecture: present, version {input.government.architectureVersion},{" "}
-                {input.government.activationState.replaceAll("_", " ").toLowerCase()} — no government workflow is active.
-              </p>
-            </div>
-          </section>
-        </div>
-
-        <p className="footer-note">
-          Every figure on this page is computed on demand from verified project records within your
-          accessible portfolio. Risk scores, forecasts and summaries are deterministic advisory reading
-          aids — they never approve draws, never alter records, and never replace human review.
-        </p>
+        <AboutView label="About this view — provenance, advisory limits and methodology">
+          <p>
+            Every figure is computed on demand from verified project records within your accessible
+            portfolio. Risk scores, forecasts and summaries are deterministic advisory reading aids —
+            they never approve draws, never alter records, and never replace human review.
+          </p>
+          <p>{input.fraud.advisory}</p>
+          <p>
+            Government / infrastructure / donor / grant portfolio architecture: present, version{" "}
+            {input.government.architectureVersion},{" "}
+            {input.government.activationState.replaceAll("_", " ").toLowerCase()} — no government
+            workflow is active.
+          </p>
+        </AboutView>
       </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>

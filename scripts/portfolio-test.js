@@ -867,8 +867,17 @@ async function main() {
     "executive report writes no rows into the project-scoped reports register"
   );
   const execPage = await page("funder", "/executive");
-  assert(execPage.status === 200 && /<h1>[^<]*Executive command center[^<]*<\/h1>/.test(execPage.html), "executive page renders with a single h1");
-  assert(execPage.html.includes("metric-strip"), "executive page includes the KPI metric strip");
+  // Accessibility intent (unchanged): exactly ONE h1, and it names the
+  // page. The workstation header renders the title in title case, so the
+  // check is case-insensitive and now actually verifies singularity.
+  const execH1s = execPage.html.match(/<h1[^>]*>[\s\S]*?<\/h1>/g) ?? [];
+  assert(
+    execPage.status === 200 &&
+      execH1s.length === 1 &&
+      /executive command center/i.test(execH1s[0]),
+    "executive page renders with a single h1 naming the page"
+  );
+  assert(execPage.html.includes("kpi-rail"), "executive page leads with the KPI rail");
   assert(execPage.html.includes("Projects by lender"), "executive page includes lender distribution");
   const entPage = await page("funder", "/executive/entities");
   assert(entPage.status === 200 && entPage.html.includes("Acme Concrete Supply"), "entities page lists the resolved vendor");

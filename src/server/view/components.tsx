@@ -208,53 +208,48 @@ export interface NavGroup { title: string | null; items: NavItem[] }
  *  destination is preserved; only grouping, order, and labels changed. */
 export const NAV_GROUPS: NavGroup[] = [
   {
-    title: null,
+    title: "Command",
     items: [
       { key: "executive", href: "/executive", label: "Executive Command", icon: icons.insights },
       { key: "overview", href: "/overview", label: "Overview", icon: icons.overview },
       { key: "projects", href: "/projects", label: "Projects", icon: icons.projects },
-    ],
-  },
-  {
-    title: "Capital control",
-    items: [
       { key: "draws", href: "/draws", label: "Draws", icon: icons.dollar },
-      { key: "approvals", href: "/approvals", label: "Approvals", icon: icons.approvals, badge: "approvals" },
-      { key: "change-orders", href: "/change-orders", label: "Change Orders", icon: icons.refresh },
-      { key: "budget", href: "/budget", label: "Budget & Progress", icon: icons.ledger },
     ],
   },
   {
-    title: "Verification & records",
+    title: "Verification",
     items: [
       { key: "compliance", href: "/compliance", label: "Evidence Review", icon: icons.shield },
       { key: "evidence-intel", href: "/evidence-intelligence", label: "Evidence Intelligence", icon: icons.insights },
-      { key: "timeline", href: "/timeline", label: "Timeline", icon: icons.activity },
-      { key: "twin", href: "/timeline#twin-snapshots", label: "Digital Twin", icon: icons.map },
       { key: "official-sources", href: "/official-sources", label: "Official Sources", icon: icons.building },
       { key: "ledger", href: "/ledger", label: "Evidence Ledger", icon: icons.ledger },
     ],
   },
   {
-    title: "Portfolio & analytics",
+    title: "Governance",
     items: [
-      { key: "insights", href: "/insights", label: "Analytics", icon: icons.insights },
-      { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
-      { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
+      { key: "approvals", href: "/approvals", label: "Approvals", icon: icons.approvals, badge: "approvals" },
+      { key: "exceptions", href: "/exceptions", label: "Exceptions", icon: icons.shield, badge: "exceptions" },
+      { key: "change-orders", href: "/change-orders", label: "Change Orders", icon: icons.refresh },
+      { key: "budget", href: "/budget", label: "Budget & Progress", icon: icons.ledger },
     ],
   },
   {
-    title: "Field operations",
+    title: "Intelligence",
     items: [
+      { key: "timeline", href: "/timeline", label: "Timeline", icon: icons.activity },
+      { key: "twin", href: "/timeline#twin-snapshots", label: "Digital Twin", icon: icons.map },
+      { key: "insights", href: "/insights", label: "Portfolio Analytics", icon: icons.insights },
+      { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
+    ],
+  },
+  {
+    title: "Operations",
+    items: [
+      { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
       { key: "issues", href: "/issues", label: "Field Issues", icon: icons.alert, badge: "issues" },
-      { key: "exceptions", href: "/exceptions", label: "Exceptions", icon: icons.shield, badge: "exceptions" },
       { key: "field", href: "/field", label: "Field Capture", icon: icons.camera },
       { key: "comms", href: "/communications", label: "Communications", icon: icons.chat },
-    ],
-  },
-  {
-    title: "Administration",
-    items: [
       { key: "setup", href: "/setup", label: "Pilot Setup", icon: icons.projects },
       { key: "pilot", href: "/pilot", label: "Pilot Operations", icon: icons.activity },
       { key: "integrations", href: "/communications/integrations", label: "Integrations", icon: icons.refresh },
@@ -276,19 +271,23 @@ const pick = (...keys: string[]): NavItem[] =>
  */
 export function navGroupsFor(role: User["role"]): NavGroup[] {
   if (role === "FUNDER_REP") {
+    // Pilot emphasis WITHOUT flattening the workstation's grouped shape:
+    // the six pilot surfaces lead, then every other destination stays in
+    // its normal group. Nothing is removed for any role.
+    const primaryKeys = new Set(["executive", "overview", "projects", "draws", "compliance", "approvals"]);
     const primary = [
+      itemByKey.get("executive")!,
       { ...itemByKey.get("overview")!, label: "Portfolio" },
       ...pick("projects", "draws"),
       ...pick("compliance").map((i) => ({ ...i, label: "Evidence Review" })),
-      ...pick("approvals", "reports"),
+      ...pick("approvals"),
     ];
-    const primaryKeys = new Set(["overview", "projects", "draws", "compliance", "approvals", "reports"]);
     return [
-      { title: null, items: primary },
-      {
-        title: "Advanced & intelligence",
-        items: ALL_NAV_ITEMS.filter((i) => !primaryKeys.has(i.key)),
-      },
+      { title: "Command", items: primary },
+      ...NAV_GROUPS.map((g) => ({
+        title: g.title,
+        items: g.items.filter((i) => !primaryKeys.has(i.key)),
+      })).filter((g) => g.items.length > 0),
     ];
   }
   if (role === "FIELD") {
@@ -1275,5 +1274,278 @@ export function Provenance(props: { rows: Array<{ k: string; v: Child }> }): VNo
         </div>
       ))}
     </div>
+  );
+}
+
+// =====================================================================
+// WORKSTATION PRIMITIVES (v25)
+//
+// The operator-console composition layer. These replace the
+// "full-width Card → heading → paragraph → content" default with
+// panels, rails, dense tables and split workspaces. They are pure
+// presentation: no data access, no authorization, no state.
+// =====================================================================
+
+/** Compact page identity for workstation surfaces. One line of chrome,
+ *  not a hero block: title, inline context, and actions on the right. */
+export function WorkHeader(props: {
+  title: string;
+  sub?: string;
+  crumb?: { href: string; label: string };
+  children?: Child;
+}): VNode {
+  return (
+    <header className="ws-head">
+      <div className="ws-id">
+        {props.crumb ? <a className="crumb" href={props.crumb.href}>← {props.crumb.label}</a> : null}
+        <h1>{props.title}</h1>
+        {props.sub ? <p className="ws-sub">{props.sub}</p> : null}
+      </div>
+      {props.children ? <div className="ws-actions">{props.children}</div> : null}
+    </header>
+  );
+}
+
+export interface Kpi {
+  label: string;
+  value: string;
+  /** Secondary line: comparison, scope, or an honest unavailable note. */
+  detail?: string;
+  /** Direction of the detail line, when the underlying record supports one. */
+  trend?: "up" | "down" | "flat";
+  tone?: "ok" | "warn" | "bad";
+  href?: string;
+}
+
+/** The top strip: every headline number on one horizontal rail. On
+ *  mobile it becomes a horizontally scrollable rail (CSS), never a
+ *  stacked block of cards. */
+export function KpiRail(props: { items: Kpi[] }): VNode {
+  const cell = (k: Kpi): VNode => (
+    <>
+      <span className="k-l">{k.label}</span>
+      <span className="k-v">{k.value}</span>
+      {k.detail ? <span className={`k-d ${k.trend ?? ""}`}>{k.detail}</span> : null}
+    </>
+  );
+  return (
+    <div className="kpi-rail">
+      {props.items.map((k) =>
+        k.href ? (
+          <a className={`kpi ${k.tone ? `t-${k.tone}` : ""}`} href={k.href}>{cell(k)}</a>
+        ) : (
+          <div className={`kpi ${k.tone ? `t-${k.tone}` : ""}`}>{cell(k)}</div>
+        )
+      )}
+    </div>
+  );
+}
+
+/** The workstation's only container: a titled panel with an optional
+ *  right-hand head slot and footer link. Bodies are dense by default. */
+export function DensePanel(props: {
+  title: string;
+  right?: Child;
+  foot?: Child;
+  /** Remove body padding — for tables and lists that own their edges. */
+  flush?: boolean;
+  className?: string;
+  children?: Child;
+}): VNode {
+  return (
+    <section className={`dpanel ${props.className ?? ""}`}>
+      <div className="dpanel-head">
+        <h2>{props.title}</h2>
+        {props.right ? <span className="dp-right">{props.right}</span> : null}
+      </div>
+      <div className={`dpanel-body ${props.flush ? "flush" : ""}`}>{props.children}</div>
+      {props.foot ? <div className="dpanel-foot">{props.foot}</div> : null}
+    </section>
+  );
+}
+
+export interface Signal {
+  title: string;
+  sub?: string;
+  href?: string;
+  severity?: "high" | "med" | "low";
+  /** Right-aligned count/status text. */
+  meta?: Child;
+  icon?: VNode;
+}
+
+/** Compact row list — advisory signals, attention queues, review lists. */
+export function SignalList(props: { items: Signal[]; empty?: string }): VNode {
+  if (props.items.length === 0) {
+    return <p className="empty-mini">{props.empty ?? "Nothing to show."}</p>;
+  }
+  const inner = (s: Signal): Child => (
+    <>
+      <span className={`s-ico ${s.severity ?? ""}`} aria-hidden="true">{s.icon ?? icons.alert(12)}</span>
+      <span className="s-body">
+        <span className="s-t">{s.title}</span>
+        {s.sub ? <span className="s-s">{s.sub}</span> : null}
+      </span>
+      {s.meta ? <span className="s-r">{s.meta}</span> : null}
+    </>
+  );
+  return (
+    <ul className="slist">
+      {props.items.map((s) => (
+        <li>{s.href ? <a href={s.href}>{inner(s)}</a> : <span className="srow">{inner(s)}</span>}</li>
+      ))}
+    </ul>
+  );
+}
+
+export interface DenseColumn {
+  key: string;
+  label: string;
+  num?: boolean;
+}
+
+/** The primary work surface: a compact table with sticky headers.
+ *  Rows are already-rendered cells keyed by column. */
+export function DenseTable(props: {
+  columns: DenseColumn[];
+  rows: Array<Record<string, Child>>;
+  empty?: string;
+}): VNode {
+  if (props.rows.length === 0) {
+    return <p className="empty-mini">{props.empty ?? "No rows."}</p>;
+  }
+  return (
+    <div className="dtable-wrap">
+      <table className="dtable">
+        <thead>
+          <tr>{props.columns.map((c) => <th className={c.num ? "num" : ""}>{c.label}</th>)}</tr>
+        </thead>
+        <tbody>
+          {props.rows.map((r) => (
+            <tr>{props.columns.map((c) => <td className={c.num ? "num" : ""}>{r[c.key] ?? "—"}</td>)}</tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Main work surface + sticky inspector rail (the lender workbench). */
+export function Workbench(props: { main: Child; rail: Child }): VNode {
+  return (
+    <div className="workbench">
+      <div className="wb-main">{props.main}</div>
+      <div className="wb-rail">{props.rail}</div>
+    </div>
+  );
+}
+
+/** Three-pane operator workspace: event stream | canvas | inspector.
+ *  `mode` drives the mobile segmented control (CSS hides the other pane). */
+export function SplitWorkspace(props: {
+  stream: Child;
+  canvas: Child;
+  inspector: Child;
+  mode?: "timeline" | "twin";
+  /** Render the inspector as a bottom sheet on small screens. */
+  inspectorAsSheet?: boolean;
+}): VNode {
+  return (
+    <div className={`splitws ${props.mode ? `mode-${props.mode}` : ""}`}>
+      <div className="ws-stream">{props.stream}</div>
+      <div className="ws-canvas">{props.canvas}</div>
+      <div className={`ws-inspector ${props.inspectorAsSheet ? "as-sheet" : ""}`}>{props.inspector}</div>
+    </div>
+  );
+}
+
+/** Compact underline tabs for record domains. */
+export function WorkspaceTabs(props: {
+  items: Array<{ href: string; label: string; active?: boolean; count?: number }>;
+  label: string;
+}): VNode {
+  return (
+    <nav className="wstabs" aria-label={props.label}>
+      {props.items.map((t) => (
+        <a href={t.href} className={t.active ? "active" : ""} aria-current={t.active ? "page" : undefined}>
+          {t.label}
+          {t.count ? <span className="count">{t.count}</span> : null}
+        </a>
+      ))}
+    </nav>
+  );
+}
+
+/** Doctrine and methodology compressed to one expandable line. The
+ *  disclosure is never deleted — it simply stops consuming the
+ *  operational workspace. */
+export function AboutView(props: { label?: string; children?: Child }): VNode {
+  return (
+    <details className="about-view">
+      <summary>{props.label ?? "About this view"}</summary>
+      <div className="av-body">{props.children}</div>
+    </details>
+  );
+}
+
+/** One-line deterministic next action. */
+export function NextActionBanner(props: { label: string; detail?: string; right?: Child; tone?: string }): VNode {
+  return (
+    <div className={`next-action ${props.tone ?? ""}`} role="status">
+      <span className="chip info">Next action</span>
+      <span>
+        <b>{props.label}</b>
+        {props.detail ? <> {props.detail}</> : null}
+      </span>
+      {props.right ? <span className="na-r">{props.right}</span> : null}
+    </div>
+  );
+}
+
+/** Sticky mobile decision bar (hidden ≥721px by CSS). */
+export function MobileActionBar(props: { children?: Child }): VNode {
+  return <div className="mobile-actionbar">{props.children}</div>;
+}
+
+/** A large readout with an optional scored breakdown beneath it. */
+export function Readout(props: {
+  value: string;
+  caption: string;
+  scores?: Array<{ label: string; value: string; pct?: number; tone?: string }>;
+}): VNode {
+  return (
+    <>
+      <div className="readout">
+        <span className="r-v">{props.value}</span>
+        <span className="r-t">{props.caption}</span>
+      </div>
+      {props.scores && props.scores.length > 0 ? (
+        <ul className="scorelist">
+          {props.scores.map((s) => (
+            <li>
+              <span className="sl-n">{s.label}</span>
+              {typeof s.pct === "number" ? (
+                <span className={`mini-bar ${s.tone ?? ""}`}><span style={`width:${Math.max(0, Math.min(100, s.pct))}%`}></span></span>
+              ) : null}
+              <span className="sl-v">{s.value}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </>
+  );
+}
+
+/** Compact key/value facts for inspector rails. */
+export function DenseFacts(props: { rows: Array<{ k: string; v: Child }> }): VNode {
+  return (
+    <dl className="dkv">
+      {props.rows.map((r) => (
+        <>
+          <dt>{r.k}</dt>
+          <dd>{r.v}</dd>
+        </>
+      ))}
+    </dl>
   );
 }

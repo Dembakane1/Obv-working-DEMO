@@ -13,9 +13,20 @@
  *  - Advisory content is chipped ADVISORY and never styled as governed.
  */
 import { h, Fragment, renderDocument, VNode } from "./jsx";
-import { AppShell, NavContext, PageHeader, enumLabel } from "./components";
+import {
+  AboutView,
+  AppShell,
+  DensePanel,
+  NavContext,
+  PageHeader,
+  SignalList,
+  SplitWorkspace,
+  WorkHeader,
+  enumLabel,
+} from "./components";
 import { raw } from "./jsx";
 import type {
+  TimelineEvent,
   TwinAnchoredRecord,
   TwinElement,
   TwinPinDetail,
@@ -487,6 +498,11 @@ export function renderDigitalTwin(input: {
   focusEventId: string | null;
   pinDetail: TwinPinDetail | null;
   providers: { providers: TwinProviderSpec[]; implemented: number; notice: string };
+  /** The project's governed timeline events — the workspace's left pane.
+   *  Same records the Timeline page shows; the Timeline stays authoritative. */
+  events?: TimelineEvent[];
+  /** Mobile segmented mode. Desktop always shows all three panes. */
+  mode?: string | null;
 }): string {
   const s = input.scene;
   const elementIndex: Record<string, unknown> = {};
@@ -515,148 +531,183 @@ export function renderDigitalTwin(input: {
     layers: s.layers.map((l) => ({ key: l.key, available: l.available, defaultOn: l.defaultOn })),
   };
 
+  const advisories = s.elements.filter((e) => e.kind === "ADVISORY_MARKER");
+  const events = input.events ?? [];
+  const syncedEventIds = new Set(s.sync.map((x) => x.eventId));
+  const evTime = (iso: string) => iso.replace("T", " ").slice(5, 16);
+
   return renderDocument(
-    <AppShell title="Digital Twin" nav={input.nav} context="Digital Twin">
-      <PageHeader
-        title={s.projectName}
-        sub="An interactive visualization of the records OBV already holds — the Timeline remains authoritative."
-        asOf={
-          (s.frame.widthM > 0 && s.frame.heightM > 0
-            ? `Recorded extent ${s.frame.widthM}×${s.frame.heightM} m · `
-            : "") + `computed ${s.asOf.replace("T", " ").slice(0, 16)} UTC`
-        }
-      >
-        <a className="btn ghost sm" href={`/timeline/story/${s.projectId}`}>Story →</a>
-        <a className="btn ghost sm" href={`/timeline/site/${s.projectId}`}>Site intelligence →</a>
-        <a className="btn ghost sm" href={`/timeline/map/${s.projectId}`}>Map data →</a>
-      </PageHeader>
-      <TwinModeTabs projectId={s.projectId} active="twin" />
-      <div className="evi-advisory">{s.notice}</div>
-      {s.caps.length > 0 ? (
-        <p className="sub tl-caps">
-          <strong>Not the complete record:</strong> {s.caps.join(" · ")}.
-        </p>
-      ) : null}
+    <AppShell title="Digital Twin" nav={input.nav} context={`${s.projectName} · Timeline & Digital Twin`}>
+      <div className="page-wrap ws">
+        <WorkHeader
+          title="Timeline & Digital Twin"
+          sub={`${s.projectName} · ${String(events.length)} recorded events · ${
+            s.frame.widthM > 0 && s.frame.heightM > 0 ? `extent ${s.frame.widthM}×${s.frame.heightM} m · ` : ""
+          }computed ${s.asOf.replace("T", " ").slice(0, 16)} UTC`}
+          crumb={{ href: `/project/${s.projectId}`, label: s.projectName }}
+        >
+          <a className="btn ghost sm" href={`/timeline/project/${s.projectId}`}>Full timeline</a>
+          <a className="btn ghost sm hide-mobile" href={`/timeline/story/${s.projectId}`}>Story</a>
+          <a className="btn ghost sm hide-mobile" href={`/timeline/site/${s.projectId}`}>Site intelligence</a>
+          <a className="btn ghost sm hide-mobile" href={`/timeline/map/${s.projectId}`}>Map data</a>
+        </WorkHeader>
 
-      <div className="twin-layout">
-        <aside className="twin-side">
-          <section className="evi-card twin-panel">
-            <h2>Layers</h2>
-            <ul className="twin-layer-list" id="twin-layers">
-              {s.layers.map((l) => (
-                <li className={`twin-layer ${l.available ? "" : "twin-layer-off"}`}>
-                  <label>
-                    <input
-                      type="checkbox"
-                      data-layer-toggle={l.key}
-                      checked={l.defaultOn ? "checked" : undefined}
-                      disabled={l.available ? undefined : "disabled"}
-                    />{" "}
-                    {l.label} <span className="twin-layer-count">{l.available ? String(l.count) : "—"}</span>
-                  </label>
-                  {l.note ? <span className="sub">{l.note}</span> : null}
-                </li>
-              ))}
-            </ul>
-          </section>
+        {/* Mobile: one mode owns the viewport — never a stacked twin card. */}
+        <nav className="segmented" aria-label="Workspace mode">
+          <a href={`/timeline/twin/${s.projectId}?mode=timeline`} className={input.mode === "twin" ? "" : "active"}>Timeline</a>
+          <a href={`/timeline/twin/${s.projectId}?mode=twin`} className={input.mode === "twin" ? "active" : ""}>Twin</a>
+        </nav>
 
-          <section className="evi-card twin-panel">
-            <h2>Construction progress</h2>
-            <p className="sub">
-              Recorded governance lifecycle per stage — <b>not a physical measurement</b>.
-              Overall: <b>{String(s.completion.pct)}%</b> tranche-weighted released.
-            </p>
-            <ul className="twin-stage-list">
-              {s.stages.map((st) => (
-                <li className="twin-stage" data-stage={st.milestoneId} tabindex="0">
-                  <span className="twin-stage-head">
-                    <b>{String(st.seq)}. {st.title}</b>
-                    {chip(st.status, statusTone(st.status))}
+        <SplitWorkspace
+          mode={input.mode === "twin" ? "twin" : "timeline"}
+          inspectorAsSheet={Boolean(input.pinDetail || input.focusEventId)}
+          stream={
+            <DensePanel
+              title="Event stream"
+              right={<span>{String(events.length)}</span>}
+              flush
+              foot={<a href={`/timeline/project/${s.projectId}`}>Filter the full timeline →</a>}
+            >
+              <SignalList
+                empty="No governed events recorded for this project yet."
+                items={events.slice(0, 60).map((e) => ({
+                  title: e.title,
+                  sub: `${evTime(e.at)} · ${enumLabel(e.type)}${e.actorName ? ` · ${e.actorName}` : ""}`,
+                  severity:
+                    e.severity === "HIGH" ? "high" : e.severity === "MEDIUM" ? "med" : "low",
+                  // Selecting an event focuses the scene AND the inspector:
+                  // the same ?focus the twin client already synchronizes.
+                  href: `/timeline/twin/${s.projectId}?focus=${encodeURIComponent(e.id)}${input.mode === "twin" ? "&mode=twin" : ""}`,
+                  meta: (
+                    <>
+                      {e.recordStatus === "ADVISORY" ? <span className="chip warn">Advisory</span> : null}
+                      {syncedEventIds.has(e.id) ? <span className="chip dim">on scene</span> : null}
+                    </>
+                  ),
+                }))}
+              />
+            </DensePanel>
+          }
+          canvas={
+            <DensePanel
+              title="Digital Twin"
+              right={
+                <>
+                  <span>{String(s.completion.pct)}% released</span>
+                  <a href={`/timeline/twin/${s.projectId}/providers`}>layers</a>
+                </>
+              }
+              className="twin-canvas-panel"
+            >
+              <div className="ws-canvas-body">
+                <SceneSvg scene={s} />
+                <div className="twin-playbar" id="twin-playbar">
+                  <button className="btn secondary sm" id="twin-play" type="button">▶ Play history</button>
+                  <select id="twin-speed" aria-label="Playback speed">
+                    <option value="900">1×</option>
+                    <option value="450">2×</option>
+                    <option value="150">4×</option>
+                  </select>
+                  <input id="twin-scrub" type="range" min="0" max="0" value="0" aria-label="Playback position" />
+                  <span className="sub" id="twin-play-caption">
+                    Playback replays the recorded timeline — it never simulates.
                   </span>
-                  <LifecycleBar step={st.lifecycleStep} total={st.lifecycleTotal} />
-                  <span className="sub">
-                    {st.spatialLabel ? `${st.spatialLabel} · ` : ""}
-                    {String(st.evidenceCount)} evidence ({String(st.gpsEvidenceCount)} GPS) ·{" "}
-                    {String(st.inspectionCount)} inspection{st.inspectionCount === 1 ? "" : "s"}
-                    {st.openExceptionCount > 0 ? ` · ${st.openExceptionCount} open exception${st.openExceptionCount === 1 ? "" : "s"}` : ""}
-                    {st.hasGeometry ? "" : " · no recorded geometry"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        </aside>
+                  <span className="sub tl-caps" id="twin-play-note" style="display:none"></span>
+                </div>
+                <ul className="twin-layer-list twin-layer-row" id="twin-layers">
+                  {s.layers.map((l) => (
+                    <li className={`twin-layer ${l.available ? "" : "twin-layer-off"}`}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          data-layer-toggle={l.key}
+                          checked={l.defaultOn ? "checked" : undefined}
+                          disabled={l.available ? undefined : "disabled"}
+                        />{" "}
+                        {l.label} <span className="twin-layer-count">{l.available ? String(l.count) : "—"}</span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </DensePanel>
+          }
+          inspector={
+            <DensePanel
+              title={input.pinDetail ? "Evidence detail" : "Context inspector"}
+              right={<span id="twin-detail-title">{input.pinDetail ? "evidence" : "selection"}</span>}
+              className="twin-detail"
+              foot={<a href={`/timeline/project/${s.projectId}`}>Open the authoritative timeline →</a>}
+            >
+              <div id="twin-detail-body">
+                {input.pinDetail ? (
+                  <PinDrawer detail={input.pinDetail} projectId={s.projectId} />
+                ) : (
+                  <p className="sub" style="margin:0 0 10px">
+                    Select an event, stage, pin or marker — its record appears here. Read-only, always.
+                  </p>
+                )}
+              </div>
+              {advisories.length > 0 ? (
+                <div data-twin-advisory-list style="margin-top:10px">
+                  <h3 style="margin:0 0 6px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3)">
+                    Advisory signals
+                  </h3>
+                  <SignalList
+                    items={advisories.slice(0, 6).map((a) => ({
+                      title: a.label,
+                      sub: a.detail ?? undefined,
+                      severity: a.severity === "HIGH" ? "high" : "med",
+                      href: a.href ?? undefined,
+                      meta: a.points.length > 0 ? <span className="chip dim">on scene</span> : undefined,
+                    }))}
+                  />
+                </div>
+              ) : null}
+              <div style="margin-top:10px">
+                <h3 style="margin:0 0 6px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3)">
+                  Construction progress
+                </h3>
+                <ul className="twin-stage-list">
+                  {s.stages.map((st) => (
+                    <li className="twin-stage" data-stage={st.milestoneId} tabindex="0">
+                      <span className="twin-stage-head">
+                        <b>{String(st.seq)}. {st.title}</b>
+                        {chip(st.status, statusTone(st.status))}
+                      </span>
+                      <LifecycleBar step={st.lifecycleStep} total={st.lifecycleTotal} />
+                      <span className="sub">
+                        {String(st.evidenceCount)} evidence · {String(st.inspectionCount)} inspection
+                        {st.inspectionCount === 1 ? "" : "s"}
+                        {st.openExceptionCount > 0 ? ` · ${st.openExceptionCount} open exception${st.openExceptionCount === 1 ? "" : "s"}` : ""}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </DensePanel>
+          }
+        />
 
-        <div className="twin-main">
-          <section className="evi-card twin-scene-card">
-            <SceneSvg scene={s} />
-            <div className="twin-playbar" id="twin-playbar">
-              <button className="btn secondary sm" id="twin-play" type="button">▶ Play history</button>
-              <select id="twin-speed" aria-label="Playback speed">
-                <option value="900">1×</option>
-                <option value="450">2×</option>
-                <option value="150">4×</option>
-              </select>
-              <input id="twin-scrub" type="range" min="0" max="0" value="0" aria-label="Playback position" />
-              <span className="sub" id="twin-play-caption">
-                Construction playback replays the recorded timeline — it never simulates.
-              </span>
-              <span className="sub tl-caps" id="twin-play-note" style="display:none"></span>
-            </div>
-          </section>
-        </div>
-
-        <aside className="twin-detail" id="twin-detail">
-          <section className="evi-card twin-panel">
-            <h2 id="twin-detail-title">{input.pinDetail ? "Evidence detail" : "Selection"}</h2>
-            <div id="twin-detail-body">
-              {input.pinDetail ? (
-                <PinDrawer detail={input.pinDetail} projectId={s.projectId} />
-              ) : (
-                <p className="sub">
-                  Select a stage, pin, or marker in the scene — or arrive from a Timeline event —
-                  and its record appears here. Read-only, always.
-                </p>
-              )}
-            </div>
-          </section>
-        </aside>
-      </div>
-
-      {s.elements.some((e) => e.kind === "ADVISORY_MARKER") ? (
-        <section className="evi-card" data-twin-advisory-list>
-          <h2>Advisory signals</h2>
-          <p className="sub">
-            Advisory only — observations for a human reviewer, never automatic decisions. Signals
-            whose subject has a recorded GPS fix are also drawn in the scene.
+        <AboutView label="About this workspace — the Twin never changes governed state">
+          <p>{s.notice}</p>
+          <p>
+            Construction progress is the recorded governance lifecycle per stage — <b>not a physical
+            measurement</b>. Overall {String(s.completion.pct)}% tranche-weighted released.
           </p>
-          <ul className="twin-dock-list">
-            {s.elements.filter((e) => e.kind === "ADVISORY_MARKER").map((a) => (
-              <li className="twin-dock-item" data-el={a.id} tabindex="0">
-                <span className="twin-dock-label">
-                  <span className="chip warn">Advisory</span>
-                  {a.severity ? <span className={`chip ${a.severity === "HIGH" ? "bad" : "warn"}`}>{a.severity}</span> : null}
-                  <b>{a.label}</b>
-                  {a.points.length > 0 ? <span className="chip dim">on scene</span> : <span className="chip dim">no recorded position</span>}
-                </span>
-                <span className="sub">{a.detail} {a.href ? <a href={a.href}>open record</a> : null}</span>
-              </li>
+          {s.caps.length > 0 ? (
+            <p><strong>Not the complete record:</strong> {s.caps.join(" · ")}.</p>
+          ) : null}
+          <p>{input.providers.notice}</p>
+          <div className="twin-providers">
+            {input.providers.providers.map((pr) => (
+              <span className="chip dim" title={pr.description}>{pr.displayName} — disabled</span>
             ))}
-          </ul>
-        </section>
-      ) : null}
+          </div>
+        </AboutView>
 
-      <AnchoredDock anchored={s.anchored} />
-
-      <section className="evi-card">
-        <h2>Future spatial layers</h2>
-        <p className="sub">{input.providers.notice}</p>
-        <div className="twin-providers">
-          {input.providers.providers.map((p) => (
-            <span className="chip dim" title={p.description}>{p.displayName} — disabled</span>
-          ))}
-        </div>
-      </section>
+        <AnchoredDock anchored={s.anchored} />
+      </div>
 
       <script type="application/json" id="twin-data">{raw(JSON.stringify(clientData).replace(/</g, "\\u003c"))}</script>
       <script src="/js/twin.js" defer></script>

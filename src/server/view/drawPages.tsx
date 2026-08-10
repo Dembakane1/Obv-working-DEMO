@@ -10,21 +10,33 @@
 import { h, Fragment, VNode, Child, renderDocument, raw } from "./jsx";
 import { icons } from "./icons";
 import {
+  AboutView,
   AppShell,
+  AttentionBanner,
+  DenseFacts,
+  DensePanel,
+  DenseTable,
+  EmptyStateV2,
+  KpiRail,
+  Methodology,
+  Metric,
+  MetricData,
+  MetricStrip,
+  MobileActionBar,
   NavContext,
+  NextActionBanner,
   PageHeader,
+  Readout,
+  SectionHead,
+  SignalList,
   VerdictChip,
+  WorkHeader,
+  Workbench,
+  WorkspaceTabs,
+  enumLabel,
   fmtDate,
   money,
   roleLabel,
-  Metric,
-  MetricStrip,
-  MetricData,
-  AttentionBanner,
-  SectionHead,
-  EmptyStateV2,
-  Methodology,
-  enumLabel,
   shortHash,
 } from "./components";
 import type {
@@ -471,65 +483,221 @@ export function renderDrawDetail(d: DrawDetailData): string {
   const exceptions = d.lines.filter((l) =>
     ["PARTIALLY_SUPPORTED", "EXCEPTION", "REJECTED"].includes(l.status)
   );
+
+  // ---- derived summary modules (existing governed records only) ----
+  const checks = d.completeness.checks;
+  const checksOk = checks.filter((c) => c.ok).length;
+  const readinessPct = checks.length ? Math.round((checksOk / checks.length) * 100) : 0;
+  const reviewedLines = d.lines.filter((l) => l.status !== "PENDING").length;
+  const linePct = d.lines.length ? Math.round((reviewedLines / d.lines.length) * 100) : 0;
+  const evidenceLinked = d.evidenceRows.length;
+  const missingDocs = d.checklist.filter((c) => c.state === "MISSING" || c.state === "REJECTED" || c.state === "EXPIRED").length;
+  const released = d.accountEvents.find((e) => e.type === "RELEASED");
+
+  // Blockers = the failing completeness checks plus governed line exceptions.
+  const blockers: Array<{ title: string; sub: string; severity: "high" | "med" }> = [
+    ...checks.filter((c) => !c.ok).map((c) => ({ title: c.label, sub: c.detail, severity: "high" as const })),
+    ...exceptions.slice(0, 4).map((l) => ({
+      title: `${enumLabel(l.status)} — ${l.description}`,
+      sub: l.reviewNotes ?? `${money(l.currentRequested)} requested`,
+      severity: "med" as const,
+    })),
+  ];
+
+  const decisionControls = (
+    <>
+      {reviewOpen ? <a className="btn sm hide-mobile" href={url("review")}>Open review</a> : null}
+      {d.canDecide && !d.alreadyDecided ? <a className="btn sm hide-mobile" href={url("lender")}>Record decision</a> : null}
+      <a className="btn ghost sm hide-mobile" href={url("lender")}>Lender workspace</a>
+      <form method="POST" action={`/api/draws/${draw.id}/verification-package`} className="hide-mobile">
+        <button className="btn secondary sm" type="submit" data-busy-label="Building…">Export package</button>
+      </form>
+    </>
+  );
+
   return renderDocument(
     <AppShell
       title={`Draw #${draw.drawNumber}`}
       nav={d.nav}
       context={`Draw #${draw.drawNumber} · ${d.project.name.slice(0, 40)}`}
     >
-      <PageHeader
-        title={`Draw Request #${draw.drawNumber}`}
-        sub={`${d.project.name} · ${d.borrowerOrg ? `Requested by ${d.borrowerOrg.name}` : "Lender-entered"} · Period ${draw.periodStart ?? "—"} → ${draw.periodEnd ?? "—"}`}
-        crumb={{ href: "/draws", label: "Draw Requests" }}
-      >
-        <DrawStatusChip status={draw.status} />
-      </PageHeader>
+      <div className="page-wrap ws">
+        <WorkHeader
+          title={`Draw Review — Draw #${draw.drawNumber}`}
+          sub={`${d.project.name} · ${d.borrowerOrg ? d.borrowerOrg.name : "Lender-entered"} · ${draw.periodStart ?? "—"} → ${draw.periodEnd ?? "—"}`}
+          crumb={{ href: "/draws", label: "Draws" }}
+        >
+          <DrawStatusChip status={draw.status} />
+          {decisionControls}
+        </WorkHeader>
 
-      {d.nextAction ? (
-        <div className="pilot-next" role="status">
-          <span className={`chip ${d.nextAction.actor === "NONE" ? "ok" : d.nextAction.actor === "CONTRACTOR" || d.nextAction.actor === "INSPECTOR" ? "warn" : "info"}`}>
-            Next action
-          </span>
-          <span>
-            <b>{d.nextAction.label}.</b> {d.nextAction.detail}
-          </span>
+        {d.nextAction ? (
+          <NextActionBanner label={`${d.nextAction.label}.`} detail={d.nextAction.detail} />
+        ) : null}
+
+        {/* ---- top summary region: four modules side by side (a
+            horizontally scrollable rail on phones) ---- */}
+        <div className="ws-row ws-row-5 ws-row-rail">
+          <DensePanel title="Evidence readiness" right={<span>{checksOk}/{checks.length}</span>}>
+            <Readout
+              value={`${readinessPct}%`}
+              caption="submission checks satisfied"
+              scores={checks.slice(0, 4).map((c) => ({
+                label: c.label,
+                value: c.ok ? "OK" : "Open",
+                pct: c.ok ? 100 : 0,
+                tone: c.ok ? "ok" : "bad",
+              }))}
+            />
+          </DensePanel>
+
+          <DensePanel title="Review progress" right={<span>{reviewedLines}/{d.lines.length} lines</span>}>
+            <Readout
+              value={`${linePct}%`}
+              caption="line items reviewed"
+              scores={[
+                { label: "Evidence linked", value: String(evidenceLinked) },
+                { label: "Documents outstanding", value: String(missingDocs), tone: missingDocs ? "warn" : "ok" },
+                { label: "Lines in exception", value: String(exceptions.length), tone: exceptions.length ? "warn" : "ok" },
+              ]}
+            />
+          </DensePanel>
+
+          <DensePanel
+            title="Advisory signals"
+            right={<span>{String(blockers.length)}</span>}
+            flush
+            foot={<a href={url("exceptions")}>Exceptions →</a>}
+          >
+            <SignalList
+              empty="No open blockers or line exceptions."
+              items={blockers.slice(0, 5).map((b) => ({
+                title: b.title,
+                sub: b.sub,
+                severity: b.severity,
+              }))}
+            />
+          </DensePanel>
+
+          <DensePanel title="Draw summary" className="dp-span2">
+            <DenseFacts
+              rows={[
+                { k: "Requested amount", v: <b>{money(s.requested)}</b> },
+                { k: "Supported", v: money(s.supported) },
+                { k: "Exception", v: s.exception > 0 ? money(s.exception) : "—" },
+                { k: "Retainage", v: s.retainage > 0 ? money(s.retainage) : "—" },
+                { k: "Recommended", v: s.recommended !== null ? money(s.recommended) : "Not finalized" },
+                { k: "Released", v: released ? money(released.amount) : "—" },
+                { k: "Contract value", v: money(d.contract.current) },
+              ]}
+            />
+          </DensePanel>
         </div>
-      ) : null}
 
-      {/* header financial band — answers the page's core questions */}
-      <div className="fin-band" style="margin-bottom:12px">
-        {kpi("Requested", money(s.requested))}
-        {kpi("Supported", money(s.supported), s.supported < s.requested ? "warn" : "ok")}
-        {kpi("Exception", s.exception > 0 ? money(s.exception) : "—", s.exception > 0 ? "warn" : undefined)}
-        {kpi("Retainage", s.retainage > 0 ? money(s.retainage) : "—")}
-        {kpi("Recommended", s.recommended !== null ? money(s.recommended) : "Not finalized")}
-        {kpi(
-          "Released",
-          d.accountEvents.some((e) => e.type === "RELEASED")
-            ? money(d.accountEvents.find((e) => e.type === "RELEASED")!.amount)
-            : "—",
-          d.accountEvents.some((e) => e.type === "RELEASED") ? "ok" : undefined
-        )}
+        {/* ---- tabbed record domains over a workbench ---- */}
+        <WorkspaceTabs
+          label="Draw record domains"
+          items={TABS.map((t) => ({
+            href: url(t.key),
+            label: t.label,
+            active: d.tab === t.key,
+            count: t.key === "exceptions" ? exceptions.length : undefined,
+          }))}
+        />
+
+        <Workbench
+          main={
+            <>
+              {d.tab === "overview" ? renderOverviewTab(d, editable) : null}
+              {d.tab === "lines" ? renderLinesTab(d, editable, reviewOpen) : null}
+              {d.tab === "evidence" ? renderEvidenceTab(d, editable || reviewOpen) : null}
+              {d.tab === "documents" ? renderDocumentsTab(d, editable, reviewOpen) : null}
+              {d.tab === "exceptions" ? renderExceptionsTab(d, exceptions) : null}
+              {d.tab === "review" ? renderReviewTab(d, reviewOpen) : null}
+              {d.tab === "governance" ? renderGovernanceTab(d) : null}
+              {d.tab === "lender" && d.lender ? renderLenderTab(d, d.lender) : null}
+              {d.tab === "activity" ? renderActivityTab(d) : null}
+            </>
+          }
+          rail={
+            <>
+              <DensePanel title="Decision status">
+                <DenseFacts
+                  rows={[
+                    { k: "Status", v: <DrawStatusChip status={draw.status} /> },
+                    { k: "Submitted", v: draw.submittedAt ? fmtDate(draw.submittedAt).slice(0, 16) : "Not submitted" },
+                    { k: "Approval", v: d.approval ? enumLabel(d.approval.status) : "Not opened" },
+                    { k: "Governance records", v: String(d.approvalRecords.length) },
+                    { k: "Recommended", v: money(d.recommendation.supportedAmount) },
+                    { k: "Governance eligible", v: d.recommendation.eligibleForGovernance ? "Yes" : "No" },
+                  ]}
+                />
+              </DensePanel>
+
+              <DensePanel
+                title="Current blockers"
+                right={<span>{String(blockers.length)}</span>}
+                flush
+              >
+                <SignalList
+                  empty="Nothing is blocking this draw."
+                  items={blockers.slice(0, 6).map((b) => ({ title: b.title, sub: b.sub, severity: b.severity }))}
+                />
+              </DensePanel>
+
+              {d.nextAction ? (
+                <DensePanel title="Required next action">
+                  <p style="margin:0;font-size:12.5px;color:var(--ink)">
+                    <b>{d.nextAction.label}</b>
+                  </p>
+                  <p style="margin:5px 0 0;font-size:11.5px;color:var(--ink-3)">{d.nextAction.detail}</p>
+                  <p style="margin:7px 0 0;font-size:11px;color:var(--ink-3)">
+                    Responsible: {enumLabel(d.nextAction.actor)}
+                  </p>
+                </DensePanel>
+              ) : null}
+
+              <DensePanel title="Package & records" flush>
+                <SignalList
+                  empty="No generated reports yet."
+                  items={[
+                    { title: "Project record", sub: d.project.name, severity: "low", href: `/project/${d.project.id}` },
+                    { title: "Project timeline", sub: "Every governed event", severity: "low", href: `/timeline/project/${d.project.id}` },
+                    ...d.reports.slice(0, 3).map((r) => ({
+                      title: enumLabel(r.reportType),
+                      sub: fmtDate(r.generatedAt).slice(0, 16),
+                      severity: "low" as const,
+                      href: `/reports/file/${r.id}`,
+                    })),
+                  ]}
+                />
+              </DensePanel>
+            </>
+          }
+        />
+
+        <MobileActionBar>
+          {reviewOpen ? <a className="btn sm" href={url("review")}>Review</a> : null}
+          {d.canDecide && !d.alreadyDecided ? <a className="btn sm" href={url("lender")}>Decision</a> : null}
+          {!reviewOpen && !(d.canDecide && !d.alreadyDecided) ? (
+            <span className="ma-note">{d.nextAction ? d.nextAction.label : enumLabel(draw.status)}</span>
+          ) : null}
+          <a className="btn ghost sm" href={url("lines")}>Line items</a>
+        </MobileActionBar>
+
+        <AboutView label="About this workspace — what a draw decision means">
+          <p>
+            Every figure here is derived from governed records: line items, linked evidence,
+            documents, inspections and approval history. Advisory signals and readiness percentages
+            are reading aids for a human reviewer — they never approve a draw, never release funds,
+            and never replace the formal approval process.
+          </p>
+          <p>
+            A lender decision requires the completed formal approval process; approval is not
+            settlement, and OBV records eligibility only.
+          </p>
+        </AboutView>
       </div>
-
-      <nav className="tabs" aria-label="Draw sections">
-        {TABS.map((t) => (
-          <a href={url(t.key)} className={d.tab === t.key ? "active" : ""} aria-current={d.tab === t.key ? "page" : undefined}>
-            {t.label}
-            {t.key === "exceptions" && exceptions.length ? <span className="count">{exceptions.length}</span> : null}
-          </a>
-        ))}
-      </nav>
-
-      {d.tab === "overview" ? renderOverviewTab(d, editable) : null}
-      {d.tab === "lines" ? renderLinesTab(d, editable, reviewOpen) : null}
-      {d.tab === "evidence" ? renderEvidenceTab(d, editable || reviewOpen) : null}
-      {d.tab === "documents" ? renderDocumentsTab(d, editable, reviewOpen) : null}
-      {d.tab === "exceptions" ? renderExceptionsTab(d, exceptions) : null}
-      {d.tab === "review" ? renderReviewTab(d, reviewOpen) : null}
-      {d.tab === "governance" ? renderGovernanceTab(d) : null}
-      {d.tab === "lender" && d.lender ? renderLenderTab(d, d.lender) : null}
-      {d.tab === "activity" ? renderActivityTab(d) : null}
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );
@@ -649,84 +817,85 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
   const reconciled = rec === draw.requestedAmount;
   return (
     <>
-      <div className="panel">
-        <div className="panel-head">
-          <h3>Line items</h3>
-          <span className="right" style={reconciled ? "color:var(--ok)" : "color:var(--warn)"}>
-            Lines {money(rec)} / requested {money(draw.requestedAmount)} {reconciled ? "· reconciled" : `· off by ${money(Math.abs(draw.requestedAmount - rec))}`}
+      <DensePanel
+        title="Line items"
+        right={
+          <span style={reconciled ? "color:var(--ok)" : "color:var(--warn)"}>
+            {money(rec)} / {money(draw.requestedAmount)} {reconciled ? "· reconciled" : `· off by ${money(Math.abs(draw.requestedAmount - rec))}`}
           </span>
-        </div>
-        {d.lines.length === 0 ? (
-          <p className="sub" style="padding:14px 16px">No line items yet.</p>
-        ) : (
-          <div className="intg-table-wrap">
-            <table className="intg-table">
-              <thead>
-                <tr>
-                  <th>Line</th><th>Milestone</th><th>Scheduled</th><th>Prev. paid</th>
-                  <th>This draw</th><th>Stored</th><th>Retainage</th><th>Balance</th>
-                  <th>% claimed</th><th>Financial</th><th>Verified physical</th>
-                  <th>Progress variance</th><th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.lines.map((l) => {
-                  const ms = l.milestoneId ? d.milestones.find((m) => m.id === l.milestoneId) : null;
-                  const cmp = d.lineComparisons.get(l.id);
-                  return (
-                    <tr>
-                      <td data-l="Line">
-                        <b>{l.description}</b>
-                        {l.budgetLineId ? <span className="sub" style="display:block">{l.budgetLineId}</span> : null}
-                        {l.changeOrderId && d.lineChangeOrders.get(l.id) ? (
-                          <span
-                            className={`sync-tag ${d.lineChangeOrders.get(l.id)!.approved ? "ok" : "bad"}`}
-                            style="margin:2px 0 0"
-                          >
-                            CO-{d.lineChangeOrders.get(l.id)!.number}{d.lineChangeOrders.get(l.id)!.approved ? "" : " UNAPPROVED — held for review"}
-                          </span>
-                        ) : null}
-                        {l.reviewNotes ? <span className="sub" style="display:block;color:var(--warn)">{l.reviewNotes}</span> : null}
-                        {l.milestoneId && d.lineMilestoneGates.get(l.milestoneId) ? (
-                          <span className="sub" style="display:block;font-size:10px;margin-top:2px">
-                            {d.lineMilestoneGates.get(l.milestoneId)!.summary}
-                            {d.lineMilestoneGates.get(l.milestoneId)!.blocking.length ? (
-                              <span style="color:var(--bad);display:block">
-                                Blocked: {d.lineMilestoneGates.get(l.milestoneId)!.blocking.join("; ")}
-                              </span>
-                            ) : null}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td data-l="Milestone">{ms ? <a href={`/milestone/${ms.id}`} style="color:var(--action)">M{ms.seq}</a> : "—"}</td>
-                      <td data-l="Scheduled" style="font-variant-numeric:tabular-nums">{money(l.scheduledValue)}</td>
-                      <td data-l="Prev paid" style="font-variant-numeric:tabular-nums">{money(l.previouslyPaid)}</td>
-                      <td data-l="This draw" style="font-variant-numeric:tabular-nums;font-weight:600">{money(l.currentRequested)}</td>
-                      <td data-l="Stored" style="font-variant-numeric:tabular-nums">{l.materialsStored != null ? money(l.materialsStored) : "—"}</td>
-                      <td data-l="Retainage" style="font-variant-numeric:tabular-nums">{l.retainageAmount != null ? money(l.retainageAmount) : "—"}</td>
-                      <td data-l="Balance" style="font-variant-numeric:tabular-nums">{money(l.balanceToFinish)}</td>
-                      <td data-l="% claimed">{l.percentCompleteClaimed != null ? `${l.percentCompleteClaimed}%` : "—"}</td>
-                      <td data-l="Financial">{cmp?.financialPct != null ? `${cmp.financialPct}%` : "—"}</td>
-                      <td data-l="Verified physical">{cmp?.verifiedPct != null ? `${cmp.verifiedPct}%` : "—"}</td>
-                      <td data-l="Progress variance">
-                        {cmp ? <VarianceTag state={cmp.varianceState} /> : "—"}
-                        {cmp?.exceptionCandidate ? (
-                          <span className="sub" style="display:block;color:var(--warn)">Exception candidate — review evidence basis</span>
-                        ) : null}
-                      </td>
-                      <td data-l="Status"><LineStatusTag status={l.status} /></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+        }
+        flush
+      >
+        <DenseTable
+          empty="No line items yet."
+          columns={[
+            { key: "line", label: "Line item" },
+            { key: "ms", label: "Milestone" },
+            { key: "sched", label: "Budget", num: true },
+            { key: "prev", label: "Prev. paid", num: true },
+            { key: "this", label: "This draw", num: true },
+            { key: "total", label: "Total paid", num: true },
+            { key: "ret", label: "Retainage", num: true },
+            { key: "claimed", label: "Claimed", num: true },
+            { key: "verified", label: "Verified physical", num: true },
+            { key: "variance", label: "Variance" },
+            { key: "status", label: "Status" },
+          ]}
+          rows={d.lines.map((l) => {
+            const ms = l.milestoneId ? d.milestones.find((m) => m.id === l.milestoneId) : null;
+            const cmp = d.lineComparisons.get(l.id);
+            const co = d.lineChangeOrders.get(l.id);
+            const gate = l.milestoneId ? d.lineMilestoneGates.get(l.milestoneId) : null;
+            // Gate detail and review notes are dense metadata: one line,
+            // full text on hover — never a wrapped paragraph inside a cell.
+            const sub = [
+              l.budgetLineId ?? null,
+              gate ? gate.summary : null,
+              gate && gate.blocking.length ? `Blocked: ${gate.blocking.join("; ")}` : null,
+              l.reviewNotes ?? null,
+            ].filter(Boolean).join(" · ");
+            return {
+              line: (
+                <span className="t-name" title={sub}>
+                  {l.description}
+                  {co ? (
+                    <span className={`sync-tag ${co.approved ? "ok" : "bad"}`} style="margin-left:6px">
+                      CO-{co.number}{co.approved ? "" : " UNAPPROVED"}
+                    </span>
+                  ) : null}
+                  {sub ? <span className="sub">{sub.length > 52 ? `${sub.slice(0, 52)}…` : sub}</span> : null}
+                </span>
+              ),
+              ms: ms ? <a href={`/milestone/${ms.id}`}>M{ms.seq}</a> : "—",
+              sched: money(l.scheduledValue),
+              prev: money(l.previouslyPaid),
+              this: <span className="strong">{money(l.currentRequested)}</span>,
+              total: money(l.previouslyPaid + l.currentRequested),
+              ret: l.retainageAmount != null ? money(l.retainageAmount) : "—",
+              claimed: l.percentCompleteClaimed != null ? `${l.percentCompleteClaimed}%` : "—",
+              verified: cmp?.verifiedPct != null ? `${cmp.verifiedPct}%` : "—",
+              variance: cmp ? (
+                <>
+                  <VarianceTag state={cmp.varianceState} />
+                  {cmp.exceptionCandidate ? (
+                    <span className="chip warn" style="margin-left:5px" title="Financial progress is ahead of currently verified physical progress — advisory only; the reviewer decides.">
+                      Exception candidate
+                    </span>
+                  ) : null}
+                </>
+              ) : "—",
+              status: <LineStatusTag status={l.status} />,
+            };
+          })}
+        />
+      </DensePanel>
 
-      {reviewOpen
-        ? d.lines.map((l) => (
-            <div className="panel panel-pad" style="margin-top:10px">
+      {reviewOpen ? (
+        <DensePanel title="Record line reviews" right={<span>{String(d.lines.length)} lines</span>}>
+          {d.lines.map((l) => (
+            <details className="about-view" style="margin-bottom:6px">
+              <summary>{l.description} — {money(l.currentRequested)}</summary>
+              <div className="av-body">
               <h3 style="margin:0 0 6px;font-size:12.5px">
                 Review — {l.description} ({money(l.currentRequested)}) <LineStatusTag status={l.status} />
                 {d.lineComparisons.get(l.id)?.exceptionCandidate ? (
@@ -764,9 +933,11 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
               <p className="sub" style="margin:6px 0 0;font-size:11px">
                 Line review is advisory — it cannot release funds.
               </p>
-            </div>
-          ))
-        : null}
+              </div>
+            </details>
+          ))}
+        </DensePanel>
+      ) : null}
 
       {editable ? (
         <div className="panel panel-pad" style="margin-top:12px;max-width:720px">

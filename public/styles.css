@@ -4255,3 +4255,358 @@ body.sidebar-collapsed .sidebar-brand .mark { display: none; }
 .pilot-next { display: flex; align-items: center; gap: 9px; padding: 10px 13px; border: 1px solid var(--info-line); background: var(--info-bg); border-radius: var(--r); margin: 10px 0; font-size: 13.5px; }
 .pilot-next b { color: var(--ink); }
 .pilot-next .chip { flex-shrink: 0; }
+
+/* =====================================================================
+   v25 — WORKSTATION LAYER
+   The operator-console composition: narrow chrome, full-bleed dense
+   content, multi-panel grids, and tables as the primary work surface.
+   This layer intentionally OVERRIDES the earlier document-style page
+   metrics (centered 1240px column, tall page headers, stacked full-width
+   cards) on the workstation surfaces. It changes composition, not
+   tokens: every colour still comes from the v2 theme variables, so dark
+   and light render the identical structure.
+   ===================================================================== */
+
+:root {
+  --sidebar-w: 208px;
+  --topbar-h: 46px;
+  --ws-gap: 12px;
+  --ws-pad: 16px;
+}
+
+/* ---- chrome: give the work surface the screen ---- */
+.sidebar-brand { padding: 12px 12px 10px; }
+.sidebar-nav { padding: 2px 8px 8px; }
+.nav-group { margin-top: 10px; }
+.topbar { height: var(--topbar-h); min-height: var(--topbar-h); }
+
+/* Workstation pages opt in via .ws — full-bleed, no centered column. */
+.ws { width: 100%; max-width: none; margin: 0; min-width: 0; }
+.content:has(> .ws) { max-width: none; padding: 12px 16px 64px; }
+
+/* ---- compact work header (replaces the tall page header) ---- */
+.ws-head {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 0 0 10px; margin: 0 0 12px; border-bottom: 1px solid var(--line);
+}
+.ws-head .ws-id { min-width: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ws-head h1 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; margin: 0; color: var(--ink); }
+.ws-head .ws-sub { font-size: 12px; color: var(--ink-3); margin: 0; }
+.ws-head .ws-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ws-head .crumb { font-size: 11.5px; color: var(--ink-3); }
+
+/* ---- KPI rail: one compact strip across the full width ---- */
+.kpi-rail {
+  display: grid; gap: var(--ws-gap); margin: 0 0 var(--ws-gap);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.kpi {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 10px 12px; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+}
+.kpi .k-l { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi .k-v { font-size: 21px; font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; line-height: 1.15; }
+.kpi .k-d { font-size: 11px; color: var(--ink-3); display: flex; align-items: center; gap: 5px; }
+.kpi .k-d.up { color: var(--ok); } .kpi .k-d.down { color: var(--bad); } .kpi .k-d.flat { color: var(--ink-3); }
+.kpi.t-warn .k-v { color: var(--warn); } .kpi.t-bad .k-v { color: var(--bad); } .kpi.t-ok .k-v { color: var(--ok); }
+a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); background: var(--surface-2); }
+
+/* ---- command grid rows ---- */
+.ws-row { display: grid; gap: var(--ws-gap); margin: 0 0 var(--ws-gap); align-items: stretch; min-width: 0; }
+.ws-row-3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); }
+.ws-row-5 { grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); }
+.ws-row-2 { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+
+/* ---- dense panel: the workstation's only container ---- */
+.dpanel {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+  display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+}
+.dpanel-head {
+  display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+  border-bottom: 1px solid var(--line); background: var(--surface-2); min-height: 36px;
+}
+.dpanel-head h2, .dpanel-head h3 {
+  margin: 0; font-size: 11.5px; font-weight: 650; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dpanel-head .dp-right { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--ink-3); }
+.dpanel-body { padding: 10px 12px; min-width: 0; overflow: auto; flex: 1; }
+.dpanel-body.flush { padding: 0; }
+.dpanel-foot { padding: 7px 12px; border-top: 1px solid var(--line); font-size: 11.5px; }
+.dpanel-foot a { color: var(--action); }
+.dpanel .empty-mini { color: var(--ink-3); font-size: 12px; padding: 10px 2px; }
+
+/* ---- signal list: the advisory/attention row primitive ---- */
+.slist { list-style: none; margin: 0; padding: 0; }
+.slist li { border-bottom: 1px solid var(--line); }
+.slist li:last-child { border-bottom: 0; }
+.slist a, .slist .srow {
+  display: flex; align-items: center; gap: 9px; padding: 7px 12px;
+  text-decoration: none; color: inherit; min-width: 0;
+}
+.slist a:hover { background: var(--surface-2); text-decoration: none; }
+.slist .s-ico { width: 22px; height: 22px; flex: 0 0 22px; border-radius: 5px; display: grid; place-items: center; background: var(--inset); color: var(--ink-3); }
+.slist .s-ico.high { background: var(--bad-bg); color: var(--bad); }
+.slist .s-ico.med { background: var(--warn-bg); color: var(--warn); }
+.slist .s-ico.low { background: var(--info-bg); color: var(--action); }
+.slist .s-body { min-width: 0; flex: 1; line-height: 1.3; }
+.slist .s-t { display: block; font-size: 12.5px; color: var(--ink); font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slist .s-s { display: block; font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slist .s-r { margin-left: auto; display: flex; align-items: center; gap: 7px; flex: 0 0 auto; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* ---- dense table: the primary work surface ---- */
+.dtable-wrap { overflow-x: auto; min-width: 0; }
+.dtable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.dtable thead th {
+  position: sticky; top: 0; z-index: 1; background: var(--surface-2);
+  font-size: 10.5px; letter-spacing: .045em; text-transform: uppercase; color: var(--ink-3);
+  font-weight: 600; text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.dtable tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); vertical-align: middle; }
+.dtable tbody tr:last-child td { border-bottom: 0; }
+.dtable tbody tr:hover { background: var(--surface-2); }
+.dtable .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dtable .strong { color: var(--ink); font-weight: 600; }
+.dtable .t-name {
+  color: var(--ink); font-weight: 550; display: block; max-width: 260px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dtable .t-name .sub {
+  display: block; font-size: 10.5px; color: var(--ink-3); font-weight: 400;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px;
+}
+.dtable td:first-child { min-width: 180px; }
+.dtable td a { color: var(--action); }
+
+/* ---- workbench: main work surface + inspector rail ---- */
+.workbench { display: grid; grid-template-columns: minmax(0, 1fr) 312px; gap: var(--ws-gap); align-items: start; min-width: 0; }
+.workbench > .wb-main { min-width: 0; display: flex; flex-direction: column; gap: var(--ws-gap); }
+.workbench > .wb-rail { min-width: 0; display: flex; flex-direction: column; gap: var(--ws-gap); position: sticky; top: calc(var(--topbar-h) + 10px); }
+
+/* ---- split workspace: stream | canvas | inspector ---- */
+.splitws {
+  display: grid; grid-template-columns: minmax(0, 25fr) minmax(0, 52fr) minmax(0, 23fr);
+  gap: var(--ws-gap); min-width: 0; align-items: stretch;
+  height: calc(100vh - var(--topbar-h) - 118px); min-height: 520px;
+}
+.splitws > * { min-width: 0; min-height: 0; }
+.splitws .dpanel { height: 100%; }
+.splitws .dpanel-body { overflow: auto; }
+.ws-canvas { display: flex; flex-direction: column; min-height: 0; }
+.ws-canvas .twin-scene-card, .ws-canvas .ws-canvas-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ws-canvas svg { width: 100%; height: 100%; min-height: 0; display: block; }
+
+/* ---- workspace tabs: compact, underline, scrollable ---- */
+.wstabs {
+  display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 0 0 var(--ws-gap);
+  overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.wstabs::-webkit-scrollbar { display: none; }
+.wstabs a {
+  padding: 7px 11px; font-size: 12.5px; color: var(--ink-3); text-decoration: none;
+  border-bottom: 2px solid transparent; white-space: nowrap; display: flex; align-items: center; gap: 6px;
+}
+.wstabs a:hover { color: var(--ink); text-decoration: none; }
+.wstabs a.active { color: var(--ink); border-bottom-color: var(--action); font-weight: 600; }
+.wstabs a .count {
+  font-size: 10px; background: var(--bad-bg); color: var(--bad);
+  border-radius: 9px; padding: 0 5px; font-variant-numeric: tabular-nums;
+}
+
+/* ---- "About this view": doctrine compressed to one expandable line ---- */
+.about-view { margin: 0 0 var(--ws-gap); font-size: 11.5px; }
+.about-view > summary {
+  cursor: pointer; color: var(--ink-3); list-style: none; display: flex; align-items: center; gap: 6px;
+  padding: 5px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--inset);
+}
+.about-view > summary::-webkit-details-marker { display: none; }
+.about-view > summary:hover { color: var(--ink-2); border-color: var(--line-2); }
+.about-view > summary::after { content: "▾"; margin-left: auto; font-size: 10px; }
+.about-view[open] > summary::after { content: "▴"; }
+.about-view .av-body {
+  padding: 9px 11px; border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 var(--r-sm) var(--r-sm); color: var(--ink-3); line-height: 1.5;
+}
+.about-view .av-body p { margin: 0 0 6px; } .about-view .av-body p:last-child { margin: 0; }
+
+/* ---- next-action banner: one compact line, never a hero block ---- */
+.next-action {
+  display: flex; align-items: center; gap: 9px; padding: 8px 12px; margin: 0 0 var(--ws-gap);
+  border: 1px solid var(--info-line); background: var(--info-bg); border-radius: var(--r); font-size: 12.5px;
+}
+.next-action b { color: var(--ink); }
+.next-action .na-r { margin-left: auto; display: flex; gap: 7px; flex-shrink: 0; }
+
+/* ---- mini progress + readiness primitives ---- */
+.mini-bar { height: 6px; border-radius: 3px; background: var(--inset); overflow: hidden; }
+.mini-bar > span { display: block; height: 100%; background: var(--action); }
+.mini-bar.ok > span { background: var(--ok); } .mini-bar.warn > span { background: var(--warn); } .mini-bar.bad > span { background: var(--bad); }
+.readout { display: flex; align-items: baseline; gap: 7px; }
+.readout .r-v { font-size: 25px; font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; line-height: 1; }
+.readout .r-t { font-size: 11.5px; color: var(--ink-3); }
+.scorelist { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.scorelist li { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-3); }
+.scorelist li .sl-n { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scorelist li .sl-v { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.scorelist li .mini-bar { width: 66px; flex: 0 0 66px; }
+
+/* ---- KV facts, compact ---- */
+.dkv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
+.dkv dt { color: var(--ink-3); white-space: nowrap; }
+.dkv dd { margin: 0; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* =============== responsive: the workstation gives way ============== */
+@media (max-width: 1279px) {
+  .workbench { grid-template-columns: minmax(0, 1fr); }
+  .workbench > .wb-rail { position: static; }
+  .ws-row-3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .splitws { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); height: auto; }
+  .splitws > .ws-inspector { grid-column: 1 / -1; }
+  .splitws .dpanel { height: auto; }
+  .splitws .ws-canvas { min-height: 420px; }
+}
+@media (max-width: 1023px) {
+  .ws-row-3, .ws-row-2 { grid-template-columns: minmax(0, 1fr); }
+  .splitws { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 720px) {
+  .content:has(> .ws) { padding: 10px 12px 76px; }
+  :root { --ws-gap: 10px; }
+  .ws-head { gap: 8px; padding-bottom: 8px; margin-bottom: 10px; }
+  .ws-head h1 { font-size: 16px; }
+  .ws-head .ws-actions { margin-left: 0; width: 100%; }
+
+  /* mobile KPIs are a horizontally scrollable rail, never a 2x3 block */
+  .kpi-rail {
+    display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none; padding-bottom: 2px;
+  }
+  .kpi-rail::-webkit-scrollbar { display: none; }
+  .kpi-rail > .kpi { flex: 0 0 60%; max-width: 230px; scroll-snap-align: start; }
+  .kpi .k-v { font-size: 19px; }
+
+  .dtable { font-size: 12px; }
+  .dtable thead th, .dtable tbody td { padding: 6px 8px; }
+
+  /* sticky decision bar on mobile work surfaces */
+  .mobile-actionbar {
+    position: sticky; bottom: calc(var(--bottomnav-h) - 2px); z-index: 25;
+    display: flex; gap: 8px; padding: 9px 12px; margin: var(--ws-gap) -12px 0;
+    background: var(--surface); border-top: 1px solid var(--line-2);
+    box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.20);
+  }
+  .mobile-actionbar .btn, .mobile-actionbar form { flex: 1; }
+  .mobile-actionbar form .btn { width: 100%; }
+  .mobile-actionbar > .ma-note { flex: 1; font-size: 11.5px; color: var(--ink-3); align-self: center; }
+}
+@media (min-width: 721px) { .mobile-actionbar { display: none; } }
+
+/* ---- segmented control (mobile Timeline | Twin) ---- */
+.segmented { display: none; }
+@media (max-width: 1023px) {
+  .segmented {
+    display: flex; gap: 2px; padding: 3px; background: var(--inset);
+    border: 1px solid var(--line); border-radius: var(--r); margin: 0 0 var(--ws-gap);
+  }
+  .segmented a {
+    flex: 1; text-align: center; padding: 7px 10px; font-size: 12.5px; font-weight: 600;
+    color: var(--ink-3); text-decoration: none; border-radius: var(--r-sm);
+  }
+  .segmented a.active { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+  .segmented a:hover { text-decoration: none; color: var(--ink); }
+  /* the selected mode owns the viewport; the other is hidden, not stacked */
+  .splitws.mode-timeline > .ws-canvas, .splitws.mode-twin > .ws-stream { display: none; }
+  .splitws.mode-twin > .ws-canvas { min-height: calc(100vh - var(--topbar-h) - var(--bottomnav-h) - 190px); }
+}
+
+/* ---- context drawer / bottom sheet ---- */
+@media (max-width: 1023px) {
+  .splitws > .ws-inspector.as-sheet {
+    position: fixed; left: 0; right: 0; bottom: var(--bottomnav-h); z-index: 40;
+    max-height: 62vh; border-radius: var(--r) var(--r) 0 0;
+    box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.34); border: 1px solid var(--line-2);
+  }
+  .splitws > .ws-inspector.as-sheet .dpanel-head { position: sticky; top: 0; }
+}
+
+/* ---- print: workstation grids linearize ---- */
+@media print {
+  .workbench, .splitws, .ws-row-3, .ws-row-5, .ws-row-2 { display: block; }
+  .dpanel { break-inside: avoid; margin-bottom: 10px; }
+}
+
+/* ---- workstation: twin canvas panel + inline layer row (v25) ---- */
+.twin-canvas-panel .dpanel-body { display: flex; flex-direction: column; min-height: 0; padding: 0; }
+.ws-canvas-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0; }
+.ws-canvas-body > svg, .ws-canvas-body #twin-scene {
+  flex: 1 1 auto; min-height: 280px; width: 100%; height: 100%; display: block;
+}
+.ws-canvas-body .twin-playbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 7px 12px; border-top: 1px solid var(--line); background: var(--surface-2); font-size: 11.5px;
+}
+.ws-canvas-body .twin-playbar #twin-scrub { flex: 1; min-width: 90px; }
+.twin-layer-row {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; list-style: none;
+  margin: 0; padding: 7px 12px; border-top: 1px solid var(--line); font-size: 11.5px;
+}
+.twin-layer-row.twin-layer-list { flex-direction: row; flex-wrap: wrap; gap: 4px 14px; }
+.twin-layer-row .twin-layer { margin: 0; padding: 0; border: 0; display: inline-flex; width: auto; flex: 0 0 auto; }
+.twin-layer-row .twin-layer-count { margin-left: 4px; }
+.twin-layer-row .twin-layer .sub { display: none; }
+.twin-layer-row .twin-layer label { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-3); cursor: pointer; }
+.twin-layer-row .twin-layer-off label { opacity: .5; cursor: default; }
+.splitws .twin-stage-list { max-height: none; }
+.splitws .twin-stage { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.splitws .twin-stage:last-child { border-bottom: 0; }
+
+/* ---- mobile: executive priority ordering (v25) ----
+   Phones lead with what needs action, not with every desktop module.
+   Order only — the same markup, no duplicated DOM. */
+@media (max-width: 720px) {
+  .ws-row-5 { display: flex; flex-direction: column; }
+  .ws-row-5 > *:nth-child(1) { order: 1; }   /* projects needing attention */
+  .ws-row-5 > *:nth-child(2) { order: 2; }   /* draws needing review */
+  .ws-row-5 > *:nth-child(5) { order: 3; }   /* high-risk projects */
+  .ws-row-5 > *:nth-child(3) { order: 4; }
+  .ws-row-5 > *:nth-child(4) { order: 5; }
+  .ws-row-3 { display: flex; flex-direction: column; }
+  .ws-row-3 > *:nth-child(1) { order: 1; }   /* advisory signals first */
+  .ws-row-3 > *:nth-child(3) { order: 2; }   /* risk distribution */
+  .ws-row-3 > *:nth-child(2) { order: 3; }
+  /* deeper analytics move below the fold on phones */
+  .ws-row-2 { display: flex; flex-direction: column; }
+}
+
+/* ---- mobile: draw workbench composition (v25) ----
+   Header stays one line, the summary modules become a horizontal rail,
+   and the tabbed work area owns the viewport above the sticky decision
+   bar. Phones get their own composition, not a stacked desktop grid. */
+@media (max-width: 720px) {
+  .ws-row-rail {
+    display: flex; flex-direction: row; gap: 8px; overflow-x: auto;
+    scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .ws-row-rail::-webkit-scrollbar { display: none; }
+  .ws-row-rail > * { flex: 0 0 82%; max-width: 320px; scroll-snap-align: start; }
+  /* secondary chrome actions live in the sticky bar on phones */
+  .ws-head .ws-actions .hide-mobile { display: none; }
+  .next-action { align-items: flex-start; }
+}
+
+/* ---- projects register: the four-column row needs ~914px of content
+   width; between the tablet breakpoint and ~1180px the workstation's
+   wider content area is still narrower than that, so relax the minimums
+   before the row can push the page horizontally (v25). ---- */
+@media (min-width: 1024px) and (max-width: 1219px) {
+  .proj-row { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 8px 16px; }
+  .pr-na { overflow: hidden; text-overflow: ellipsis; }
+}
+
+/* ---- reconciliation form inputs must shrink with their row (v25) ----
+   A number input carries an intrinsic ~196px width; inside the flex row
+   it refused to shrink and pushed the page a few pixels wide at the
+   tablet/desktop boundary. */
+.lender-form label { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+.lender-form input, .lender-form select, .lender-form textarea { max-width: 100%; min-width: 0; }
