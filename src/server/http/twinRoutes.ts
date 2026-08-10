@@ -11,6 +11,7 @@ import * as twin from "../services/twin";
 import type { NavContext } from "../view/components";
 import type { User } from "../../shared/types";
 import { renderDigitalTwin, renderTwinProviders } from "../view/twinPages";
+import * as timeline from "../services/timeline";
 
 export interface TwinRouteContext {
   pathname: string;
@@ -62,6 +63,10 @@ export async function handleTwinRoutes(ctx: TwinRouteContext): Promise<boolean> 
         focusEventId: ctx.searchParams.get("focus"),
         pinDetail: pinId ? safePin(() => twin.twinPinDetail(user, projectId, pinId)) : null,
         providers: twin.twinProviderReadiness(),
+        // The workspace's left pane: the SAME governed events the Timeline
+        // page reads, through the same viewer-scoped service. Read-only.
+        events: timeline.projectTimeline(user, projectId).events,
+        mode: ctx.searchParams.get("mode"),
       })
     );
     return true;
