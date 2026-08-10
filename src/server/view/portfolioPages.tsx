@@ -412,6 +412,26 @@ export function renderExecutive(input: {
             </DensePanel>
           )}
 
+          {input.projectHistory ? (
+            <DensePanel title="Project history" foot={<a href="/timeline">Open timeline →</a>}>
+              <Readout
+                value={String(input.projectHistory.totalEvents)}
+                caption="Recorded events"
+                scores={[
+                  { label: "Projects with history", value: String(input.projectHistory.projects) },
+                  { label: "Active weeks", value: String(input.projectHistory.activeWeeks) },
+                  input.projectHistory.busiestProject
+                    ? { label: `Busiest: ${input.projectHistory.busiestProject.projectName}`, value: String(input.projectHistory.busiestProject.totalEvents) }
+                    : { label: "Busiest project", value: "—" },
+                  {
+                    label: "Last activity",
+                    value: input.projectHistory.lastActivityAt ? fmtDate(input.projectHistory.lastActivityAt).slice(0, 10) : "—",
+                  },
+                ]}
+              />
+            </DensePanel>
+          ) : null}
+
           <DensePanel
             title="High-risk projects"
             right={<span>{String(highRisk.length)}</span>}
