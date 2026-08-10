@@ -312,8 +312,19 @@ async function main() {
     if (!overview.html.includes(s)) fail(`command center section missing: ${s}`);
   }
   pass("all command-center sections render");
-  assert(/Advanced &amp; intelligence|Advanced & intelligence/.test(overview.html),
-    "advanced capabilities stay one group away — nothing deleted");
+  // The pilot rule is "the lender's surfaces lead; everything else stays one
+  // group away, nothing deleted". The workstation shell keeps that promise
+  // with named groups instead of one "Advanced & intelligence" bucket, so
+  // assert the shape that now carries the rule — every secondary group
+  // present, and the pilot's own group leading the sidebar.
+  for (const group of ["Command", "Verification", "Governance", "Intelligence", "Operations"]) {
+    assert(overview.html.includes(`>${group}</div>`),
+      `advanced capabilities stay one group away under ${group} — nothing deleted`);
+  }
+  assert(
+    overview.html.indexOf(">Command</div>") < overview.html.indexOf(">Verification</div>"),
+    "the lender's pilot surfaces lead the sidebar; advanced groups follow"
+  );
   for (const href of ["/timeline", "/evidence-intelligence", "/official-sources", "/executive"]) {
     assert(overview.html.includes(`href="${href}"`), `advanced destination preserved: ${href}`);
   }
