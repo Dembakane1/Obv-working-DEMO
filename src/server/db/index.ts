@@ -32,6 +32,11 @@ export const REPORTS_DIR = process.env.OBV_REPORT_STORAGE_PATH
 export const AUDIT_PACKAGES_DIR = path.join(DATA_DIR, "audit-packages");
 const DB_PATH = path.join(DATA_DIR, "obv.db");
 
+/** Current schema version stamped into PRAGMA user_version at open. The
+ *  additive-migration model brings any older database forward in place;
+ *  the stamp exists so an OLDER build refuses a NEWER database. */
+export const SCHEMA_VERSION = 1;
+
 let db: DatabaseSync | null = null;
 
 const SCHEMA = `
@@ -161,7 +166,41 @@ CREATE TABLE IF NOT EXISTS notifications (
   delivery_mode TEXT NOT NULL DEFAULT 'MOCK',      -- TEAMS_WEBHOOK | MOCK
   delivery_status TEXT NOT NULL DEFAULT 'SKIPPED', -- SENT | FAILED | SKIPPED
   sent_at TEXT,
-  failure_category TEXT                            -- sanitized, never secrets
+  failure_category TEXT,                           -- sanitized, never secrets
+  recipient_user_id TEXT,                          -- addressed recipient (null = broadcast)
+  recipient_reason TEXT                            -- deterministic "why this user"
+);
+
+-- Per-user channel preferences for OPTIONAL delivery (email/Teams).
+-- In-app notifications are mandatory and never consult this table.
+CREATE TABLE IF NOT EXISTS notification_preferences (
+  user_id TEXT NOT NULL REFERENCES users(id),
+  channel TEXT NOT NULL CHECK (channel IN ('EMAIL','TEAMS')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, channel)
+);
+
+-- Production backup records. The FILE is the backup; this row is its
+-- provenance: what was snapshotted, when, by whom, its hash, and the
+-- latest verification result. Rows are never deleted (retention_until is
+-- metadata for the operator — OBV never auto-deletes backup files).
+CREATE TABLE IF NOT EXISTS backup_records (
+  id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  source_environment TEXT NOT NULL,          -- demo | pilot | production at creation
+  file_name TEXT NOT NULL,                   -- basename under the backup dir (never a path)
+  size_bytes INTEGER,
+  sha256 TEXT,                               -- of the backup file at creation
+  schema_version INTEGER,                    -- PRAGMA user_version of the source
+  app_commit TEXT,                           -- deploy commit when the platform provides one
+  status TEXT NOT NULL DEFAULT 'COMPLETED' CHECK (status IN ('COMPLETED','FAILED')),
+  error TEXT,                                -- sanitized failure detail
+  verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED'
+    CHECK (verification_status IN ('UNVERIFIED','VERIFIED','MISMATCH')),
+  verified_at TEXT,
+  retention_until TEXT,
+  created_by_user_id TEXT                    -- null for scheduler/CLI runs
 );
 
 CREATE TABLE IF NOT EXISTS demo_fallback_photos (
@@ -2149,9 +2188,13 @@ CREATE TABLE IF NOT EXISTS email_outbox (
   status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED','SENT','FAILED','SUPPRESSED')),
   error TEXT,
   created_at TEXT NOT NULL,
-  sent_at TEXT
+  sent_at TEXT,
+  dedupe_key TEXT                               -- duplicate-send suppression (see sendEmail)
 );
 CREATE INDEX IF NOT EXISTS idx_email_outbox_status ON email_outbox(status, created_at);
+-- idx_email_outbox_dedupe is created in the additive-migration block in
+-- getDb(): creating it here would fail against databases that predate the
+-- dedupe_key column (the ALTER runs after this schema executes).
 
 -- E-signature requests: lifecycle state + append-only per-request trail.
 -- document_ref points at EXISTING artifacts (reports, draw documents);
@@ -2793,6 +2836,15 @@ export function getDb(): DatabaseSync {
       "ALTER TABLE inspection_requirements ADD COLUMN code_basis_required INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE inspection_requirements ADD COLUMN permit_must_be_active_before_draw_review INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE inspection_requirements ADD COLUMN permit_must_be_active_before_governance INTEGER NOT NULL DEFAULT 0",
+      // ---- email duplicate-send suppression (additive) ----
+      "ALTER TABLE email_outbox ADD COLUMN dedupe_key TEXT",
+      // The dedupe index lives here (not in SCHEMA) so databases that
+      // predate the column gain it right after the ALTER above.
+      "CREATE INDEX IF NOT EXISTS idx_email_outbox_dedupe ON email_outbox(dedupe_key, created_at)",
+      // ---- per-recipient notification routing (additive; legacy rows
+      // stay broadcast with NULL recipient) ----
+      "ALTER TABLE notifications ADD COLUMN recipient_user_id TEXT",
+      "ALTER TABLE notifications ADD COLUMN recipient_reason TEXT",
     ]) {
       try {
         db.exec(ddl);
@@ -2898,6 +2950,36 @@ export function getDb(): DatabaseSync {
         db.exec(ddl);
       } catch {
         /* column already present */
+      }
+    }
+    // ---- schema version stamp (database safety) ----
+    // The additive-migration model means any database this build has
+    // opened is AT the current version; the stamp exists so an OLDER
+    // build refuses a NEWER database instead of running against columns
+    // and constraints it does not understand. Bump when the schema
+    // changes shape in a way an older build must not touch.
+    const uv = Number(
+      (db.prepare("PRAGMA user_version").get() as { user_version?: number }).user_version ?? 0
+    );
+    if (uv > SCHEMA_VERSION) {
+      const stale = db;
+      db = null;
+      try { stale.close(); } catch { /* already closed */ }
+      throw new Error(
+        `This database was created by a NEWER build (schema version ${uv} > ${SCHEMA_VERSION}). ` +
+          "Running an older build against it could corrupt governed records. Deploy the newer " +
+          "build, or restore the matching backup."
+      );
+    }
+    // Stamp only when needed, and tolerate losing the race: an
+    // unconditional write here would contend with a sibling process
+    // (test batteries open one database from several processes at once),
+    // and the stamp is a protection marker, not data.
+    if (uv !== SCHEMA_VERSION) {
+      try {
+        db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+      } catch {
+        /* a concurrent open is stamping the same value */
       }
     }
   }

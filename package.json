@@ -11,6 +11,8 @@
     "dev": "npm run build && node dist/server/http/server.js",
     "test": "node scripts/run-all-tests.js",
     "verify": "npm run build && npm test",
+    "backup": "node scripts/backup.js",
+    "pilot:check": "node scripts/pilot-check.js",
     "doctor": "node scripts/doctor.js",
     "browsers": "playwright install chromium",
     "browsers:deps": "playwright install --with-deps chromium",

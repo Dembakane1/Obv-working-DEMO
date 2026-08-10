@@ -71,6 +71,14 @@ async function page(key, p, base = BASE) {
 }
 
 let db;
+// Kill spawned servers even when a failure happens before the try/finally
+// block arms — an orphan would poison the NEXT run's port pre-flight.
+const spawnedServers = [];
+process.on("exit", () => {
+  for (const s of spawnedServers) {
+    try { s.kill(); } catch { /* already gone */ }
+  }
+});
 const q1 = (sql, ...args) => db.prepare(sql).get(...args);
 const exec = (sql, ...args) => db.prepare(sql).run(...args);
 
@@ -151,6 +159,7 @@ async function main() {
     env: { ...process.env, OBV_DATA_DIR: DATA_DIR, PORT: String(PORT), OBV_BANKING_PROVIDER: "mock", OBV_BANKING_MODE: "demo" },
     stdio: "ignore",
   });
+  spawnedServers.push(demoServer);
   // Identity hardening (added after the original audit): production mode
   // REFUSES to start without a session secret — forgeable identity
   // cookies would be worse than no server. Assert the refusal, then
@@ -181,6 +190,7 @@ async function main() {
     env: prodEnv,
     stdio: "ignore",
   });
+  spawnedServers.push(prodServer);
   async function waitUp(base) {
     let up = false;
     for (let i = 0; i < 50 && !up; i++) {
@@ -233,6 +243,7 @@ async function main() {
       env: { ...prodEnv, OBV_DEMO_AUTH: "1" },
       stdio: "ignore",
     });
+    spawnedServers.push(prodServer);
     await waitUp(PROD_BASE);
     await signIn("prodFunder", "user-funder", PROD_BASE);
     fp = bankingFingerprint();

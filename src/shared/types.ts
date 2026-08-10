@@ -202,6 +202,20 @@ export interface Notification {
   sentAt?: string | null;
   /** Sanitized failure category (never secrets or webhook URLs). */
   failureCategory?: string | null;
+  /** Addressed recipient (null = legacy broadcast row). */
+  recipientUserId?: string | null;
+  /** Deterministic, non-secret "why this user" explanation. */
+  recipientReason?: string | null;
+}
+
+/** Per-user delivery preference for OPTIONAL channels. In-app delivery is
+ *  mandatory and has no preference row — preferences can mute a channel,
+ *  never the authoritative in-app record. */
+export interface NotificationPreference {
+  userId: string;
+  channel: "EMAIL" | "TEAMS";
+  enabled: boolean;
+  updatedAt: string;
 }
 
 /** Append-only, hash-chained evidence ledger entry. */
@@ -2990,6 +3004,8 @@ export interface EmailOutboxEntry {
   error: string | null;
   createdAt: string;
   sentAt: string | null;
+  /** Duplicate-send suppression key (see sendEmail); null when unused. */
+  dedupeKey: string | null;
 }
 
 export type EsignKind =

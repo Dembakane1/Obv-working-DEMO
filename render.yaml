@@ -55,3 +55,44 @@ services:
     # envVars:
     #   - key: OBV_DATA_DIR
     #     value: /var/data
+
+  # ---- EXTERNAL PILOT (real lender; SEPARATE from the public demo) ----
+  # Uncomment to provision. REQUIREMENTS this blueprint cannot buy for
+  # you: a PAID instance type (persistent disks are not available on the
+  # free plan — the pilot cannot run on ephemeral storage) and Postmark
+  # credentials entered in the dashboard. After the first deploy, run
+  # `npm run pilot:check` in a shell on the service and fix every FAIL
+  # before inviting the lender. Full sequence: docs/FIRST_LENDER_RUNBOOK.md
+  #
+  # - type: web
+  #   name: obv-pilot
+  #   runtime: docker
+  #   plan: starter               # any PAID plan — required for the disk
+  #   branch: main
+  #   dockerfilePath: ./Dockerfile
+  #   healthCheckPath: /api/ready # readiness, not liveness: deploys gate on it
+  #   disk:
+  #     name: obv-pilot-data
+  #     mountPath: /var/data
+  #     sizeGB: 5
+  #   envVars:
+  #     - key: OBV_ENVIRONMENT
+  #       value: pilot            # disables every demo surface at startup
+  #     - key: OBV_DATA_DIR
+  #       value: /var/data
+  #     - key: OBV_SESSION_SECRET
+  #       generateValue: true
+  #     - key: OBV_AUTH_LINK_DELIVERY
+  #       value: email
+  #     - key: OBV_EMAIL_PROVIDER
+  #       value: postmark
+  #     - key: OBV_INTEGRATIONS_PRODUCTION_ENABLE
+  #       value: "true"
+  #     - key: OBV_POSTMARK_SERVER_TOKEN
+  #       sync: false             # entered in the dashboard, never committed
+  #     - key: OBV_EMAIL_FROM
+  #       sync: false             # verified Postmark sender signature
+  #     - key: OBV_BOOTSTRAP_ADMIN_EMAIL
+  #       sync: false             # the OBV operator's real address
+  #     - key: OBV_PUBLIC_BASE_URL
+  #       sync: false             # e.g. https://obv-pilot.onrender.com

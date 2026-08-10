@@ -119,9 +119,15 @@ export function assertIntegrationsConfig(): void {
 
 export function integrationsStartupNotice(): string {
   const cfg = integrationsConfig();
+  // Postmark is the one LIVE external adapter in this build; every other
+  // external vendor remains a disabled boundary.
+  const emailNote =
+    cfg.emailProvider === "postmark"
+      ? "email=postmark (LIVE transactional provider)"
+      : `email=${cfg.emailProvider}`;
   return (
-    `integrations: email=${cfg.emailProvider} esign=${cfg.esignProvider} ` +
-    `accounting=${cfg.accountingProvider} (external adapters are disabled boundaries)`
+    `integrations: ${emailNote} esign=${cfg.esignProvider} ` +
+    `accounting=${cfg.accountingProvider} (other external adapters are disabled boundaries)`
   );
 }
 

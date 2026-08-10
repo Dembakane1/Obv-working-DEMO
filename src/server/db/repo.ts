@@ -602,35 +602,100 @@ export function insertNotification(n: Notification): void {
   getDb()
     .prepare(
       `INSERT INTO notifications (id, type, message, created_at, project_id,
-         milestone_id, delivery_mode, delivery_status, sent_at, failure_category)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         milestone_id, delivery_mode, delivery_status, sent_at, failure_category,
+         recipient_user_id, recipient_reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       n.id, n.type, n.message, n.createdAt, n.projectId ?? null,
       n.milestoneId ?? null, n.deliveryMode, n.deliveryStatus,
-      n.sentAt ?? null, n.failureCategory ?? null
+      n.sentAt ?? null, n.failureCategory ?? null,
+      n.recipientUserId ?? null, n.recipientReason ?? null
     );
+}
+
+function toNotification(row: Row): Notification {
+  return {
+    id: row.id as string,
+    type: row.type as string,
+    message: row.message as string,
+    createdAt: row.created_at as string,
+    projectId: (row.project_id as string) ?? null,
+    milestoneId: (row.milestone_id as string) ?? null,
+    deliveryMode: ((row.delivery_mode as string) ?? "MOCK") as Notification["deliveryMode"],
+    deliveryStatus: ((row.delivery_status as string) ?? "SKIPPED") as Notification["deliveryStatus"],
+    sentAt: (row.sent_at as string) ?? null,
+    failureCategory: (row.failure_category as string) ?? null,
+    recipientUserId: (row.recipient_user_id as string) ?? null,
+    recipientReason: (row.recipient_reason as string) ?? null,
+  };
 }
 
 export function listNotifications(limit = 20): Notification[] {
   return getDb()
     .prepare("SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?")
     .all(limit)
-    .map((r) => {
-      const row = r as Row;
-      return {
-        id: row.id as string,
-        type: row.type as string,
-        message: row.message as string,
-        createdAt: row.created_at as string,
-        projectId: (row.project_id as string) ?? null,
-        milestoneId: (row.milestone_id as string) ?? null,
-        deliveryMode: ((row.delivery_mode as string) ?? "MOCK") as Notification["deliveryMode"],
-        deliveryStatus: ((row.delivery_status as string) ?? "SKIPPED") as Notification["deliveryStatus"],
-        sentAt: (row.sent_at as string) ?? null,
-        failureCategory: (row.failure_category as string) ?? null,
-      };
-    });
+    .map((r) => toNotification(r as Row));
+}
+
+/** The feed pages render: one BROADCAST row per event (recipient IS
+ *  NULL). Addressed routing rows are deliberately excluded — they are the
+ *  per-recipient delivery record (with its "why this user" reason) shown
+ *  in the operator view, and rendering them here would both duplicate
+ *  events and expose other users' routing. */
+export function listBroadcastNotifications(limit = 20): Notification[] {
+  return getDb()
+    .prepare(
+      "SELECT * FROM notifications WHERE recipient_user_id IS NULL ORDER BY created_at DESC LIMIT ?"
+    )
+    .all(limit)
+    .map((r) => toNotification(r as Row));
+}
+
+/** Addressed routing records for ONE user (their own delivery history). */
+export function listNotificationsForUser(userId: string, limit = 20): Notification[] {
+  return getDb()
+    .prepare(
+      "SELECT * FROM notifications WHERE recipient_user_id = ? ORDER BY created_at DESC LIMIT ?"
+    )
+    .all(userId, limit)
+    .map((r) => toNotification(r as Row));
+}
+
+// ---------- notification preferences ----------
+
+/** Optional-channel preference; missing row = enabled (opt-out model). */
+export function notificationChannelEnabled(userId: string, channel: "EMAIL" | "TEAMS"): boolean {
+  const r = getDb()
+    .prepare("SELECT enabled FROM notification_preferences WHERE user_id = ? AND channel = ?")
+    .get(userId, channel) as Row | undefined;
+  return r ? Boolean(r.enabled) : true;
+}
+
+export function setNotificationChannelEnabled(
+  userId: string,
+  channel: "EMAIL" | "TEAMS",
+  enabled: boolean,
+  updatedAt: string
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO notification_preferences (user_id, channel, enabled, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_id, channel) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`
+    )
+    .run(userId, channel, enabled ? 1 : 0, updatedAt);
+}
+
+export function listNotificationPreferences(userId: string): { channel: "EMAIL" | "TEAMS"; enabled: boolean }[] {
+  const rows = getDb()
+    .prepare("SELECT channel, enabled FROM notification_preferences WHERE user_id = ?")
+    .all(userId) as Row[];
+  const byChannel = new Map(rows.map((r) => [r.channel as string, Boolean(r.enabled)]));
+  return (["EMAIL", "TEAMS"] as const).map((channel) => ({
+    channel,
+    enabled: byChannel.get(channel) ?? true,
+  }));
 }
 
 // ---------- demo fallback photos ----------

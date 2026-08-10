@@ -119,6 +119,9 @@ const STANDALONE = [
   "lender-pilot-test.js",
   "authz-test.js",
   "toolchain-test.js",
+  "backup-restore-test.js",
+  "pilot-production-test.js",
+  "pilot-acceptance-test.js",
 ];
 
 /** Suites that target one shared, freshly seeded application server. */

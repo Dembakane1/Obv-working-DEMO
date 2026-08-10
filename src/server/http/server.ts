@@ -28,6 +28,16 @@ import { getDb, REPORTS_DIR, WORM_DIR, UPLOADS_DIR } from "../db/index";
 import * as repo from "../db/repo";
 import * as authz from "../services/authz";
 import { AccessError } from "../services/authz";
+import { assertPostureConfig, postureStartupNotice, productionPosture } from "../services/posture";
+import {
+  assertStorageConfig,
+  databaseSafetyCheck,
+  storagePosture,
+  storageStartupNotice,
+} from "../services/ops/storage";
+import * as backups from "../services/ops/backups";
+import * as pilotChecklist from "../services/ops/checklist";
+import * as integrationsRepo from "../db/integrationsRepo";
 import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { wormEvidenceStore } from "../services/WormEvidenceStore";
@@ -376,6 +386,51 @@ function currentUser(req: http.IncomingMessage): User | null {
  *  the demo switcher exists, the production sign-in page otherwise. */
 function signInPath(): string {
   return demoAuthEnabled() ? "/demo" : "/signin";
+}
+
+/** Canonical base for links that leave the process in email (invitation
+ *  activation, sign-in). The explicit public URL wins; the request host is
+ *  a development fallback only. */
+function invitationBaseUrl(req: http.IncomingMessage): string {
+  const configured = (process.env.OBV_PUBLIC_BASE_URL ?? process.env.RENDER_EXTERNAL_URL ?? "")
+    .trim()
+    .replace(/\/$/, "");
+  if (configured) return configured;
+  return req.headers.host ? `${requestIsSecure(req) ? "https" : "http"}://${req.headers.host}` : "";
+}
+
+/** Email an invitation's activation link to the invitee through the
+ *  configured provider. The INVITATION kind is credential-redacted in the
+ *  outbox, so the raw link reaches the wire but never the database. A
+ *  failing send is recorded by the email layer and never interrupts the
+ *  invitation itself. */
+function deliverInvitationEmail(
+  invitation: { email: string; organizationId: string; role: string },
+  link: string,
+  actor: User
+): void {
+  try {
+    const org = repo.getOrganization(invitation.organizationId);
+    const composed = integrationsSvc.composeEmail("INVITATION", {
+      orgName: org?.name ?? "your organization",
+      inviterName: actor.name,
+      role: invitation.role,
+      activationLink: link,
+    });
+    integrationsSvc.sendEmail(
+      {
+        kind: "INVITATION",
+        to: invitation.email,
+        subject: composed.subject,
+        text: composed.text,
+        organizationId: invitation.organizationId,
+        containsCredential: true,
+      },
+      actor
+    );
+  } catch {
+    /* recorded by the email layer; the invitation itself already exists */
+  }
 }
 
 function readBody(req: http.IncomingMessage, limitBytes = 16 * 1024 * 1024): Promise<Buffer> {
@@ -1332,6 +1387,45 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       },
       database === "connected" ? 200 : 503
     );
+    return;
+  }
+
+  // READINESS (distinct from the liveness probe above): whether this
+  // deployment is SAFE to receive pilot traffic. Open like /api/health so
+  // platform probes can gate rollout, but deliberately terse — pass/fail
+  // booleans only; paths, versions, provider names and counts live behind
+  // the authenticated operator view (/api/ops/status).
+  if (method === "GET" && pathname === "/api/ready") {
+    const checks: Record<string, boolean> = {};
+    try {
+      getDb().prepare("PRAGMA user_version").get();
+      checks.database = true;
+    } catch {
+      checks.database = false;
+    }
+    try {
+      checks.storage = storagePosture().roots.every((r) => r.writable);
+    } catch {
+      checks.storage = false;
+    }
+    try {
+      identitySvc.assertIdentityConfig();
+      checks.identity = true;
+    } catch {
+      checks.identity = false;
+    }
+    try {
+      integrationsSvc.assertIntegrationsConfig();
+      integrationsSvc.assertEmailProviderConfig();
+      checks.email = true;
+    } catch {
+      checks.email = false;
+    }
+    const ready = Object.values(checks).every(Boolean);
+    // Backup freshness is reported, not gating: readiness gates rollout,
+    // and a fresh deployment's first backup necessarily comes after it.
+    const backupFresh = backups.hoursSinceLastBackup() <= 24;
+    sendJson(res, { ready, checks, backupWithin24h: backupFresh }, ready ? 200 : 503);
     return;
   }
 
@@ -4311,10 +4405,154 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ---- operations: status, backups (operator-only, audited) ----
+  // The detailed counterpart to /api/ready: storage posture, database
+  // safety, email/webhook queue health, backup freshness, recent
+  // delivery failures, and the per-recipient notification routing record
+  // (the operator's "why did this user receive this?" view). Secrets,
+  // tokens and raw links never appear — everything here is stats,
+  // statuses, sanitized error classes and non-secret metadata.
+  if (pathname === "/api/ops/status" && method === "GET") {
+    const op = currentUser(req);
+    if (!op) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    if (op.role !== "PROJECT_MANAGER") { sendJson(res, { error: "Operations status requires an administrator" }, 403); return; }
+    let dbSafety: { integrity: string; foreignKeyViolations: number; schemaVersion: number } | { error: string };
+    try {
+      dbSafety = databaseSafetyCheck();
+    } catch (e) {
+      dbSafety = { error: (e as Error).message.slice(0, 200) };
+    }
+    const backupList = backups.listBackups(10);
+    sendJson(res, {
+      environment: postureStartupNotice(),
+      storage: storagePosture(),
+      database: dbSafety,
+      email: {
+        provider: integrationsSvc.resolveEmailProvider().name,
+        stats: integrationsRepo.emailStats(),
+        recentFailures: integrationsRepo
+          .listEmails({ status: "FAILED", limit: 10 })
+          .map((e: { id: string; kind: string; toEmail: string; error: string | null; createdAt: string }) => ({
+            id: e.id, kind: e.kind, to: e.toEmail, error: e.error, createdAt: e.createdAt,
+          })),
+      },
+      webhooks: integrationsRepo.webhookQueueStats(),
+      backups: {
+        latestVerified: backups.latestVerifiedBackup(),
+        hoursSinceLast: backups.hoursSinceLastBackup(),
+        recent: backupList,
+      },
+      recentAddressedNotifications: repo
+        .listNotifications(50)
+        .filter((n) => n.recipientUserId)
+        .slice(0, 25)
+        .map((n) => ({
+          type: n.type,
+          createdAt: n.createdAt,
+          recipientUserId: n.recipientUserId,
+          reason: n.recipientReason,
+          projectId: n.projectId,
+        })),
+    });
+    return;
+  }
+  // Setup checklist for organization administrators: deterministic
+  // "ready to process the first draw" derivation. Read-only — it can
+  // never change governance.
+  if (pathname === "/api/ops/checklist" && method === "GET") {
+    const op = currentUser(req);
+    if (!op) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    if (!pilot.canAdminPilot(op)) { sendJson(res, { error: "The setup checklist requires an administrator" }, 403); return; }
+    sendJson(res, pilotChecklist.pilotSetupChecklist(op));
+    return;
+  }
+  if (pathname === "/api/ops/backups" && method === "POST") {
+    const op = currentUser(req);
+    if (!op) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    if (op.role !== "PROJECT_MANAGER") { sendJson(res, { error: "Backups require an administrator" }, 403); return; }
+    const record = backups.createBackup(op.id);
+    const verified = record.status === "COMPLETED" ? backups.verifyBackup(record.id) : record;
+    repo.insertConfigAudit({
+      id: repo.newId(),
+      projectId: null,
+      actorUserId: op.id,
+      action: "BACKUP_CREATED",
+      entityType: "backup",
+      entityId: record.id,
+      reason: null,
+      beforeSummary: null,
+      afterSummary: `${verified.status}/${verified.verificationStatus} (${verified.sizeBytes ?? 0} bytes)`,
+      createdAt: new Date().toISOString(),
+    });
+    sendJson(res, { backup: verified }, verified.status === "COMPLETED" ? 201 : 500);
+    return;
+  }
+  {
+    const verifyMatch = /^\/api\/ops\/backups\/([^/]+)\/verify$/.exec(pathname);
+    if (verifyMatch && method === "POST") {
+      const op = currentUser(req);
+      if (!op) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+      if (op.role !== "PROJECT_MANAGER") { sendJson(res, { error: "Backups require an administrator" }, 403); return; }
+      const verified = backups.verifyBackup(verifyMatch[1]);
+      repo.insertConfigAudit({
+        id: repo.newId(),
+        projectId: null,
+        actorUserId: op.id,
+        action: "BACKUP_VERIFIED",
+        entityType: "backup",
+        entityId: verified.id,
+        reason: null,
+        beforeSummary: null,
+        afterSummary: verified.verificationStatus,
+        createdAt: new Date().toISOString(),
+      });
+      sendJson(res, { backup: verified });
+      return;
+    }
+  }
+
+  // ---- notification preferences (self-scoped; in-app stays mandatory) ----
+  if (pathname === "/api/me/notification-preferences") {
+    const prefUser = currentUser(req);
+    if (!prefUser) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    if (method === "GET") {
+      sendJson(res, {
+        preferences: repo.listNotificationPreferences(prefUser.id),
+        note: "In-app notifications are mandatory; preferences affect optional email/Teams delivery only.",
+      });
+      return;
+    }
+    if (method === "POST") {
+      const body = (await readBody(req, 4 * 1024)).toString("utf8");
+      const params = isFormPost(req)
+        ? Object.fromEntries(new URLSearchParams(body))
+        : (JSON.parse(body || "{}") as Record<string, unknown>);
+      const channel = String(params.channel ?? "").toUpperCase();
+      if (channel !== "EMAIL" && channel !== "TEAMS") {
+        sendJson(res, { error: "channel must be EMAIL or TEAMS" }, 422);
+        return;
+      }
+      const enabled = /^(1|true|on)$/i.test(String(params.enabled ?? ""));
+      repo.setNotificationChannelEnabled(prefUser.id, channel, enabled, new Date().toISOString());
+      sendJson(res, { preferences: repo.listNotificationPreferences(prefUser.id) });
+      return;
+    }
+  }
+
   // Reset the DEMO data to its seeded state. Pilot projects created
   // through onboarding are preserved — wiping everything requires the
   // explicitly gated Development Full Reset below.
   if (method === "POST" && pathname === "/api/demo/reset") {
+    // Demo reset does not exist in pilot/production posture — same 404
+    // shape as the disabled role switcher (the seed service refuses too;
+    // this route gate keeps the surface unprobeable).
+    if (productionPosture()) {
+      sendJson(res, { error: "Not found" }, 404);
+      return;
+    }
     // Reseeding is destructive (it can remove uploads, WORM evidence,
     // reports and audit packages), so it requires a session. The blanket
     // page guard further down is GET-only and would never cover this.
@@ -4438,10 +4676,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       },
       actor
     );
-    // Mock delivery for the pilot demo build: the activation link is
-    // surfaced ONCE to the administrator; no real email is sent and the
-    // raw token is never logged or stored.
-    const link = `${req.headers.host ? `http://${req.headers.host}` : ""}/invite/${rawToken}`;
+    // The activation link is surfaced ONCE to the administrator AND
+    // emailed to the invitee through the configured provider (redacted
+    // by kind in the outbox — the raw token is never logged or stored).
+    const link = `${invitationBaseUrl(req)}/invite/${rawToken}`;
+    deliverInvitationEmail(invitation, link, actor);
     if (isFormPost(req)) {
       redirect(res, `/setup?invited=${encodeURIComponent(invitation.email)}&link=${encodeURIComponent(link)}`);
     } else {
@@ -4458,7 +4697,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       pilotRespond("/setup", { invitation });
     } else {
       const { invitation, rawToken } = pilot.resendInvitation(invActionMatch[1], actor);
-      const link = `${req.headers.host ? `http://${req.headers.host}` : ""}/invite/${rawToken}`;
+      const link = `${invitationBaseUrl(req)}/invite/${rawToken}`;
+      deliverInvitationEmail(invitation, link, actor);
       if (isFormPost(req)) {
         redirect(res, `/setup?invited=${encodeURIComponent(invitation.email)}&link=${encodeURIComponent(link)}`);
       } else {
@@ -4679,6 +4919,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   // including user-created pilot projects. Gated behind an authorized
   // role AND a typed confirmation phrase; never exposed casually.
   if (method === "POST" && pathname === "/api/dev/full-reset") {
+    // The development full reset does not exist outside the demo
+    // environment (defense in depth: seedDemo refuses there as well).
+    if (productionPosture()) {
+      sendJson(res, { error: "Not found" }, 404);
+      return;
+    }
     const resetUser = currentUser(req);
     if (!resetUser || resetUser.role !== "PROJECT_MANAGER") {
       sendJson(res, { error: "Not authorized" }, 403);
@@ -4896,7 +5142,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         nav: navFor(user!, "overview"),
         metrics: overviewMetrics(user!, projects),
         projects,
-        notifications: repo.listNotifications(),
+        notifications: repo.listBroadcastNotifications(),
         chainValid: chain.valid,
         teamsConfigured: TEAMS_CONFIG.configured(),
         nextReleases,
@@ -4936,6 +5182,35 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const u = currentUser(req);
     if (!u) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
     sendJson(res, lenderPilot.pilotRoiMeasurements(u));
+    return;
+  }
+
+  // Pilot-results export: the same tenant-scoped raw measurements as
+  // /api/pilot/roi, as CSV for post-pilot analysis. Measurements only —
+  // no fabricated monetary savings, by design.
+  if (method === "GET" && pathname === "/api/pilot/roi/export.csv") {
+    const u = currentUser(req);
+    if (!u) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    const roi = lenderPilot.pilotRoiMeasurements(u);
+    const cols = [
+      "drawRequestId", "projectId", "drawNumber", "submittedAt", "firstReviewAt",
+      "decisionAt", "daysSubmissionToFirstReview", "daysSubmissionToDecision",
+      "resubmissions", "clarificationRequests", "returnedCount",
+      "missingDocumentEvents", "exceptionsRaised",
+    ] as const;
+    const esc = (v: unknown): string => {
+      const s = v === null || v === undefined ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csv = [
+      cols.join(","),
+      ...roi.draws.map((d) => cols.map((c) => esc(d[c])).join(",")),
+    ].join("\n");
+    res.writeHead(200, {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="obv-pilot-measurements-${roi.asOf.slice(0, 10)}.csv"`,
+    });
+    res.end(csv + "\n");
     return;
   }
 
@@ -5236,7 +5511,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         ledger: repo.listLedgerEntries(),
         chainValid: chain.valid,
         accountEvents: repo.listAccountEventsForProject(data.project.id),
-        notifications: repo.listNotifications(30),
+        notifications: repo.listBroadcastNotifications(30),
         users: usersById(),
         threads: listThreadsForUser(user!)
           .filter((t) => t.projectId === data.project.id)
@@ -6295,6 +6570,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 }
 
 const server = http.createServer((req, res) => {
+  // Correlation id for supportability: honor a sane inbound X-Request-Id
+  // (proxies often mint one), else generate. Echoed on the response and
+  // stamped into the error log line, so "OBV didn't work" can become a
+  // specific, findable event without exposing anything internal.
+  const inboundRid = String(req.headers["x-request-id"] ?? "");
+  const requestId = /^[A-Za-z0-9._-]{8,64}$/.test(inboundRid) ? inboundRid : randomUUID();
+  res.setHeader("X-Request-Id", requestId);
   handle(req, res).catch((err) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
@@ -6306,8 +6588,10 @@ const server = http.createServer((req, res) => {
     // something real. ComplianceError is the DMV layer's typed error.
     const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError || err instanceof IdentityError || err instanceof IntegrationError || err instanceof EvidenceIntelError || err instanceof OfficialSourceError || err instanceof TimelineError;
     const status = known ? err.statusCode : 500;
-    console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
-    const message = known ? err.message : "Internal server error";
+    console.error(`[error] [rid=${requestId}] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
+    // Unknown failures surface the correlation id so a lender can quote a
+    // findable reference to support — never the error itself.
+    const message = known ? err.message : `Internal server error (reference ${requestId})`;
     if (res.headersSent) {
       res.end();
       return;
@@ -6363,7 +6647,12 @@ function startupCheck(label: string, fn: () => void): void {
   }
 }
 
+startupCheck("environment posture", () => assertPostureConfig());
+startupCheck("storage", () => assertStorageConfig());
 startupCheck("database", () => void getDb());
+// Fail safely against a corrupted or referentially broken database — a
+// server that runs anyway would author records on rotten ground.
+startupCheck("database safety", () => void databaseSafetyCheck());
 startupCheck("banking provider", () => resolveBankingProvider());
 startupCheck("session configuration", () => assertSessionConfig());
 startupCheck("identity configuration", () => identitySvc.assertIdentityConfig());
@@ -6371,6 +6660,9 @@ startupCheck("identity configuration", () => identitySvc.assertIdentityConfig())
 // and OBV_BOOTSTRAP_ADMIN_EMAIL is set; a populated table makes it a no-op.
 startupCheck("identity bootstrap", () => void identitySvc.ensureBootstrapIdentity());
 startupCheck("integrations configuration", () => integrationsSvc.assertIntegrationsConfig());
+// The configured email provider's own requirements (e.g. Postmark's token
+// and sender signature) are validated at startup, never at first send.
+startupCheck("email provider", () => integrationsSvc.assertEmailProviderConfig());
 startupCheck("evidence intelligence configuration", () => evidenceIntelSvc.assertEvidenceIntelConfig());
 startupCheck("official sources configuration", () => officialSourcesSvc.assertOfficialSourcesConfig());
 startupCheck("official source registry", () => officialSourcesSvc.ensureSourceRegistry());
@@ -6386,8 +6678,10 @@ if (integrationsSvc.integrationsConfig().webhookDispatchIntervalMs > 0) {
 }
 server.listen(PORT, () => {
   console.log(`OBV running at http://localhost:${PORT}`);
-  // Session posture is disclosed at boot: a reader must never have to guess
-  // whether identity cookies are signed with a durable secret.
+  // Posture is disclosed at boot: a reader must never have to guess
+  // which environment this is or whether cookies use a durable secret.
+  console.log(postureStartupNotice());
+  console.log(storageStartupNotice());
   console.log(sessionStartupNotice());
   console.log(identitySvc.identityStartupNotice());
   console.log(integrationsSvc.integrationsStartupNotice());

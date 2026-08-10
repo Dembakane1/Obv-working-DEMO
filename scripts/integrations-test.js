@@ -150,20 +150,32 @@ function staticGuards() {
     repo: "src/server/db/integrationsRepo.ts",
     routes: "src/server/http/integrationRoutes.ts",
   };
+  // Postmark is the ONE live external adapter (production email for the
+  // external pilot); its HTTP delivery lives in email.ts. Every other
+  // module stays network-free, and every other vendor stays a named
+  // disabled boundary with no endpoint anywhere.
   const nonNetwork = Object.entries(files)
-    .filter(([k]) => k !== "webhooks")
+    .filter(([k]) => k !== "webhooks" && k !== "email")
     .map(([, p]) => readSrc(p))
     .join("\n");
   assert(
     !/\bnode:https?\b|fetch\s*\(|axios|XMLHttpRequest|net\.connect/.test(nonNetwork),
-    "network primitives exist ONLY in the webhook dispatcher"
+    "network primitives exist ONLY in the webhook dispatcher and the live email adapter"
   );
   const combined = Object.values(files).map(readSrc).join("\n");
   assert(
-    !/api\.sendgrid|api\.mailgun|sesv2|api\.postmarkapp|graph\.microsoft|docusign\.net|sign\.dropbox|adobesign|quickbooks\.api|api\.xero|sage\.com/i.test(
+    !/api\.sendgrid|api\.mailgun|sesv2|graph\.microsoft|docusign\.net|sign\.dropbox|adobesign|quickbooks\.api|api\.xero|sage\.com/i.test(
       combined
     ),
-    "no vendor API hostnames anywhere — adapters are named boundaries, not implementations"
+    "no other vendor API hostname anywhere — those adapters are named boundaries, not implementations"
+  );
+  const nonEmailCombined = Object.entries(files)
+    .filter(([k]) => k !== "email")
+    .map(([, p]) => readSrc(p))
+    .join("\n");
+  assert(
+    /api\.postmarkapp\.com/.test(readSrc(files.email)) && !/api\.postmarkapp/i.test(nonEmailCombined),
+    "the Postmark endpoint exists in exactly one place: the email adapter"
   );
   assert(
     !/api[_-]?key|client[_-]?secret|bearer /i.test(combined),
@@ -203,7 +215,10 @@ function staticGuards() {
     assert(schemaSrc.includes(`CREATE TABLE IF NOT EXISTS ${table}`), `schema declares ${table}`);
   }
   const emailSrc = readSrc(files.email);
-  assert((emailSrc.match(/disabledEmailProvider\("/g) ?? []).length === 5, "five email vendor adapters exist as disabled boundaries");
+  // Postmark graduated to the ONE live adapter; the other four vendors
+  // remain disabled boundaries that refuse every call.
+  assert((emailSrc.match(/disabledEmailProvider\("/g) ?? []).length === 4, "four email vendor adapters remain disabled boundaries");
+  assert(/name: "postmark",\s*\n\s*displayName: "Postmark",\s*\n\s*active: true/.test(emailSrc), "postmark is the single live email adapter");
   assert(/REDACTION|credential-bearing/i.test(emailSrc), "credential-bearing email bodies are redacted by doctrine");
   assert((readSrc(files.esign).match(/disabledEsignProvider\("/g) ?? []).length === 3, "three e-sign vendor adapters exist as disabled boundaries");
   assert((readSrc(files.accounting).match(/disabledAccountingProvider\("/g) ?? []).length === 3, "three accounting vendor adapters exist as disabled boundaries");

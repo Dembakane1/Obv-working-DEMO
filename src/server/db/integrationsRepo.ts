@@ -114,6 +114,7 @@ function toEmail(r: Row): EmailOutboxEntry {
     error: (r.error as string) ?? null,
     createdAt: r.created_at as string,
     sentAt: (r.sent_at as string) ?? null,
+    dedupeKey: (r.dedupe_key as string) ?? null,
   };
 }
 
@@ -122,13 +123,27 @@ export function insertEmail(e: EmailOutboxEntry): void {
     .prepare(
       `INSERT INTO email_outbox (
          id, kind, provider, to_email, subject, body_text, organization_id,
-         project_id, status, error, created_at, sent_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         project_id, status, error, created_at, sent_at, dedupe_key
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       e.id, e.kind, e.provider, e.toEmail, e.subject, e.bodyText, e.organizationId,
-      e.projectId, e.status, e.error, e.createdAt, e.sentAt
+      e.projectId, e.status, e.error, e.createdAt, e.sentAt, e.dedupeKey
     );
+}
+
+/** Most recent non-failed email carrying this dedupe key since
+ *  windowStart — the duplicate-send suppressor. FAILED sends do not
+ *  suppress a retry. */
+export function findRecentEmailByDedupeKey(dedupeKey: string, windowStart: string): EmailOutboxEntry | null {
+  const r = getDb()
+    .prepare(
+      `SELECT * FROM email_outbox
+        WHERE dedupe_key = ? AND created_at >= ? AND status IN ('QUEUED','SENT')
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`
+    )
+    .get(dedupeKey, windowStart);
+  return r ? toEmail(r as Row) : null;
 }
 
 export function getEmail(id: string): EmailOutboxEntry | null {
