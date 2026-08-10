@@ -26,6 +26,12 @@ const { DatabaseSync } = require("node:sqlite");
 
 const ROOT = path.join(__dirname, "..");
 const SERVER = path.join(ROOT, "dist", "server", "http", "server.js");
+
+// Pilot posture is declared explicitly below; drop the unified runner's
+// ambient demo-banking injection so it cannot contradict the declaration.
+delete process.env.OBV_BANKING_MODE;
+delete process.env.OBV_BANKING_PRODUCTION_ENABLE;
+delete process.env.OBV_ENVIRONMENT;
 const PORT = 3351;
 const BASE = `http://localhost:${PORT}`;
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "obv-accept-"));

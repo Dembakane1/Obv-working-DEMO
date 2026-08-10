@@ -20,6 +20,14 @@ const { DatabaseSync } = require("node:sqlite");
 
 const ROOT = path.join(__dirname, "..");
 const SERVER = path.join(ROOT, "dist", "server", "http", "server.js");
+
+// This suite declares every posture explicitly. The unified runner
+// injects OBV_BANKING_MODE=demo (a safety default for OTHER suites) into
+// the ambient environment; inherited into a declared-pilot child it
+// would fire the contradiction refusal instead of the wall under test.
+delete process.env.OBV_BANKING_MODE;
+delete process.env.OBV_BANKING_PRODUCTION_ENABLE;
+delete process.env.OBV_ENVIRONMENT;
 const SEED = path.join(ROOT, "dist", "server", "db", "seed.js");
 const PORT = 3345;
 const BASE = `http://localhost:${PORT}`;
