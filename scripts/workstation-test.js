@@ -198,9 +198,17 @@ async function main() {
   );
 
   // ============ 6. navigation shape + preserved authorization ============
-  for (const group of ["Command", "Verification", "Governance", "Intelligence", "Operations"]) {
+  // Four groups since navigation consolidated: Site Intelligence became a
+  // workspace under Verification rather than its own Intelligence group.
+  // navigation-test.js owns the detail; this only guards the shell shape.
+  for (const group of ["Command", "Verification", "Governance", "Operations"]) {
     assert(exec.includes(`>${group}</div>`), `sidebar groups navigation under ${group}`);
   }
+  const navRows = (exec.split('<nav class="sidebar-nav"')[1] ?? "").split("</nav>")[0].match(/class="nav-item/g) ?? [];
+  assert(
+    navRows.length <= 12,
+    `the workstation shell offers ${navRows.length} first-level destinations, not a twenty-item scroll`
+  );
   const fieldHome = await page("/field", field);
   assert(!fieldHome.includes("/executive\""), "a FIELD user's shell does not expose the executive command route");
   const fieldExec = await fetch(`${BASE}/executive`, { headers: { cookie: field, accept: "text/html" }, redirect: "manual" });
