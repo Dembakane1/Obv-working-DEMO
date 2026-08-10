@@ -477,15 +477,60 @@ export function renderExecutive(input: {
           </DensePanel>
 
           <div style="display:flex;flex-direction:column;gap:var(--ws-gap);min-width:0">
-            <DensePanel title="Portfolio distribution" flush>
+            <DensePanel
+              title="Portfolio distribution"
+              right={<span>by state · by lender</span>}
+              flush
+              foot={<a href="/executive/entities">Contractors, inspectors &amp; vendors →</a>}
+            >
               <SignalList
                 empty="No distribution data."
-                items={overview.distributions.byState.slice(0, 6).map((d) => ({
-                  title: d.label,
-                  sub: `${d.count} project${d.count === 1 ? "" : "s"}`,
-                  severity: "low",
-                  meta: money(d.totalBudget),
-                }))}
+                items={[
+                  ...overview.distributions.byState.slice(0, 4).map((dist) => ({
+                    title: dist.label,
+                    sub: `${dist.count} project${dist.count === 1 ? "" : "s"} · by state`,
+                    severity: "low" as const,
+                    meta: money(dist.totalBudget),
+                  })),
+                  ...overview.distributions.byLender.slice(0, 4).map((dist) => ({
+                    title: dist.label,
+                    sub: `${dist.count} project${dist.count === 1 ? "" : "s"} · Projects by lender`,
+                    severity: "low" as const,
+                    meta: money(dist.totalBudget),
+                  })),
+                ]}
+              />
+            </DensePanel>
+
+            <DensePanel
+              title="Operational trends"
+              right={<span>opened vs resolved</span>}
+              flush
+            >
+              <SignalList
+                empty="No trend data in scope."
+                items={[
+                  ...overview.trends.exceptions.slice(-2).map((tr) => ({
+                    title: `Exceptions · ${tr.month}`,
+                    sub: `${tr.opened} opened · ${tr.resolved} resolved`,
+                    severity: "low" as const,
+                  })),
+                  ...overview.trends.disputes.slice(-1).map((tr) => ({
+                    title: `Disputes · ${tr.month}`,
+                    sub: `${tr.opened} opened · ${tr.resolved} resolved`,
+                    severity: "low" as const,
+                  })),
+                  ...overview.trends.draws.slice(-2).map((tr) => ({
+                    title: `Draws · ${tr.month}`,
+                    sub: `${tr.opened} submitted · ${tr.resolved} approved`,
+                    severity: "low" as const,
+                  })),
+                  ...overview.trends.permits.slice(-1).map((tr) => ({
+                    title: `Permits · ${tr.month}`,
+                    sub: `${tr.opened} issued · ${tr.resolved} closed`,
+                    severity: "low" as const,
+                  })),
+                ]}
               />
             </DensePanel>
             <DensePanel
