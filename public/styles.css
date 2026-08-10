@@ -4388,7 +4388,10 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
 .splitws {
   display: grid; grid-template-columns: minmax(0, 25fr) minmax(0, 52fr) minmax(0, 23fr);
   gap: var(--ws-gap); min-width: 0; align-items: stretch;
-  height: calc(100vh - var(--topbar-h) - 118px); min-height: 520px;
+  /* --wsnav-h is set by .content when a workspace tab bar precedes this
+     surface, so the split workspace keeps fitting the viewport instead of
+     being pushed into a scroll by its own navigation. */
+  height: calc(100vh - var(--topbar-h) - 118px - var(--wsnav-h, 0px)); min-height: 520px;
 }
 .splitws > * { min-width: 0; min-height: 0; }
 .splitws .dpanel { height: 100%; }
@@ -4610,3 +4613,106 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
    tablet/desktop boundary. */
 .lender-form label { flex: 1 1 auto; min-width: 0; max-width: 100%; }
 .lender-form input, .lender-form select, .lender-form textarea { max-width: 100%; min-width: 0; }
+
+/* ============================================================
+   v26 — WORKSPACE NAVIGATION
+
+   Consolidation moved twenty-three sidebar destinations into twelve
+   workspaces. `.wsnav` is the secondary navigation that keeps a merged
+   workspace from becoming one long screen: it names the destination
+   inside the workspace the sidebar has already highlighted.
+   ============================================================ */
+
+.wsnav {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-2);
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* The bar is a landmark on every workspace page — it must not scroll
+     away under a long register. */
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.wsnav::-webkit-scrollbar { display: none; }
+
+.wsnav-tab {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 7px;
+  font: 600 12.5px/1 var(--sans);
+  color: var(--text-2);
+  text-decoration: none;
+  white-space: nowrap;
+  min-height: 32px;
+  transition: background .12s ease, color .12s ease;
+}
+.wsnav-tab:hover { background: var(--surface-3); color: var(--text-1); }
+.wsnav-tab.active {
+  background: var(--surface-1);
+  color: var(--text-1);
+  box-shadow: 0 1px 2px rgb(0 0 0 / .18);
+}
+.wsnav-tab .count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: 700 10.5px/1 var(--sans);
+}
+
+/* Workstation surfaces are full-bleed; the tab bar follows them out to
+   the edges instead of sitting in a narrower column above them. */
+.content:has(> .wsnav + .ws) { max-width: none; }
+
+/* Viewport-fitted surfaces (the Timeline/Twin split workspace) subtract
+   the tab bar's own height rather than overflowing by it. */
+.content:has(> .wsnav) { --wsnav-h: 52px; }
+
+@media (max-width: 720px) {
+  .wsnav {
+    margin: 0 0 10px;
+    border-radius: 8px;
+    /* Horizontal scroll, never a wrapped block of stacked pills: the
+       selected destination stays on one line at thumb height. */
+    flex-wrap: nowrap;
+  }
+  .wsnav-tab { padding: 8px 11px; min-height: 36px; }
+}
+
+/* Sub-destinations under a workspace row on the mobile More page, so a
+   consolidated destination is one tap from More rather than two. */
+.more-subs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 10px 12px;
+  margin-top: -4px;
+}
+.more-sub {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font: 600 12px/1 var(--sans);
+  text-decoration: none;
+}
+.more-sub:hover { background: var(--surface-3); color: var(--text-1); }

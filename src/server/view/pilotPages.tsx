@@ -1159,8 +1159,10 @@ export function renderPilotDashboard(input: {
         <Metric d={{ value: String(s.invitationsPending), label: "Invitations pending", sub: s.invitationsPending ? "Awaiting acceptance" : "All accepted", dim: s.invitationsPending === 0 }} />
       </div>
 
+      {/* id="readiness" anchors the Pilot workspace's Readiness tab: the
+          readiness view IS this register, not a separate page. */}
       {input.drafts.length > 0 ? (
-        <div className="panel" style="margin-top:12px">
+        <div className="panel" id="readiness" style="margin-top:12px">
           <div className="panel-head"><h3>Draft projects — readiness</h3></div>
           {input.drafts.map(({ project, blockers }, i) => (
             <div className="setup-proj" style={i > 0 ? "border-top:1px solid var(--line)" : ""}>

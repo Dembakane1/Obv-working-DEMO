@@ -197,21 +197,73 @@ export interface NavContext {
   orgKind?: string;
 }
 
-interface NavItem { key: string; href: string; label: string; icon: () => VNode; badge?: "approvals" | "issues" | "exceptions" }
+/** Which live attention count, if any, a destination carries. */
+type BadgeKind = "approvals" | "issues" | "exceptions" | "governance";
+
+/**
+ * A destination inside a workspace.
+ *
+ * Every tab is a real, independently routable page that existed before
+ * navigation consolidation and still answers on its own URL. Grouping
+ * them changed which destinations the SIDEBAR advertises — not which
+ * destinations exist, what they contain, or who may open them.
+ */
+export interface NavTab {
+  key: string;
+  href: string;
+  label: string;
+  /** The count that belongs to THIS destination specifically. A parent
+   *  may summarise several; a tab never reports a count it doesn't own. */
+  badge?: BadgeKind;
+}
+
+interface NavItem {
+  key: string;
+  href: string;
+  label: string;
+  icon: () => VNode;
+  badge?: BadgeKind;
+  /** Secondary navigation. Present only on consolidated workspaces. */
+  tabs?: NavTab[];
+  /**
+   * Which roles the SIDEBAR offers this workspace to. Navigation
+   * visibility is not authorization: every route keeps its own server-side
+   * gate, and hiding an entry here neither grants nor revokes access.
+   */
+  roles?: UserRole[];
+}
 
 /** Grouped primary navigation — the lender workflow reads top-to-bottom:
  *  portfolio context → capital decisions → verification truth → field ops. */
 export interface NavGroup { title: string | null; items: NavItem[] }
 
-/** Regrouped for the enterprise shell: command → capital → verification
- *  → portfolio intelligence → field → administration. Every pre-existing
- *  destination is preserved; only grouping, order, and labels changed. */
+/**
+ * Consolidated navigation: twelve workspaces instead of twenty-three
+ * first-level destinations.
+ *
+ * Closely related governed surfaces became TABS of one workspace rather
+ * than separate sidebar choices, so a user no longer has to know OBV's
+ * internal module boundaries to find anything. Nothing was deleted and no
+ * route moved: each tab points at the same URL it always had, and every
+ * old bookmark still resolves. These remain distinct domain concepts
+ * internally — Review, Intelligence, Official Sources and the Ledger are
+ * grouped in one workspace, never merged into one record or one query.
+ */
 export const NAV_GROUPS: NavGroup[] = [
   {
     title: "Command",
     items: [
-      { key: "executive", href: "/executive", label: "Executive Command", icon: icons.insights },
-      { key: "overview", href: "/overview", label: "Overview", icon: icons.overview },
+      {
+        key: "command",
+        href: "/overview",
+        label: "Command Center",
+        icon: icons.overview,
+        tabs: [
+          { key: "overview", href: "/overview", label: "Overview" },
+          { key: "executive", href: "/executive", label: "Executive" },
+          { key: "insights", href: "/insights", label: "Analytics" },
+        ],
+      },
       { key: "projects", href: "/projects", label: "Projects", icon: icons.projects },
       { key: "draws", href: "/draws", label: "Draws", icon: icons.dollar },
     ],
@@ -219,48 +271,135 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: "Verification",
     items: [
-      { key: "compliance", href: "/compliance", label: "Evidence Review", icon: icons.shield },
-      { key: "evidence-intel", href: "/evidence-intelligence", label: "Evidence Intelligence", icon: icons.insights },
-      { key: "official-sources", href: "/official-sources", label: "Official Sources", icon: icons.building },
-      { key: "ledger", href: "/ledger", label: "Evidence Ledger", icon: icons.ledger },
+      {
+        key: "evidence",
+        href: "/compliance",
+        label: "Evidence",
+        icon: icons.shield,
+        tabs: [
+          { key: "compliance", href: "/compliance", label: "Review" },
+          { key: "evidence-intel", href: "/evidence-intelligence", label: "Intelligence" },
+          { key: "official-sources", href: "/official-sources", label: "Official Sources" },
+          { key: "ledger", href: "/ledger", label: "Ledger" },
+        ],
+      },
+      {
+        key: "site",
+        href: "/timeline",
+        label: "Site Intelligence",
+        icon: icons.map,
+        tabs: [
+          { key: "timeline", href: "/timeline", label: "Timeline" },
+          { key: "twin", href: "/timeline#twin-snapshots", label: "Digital Twin" },
+          { key: "map", href: "/map", label: "Map / Satellite" },
+        ],
+      },
     ],
   },
   {
     title: "Governance",
     items: [
-      { key: "approvals", href: "/approvals", label: "Approvals", icon: icons.approvals, badge: "approvals" },
-      { key: "exceptions", href: "/exceptions", label: "Exceptions", icon: icons.shield, badge: "exceptions" },
-      { key: "change-orders", href: "/change-orders", label: "Change Orders", icon: icons.refresh },
-      { key: "budget", href: "/budget", label: "Budget & Progress", icon: icons.ledger },
-    ],
-  },
-  {
-    title: "Intelligence",
-    items: [
-      { key: "timeline", href: "/timeline", label: "Timeline", icon: icons.activity },
-      { key: "twin", href: "/timeline#twin-snapshots", label: "Digital Twin", icon: icons.map },
-      { key: "insights", href: "/insights", label: "Portfolio Analytics", icon: icons.insights },
-      { key: "map", href: "/map", label: "Map / Satellite", icon: icons.map },
+      {
+        key: "governance",
+        href: "/approvals",
+        label: "Governance",
+        icon: icons.approvals,
+        // Approvals and exceptions are separate governed records that
+        // merely share a workspace. The parent summarises how much is
+        // outstanding; each tab reports its own exact category.
+        badge: "governance",
+        tabs: [
+          { key: "approvals", href: "/approvals", label: "Approvals", badge: "approvals" },
+          { key: "exceptions", href: "/exceptions", label: "Exceptions", badge: "exceptions" },
+        ],
+      },
+      {
+        key: "controls",
+        href: "/budget",
+        label: "Project Controls",
+        icon: icons.ledger,
+        tabs: [
+          { key: "budget", href: "/budget", label: "Budget & Progress" },
+          { key: "change-orders", href: "/change-orders", label: "Change Orders" },
+        ],
+      },
     ],
   },
   {
     title: "Operations",
     items: [
+      {
+        key: "field",
+        href: "/field",
+        label: "Field",
+        icon: icons.camera,
+        badge: "issues",
+        tabs: [
+          { key: "field", href: "/field", label: "Capture" },
+          { key: "issues", href: "/issues", label: "Issues", badge: "issues" },
+        ],
+      },
       { key: "reports", href: "/reports", label: "Reports", icon: icons.reports },
-      { key: "issues", href: "/issues", label: "Field Issues", icon: icons.alert, badge: "issues" },
-      { key: "field", href: "/field", label: "Field Capture", icon: icons.camera },
       { key: "comms", href: "/communications", label: "Communications", icon: icons.chat },
-      { key: "setup", href: "/setup", label: "Pilot Setup", icon: icons.projects },
-      { key: "pilot", href: "/pilot", label: "Pilot Operations", icon: icons.activity },
-      { key: "integrations", href: "/communications/integrations", label: "Integrations", icon: icons.refresh },
+      {
+        key: "pilot",
+        href: "/pilot",
+        label: "Pilot",
+        icon: icons.activity,
+        // Mirrors the server's own definition of who administers a pilot
+        // (services/pilot/onboarding.canViewPilot). /setup already answers
+        // 403 to any other role; the sidebar simply stops advertising a
+        // door that is locked.
+        roles: ["PROJECT_MANAGER", "FUNDER_REP", "COMPLIANCE_REVIEWER"],
+        tabs: [
+          { key: "pilot", href: "/pilot", label: "Operations" },
+          { key: "setup", href: "/setup", label: "Setup" },
+          { key: "readiness", href: "/pilot#readiness", label: "Readiness" },
+        ],
+      },
+      {
+        key: "admin",
+        href: "/administration",
+        label: "Administration",
+        icon: icons.refresh,
+        tabs: [
+          { key: "admin", href: "/administration", label: "Overview" },
+          { key: "integrations", href: "/communications/integrations", label: "Integrations" },
+        ],
+      },
     ],
   },
 ];
 
-const ALL_NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
-const itemByKey = new Map(ALL_NAV_ITEMS.map((i) => [i.key, i]));
+const WORKSPACES = NAV_GROUPS.flatMap((g) => g.items);
+const itemByKey = new Map(WORKSPACES.map((i) => [i.key, i]));
 const pick = (...keys: string[]): NavItem[] =>
   keys.map((k) => itemByKey.get(k)).filter((i): i is NavItem => Boolean(i));
+
+/**
+ * Every routable destination the navigation knows about, flattened.
+ *
+ * A workspace with tabs contributes its tabs; a workspace without tabs is
+ * itself the destination. This list is what proves consolidation removed
+ * nothing: it is the same set of pages the flat sidebar used to list.
+ */
+export const ALL_DESTINATIONS: NavTab[] = WORKSPACES.flatMap((w) =>
+  w.tabs ?? [{ key: w.key, href: w.href, label: w.label, badge: w.badge }]
+);
+const destinationByKey = new Map(ALL_DESTINATIONS.map((d) => [d.key, d]));
+
+/** Which workspace owns a given destination key — how a page that still
+ *  reports `active: "ledger"` lights up the Evidence workspace. */
+const workspaceByKey = new Map<string, NavItem>();
+for (const w of WORKSPACES) {
+  workspaceByKey.set(w.key, w);
+  for (const t of w.tabs ?? []) workspaceByKey.set(t.key, w);
+}
+
+export const workspaceFor = (active: string): NavItem | undefined => workspaceByKey.get(active);
+
+/** Navigation visibility only — never an authorization decision. */
+const visibleTo = (item: NavItem, role: UserRole): boolean => !item.roles || item.roles.includes(role);
 
 /**
  * Lender Pilot RC1: role-focused navigation. A first-time lender sees
@@ -270,37 +409,49 @@ const pick = (...keys: string[]): NavItem[] =>
  * chooses what to emphasize; every page keeps its own gates).
  */
 export function navGroupsFor(role: User["role"]): NavGroup[] {
-  if (role === "FUNDER_REP") {
-    // Pilot emphasis WITHOUT flattening the workstation's grouped shape:
-    // the six pilot surfaces lead, then every other destination stays in
-    // its normal group. Nothing is removed for any role.
-    const primaryKeys = new Set(["executive", "overview", "projects", "draws", "compliance", "approvals"]);
-    const primary = [
-      itemByKey.get("executive")!,
-      { ...itemByKey.get("overview")!, label: "Portfolio" },
-      ...pick("projects", "draws"),
-      ...pick("compliance").map((i) => ({ ...i, label: "Evidence Review" })),
-      ...pick("approvals"),
-    ];
-    return [
-      { title: "Command", items: primary },
-      ...NAV_GROUPS.map((g) => ({
-        title: g.title,
-        items: g.items.filter((i) => !primaryKeys.has(i.key)),
-      })).filter((g) => g.items.length > 0),
-    ];
-  }
   if (role === "FIELD") {
-    const primaryKeys = new Set(["projects", "field", "issues"]);
+    // A field worker's job is capture. Their sidebar leads with it and
+    // stays short; every other workspace remains one group below, so
+    // nothing a field user could previously reach became unreachable.
+    const primary = pick("field", "projects");
+    const primaryKeys = new Set(primary.map((i) => i.key));
     return [
-      { title: null, items: pick("projects", "field", "issues") },
-      { title: "More", items: ALL_NAV_ITEMS.filter((i) => !primaryKeys.has(i.key)) },
+      { title: null, items: primary },
+      { title: "More", items: WORKSPACES.filter((i) => !primaryKeys.has(i.key) && visibleTo(i, role)) },
     ];
   }
-  return NAV_GROUPS;
+  return NAV_GROUPS.map((g) => ({ title: g.title, items: g.items.filter((i) => visibleTo(i, role)) })).filter(
+    (g) => g.items.length > 0
+  );
 }
 
-export const BOTTOM_NAV = ["overview", "projects", "approvals", "ledger"];
+export interface BottomEntry { key: string; href: string; label: string; icon: () => VNode; badge?: BadgeKind }
+
+/**
+ * Mobile bottom bar — four role-appropriate destinations plus More.
+ *
+ * Deliberately NOT a mirror of the sidebar: a thumb-sized bar that tried
+ * to expose every workspace would expose none of them well. Everything
+ * omitted here is one tap away under More, which lists each remaining
+ * workspace together with its individual destinations.
+ */
+export function bottomNavFor(role: UserRole): BottomEntry[] {
+  const entry = (key: string, label: string, badge?: BadgeKind): BottomEntry => {
+    const dest = destinationByKey.get(key);
+    const ws = workspaceByKey.get(key)!;
+    return { key, href: dest?.href ?? ws.href, label, icon: ws.icon, badge };
+  };
+  if (role === "FIELD") {
+    // Capture first, and it stays first: a field user must never navigate
+    // a lender workspace to upload evidence.
+    return [entry("field", "Capture"), entry("projects", "Projects"), entry("issues", "Issues", "issues")];
+  }
+  const third =
+    role === "COMPLIANCE_REVIEWER"
+      ? entry("approvals", "Approvals", "approvals")
+      : entry("draws", "Draws");
+  return [entry("overview", "Overview"), entry("projects", "Projects"), third, entry("compliance", "Evidence")];
+}
 
 export function AppShell(props: {
   title: string;
@@ -310,25 +461,50 @@ export function AppShell(props: {
   children?: Child;
 }): VNode {
   const { user, active, pendingApprovals, openIssues = 0, openExceptions = 0 } = props.nav;
-  const activeItem = ALL_NAV_ITEMS.find((i) => i.key === active);
-  const badgeCount = (item: NavItem) =>
+  // The topbar names the DESTINATION the user is on ("Ledger"), while the
+  // sidebar highlights the workspace that owns it ("Evidence").
+  const activeItem = destinationByKey.get(active) ?? workspaceByKey.get(active);
+  const activeWorkspace = workspaceByKey.get(active);
+  const groups = navGroupsFor(user.role);
+  const badgeCount = (item: { badge?: BadgeKind }) =>
     item.badge === "approvals"
       ? pendingApprovals
       : item.badge === "issues"
         ? openIssues
         : item.badge === "exceptions"
           ? openExceptions
-          : 0;
+          : // A summary of outstanding work, never a merged record: the
+            // tabs below report approvals and exceptions separately.
+            item.badge === "governance"
+            ? pendingApprovals + openExceptions
+            : 0;
+  const badgeTitle = (item: { badge?: BadgeKind }) =>
+    item.badge === "governance"
+      ? `${pendingApprovals} pending approval${pendingApprovals === 1 ? "" : "s"} · ${openExceptions} open exception${openExceptions === 1 ? "" : "s"}`
+      : undefined;
   const navLink = (item: NavItem) => (
     <a
       href={item.href}
-      className={`nav-item ${active === item.key ? "active" : ""}`}
-      aria-current={active === item.key ? "page" : undefined}
+      className={`nav-item ${activeWorkspace?.key === item.key ? "active" : ""}`}
+      aria-current={activeWorkspace?.key === item.key ? "page" : undefined}
     >
       {item.icon()}
       {item.label}
-      {badgeCount(item) > 0 ? <span className="count">{badgeCount(item)}</span> : null}
+      {badgeCount(item) > 0 ? (
+        <span className="count" title={badgeTitle(item)}>{badgeCount(item)}</span>
+      ) : null}
     </a>
+  );
+  // Search must not shrink just because the sidebar did. The palette reads
+  // this index, so every destination behind a tab stays findable by name.
+  const navIndex = groups.flatMap((g) =>
+    g.items.flatMap((w) =>
+      (w.tabs ?? [{ key: w.key, href: w.href, label: w.label }]).map((t) => ({
+        label: w.tabs && w.tabs.length > 1 ? `${w.label} · ${t.label}` : t.label,
+        href: t.href,
+        group: g.title ?? "Pages",
+      }))
+    )
   );
   return (
     <html lang="en">
@@ -371,7 +547,7 @@ export function AppShell(props: {
               <div className="nav-group">Pinned &amp; recent</div>
             </div>
             <nav className="sidebar-nav" aria-label="Primary">
-              {navGroupsFor(user.role).map((g) => (
+              {groups.map((g) => (
                 <>
                   {g.title ? <div className="nav-group">{g.title}</div> : null}
                   {g.items.map(navLink)}
@@ -448,7 +624,27 @@ export function AppShell(props: {
               </span>
             </div>
 
-            <div className="content">{props.children}</div>
+            <div className="content">
+              {/* Secondary navigation for a consolidated workspace. The
+                  sidebar names the workspace; this names the destination
+                  inside it, so a merged workspace never becomes one long
+                  screen of everything it contains. */}
+              {activeWorkspace && (activeWorkspace.tabs?.length ?? 0) > 1 ? (
+                <nav className="wsnav" aria-label={`${activeWorkspace.label} sections`}>
+                  {activeWorkspace.tabs!.map((t) => (
+                    <a
+                      href={t.href}
+                      className={`wsnav-tab ${active === t.key ? "active" : ""}`}
+                      aria-current={active === t.key ? "page" : undefined}
+                    >
+                      {t.label}
+                      {badgeCount(t) > 0 ? <span className="count">{badgeCount(t)}</span> : null}
+                    </a>
+                  ))}
+                </nav>
+              ) : null}
+              {props.children}
+            </div>
           </div>
         </div>
 
@@ -472,22 +668,21 @@ export function AppShell(props: {
             <div className="cmdk-hint">↑↓ navigate · Enter open · Esc close</div>
           </div>
         </div>
+        {raw(
+          `<script type="application/json" id="nav-index">${JSON.stringify(navIndex).replace(/</g, "\\u003c")}</script>`
+        )}
         <script src="/js/shell.js" defer></script>
 
         <nav className="bottom-nav" aria-label="Primary">
-          {BOTTOM_NAV.map((key) => {
-            const item = ALL_NAV_ITEMS.find((i) => i.key === key)!;
-            const short =
-              key === "overview" ? "Overview" : key === "projects" ? "Projects" : key === "approvals" ? "Approvals" : "Ledger";
+          {bottomNavFor(user.role).map((item) => {
+            const count = badgeCount(item);
             return (
               <a href={item.href} className={active === item.key ? "active" : ""} aria-current={active === item.key ? "page" : undefined}>
                 <span className="bn-ico">
                   {item.icon()}
-                  {item.key === "approvals" && pendingApprovals > 0 ? (
-                    <span className="bn-badge">{pendingApprovals}</span>
-                  ) : null}
+                  {count > 0 ? <span className="bn-badge">{count}</span> : null}
                 </span>
-                {short}
+                {item.label}
               </a>
             );
           })}

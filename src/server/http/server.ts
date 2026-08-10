@@ -234,6 +234,7 @@ import {
   renderDraftNew,
   renderMap,
   renderMilestoneDetail,
+  renderAdministration,
   renderMore,
   renderOverview,
   renderProjectDetail,
@@ -5074,6 +5075,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // null user and failed as a TypeError instead of redirecting to sign-in.
     "/disputes", "/dispute/",
     "/executive",
+    // Same class of omission as /disputes above: a shell page missing from
+    // this list runs with a null user and throws instead of redirecting.
+    "/administration",
     "/account",
     "/integrations",
     "/evidence-intelligence",
@@ -6558,6 +6562,20 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   if (method === "GET" && pathname === "/more") {
     sendHtml(res, renderMore({ nav: navFor(user!, "more") }));
+    return;
+  }
+
+  if (method === "GET" && pathname === "/administration") {
+    // A directory over surfaces that already exist and already gate
+    // themselves — it reads nothing a user could not read directly.
+    sendHtml(
+      res,
+      renderAdministration({
+        nav: navFor(user!, "admin"),
+        org: repo.getOrganization(user!.organizationId) ?? null,
+        canAdministerPilot: pilot.canViewPilot(user!),
+      })
+    );
     return;
   }
 

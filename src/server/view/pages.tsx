@@ -50,7 +50,7 @@ import {
   PreviewBanner,
   NAV_GROUPS,
   navGroupsFor,
-  BOTTOM_NAV,
+  bottomNavFor,
 } from "./components";
 import type {
   ApprovalRecord,
@@ -3149,6 +3149,14 @@ export function renderIntelligence(input: { nav: NavContext; data: IntelligenceD
  *  can never again drift behind the sidebar (which is exactly how the
  *  Timeline and Digital Twin pages went missing on phones). */
 const MORE_DESCRIPTIONS: Record<string, string> = {
+  // Workspace-level descriptions (what the consolidated sidebar shows).
+  command: "Portfolio overview, executive command and analytics",
+  evidence: "Review, intelligence, official records and the ledger",
+  site: "Timeline, Digital Twin and spatial coverage",
+  governance: "Approvals and exceptions — separate governed registers",
+  controls: "Budget, verified progress and change orders",
+  admin: "Organization, access and integration configuration",
+  // Individual destinations, still used wherever one is listed directly.
   executive: "Portfolio command center, risk and forecasts",
   overview: "Portfolio control center",
   projects: "All projects and milestones",
@@ -3167,10 +3175,10 @@ const MORE_DESCRIPTIONS: Record<string, string> = {
   reports: "Verification reports and audit packages",
   issues: "Operational issues from field coordination",
   exceptions: "Control-surveillance register",
-  field: "Mobile evidence capture",
+  field: "Mobile evidence capture and field issues",
   comms: "Project-linked coordination threads",
   setup: "Customer onboarding & project configuration",
-  pilot: "Pilot status across projects",
+  pilot: "Pilot setup, operations and launch readiness",
   integrations: "Teams & WhatsApp bridge status",
 };
 
@@ -3178,20 +3186,36 @@ export function renderMore(input: { nav: NavContext }): string {
   const { user } = input.nav;
   const openIssues = input.nav.openIssues ?? 0;
   const openExceptions = input.nav.openExceptions ?? 0;
+  const pendingApprovals = input.nav.pendingApprovals ?? 0;
   // Derived from the SAME navigation the sidebar renders: everything not
   // already on the bottom bar appears here, so every destination —
   // Timeline and Digital Twin included — is reachable on mobile.
-  const inBottomBar = new Set(BOTTOM_NAV);
+  //
+  // Since consolidation, a workspace row also lists the destinations
+  // INSIDE it. Without that, "Evidence Ledger" would be two taps and one
+  // guess away on a phone; here it stays one tap from More.
+  const inBottomBar = new Set(bottomNavFor(user.role).map((b) => b.key));
+  const countFor = (badge?: string): number | undefined =>
+    badge === "issues"
+      ? openIssues
+      : badge === "exceptions"
+        ? openExceptions
+        : badge === "approvals"
+          ? pendingApprovals
+          : badge === "governance"
+            ? pendingApprovals + openExceptions
+            : undefined;
   const groups = navGroupsFor(user.role).map((g) => ({
     title: g.title ?? "Command",
     items: g.items
-      .filter((i) => !inBottomBar.has(i.key))
+      .filter((i) => !inBottomBar.has(i.key) && !(i.tabs ?? []).every((t) => inBottomBar.has(t.key)))
       .map((i) => ({
         href: i.href,
         label: i.label,
         icon: i.icon,
         desc: MORE_DESCRIPTIONS[i.key] ?? "",
-        badge: i.badge === "issues" ? openIssues : i.badge === "exceptions" ? openExceptions : undefined,
+        badge: countFor(i.badge),
+        tabs: (i.tabs ?? []).filter((t) => (i.tabs ?? []).length > 1),
       })),
   })).filter((g) => g.items.length > 0);
   return renderDocument(
@@ -3202,15 +3226,24 @@ export function renderMore(input: { nav: NavContext }): string {
           <div className="mg-t">{g.title}</div>
           <div className="more-list">
             {g.items.map((i) => (
-              <a className="more-row" href={i.href}>
-                <span className="mr-ico" aria-hidden="true">{i.icon()}</span>
-                <span className="mr-body">
-                  <span className="mr-t">{i.label}</span>
-                  <span className="mr-s">{i.desc}</span>
-                </span>
-                {i.badge && i.badge > 0 ? <span className="mr-badge">{i.badge}</span> : null}
-                <span className="mr-arrow" aria-hidden="true">{icons.arrowRight(14)}</span>
-              </a>
+              <>
+                <a className="more-row" href={i.href}>
+                  <span className="mr-ico" aria-hidden="true">{i.icon()}</span>
+                  <span className="mr-body">
+                    <span className="mr-t">{i.label}</span>
+                    <span className="mr-s">{i.desc}</span>
+                  </span>
+                  {i.badge && i.badge > 0 ? <span className="mr-badge">{i.badge}</span> : null}
+                  <span className="mr-arrow" aria-hidden="true">{icons.arrowRight(14)}</span>
+                </a>
+                {i.tabs.length > 0 ? (
+                  <div className="more-subs">
+                    {i.tabs.map((t) => (
+                      <a className="more-sub" href={t.href}>{t.label}</a>
+                    ))}
+                  </div>
+                ) : null}
+              </>
             ))}
           </div>
         </div>
@@ -3255,10 +3288,15 @@ export function renderFieldShell(user: User): string {
               <span className="brand-sm" style="display:block">OBV Field</span>
               <span className="brand-sub" style="display:block">Evidence capture</span>
             </span>
+            {/* Capture keeps its own stripped shell — a field worker must
+                never navigate enterprise chrome to upload evidence. The
+                Field workspace's other destination is reachable from here
+                as a plain link rather than by importing the sidebar. */}
             <span className="role-tag">
               {user.name}
               <br />
-              {user.title} · <a href="/demo" style="color:#96b0f5">switch</a>
+              {user.title} · <a href="/issues" style="color:#96b0f5">issues</a> ·{" "}
+              <a href="/demo" style="color:#96b0f5">switch</a>
             </span>
           </div>
           <div id="app" data-user-id={user.id} data-user-name={user.name}>
@@ -4680,6 +4718,94 @@ export function renderDraftNew(input: {
           </div>
         </form>
       </div>
+    </AppShell>
+  );
+}
+
+// ------------------------------------------------------- administration
+
+/**
+ * Administration workspace.
+ *
+ * A directory, not a new capability. Every row opens a surface that
+ * already existed and already enforces its own permissions; this page
+ * exists so configuration stops competing with everyday work for a
+ * first-level sidebar slot. No administrative power is created here, and
+ * OBV has no separate administrator role — these surfaces answer to the
+ * same four roles and the same server-side gates they always did.
+ */
+export function renderAdministration(input: {
+  nav: NavContext;
+  org: Organization | null;
+  canAdministerPilot: boolean;
+}): string {
+  const { user } = input.nav;
+  const rows: { href: string; title: string; sub: string; note?: string }[] = [
+    {
+      href: "/communications/integrations",
+      title: "Integrations",
+      sub: "Microsoft Teams and WhatsApp bridge status, per-thread bindings and sync health.",
+    },
+    {
+      href: "/account/security",
+      title: "Access & security",
+      sub: "Your organizations, active sessions and sign-in history. Sign out everywhere.",
+      note: "Opens the identity surface, outside the application shell.",
+    },
+    {
+      href: "/communications",
+      title: "Communications",
+      sub: "Project-linked coordination threads and the clarification register.",
+    },
+  ];
+  if (input.canAdministerPilot) {
+    rows.push({
+      href: "/setup",
+      title: "Pilot configuration",
+      sub: "Organization, team, project configuration and launch readiness review.",
+    });
+  }
+  return renderDocument(
+    <AppShell title="Administration" nav={{ ...input.nav, active: "admin" }}>
+      <PageHeader
+        title="Administration"
+        sub="Configuration surfaces, grouped away from everyday work. Each one enforces its own permissions."
+      />
+      <div className="panel">
+        <div className="panel-head"><h3>Organization</h3></div>
+        <div className="kv-grid">
+          <div className="kv"><span className="k">Organization</span><span className="v">{input.org?.name ?? "—"}</span></div>
+          <div className="kv">
+            <span className="k">Kind</span>
+            <span className="v">{input.org?.kind ? enumLabel(input.org.kind) : "—"}</span>
+          </div>
+          <div className="kv"><span className="k">Signed in as</span><span className="v">{user.name}</span></div>
+          <div className="kv"><span className="k">Role</span><span className="v">{enumLabel(user.role)}</span></div>
+        </div>
+        <p className="sub" style="margin:10px 12px 12px">
+          Roles are assigned per organization and enforced on every request. Navigation
+          shows or hides destinations for clarity; it never grants access.
+        </p>
+      </div>
+      <div className="more-list" style="margin-top:12px">
+        {rows.map((r) => (
+          <a className="more-row" href={r.href}>
+            <span className="mr-body">
+              <span className="mr-t">{r.title}</span>
+              <span className="mr-s">{r.sub}{r.note ? ` — ${r.note}` : ""}</span>
+            </span>
+            <span className="mr-arrow" aria-hidden="true">{icons.arrowRight(14)}</span>
+          </a>
+        ))}
+      </div>
+      <Methodology title="What administration does not do">
+        <p>
+          OBV has no administrative override. Configuration decides the rules a project
+          runs under; it can never approve a milestone, release funds, alter a recorded
+          verification or edit the evidence ledger. Those remain governed workflows with
+          their own evidence requirements and approval records.
+        </p>
+      </Methodology>
     </AppShell>
   );
 }
