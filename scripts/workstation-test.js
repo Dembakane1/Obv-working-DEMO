@@ -13,7 +13,7 @@
  * heading → paragraph → next card" fails here.
  */
 const { spawn, spawnSync } = require("node:child_process");
-const { mkdtempSync, readFileSync } = require("node:fs");
+const { mkdtempSync, readFileSync, rmSync } = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
@@ -213,7 +213,16 @@ async function main() {
   console.log("Structure asserted: rails, panels, dense tables, workbench, split workspace, mobile composition.");
 }
 
-main().catch((err) => {
-  console.error(err.message ?? err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error(err.message ?? err);
+    process.exitCode = 1;
+  })
+  // The spawned server holds the event loop open, so an "exit" handler alone
+  // can never run — the suite would print its result and then hang until the
+  // runner killed it, leaving the server orphaned on the port. Tear it down
+  // here, the way the sibling suites do, so the loop drains on its own.
+  .finally(() => {
+    stopServer();
+    try { rmSync(DATA, { recursive: true, force: true }); } catch { /* best effort */ }
+  });
