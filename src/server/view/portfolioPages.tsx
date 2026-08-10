@@ -398,7 +398,7 @@ export function renderExecutive(input: {
             <DensePanel title="Official sources current" foot={<a href="/official-sources">Source workspace →</a>}>
               <Readout
                 value={`${input.officialSources.coveragePct}%`}
-                caption="permit record coverage"
+                caption="permit official-record coverage"
                 scores={[
                   { label: "Open source reviews", value: String(input.officialSources.openReviews) },
                   { label: "Enforcement alerts", value: String(input.officialSources.enforcementAlerts) },
