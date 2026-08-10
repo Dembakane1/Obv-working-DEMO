@@ -837,7 +837,7 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
             { key: "total", label: "Total paid", num: true },
             { key: "ret", label: "Retainage", num: true },
             { key: "claimed", label: "Claimed", num: true },
-            { key: "verified", label: "Verified", num: true },
+            { key: "verified", label: "Verified physical", num: true },
             { key: "variance", label: "Variance" },
             { key: "status", label: "Status" },
           ]}
@@ -874,7 +874,16 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
               ret: l.retainageAmount != null ? money(l.retainageAmount) : "—",
               claimed: l.percentCompleteClaimed != null ? `${l.percentCompleteClaimed}%` : "—",
               verified: cmp?.verifiedPct != null ? `${cmp.verifiedPct}%` : "—",
-              variance: cmp ? <VarianceTag state={cmp.varianceState} /> : "—",
+              variance: cmp ? (
+                <>
+                  <VarianceTag state={cmp.varianceState} />
+                  {cmp.exceptionCandidate ? (
+                    <span className="chip warn" style="margin-left:5px" title="Financial progress is ahead of currently verified physical progress — advisory only; the reviewer decides.">
+                      Exception candidate
+                    </span>
+                  ) : null}
+                </>
+              ) : "—",
               status: <LineStatusTag status={l.status} />,
             };
           })}

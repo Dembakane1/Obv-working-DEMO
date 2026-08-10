@@ -4603,3 +4603,10 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
   .proj-row { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 8px 16px; }
   .pr-na { overflow: hidden; text-overflow: ellipsis; }
 }
+
+/* ---- reconciliation form inputs must shrink with their row (v25) ----
+   A number input carries an intrinsic ~196px width; inside the flex row
+   it refused to shrink and pushed the page a few pixels wide at the
+   tablet/desktop boundary. */
+.lender-form label { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+.lender-form input, .lender-form select, .lender-form textarea { max-width: 100%; min-width: 0; }
