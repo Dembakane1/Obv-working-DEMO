@@ -117,6 +117,7 @@ const STANDALONE = [
   "twin-test.js",
   "design-test.js",
   "workstation-test.js",
+  "navigation-test.js",
   "lender-pilot-test.js",
   "authz-test.js",
   "toolchain-test.js",

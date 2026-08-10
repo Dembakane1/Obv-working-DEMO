@@ -58,7 +58,7 @@ export async function handleTwinRoutes(ctx: TwinRouteContext): Promise<boolean> 
     const pinId = ctx.searchParams.get("pin");
     ctx.sendHtml(
       renderDigitalTwin({
-        nav: ctx.navFor(user, "timeline"),
+        nav: ctx.navFor(user, "twin"),
         scene,
         focusEventId: ctx.searchParams.get("focus"),
         pinDetail: pinId ? safePin(() => twin.twinPinDetail(user, projectId, pinId)) : null,
@@ -80,7 +80,7 @@ export async function handleTwinRoutes(ctx: TwinRouteContext): Promise<boolean> 
       return true;
     }
     ctx.sendHtml(
-      renderTwinProviders({ nav: ctx.navFor(user, "timeline"), providers: twin.twinProviderReadiness() })
+      renderTwinProviders({ nav: ctx.navFor(user, "twin"), providers: twin.twinProviderReadiness() })
     );
     return true;
   }

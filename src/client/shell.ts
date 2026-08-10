@@ -116,12 +116,35 @@
   const cmdkInput = document.getElementById("cmdk-input") as HTMLInputElement | null;
   const cmdkList = document.getElementById("cmdk-list");
   interface Entry { label: string; href: string; group: string }
+  // Every destination the shell knows about, including the ones that live
+  // inside a consolidated workspace and therefore have no sidebar row of
+  // their own. Scraping the sidebar alone would silently shrink search to
+  // the twelve workspace parents and lose "Ledger", "Official Sources"
+  // and the rest — reachable by tab, but no longer findable by name.
+  const navIndex: Entry[] = (() => {
+    const el = document.getElementById("nav-index");
+    if (!el?.textContent) return [];
+    try {
+      const parsed: unknown = JSON.parse(el.textContent);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (e): e is Entry =>
+          Boolean(e) && typeof (e as Entry).label === "string" && typeof (e as Entry).href === "string"
+      );
+    } catch {
+      return [];
+    }
+  })();
   function collectEntries(): Entry[] {
     const entries: Entry[] = [];
-    document.querySelectorAll<HTMLAnchorElement>(".sidebar-nav .nav-item").forEach((a) => {
-      const label = (a.textContent ?? "").trim().replace(/\d+$/, "").trim();
-      if (label) entries.push({ label, href: a.getAttribute("href") ?? "#", group: "Pages" });
-    });
+    if (navIndex.length > 0) {
+      entries.push(...navIndex);
+    } else {
+      document.querySelectorAll<HTMLAnchorElement>(".sidebar-nav .nav-item").forEach((a) => {
+        const label = (a.textContent ?? "").trim().replace(/\d+$/, "").trim();
+        if (label) entries.push({ label, href: a.getAttribute("href") ?? "#", group: "Pages" });
+      });
+    }
     for (const p of readRefs("obv-pins")) {
       entries.push({ label: p.name, href: `/timeline/project/${encodeURIComponent(p.id)}`, group: "Pinned" });
     }
