@@ -109,9 +109,28 @@ async function main() {
       }
     }
   }
-  const baseUrl = (process.env.OBV_PUBLIC_BASE_URL ?? process.env.RENDER_EXTERNAL_URL ?? "").trim();
+  // Resolved by the runtime platform boundary so the generic variable
+  // wins and platform-injected ones remain a compatibility fallback.
+  const runtime = require(path.join(DIST, "services", "platform", "runtime.js"));
+  const baseUrl = runtime.publicBaseUrl();
   if (baseUrl) pass("public base URL", baseUrl);
   else (production ? fail : warn)("public base URL", "OBV_PUBLIC_BASE_URL not set — emailed links would use the request host");
+
+  // ---------- deployment shape ----------
+  // The single-writer constraint is a property an operator must be told,
+  // not one they should have to infer: scaling this service to two
+  // replicas on one data directory corrupts SQLite silently.
+  try {
+    const ds = require(path.join(DIST, "services", "platform", "datastore.js")).dataStorePosture();
+    add(
+      ds.supportsHorizontalScale ? "PASS" : "WARN",
+      "instance constraint",
+      `${ds.engine}: max ${ds.maxWriterInstances} writer instance — do not scale beyond one replica`
+    );
+  } catch (e) {
+    warn("instance constraint", `could not resolve data store posture: ${String(e.message ?? e).slice(0, 80)}`);
+  }
+  pass("runtime platform", runtime.runtimeStartupNotice());
 
   // ---------- storage / database ----------
   try {

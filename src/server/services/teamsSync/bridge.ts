@@ -31,6 +31,7 @@ import type {
 import { GRAPH_CONFIG, webhookClientState } from "./config";
 import { teamsConversationProvider } from "./graphProvider";
 import { ConversationSyncError, NormalizedInboundMessage } from "./types";
+import { publicBaseUrl } from "../platform/runtime";
 
 const provider = teamsConversationProvider;
 
@@ -222,7 +223,7 @@ export async function syncOutbound(message: ChatMessage, thread: ConversationThr
 /** Reference messages render as clean context blocks with OBV deep links
  *  — informational only; no Teams-side action can record an approval. */
 function outboundText(message: ChatMessage): string {
-  const base = (process.env.OBV_PUBLIC_BASE_URL ?? process.env.RENDER_EXTERNAL_URL ?? "").replace(/\/$/, "");
+  const base = publicBaseUrl();
   const link = (path: string) => (base ? `${base}${path}` : "Open OBV to review");
   if (message.messageType === "EVIDENCE_REFERENCE" && message.refId) {
     const ev = repo.getEvidence(message.refId);

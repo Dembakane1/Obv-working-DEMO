@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { h, Fragment, VNode, Child, raw } from "./jsx";
 import { brandMark, icons } from "./icons";
+import { appBranch, shortCommit } from "../services/platform/runtime";
 import type {
   AccountStatus,
   ApprovalRecord,
@@ -165,20 +166,24 @@ export function FallbackChip(): VNode {
 // ---------------------------------------------------------- app shell
 
 /** Preview-deployment banner. Renders ONLY when the process is explicitly
- *  marked as a preview (OBV_PREVIEW=1) or Render reports a non-production
- *  branch. Production deploys never set either condition, so the banner
- *  can never appear there. */
-const PREVIEW_BRANCH = process.env.RENDER_GIT_BRANCH ?? process.env.OBV_PREVIEW_BRANCH ?? "";
-const PREVIEW_COMMIT = (process.env.RENDER_GIT_COMMIT ?? process.env.OBV_PREVIEW_COMMIT ?? "").slice(0, 7);
-const IS_PREVIEW =
-  process.env.OBV_PREVIEW === "1" || PREVIEW_BRANCH === "claude/obv-frontend-reconstruction";
+ *  marked as a preview (OBV_PREVIEW=1). Production deploys never set it,
+ *  so the banner can never appear there.
+ *
+ *  Branch and commit come from the runtime platform boundary, so the
+ *  generic OBV_* variables win and platform-injected ones stay a
+ *  compatibility fallback. The banner used to also trigger on a
+ *  hard-coded branch name, which made a deployment marker depend on
+ *  which host happened to inject which variable. */
+const PREVIEW_BRANCH = appBranch();
+const PREVIEW_COMMIT = shortCommit() === "unknown" ? "" : shortCommit();
+const IS_PREVIEW = process.env.OBV_PREVIEW === "1";
 
 export function PreviewBanner(): VNode | null {
   if (!IS_PREVIEW) return null;
   return (
     <div className="preview-banner" role="note">
       <b>Frontend preview</b>
-      <span>Branch: {PREVIEW_BRANCH || "claude/obv-frontend-reconstruction"}</span>
+      <span>Branch: {PREVIEW_BRANCH || "unspecified"}</span>
       <span>Commit: {PREVIEW_COMMIT || "local build"}</span>
     </div>
   );

@@ -27,6 +27,7 @@ import { buildLenderFiles } from "./lenderReporting";
 import * as permitService from "./permits";
 import { AUDIT_PACKAGES_DIR, DATA_DIR, REPORTS_DIR, UPLOADS_DIR } from "../db/index";
 import { wormEvidenceStore } from "./WormEvidenceStore";
+import { evidenceKey, objectStore } from "./storage/objectStore";
 import { assessFinancialProgress, assessPhysicalProgress, canAccessProjectFinance } from "./budgetProgress";
 import { retainageSummary } from "./retainage";
 import { audit } from "./pilot/onboarding";
@@ -230,14 +231,17 @@ function mimeForFilename(name: string): string {
   return MEDIA_MIME[ext] ?? "application/octet-stream";
 }
 
-/** Resolve a served evidence path to a file on disk, where accessible. */
+/**
+ * Resolve a served evidence path to a file on disk, where accessible.
+ *
+ * The prefix→location rules now live in the object-storage boundary, so
+ * "where does this artifact live?" has one answer for a future adapter to
+ * change. Behaviour is unchanged: the same three prefixes resolve to the
+ * same three locations, and anything else is still null.
+ */
 function evidenceDiskPath(photoPath: string): string | null {
-  if (photoPath.startsWith("/worm/")) return path.join(DATA_DIR, "worm", path.basename(photoPath));
-  if (photoPath.startsWith("/uploads/")) return path.join(UPLOADS_DIR, path.basename(photoPath));
-  if (photoPath.startsWith("/demo-evidence/")) {
-    return path.join(process.cwd(), "public", "demo-evidence", path.basename(photoPath));
-  }
-  return null;
+  const key = evidenceKey(photoPath);
+  return key === null ? null : objectStore.physicalPath(key);
 }
 
 export async function validateProjectIntegrity(projectId: string): Promise<IntegrityValidation> {

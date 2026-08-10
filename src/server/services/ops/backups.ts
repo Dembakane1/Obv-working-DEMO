@@ -27,6 +27,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { appCommit as runtimeAppCommit } from "../platform/runtime";
 import { getDb } from "../../db/index";
 import * as repo from "../../db/repo";
 import { environmentName } from "../posture";
@@ -65,8 +66,11 @@ function retentionDays(): number {
   return Number.isFinite(n) && n >= 1 && n <= 3650 ? Math.floor(n) : 30;
 }
 
+/** Recorded on each backup so a restored file can be tied to a build.
+ *  Resolved by the runtime platform boundary, not read from a
+ *  platform-specific variable here. */
 function appCommit(): string | null {
-  const v = (process.env.OBV_APP_COMMIT ?? process.env.RENDER_GIT_COMMIT ?? "").trim();
+  const v = runtimeAppCommit();
   return v ? v.slice(0, 40) : null;
 }
 

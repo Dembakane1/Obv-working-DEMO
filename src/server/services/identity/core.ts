@@ -104,9 +104,11 @@ export function identityConfig(): IdentityConfig {
     const provider = (process.env.OBV_EMAIL_PROVIDER ?? "outbox").trim().toLowerCase() || "outbox";
     if (provider === "outbox") {
       throw new IdentityError(
+        // Names the setting, not a vendor: identity must stay correct when
+        // the deployment's delivery provider changes.
         "OBV_AUTH_LINK_DELIVERY=email requires a real email provider, but OBV_EMAIL_PROVIDER " +
-          "is 'outbox' (the development mailbox). Set OBV_EMAIL_PROVIDER=postmark with its " +
-          "credentials, or use OBV_AUTH_LINK_DELIVERY=file for development.",
+          "is 'outbox' (the development mailbox). Set OBV_EMAIL_PROVIDER to a live provider " +
+          "with its credentials, or use OBV_AUTH_LINK_DELIVERY=file for development.",
         500
       );
     }

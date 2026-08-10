@@ -3164,6 +3164,28 @@ function migrateThreadsForDraws(db: DatabaseSync): void {
   db.exec("PRAGMA foreign_keys = ON;");
 }
 
+/**
+ * Close the database handle if one is open.
+ *
+ * Called on container shutdown. Closing checkpoints the WAL back into the
+ * main database file, so the next start — possibly on a different host
+ * that has just mounted the same volume — opens a fully materialised
+ * database rather than replaying a write-ahead log left behind by a
+ * process that was killed mid-flight.
+ *
+ * Safe to call more than once, and safe to call when nothing was opened.
+ */
+export function closeDb(): void {
+  if (!db) return;
+  try {
+    db.close();
+  } catch {
+    // A close failure must never stop shutdown: the platform is already
+    // waiting on us, and the WAL stays readable either way.
+  }
+  db = null;
+}
+
 export function resetDb(): void {
   if (db) {
     db.close();
