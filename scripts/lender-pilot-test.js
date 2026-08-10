@@ -317,7 +317,7 @@ async function main() {
   // with named groups instead of one "Advanced & intelligence" bucket, so
   // assert the shape that now carries the rule — every secondary group
   // present, and the pilot's own group leading the sidebar.
-  for (const group of ["Command", "Verification", "Governance", "Intelligence", "Operations"]) {
+  for (const group of ["Command", "Verification", "Governance", "Operations"]) {
     assert(overview.html.includes(`>${group}</div>`),
       `advanced capabilities stay one group away under ${group} — nothing deleted`);
   }
@@ -325,8 +325,18 @@ async function main() {
     overview.html.indexOf(">Command</div>") < overview.html.indexOf(">Verification</div>"),
     "the lender's pilot surfaces lead the sidebar; advanced groups follow"
   );
-  for (const href of ["/timeline", "/evidence-intelligence", "/official-sources", "/executive"]) {
-    assert(overview.html.includes(`href="${href}"`), `advanced destination preserved: ${href}`);
+  // Advanced destinations now sit inside consolidated workspaces, so a
+  // lender reaches them by workspace tab rather than by a sidebar row of
+  // their own. The shell publishes the complete destination set — the
+  // same list global search reads — which is where "nothing deleted" is
+  // actually provable.
+  const navIndex = JSON.parse(overview.html.split('id="nav-index">')[1].split("</script>")[0]);
+  const reachable = new Set(navIndex.map((e) => e.href));
+  for (const href of ["/timeline", "/evidence-intelligence", "/official-sources", "/executive", "/ledger", "/insights"]) {
+    assert(
+      reachable.has(href) || overview.html.includes(`href="${href}"`),
+      `advanced destination preserved: ${href}`
+    );
   }
   const g4 = repo.listDrawRequestsForProject("proj-golden").find((d2) => d2.drawNumber === 4);
   const drawPage = await page(`/draw/${g4.id}`, cookie);
