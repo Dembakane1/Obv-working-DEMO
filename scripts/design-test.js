@@ -197,10 +197,21 @@ async function main() {
     "/exceptions", "/field", "/communications", "/setup", "/pilot",
     "/communications/integrations",
   ];
+  // Since navigation consolidated into workspaces, a destination is
+  // reachable either as a sidebar row or as a tab inside the workspace
+  // that owns it. The shell publishes the complete set as #nav-index —
+  // the same list global search reads — so that is the honest surface to
+  // assert here. navigation-test.js proves each tab bar actually renders
+  // and each of these URLs still answers 200.
+  const navIndex = JSON.parse(shellPage.html.split('id="nav-index">')[1].split("</script>")[0]);
+  const reachable = new Set(navIndex.map((e) => e.href));
   for (const href of PRESERVED) {
-    assert(shellPage.html.includes(`href="${href}"`), `nav still reaches ${href}`);
+    assert(
+      reachable.has(href) || shellPage.html.includes(`href="${href}"`),
+      `nav still reaches ${href}`
+    );
   }
-  assert(/Digital Twin/.test(shellPage.html), "the sidebar carries the Digital Twin entry");
+  assert(/Digital Twin/.test(shellPage.html), "navigation carries the Digital Twin entry");
   assert(/aria-current="page"/.test(shellPage.html), "the active nav item is announced to screen readers");
 
   // Mobile parity: the phone navigation is bottom bar + /more, and /more
@@ -209,7 +220,12 @@ async function main() {
   // once went missing on phones because /more was a hand-copied list.)
   const morePage = await page("/more", funder);
   assert(morePage.status === 200, "/more renders");
-  const bottomBar = ["/overview", "/projects", "/approvals", "/ledger"];
+  // Derived from the rendered bar, never hand-copied — a stale hand-typed
+  // list is precisely how mobile navigation drifted behind the sidebar
+  // before, and the bar is role-dependent now.
+  const bottomBar = [
+    ...(shellPage.html.split('class="bottom-nav"')[1]?.split("</nav>")[0] ?? "").matchAll(/href="([^"]+)"/g),
+  ].map((m) => m[1]);
   for (const href of PRESERVED) {
     const onMobile = bottomBar.includes(href) || morePage.html.includes(`href="${href}"`);
     if (!onMobile) fail(`mobile cannot reach ${href} (missing from /more and the bottom bar)`);
