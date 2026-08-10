@@ -36,6 +36,7 @@ import {
   storageStartupNotice,
 } from "../services/ops/storage";
 import * as backups from "../services/ops/backups";
+import * as pilotChecklist from "../services/ops/checklist";
 import * as integrationsRepo from "../db/integrationsRepo";
 import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
@@ -4455,6 +4456,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     });
     return;
   }
+  // Setup checklist for organization administrators: deterministic
+  // "ready to process the first draw" derivation. Read-only — it can
+  // never change governance.
+  if (pathname === "/api/ops/checklist" && method === "GET") {
+    const op = currentUser(req);
+    if (!op) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    if (!pilot.canAdminPilot(op)) { sendJson(res, { error: "The setup checklist requires an administrator" }, 403); return; }
+    sendJson(res, pilotChecklist.pilotSetupChecklist(op));
+    return;
+  }
   if (pathname === "/api/ops/backups" && method === "POST") {
     const op = currentUser(req);
     if (!op) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
@@ -5171,6 +5182,35 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const u = currentUser(req);
     if (!u) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
     sendJson(res, lenderPilot.pilotRoiMeasurements(u));
+    return;
+  }
+
+  // Pilot-results export: the same tenant-scoped raw measurements as
+  // /api/pilot/roi, as CSV for post-pilot analysis. Measurements only —
+  // no fabricated monetary savings, by design.
+  if (method === "GET" && pathname === "/api/pilot/roi/export.csv") {
+    const u = currentUser(req);
+    if (!u) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    const roi = lenderPilot.pilotRoiMeasurements(u);
+    const cols = [
+      "drawRequestId", "projectId", "drawNumber", "submittedAt", "firstReviewAt",
+      "decisionAt", "daysSubmissionToFirstReview", "daysSubmissionToDecision",
+      "resubmissions", "clarificationRequests", "returnedCount",
+      "missingDocumentEvents", "exceptionsRaised",
+    ] as const;
+    const esc = (v: unknown): string => {
+      const s = v === null || v === undefined ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csv = [
+      cols.join(","),
+      ...roi.draws.map((d) => cols.map((c) => esc(d[c])).join(",")),
+    ].join("\n");
+    res.writeHead(200, {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="obv-pilot-measurements-${roi.asOf.slice(0, 10)}.csv"`,
+    });
+    res.end(csv + "\n");
     return;
   }
 
