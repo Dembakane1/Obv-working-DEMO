@@ -32,6 +32,11 @@ export const REPORTS_DIR = process.env.OBV_REPORT_STORAGE_PATH
 export const AUDIT_PACKAGES_DIR = path.join(DATA_DIR, "audit-packages");
 const DB_PATH = path.join(DATA_DIR, "obv.db");
 
+/** Current schema version stamped into PRAGMA user_version at open. The
+ *  additive-migration model brings any older database forward in place;
+ *  the stamp exists so an OLDER build refuses a NEWER database. */
+export const SCHEMA_VERSION = 1;
+
 let db: DatabaseSync | null = null;
 
 const SCHEMA = `
@@ -174,6 +179,28 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
   enabled INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (user_id, channel)
+);
+
+-- Production backup records. The FILE is the backup; this row is its
+-- provenance: what was snapshotted, when, by whom, its hash, and the
+-- latest verification result. Rows are never deleted (retention_until is
+-- metadata for the operator — OBV never auto-deletes backup files).
+CREATE TABLE IF NOT EXISTS backup_records (
+  id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  source_environment TEXT NOT NULL,          -- demo | pilot | production at creation
+  file_name TEXT NOT NULL,                   -- basename under the backup dir (never a path)
+  size_bytes INTEGER,
+  sha256 TEXT,                               -- of the backup file at creation
+  schema_version INTEGER,                    -- PRAGMA user_version of the source
+  app_commit TEXT,                           -- deploy commit when the platform provides one
+  status TEXT NOT NULL DEFAULT 'COMPLETED' CHECK (status IN ('COMPLETED','FAILED')),
+  error TEXT,                                -- sanitized failure detail
+  verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED'
+    CHECK (verification_status IN ('UNVERIFIED','VERIFIED','MISMATCH')),
+  verified_at TEXT,
+  retention_until TEXT,
+  created_by_user_id TEXT                    -- null for scheduler/CLI runs
 );
 
 CREATE TABLE IF NOT EXISTS demo_fallback_photos (
@@ -2925,6 +2952,26 @@ export function getDb(): DatabaseSync {
         /* column already present */
       }
     }
+    // ---- schema version stamp (database safety) ----
+    // The additive-migration model means any database this build has
+    // opened is AT the current version; the stamp exists so an OLDER
+    // build refuses a NEWER database instead of running against columns
+    // and constraints it does not understand. Bump when the schema
+    // changes shape in a way an older build must not touch.
+    const uv = Number(
+      (db.prepare("PRAGMA user_version").get() as { user_version?: number }).user_version ?? 0
+    );
+    if (uv > SCHEMA_VERSION) {
+      const stale = db;
+      db = null;
+      try { stale.close(); } catch { /* already closed */ }
+      throw new Error(
+        `This database was created by a NEWER build (schema version ${uv} > ${SCHEMA_VERSION}). ` +
+          "Running an older build against it could corrupt governed records. Deploy the newer " +
+          "build, or restore the matching backup."
+      );
+    }
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
   return db;
 }

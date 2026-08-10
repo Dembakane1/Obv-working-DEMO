@@ -29,6 +29,14 @@ import * as repo from "../db/repo";
 import * as authz from "../services/authz";
 import { AccessError } from "../services/authz";
 import { assertPostureConfig, postureStartupNotice, productionPosture } from "../services/posture";
+import {
+  assertStorageConfig,
+  databaseSafetyCheck,
+  storagePosture,
+  storageStartupNotice,
+} from "../services/ops/storage";
+import * as backups from "../services/ops/backups";
+import * as integrationsRepo from "../db/integrationsRepo";
 import { seedDemo } from "../db/seed";
 import { virtualAccountService } from "../services/VirtualAccountService";
 import { wormEvidenceStore } from "../services/WormEvidenceStore";
@@ -1378,6 +1386,45 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       },
       database === "connected" ? 200 : 503
     );
+    return;
+  }
+
+  // READINESS (distinct from the liveness probe above): whether this
+  // deployment is SAFE to receive pilot traffic. Open like /api/health so
+  // platform probes can gate rollout, but deliberately terse — pass/fail
+  // booleans only; paths, versions, provider names and counts live behind
+  // the authenticated operator view (/api/ops/status).
+  if (method === "GET" && pathname === "/api/ready") {
+    const checks: Record<string, boolean> = {};
+    try {
+      getDb().prepare("PRAGMA user_version").get();
+      checks.database = true;
+    } catch {
+      checks.database = false;
+    }
+    try {
+      checks.storage = storagePosture().roots.every((r) => r.writable);
+    } catch {
+      checks.storage = false;
+    }
+    try {
+      identitySvc.assertIdentityConfig();
+      checks.identity = true;
+    } catch {
+      checks.identity = false;
+    }
+    try {
+      integrationsSvc.assertIntegrationsConfig();
+      integrationsSvc.assertEmailProviderConfig();
+      checks.email = true;
+    } catch {
+      checks.email = false;
+    }
+    const ready = Object.values(checks).every(Boolean);
+    // Backup freshness is reported, not gating: readiness gates rollout,
+    // and a fresh deployment's first backup necessarily comes after it.
+    const backupFresh = backups.hoursSinceLastBackup() <= 24;
+    sendJson(res, { ready, checks, backupWithin24h: backupFresh }, ready ? 200 : 503);
     return;
   }
 
@@ -4357,6 +4404,102 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ---- operations: status, backups (operator-only, audited) ----
+  // The detailed counterpart to /api/ready: storage posture, database
+  // safety, email/webhook queue health, backup freshness, recent
+  // delivery failures, and the per-recipient notification routing record
+  // (the operator's "why did this user receive this?" view). Secrets,
+  // tokens and raw links never appear — everything here is stats,
+  // statuses, sanitized error classes and non-secret metadata.
+  if (pathname === "/api/ops/status" && method === "GET") {
+    const op = currentUser(req);
+    if (!op) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    if (op.role !== "PROJECT_MANAGER") { sendJson(res, { error: "Operations status requires an administrator" }, 403); return; }
+    let dbSafety: { integrity: string; foreignKeyViolations: number; schemaVersion: number } | { error: string };
+    try {
+      dbSafety = databaseSafetyCheck();
+    } catch (e) {
+      dbSafety = { error: (e as Error).message.slice(0, 200) };
+    }
+    const backupList = backups.listBackups(10);
+    sendJson(res, {
+      environment: postureStartupNotice(),
+      storage: storagePosture(),
+      database: dbSafety,
+      email: {
+        provider: integrationsSvc.resolveEmailProvider().name,
+        stats: integrationsRepo.emailStats(),
+        recentFailures: integrationsRepo
+          .listEmails({ status: "FAILED", limit: 10 })
+          .map((e: { id: string; kind: string; toEmail: string; error: string | null; createdAt: string }) => ({
+            id: e.id, kind: e.kind, to: e.toEmail, error: e.error, createdAt: e.createdAt,
+          })),
+      },
+      webhooks: integrationsRepo.webhookQueueStats(),
+      backups: {
+        latestVerified: backups.latestVerifiedBackup(),
+        hoursSinceLast: backups.hoursSinceLastBackup(),
+        recent: backupList,
+      },
+      recentAddressedNotifications: repo
+        .listNotifications(50)
+        .filter((n) => n.recipientUserId)
+        .slice(0, 25)
+        .map((n) => ({
+          type: n.type,
+          createdAt: n.createdAt,
+          recipientUserId: n.recipientUserId,
+          reason: n.recipientReason,
+          projectId: n.projectId,
+        })),
+    });
+    return;
+  }
+  if (pathname === "/api/ops/backups" && method === "POST") {
+    const op = currentUser(req);
+    if (!op) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+    if (op.role !== "PROJECT_MANAGER") { sendJson(res, { error: "Backups require an administrator" }, 403); return; }
+    const record = backups.createBackup(op.id);
+    const verified = record.status === "COMPLETED" ? backups.verifyBackup(record.id) : record;
+    repo.insertConfigAudit({
+      id: repo.newId(),
+      projectId: null,
+      actorUserId: op.id,
+      action: "BACKUP_CREATED",
+      entityType: "backup",
+      entityId: record.id,
+      reason: null,
+      beforeSummary: null,
+      afterSummary: `${verified.status}/${verified.verificationStatus} (${verified.sizeBytes ?? 0} bytes)`,
+      createdAt: new Date().toISOString(),
+    });
+    sendJson(res, { backup: verified }, verified.status === "COMPLETED" ? 201 : 500);
+    return;
+  }
+  {
+    const verifyMatch = /^\/api\/ops\/backups\/([^/]+)\/verify$/.exec(pathname);
+    if (verifyMatch && method === "POST") {
+      const op = currentUser(req);
+      if (!op) { sendJson(res, { error: "Select a demo user first" }, 401); return; }
+      if (op.role !== "PROJECT_MANAGER") { sendJson(res, { error: "Backups require an administrator" }, 403); return; }
+      const verified = backups.verifyBackup(verifyMatch[1]);
+      repo.insertConfigAudit({
+        id: repo.newId(),
+        projectId: null,
+        actorUserId: op.id,
+        action: "BACKUP_VERIFIED",
+        entityType: "backup",
+        entityId: verified.id,
+        reason: null,
+        beforeSummary: null,
+        afterSummary: verified.verificationStatus,
+        createdAt: new Date().toISOString(),
+      });
+      sendJson(res, { backup: verified });
+      return;
+    }
+  }
+
   // ---- notification preferences (self-scoped; in-app stays mandatory) ----
   if (pathname === "/api/me/notification-preferences") {
     const prefUser = currentUser(req);
@@ -6387,6 +6530,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 }
 
 const server = http.createServer((req, res) => {
+  // Correlation id for supportability: honor a sane inbound X-Request-Id
+  // (proxies often mint one), else generate. Echoed on the response and
+  // stamped into the error log line, so "OBV didn't work" can become a
+  // specific, findable event without exposing anything internal.
+  const inboundRid = String(req.headers["x-request-id"] ?? "");
+  const requestId = /^[A-Za-z0-9._-]{8,64}$/.test(inboundRid) ? inboundRid : randomUUID();
+  res.setHeader("X-Request-Id", requestId);
   handle(req, res).catch((err) => {
     // SubmissionErrors carry intentional, user-safe messages. Anything
     // else is logged server-side only and surfaced generically — no
@@ -6398,8 +6548,10 @@ const server = http.createServer((req, res) => {
     // something real. ComplianceError is the DMV layer's typed error.
     const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError || err instanceof IdentityError || err instanceof IntegrationError || err instanceof EvidenceIntelError || err instanceof OfficialSourceError || err instanceof TimelineError;
     const status = known ? err.statusCode : 500;
-    console.error(`[error] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
-    const message = known ? err.message : "Internal server error";
+    console.error(`[error] [rid=${requestId}] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
+    // Unknown failures surface the correlation id so a lender can quote a
+    // findable reference to support — never the error itself.
+    const message = known ? err.message : `Internal server error (reference ${requestId})`;
     if (res.headersSent) {
       res.end();
       return;
@@ -6456,7 +6608,11 @@ function startupCheck(label: string, fn: () => void): void {
 }
 
 startupCheck("environment posture", () => assertPostureConfig());
+startupCheck("storage", () => assertStorageConfig());
 startupCheck("database", () => void getDb());
+// Fail safely against a corrupted or referentially broken database — a
+// server that runs anyway would author records on rotten ground.
+startupCheck("database safety", () => void databaseSafetyCheck());
 startupCheck("banking provider", () => resolveBankingProvider());
 startupCheck("session configuration", () => assertSessionConfig());
 startupCheck("identity configuration", () => identitySvc.assertIdentityConfig());
@@ -6485,6 +6641,7 @@ server.listen(PORT, () => {
   // Posture is disclosed at boot: a reader must never have to guess
   // which environment this is or whether cookies use a durable secret.
   console.log(postureStartupNotice());
+  console.log(storageStartupNotice());
   console.log(sessionStartupNotice());
   console.log(identitySvc.identityStartupNotice());
   console.log(integrationsSvc.integrationsStartupNotice());
