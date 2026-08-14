@@ -8,29 +8,46 @@
  * most important precondition for moving artifacts to object storage, and
  * it was satisfied before this module existed.
  *
- * WHAT WAS MISSING: the resolution rules were restated in several places,
- * so "where does this key live?" had no single answer to change. This
- * module is that answer. It does not move data, does not alter any
- * stored key, and does not change what any existing caller reads — the
- * local implementation reproduces the existing rules exactly.
+ * THE CONTRACT IS ASYNCHRONOUS AND PATH-FREE. A real remote store (Azure
+ * Blob, S3, an S3-compatible private store) performs network I/O and has
+ * no host filesystem path to offer, so the provider-neutral interface
+ * promises neither: every method returns a Promise, streams are generic
+ * `Readable`, and no method exposes where bytes physically live. The
+ * local implementation keeps its synchronous filesystem work as an
+ * internal detail behind that contract.
+ *
+ * LOCAL FILES ARE A CAPABILITY, NOT A LEAK. A few infrastructure
+ * operations genuinely need a file on disk (ZIP assembly, Chromium/PDF
+ * tooling, filename-only libraries). For those, `withLocalFile` hands the
+ * caller a path that is valid only for the duration of the callback: the
+ * local store lends its original file, and a future remote store
+ * downloads to a temporary file and removes it afterwards. Callers cannot
+ * tell which happened — which is the point.
  *
  * IMMUTABILITY (WORM). The governance layer depends on an immutability
  * GUARANTEE, never on a vendor. `ObjectClass.IMMUTABLE` means: once
- * written, the bytes at this key never change and the object is never
- * overwritten in place. Today that is enforced by write-once local files
- * plus the Evidence Ledger's hash chain, which is what actually detects
- * tampering — the ledger is the proof, the storage class is the policy.
- * A future adapter maps the same guarantee onto Azure Blob immutability
- * policies or S3 Object Lock. No governed code names a vendor.
+ * written, the bytes at this key are never replaced. Today that is a
+ * storage POLICY enforced by refusing overwrite in the active store,
+ * while the Evidence Ledger's hash chain is what actually DETECTS
+ * tampering — policy prevents ordinary replacement; the ledger proves
+ * integrity. A future deployment can add infrastructure-enforced
+ * retention (Azure Blob immutability policies, S3 Object Lock in
+ * compliance mode), which is STRONGER than the local policy: local
+ * write-once is not compliance-mode WORM and this codebase does not
+ * claim it is.
  *
  * NOT IMPLEMENTED HERE, DELIBERATELY: no Azure, S3 or network adapter.
  * An adapter with no credentials, no configuration and no caller is
  * decoration, not portability. docs/CLOUD_PORTABILITY.md records the
- * mapping each future adapter must satisfy.
+ * mapping each future adapter must satisfy. (A Memory store exists as a
+ * TEST DOUBLE ONLY — see memoryObjectStore.ts — to prove callers do not
+ * secretly depend on the filesystem.)
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createHash } from "node:crypto";
+import * as os from "node:os";
+import { Readable } from "node:stream";
+import { createHash, randomUUID } from "node:crypto";
 import { DATA_DIR, REPORTS_DIR } from "../../db/index";
 
 /** How OBV treats an object, independent of where it physically lives. */
@@ -50,21 +67,32 @@ export interface ObjectMetadata {
 }
 
 /**
- * The contract a storage backend must satisfy. Kept deliberately small:
- * every method here has a real caller or a real migration reason, and a
- * future AzureBlobObjectStore / S3ObjectStore has to implement exactly
- * this and nothing more.
+ * The contract a storage backend must satisfy.
+ *
+ * Kept deliberately small: every method has a real caller or a real
+ * migration reason, and a future AzureBlobObjectStore / S3ObjectStore has
+ * to implement exactly this and nothing more. Nothing here presumes a
+ * filesystem — that is what makes the claim "remote storage is an
+ * adapter" honest.
  */
 export interface ObjectStore {
   readonly kind: string;
-  exists(key: string): boolean;
-  get(key: string): Buffer | null;
-  metadata(key: string): ObjectMetadata | null;
-  /** True when the stored bytes still hash to `expected`. */
-  verifyHash(key: string, expected: string): boolean;
-  openReadStream(key: string): fs.ReadStream | null;
+  exists(key: string): Promise<boolean>;
+  get(key: string): Promise<Buffer | null>;
+  metadata(key: string): Promise<ObjectMetadata | null>;
+  /** True when the stored bytes still hash to `expectedSha256`. */
+  verifyHash(key: string, expectedSha256: string): Promise<boolean>;
+  /** Generic Readable — never an fs.ReadStream in the contract. */
+  openReadStream(key: string): Promise<Readable | null>;
   /** Write-once for IMMUTABLE: refuses to replace an existing object. */
-  put(key: string, body: Buffer, objectClass: ObjectClass): ObjectMetadata;
+  put(key: string, body: Buffer, objectClass: ObjectClass): Promise<ObjectMetadata>;
+  /**
+   * Run `fn` with a host-filesystem path to the object's bytes, for the
+   * few operations that require a real file (ZIP assembly, PDF tooling).
+   * The path is valid ONLY during the callback; any temporary copy is
+   * removed afterwards. Rejects if the object does not exist.
+   */
+  withLocalFile<T>(key: string, fn: (filePath: string) => Promise<T>): Promise<T>;
 }
 
 /**
@@ -75,14 +103,30 @@ export interface ObjectStore {
  * Served evidence paths (`/worm/<file>`) and bare filenames both appear
  * in existing records, so normalisation accepts them and produces the
  * canonical key. This is the only place that mapping is expressed.
+ *
+ * Security: a logical key never contains `..` — including encoded and
+ * backslash-disguised forms, which are decoded/normalised BEFORE the
+ * check so they cannot smuggle a traversal past it.
  */
 export function normalizeKey(reference: string, defaultPrefix?: string): string | null {
   if (!reference) return null;
-  let ref = reference.replace(/\\/g, "/").replace(/^\/+/, "");
+  let ref = reference;
+  // Percent-encoded traversal ("%2e%2e%2f") must not survive to the
+  // filesystem layer looking innocent. Decode defensively; a reference
+  // that fails decoding is rejected rather than passed through raw.
+  if (ref.includes("%")) {
+    try {
+      ref = decodeURIComponent(ref);
+    } catch {
+      return null;
+    }
+  }
+  ref = ref.replace(/\\/g, "/").replace(/^\/+/, "");
   if (!ref.includes("/") && defaultPrefix) ref = `${defaultPrefix}/${ref}`;
-  // Reject traversal outright rather than resolving and hoping: a key is
-  // a logical name, and a logical name never contains "..".
-  if (ref.split("/").some((seg) => seg === "..")) return null;
+  const segments = ref.split("/");
+  // Reject traversal and degenerate segments outright rather than
+  // resolving and hoping: a logical name never contains "." or "..".
+  if (segments.some((seg) => seg === ".." || seg === "." || seg === "")) return null;
   return ref || null;
 }
 
@@ -90,10 +134,11 @@ class LocalObjectStore implements ObjectStore {
   readonly kind = "local-filesystem";
 
   /**
-   * The one place a logical key becomes a physical location. Everything
-   * stays under the data root; `demo-evidence` is the single exception —
-   * it is bundled read-only demonstration media that ships inside the
-   * image, not tenant data, and it is served from `public/`.
+   * The one place a logical key becomes a physical location — private to
+   * this adapter; nothing outside the storage layer sees a path except
+   * through withLocalFile's scoped lease. `demo-evidence` is the single
+   * exception root — bundled read-only demonstration media shipped inside
+   * the image, not tenant data, served from `public/`.
    */
   private resolve(key: string): string | null {
     const normalized = normalizeKey(key);
@@ -115,81 +160,123 @@ class LocalObjectStore implements ObjectStore {
     return full.startsWith(rootWithSep) ? full : null;
   }
 
-  /** Exposed for callers that still need a disk path (PDF render, zip). */
-  physicalPath(key: string): string | null {
-    return this.resolve(key);
-  }
-
-  exists(key: string): boolean {
+  async exists(key: string): Promise<boolean> {
     const p = this.resolve(key);
-    return p !== null && fs.existsSync(p) && fs.statSync(p).isFile();
-  }
-
-  get(key: string): Buffer | null {
-    const p = this.resolve(key);
-    if (!p || !fs.existsSync(p)) return null;
+    if (!p) return false;
     try {
-      return fs.readFileSync(p);
+      return (await fs.promises.stat(p)).isFile();
+    } catch {
+      return false;
+    }
+  }
+
+  async get(key: string): Promise<Buffer | null> {
+    const p = this.resolve(key);
+    if (!p) return null;
+    try {
+      return await fs.promises.readFile(p);
     } catch {
       return null;
     }
   }
 
-  metadata(key: string): ObjectMetadata | null {
+  async metadata(key: string): Promise<ObjectMetadata | null> {
     const p = this.resolve(key);
-    if (!p || !fs.existsSync(p)) return null;
+    if (!p) return null;
     try {
-      const st = fs.statSync(p);
+      const st = await fs.promises.stat(p);
       if (!st.isFile()) return null;
+      const body = await fs.promises.readFile(p);
       return {
         key: normalizeKey(key)!,
         size: st.size,
         modifiedAt: new Date(st.mtimeMs).toISOString(),
-        sha256: createHash("sha256").update(fs.readFileSync(p)).digest("hex"),
+        sha256: createHash("sha256").update(body).digest("hex"),
       };
     } catch {
       return null;
     }
   }
 
-  verifyHash(key: string, expected: string): boolean {
-    const meta = this.metadata(key);
-    if (!meta || !expected) return false;
-    // Length-checked comparison: hex digests of equal length, compared in
-    // full rather than short-circuiting on a prefix.
-    const a = meta.sha256.toLowerCase();
-    const b = expected.toLowerCase();
-    if (a.length !== b.length) return false;
-    let diff = 0;
-    for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-    return diff === 0;
+  async verifyHash(key: string, expectedSha256: string): Promise<boolean> {
+    const meta = await this.metadata(key);
+    return meta !== null && hashesEqual(meta.sha256, expectedSha256);
   }
 
-  openReadStream(key: string): fs.ReadStream | null {
+  async openReadStream(key: string): Promise<Readable | null> {
     const p = this.resolve(key);
-    if (!p || !fs.existsSync(p)) return null;
+    if (!p || !(await this.exists(key))) return null;
     return fs.createReadStream(p);
   }
 
-  put(key: string, body: Buffer, objectClass: ObjectClass): ObjectMetadata {
+  async put(key: string, body: Buffer, objectClass: ObjectClass): Promise<ObjectMetadata> {
     const p = this.resolve(key);
     if (!p) throw new Error(`Invalid object key: ${key}`);
     if (objectClass === ObjectClass.IMMUTABLE && fs.existsSync(p)) {
-      // The WORM guarantee, enforced rather than assumed. A future
+      // The write-once policy, enforced rather than assumed. A future
       // immutable-blob adapter maps this refusal onto a retention policy.
       throw new Error(`Immutable object already exists and cannot be replaced: ${key}`);
     }
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, body);
-    return this.metadata(key)!;
+    await fs.promises.mkdir(path.dirname(p), { recursive: true });
+    await fs.promises.writeFile(p, body);
+    return (await this.metadata(key))!;
+  }
+
+  async withLocalFile<T>(key: string, fn: (filePath: string) => Promise<T>): Promise<T> {
+    const p = this.resolve(key);
+    if (!p || !(await this.exists(key))) {
+      throw new Error(`Object not found: ${key}`);
+    }
+    // The local store lends its original file — no copy, no cleanup, and
+    // the caller cannot tell this from a remote store's temporary copy.
+    return fn(p);
+  }
+}
+
+/** Length-checked, constant-time-ish hex digest comparison. */
+export function hashesEqual(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const x = a.toLowerCase();
+  const y = b.toLowerCase();
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * Materialize helper for stores that have no host file to lend: download
+ * the bytes to a private temporary file, run the callback, remove the
+ * file. Shared so every non-filesystem adapter (including the test
+ * double) gets identical, correct cleanup semantics.
+ */
+export async function materializeToTemp<T>(
+  key: string,
+  bytes: Buffer,
+  fn: (filePath: string) => Promise<T>
+): Promise<T> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "obv-object-"));
+  const file = path.join(dir, path.basename(normalizeKey(key) ?? randomUUID()));
+  await fs.promises.writeFile(file, bytes);
+  try {
+    return await fn(file);
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true });
   }
 }
 
 /**
- * The active store. A future deployment swaps this one binding — every
- * caller above it is already written against the interface.
+ * The active store, exposed AS THE INTERFACE: whoever imports this
+ * compiles against the provider-neutral contract, so nothing local-only
+ * (like the class's private path resolution) can leak through it.
+ *
+ * Honest scope: swapping this binding moves the callers that use it —
+ * today the audit-package evidence flows. Most artifact flows still reach
+ * the filesystem directly and must be converted BEFORE an adapter swap
+ * changes where their bytes live; docs/CLOUD_PORTABILITY.md §5 tracks
+ * that list.
  */
-export const objectStore = new LocalObjectStore();
+export const objectStore: ObjectStore = new LocalObjectStore();
 
 /**
  * Resolve a served evidence reference (`/worm/x.jpg`, `/uploads/x.jpg`,

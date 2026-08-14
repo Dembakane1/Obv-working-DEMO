@@ -231,18 +231,11 @@ function mimeForFilename(name: string): string {
   return MEDIA_MIME[ext] ?? "application/octet-stream";
 }
 
-/**
- * Resolve a served evidence path to a file on disk, where accessible.
- *
- * The prefix→location rules now live in the object-storage boundary, so
- * "where does this artifact live?" has one answer for a future adapter to
- * change. Behaviour is unchanged: the same three prefixes resolve to the
- * same three locations, and anything else is still null.
- */
-function evidenceDiskPath(photoPath: string): string | null {
-  const key = evidenceKey(photoPath);
-  return key === null ? null : objectStore.physicalPath(key);
-}
+// Evidence artifacts are reached ONLY through the object-storage
+// boundary: `evidenceKey` maps the served path to a logical key, and the
+// store answers existence/bytes questions. No physical path enters this
+// module — which is exactly what lets a future remote store satisfy
+// these callers unchanged.
 
 export async function validateProjectIntegrity(projectId: string): Promise<IntegrityValidation> {
   const findings: IntegrityFinding[] = [];
@@ -320,10 +313,10 @@ export async function validateProjectIntegrity(projectId: string): Promise<Integ
   const missing: string[] = [];
   let notCheckable = 0;
   for (const ev of evidence) {
-    const p = evidenceDiskPath(ev.photoPath);
-    if (!p) {
+    const key = evidenceKey(ev.photoPath);
+    if (!key) {
       notCheckable++;
-    } else if (!fs.existsSync(p)) {
+    } else if (!(await objectStore.exists(key))) {
       missing.push(ev.id);
     }
   }
@@ -477,12 +470,12 @@ interface BuiltRegisters {
  *  package when its timestamp is at or before the as-of point. */
 const atOrBefore = (ts: string | null | undefined, asOf: string) => Boolean(ts && ts <= asOf);
 
-function buildRegisters(
+async function buildRegisters(
   project: Project,
   asOf: string,
   opts: { includeReports: boolean; includeCommMetadata: boolean; includeEvidenceMedia: boolean },
   integrity: IntegrityValidation
-): BuiltRegisters {
+): Promise<BuiltRegisters> {
   const files: PackageFile[] = [];
   const counts: Record<string, number> = {};
   const sections: string[] = [];
@@ -1296,13 +1289,13 @@ function buildRegisters(
   if (opts.includeEvidenceMedia) {
     const mediaRows: unknown[][] = [];
     for (const ev of evidence) {
-      const diskPath = evidenceDiskPath(ev.photoPath);
+      const key = evidenceKey(ev.photoPath);
       const safeBase = path
         .basename(ev.photoPath)
         .replace(/[^A-Za-z0-9._-]/g, "_")
         .slice(0, 80);
-      if (diskPath && fs.existsSync(diskPath)) {
-        const bytes = fs.readFileSync(diskPath);
+      const bytes = key ? await objectStore.get(key) : null;
+      if (bytes) {
         const packagedHash = createHash("sha256").update(bytes).digest("hex");
         const name = `03_evidence/media/${ev.id}__${safeBase}`;
         add(name, bytes, "03_evidence");
@@ -1490,7 +1483,7 @@ export async function generateAuditPackage(
     const integrity = await validateProjectIntegrity(project.id);
 
     // 2. Structured registers.
-    const { files, counts, sections, notes } = buildRegisters(
+    const { files, counts, sections, notes } = await buildRegisters(
       project,
       asOf,
       { includeReports, includeCommMetadata, includeEvidenceMedia },

@@ -108,20 +108,37 @@ to multiple writers is PostgreSQL.
 
 `services/storage/objectStore.ts` defines the contract a backend must
 satisfy — `exists`, `get`, `metadata`, `verifyHash`, `openReadStream`,
-`put` — and ships `LocalObjectStore`, which reproduces the existing
-resolution rules exactly. **No data moved and no stored key changed.**
+`put`, `withLocalFile` — and ships `LocalObjectStore`, which reproduces
+the existing resolution rules exactly. **No data moved and no stored key
+changed.**
 
-`ObjectClass.IMMUTABLE` expresses the WORM guarantee independently of
-where bytes live: once written, an object is never replaced. The local
-implementation enforces it by refusing to overwrite. The Evidence Ledger's
-hash chain remains what actually *detects* tampering — the storage class
-is policy, the ledger is proof.
+**The contract is asynchronous and path-free.** Every method returns a
+`Promise`; streams are Node's generic `Readable`, never `fs.ReadStream`;
+and no method exposes where bytes physically live. A remote store
+performs network I/O and has no host path to offer, so the neutral
+interface promises neither — that is what makes "Azure/S3 is an adapter"
+honest rather than aspirational. The few operations that genuinely need a
+file on disk (ZIP assembly, Chromium/PDF tooling) use
+`withLocalFile(key, fn)`: the path is valid only during the callback, the
+local store lends its original file, and a pathless store downloads to a
+temporary file and removes it afterwards. Callers cannot tell which
+happened.
 
-Adoption is deliberately partial. `auditPackage.ts` now resolves evidence
-through the boundary instead of restating the prefix rules; other callers
-still use direct paths. Converting them is mechanical and safe, but it
-touches evidence read paths, so it is sequenced after this milestone
-rather than bundled into it.
+`ObjectClass.IMMUTABLE` expresses the write-once policy independently of
+where bytes live: once written, an object is never replaced, enforced by
+refusing overwrite. Three distinct layers, stated precisely:
+
+- **storage policy** prevents ordinary replacement (what the store enforces);
+- **the Evidence Ledger's hash chain** *detects* tampering (what proves integrity);
+- **infrastructure-enforced retention** (Azure Blob immutability policies,
+  S3 Object Lock in compliance mode) is a *stronger* future guarantee that
+  local write-once does **not** claim to equal.
+
+The contract is proven against two implementations: the production
+`LocalObjectStore` and `MemoryObjectStore`, an in-memory **test double**
+(wired to nothing) whose only job is to prove callers do not secretly
+depend on the filesystem. A property only the local store satisfies is a
+filesystem assumption, not a contract.
 
 **No Azure or S3 adapter was written.** An adapter with no credentials, no
 configuration and no caller is decoration. A future adapter must satisfy:
@@ -131,7 +148,27 @@ configuration and no caller is decoration. A future adapter must satisfy:
 | Write-once for IMMUTABLE | refuse overwrite | immutability policy / legal hold | Object Lock (compliance mode) |
 | Content addressable by key | path under data root | blob name | object key |
 | Hash verification | sha256 on read | sha256 on read (MD5 property insufficient) | sha256 on read |
-| Streamed read | `createReadStream` | blob download stream | `GetObject` stream |
+| Streamed read | generic `Readable` | blob download stream | `GetObject` stream |
+| Local-file lease | lend the original file | download to temp, delete after | download to temp, delete after |
+
+### Adoption status — the honest version
+
+The boundary exists and its first adopter is converted; **most artifact
+flows still reach the filesystem directly**. A future migration converts
+the remaining callers *before* an adapter swap changes anything.
+
+| Caller | Direct-path use | Class | Disposition |
+|---|---|---|---|
+| `auditPackage.ts` — evidence existence + media copy | none (converted) | **A — uses ObjectStore now** | Done. Path-free: `exists()` + `get()`. |
+| `auditPackage.ts` — package ZIP write/read under `AUDIT_PACKAGES_DIR` | direct | **C — migration candidate** | Package assembly writes its own output; convert with `put()`/`openReadStream` when packages move off-volume. |
+| `WormEvidenceStore.ts` — evidence write + ledger append | direct | **C — migration candidate** | The WORM write and hash-chain append must convert TOGETHER in one change; splitting them risks a ledger entry for bytes that failed to land. Deliberately not converted piecemeal. |
+| `officialSources/retrieval.ts` — snapshot payload files | direct | **C — migration candidate** | Straightforward `put()`/`get()` conversion. |
+| `permits.ts` — permit documents under uploads | direct | **C — migration candidate** | Straightforward. |
+| `report/data.ts` — rendered report artifacts | direct | **C — migration candidate** | DERIVED class; regenerable. |
+| `http/server.ts` — static serving of `/worm/`, `/uploads/`, report cache | direct | **C — migration candidate** | Becomes `openReadStream` per key; response streaming already exists. |
+| `ops/backups.ts` / `ops/storage.ts` — database file itself | direct | **B — legitimately local** | The SQLite file is infrastructure, not an application artifact; it is replaced by PostgreSQL, not by object storage. |
+| `db/seed.ts` — demo media provisioning | direct | **D — unrelated** | Development/demo seeding of bundled assets. |
+| PDF renderer child (`scripts/render-pdf.js`) | direct | **B — legitimately local** | Chromium needs real files; when its inputs move to object storage, `withLocalFile` is the seam it uses. |
 
 ---
 
@@ -172,8 +209,10 @@ is using.
 | **P2** | Platform variables took precedence over generic ones and used three different commit names | **Fixed** — one boundary, generic wins, fallbacks preserved. |
 | **P2** | Preview banner keyed off a hard-coded branch name | **Fixed** — opt-in via `OBV_PREVIEW`. |
 | **P2** | Object-key resolution restated in several places | **Fixed** — one boundary; `auditPackage.ts` converted. |
+| **P2** | ObjectStore contract was synchronous, exposed `fs.ReadStream` and a physical-path method | **Fixed** — async, generic `Readable`, path access only via the scoped `withLocalFile` lease; contract proven against a pathless in-memory double. |
+| **P2** | Test harnesses treated `child.kill()` as instant termination | **Fixed** — `scripts/lib/proc.js: stopProcessAndWait()` waits for the actual exit event; seven suites converted. Graceful shutdown made `kill()` mean "drain started", and suites restarting a server against the same data directory were racing the WAL checkpoint. |
 | **FUTURE** | SQLite → PostgreSQL | Documented in `POSTGRES_MIGRATION_MAP.md`. Not started. |
-| **FUTURE** | Local artifacts → object storage | Boundary exists; remaining callers not yet converted; no data moved. |
+| **FUTURE** | Local artifacts → object storage | Boundary exists; remaining callers classified in §5; no data moved. |
 | **FUTURE** | In-process scheduled dispatch under multiple instances | Needs a single-runner strategy once the app tier scales. |
 | **NOT A PROBLEM** | Teams / WhatsApp / Anthropic naming their vendors | Correct: they are those vendors. |
 | **NOT A PROBLEM** | Chromium in the image | Portable across any container host. |

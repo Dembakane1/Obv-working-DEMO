@@ -9,6 +9,7 @@
  * Usage: node scripts/verification-test.js   (builds must exist: npm run build)
  */
 const http = require("node:http");
+const { stopProcessAndWait } = require("./lib/proc");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -58,8 +59,9 @@ const stub = http.createServer((req, res) => {
 let child = null;
 async function startServer(extraEnv) {
   if (child) {
-    child.kill();
-    await new Promise((r) => setTimeout(r, 400));
+    // Event-based, not time-based: the drain must be COMPLETE before the
+    // next server binds the same port and reopens the same database.
+    await stopProcessAndWait(child);
   }
   const env = { ...process.env, PORT: String(PORT), ...extraEnv };
   delete env.ANTHROPIC_API_KEY;

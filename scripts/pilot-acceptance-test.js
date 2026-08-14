@@ -18,6 +18,7 @@
  *   → restart preserves everything
  */
 const { spawn, spawnSync } = require("node:child_process");
+const { stopProcessAndWait } = require("./lib/proc");
 const { createHash } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -527,8 +528,7 @@ async function main() {
   assert([403, 404].includes(sim.status), "banking simulation controls remain unavailable in pilot posture");
 
   // ---- 22. restart preserves pilot state ----
-  server.kill();
-  await new Promise((r) => setTimeout(r, 500));
+  await stopProcessAndWait(server);
   server = spawn(process.execPath, [SERVER], { env: PILOT_ENV, stdio: "ignore" });
   await waitUp();
   const after = await fetch(BASE + "/overview", { headers: { cookie: jars.admin, accept: "text/html" } });

@@ -170,48 +170,129 @@ async function main() {
     `platform-specific variables are read only inside the runtime boundary${platformReaders.length ? " — leaked into " + platformReaders.join(", ") : ""}`
   );
 
-  // ============ 3. the local object store keeps its guarantees =========
+  // ============ 3. the ObjectStore CONTRACT, against two providers ======
+  // The same behavioral checks run against the production local store AND
+  // an in-memory test double that has no filesystem at all. A property
+  // that only the local store satisfies is a filesystem assumption, not a
+  // contract — this is what makes "Azure/S3 is an adapter" checkable.
   const storeMod = path.join(ROOT, "dist/server/services/storage/objectStore.js");
+  const memoryMod = path.join(ROOT, "dist/server/services/storage/memoryObjectStore.js");
   const storeProbe = execFileSync(
     process.execPath,
     ["-e", `
+      const fs = require("node:fs");
+      const { Readable } = require("node:stream");
       const s = require(${JSON.stringify(storeMod)});
-      const out = {};
-      const key = "uploads/portability-probe.txt";
-      const meta = s.objectStore.put(key, Buffer.from("alpha"), s.ObjectClass.DERIVED);
-      out.roundTrip = s.objectStore.get(key).toString() === "alpha";
-      out.hashOk = s.objectStore.verifyHash(key, meta.sha256);
-      out.hashDetects = !s.objectStore.verifyHash(key, "0".repeat(64));
-      out.exists = s.objectStore.exists(key) && !s.objectStore.exists("uploads/absent.txt");
-      // Overwrite allowed for DERIVED, refused for IMMUTABLE.
-      s.objectStore.put(key, Buffer.from("beta"), s.ObjectClass.DERIVED);
-      out.derivedOverwrites = s.objectStore.get(key).toString() === "beta";
-      const wormKey = "worm/portability-immutable.txt";
-      s.objectStore.put(wormKey, Buffer.from("one"), s.ObjectClass.IMMUTABLE);
-      try { s.objectStore.put(wormKey, Buffer.from("two"), s.ObjectClass.IMMUTABLE); out.immutableRefused = false; }
-      catch { out.immutableRefused = true; }
-      out.immutableIntact = s.objectStore.get(wormKey).toString() === "one";
-      out.traversalRejected =
-        s.normalizeKey("../../etc/passwd") === null &&
-        s.objectStore.physicalPath("uploads/../../etc/passwd") === null;
-      out.evidenceKeys =
-        s.evidenceKey("/worm/a.jpg") === "worm/a.jpg" &&
-        s.evidenceKey("/uploads/b.jpg") === "uploads/b.jpg" &&
-        s.evidenceKey("/demo-evidence/c.jpg") === "demo-evidence/c.jpg" &&
-        s.evidenceKey("/etc/passwd") === null;
-      out.underRoot = s.objectStore.physicalPath("worm/x.jpg").startsWith(process.env.OBV_DATA_DIR);
-      console.log(JSON.stringify(out));
+      const { MemoryObjectStore } = require(${JSON.stringify(memoryMod)});
+
+      async function contract(store) {
+        const out = { kind: store.kind };
+        const key = "uploads/portability-probe.txt";
+        const meta = await store.put(key, Buffer.from("alpha"), s.ObjectClass.DERIVED);
+        out.roundTrip = (await store.get(key)).toString() === "alpha";
+        out.hashOk = await store.verifyHash(key, meta.sha256);
+        out.hashDetects = !(await store.verifyHash(key, "0".repeat(64)));
+        out.exists = (await store.exists(key)) && !(await store.exists("uploads/absent.txt"));
+        await store.put(key, Buffer.from("beta"), s.ObjectClass.DERIVED);
+        out.derivedOverwrites = (await store.get(key)).toString() === "beta";
+        const wormKey = "worm/portability-immutable.txt";
+        await store.put(wormKey, Buffer.from("one"), s.ObjectClass.IMMUTABLE);
+        try { await store.put(wormKey, Buffer.from("two"), s.ObjectClass.IMMUTABLE); out.immutableRefused = false; }
+        catch { out.immutableRefused = true; }
+        out.immutableIntact = (await store.get(wormKey)).toString() === "one";
+        // Streams are the GENERIC Readable; the contract promises nothing
+        // filesystem-shaped. (fs.ReadStream instanceof Readable, so the
+        // local store may return one — but no caller may REQUIRE one,
+        // which the memory store proves.)
+        const stream = await store.openReadStream(wormKey);
+        out.streamIsReadable = stream instanceof Readable;
+        const chunks = [];
+        for await (const c of stream) chunks.push(c);
+        out.streamedBytes = Buffer.concat(chunks).toString() === "one";
+        // Local-file materialization: path valid during the callback,
+        // bytes correct, and any temporary copy removed afterwards.
+        let leased = null;
+        out.materializedBytes = await store.withLocalFile(wormKey, async (p) => {
+          leased = p;
+          return fs.readFileSync(p).toString() === "one";
+        });
+        out.tempCleaned = store.kind === "local-filesystem"
+          ? fs.existsSync(leased)            // the local store lends its ORIGINAL file
+          : !fs.existsSync(leased);          // a pathless store must remove its temp copy
+        let missingRejected = false;
+        try { await store.withLocalFile("uploads/never-written.bin", async () => {}); }
+        catch { missingRejected = true; }
+        out.missingRejected = missingRejected;
+        return out;
+      }
+
+      (async () => {
+        const local = await contract(s.objectStore);
+        const memory = await contract(new MemoryObjectStore());
+        const keys = {};
+        // Key security: traversal in every disguise is rejected, honest
+        // keys are normalised, and nesting stays inside the root.
+        keys.plainTraversal = s.normalizeKey("../../etc/passwd") === null;
+        keys.encodedTraversal = s.normalizeKey("%2e%2e%2fetc%2fpasswd") === null && s.normalizeKey("uploads/%2e%2e/secret") === null;
+        keys.backslashTraversal = s.normalizeKey("uploads\\\\..\\\\..\\\\etc\\\\passwd") === null;
+        keys.dotSegment = s.normalizeKey("uploads/./x.jpg") === null && s.normalizeKey("uploads//x.jpg") === null;
+        keys.leadingSlash = s.normalizeKey("/worm/a.jpg") === "worm/a.jpg";
+        keys.backslashNormalized = s.normalizeKey("worm\\\\a.jpg") === "worm/a.jpg";
+        keys.nestedValid = s.normalizeKey("audit-packages/pkg-1/file.zip") === "audit-packages/pkg-1/file.zip";
+        keys.badDecode = s.normalizeKey("%zz-broken") === null;
+        keys.evidenceKeys =
+          s.evidenceKey("/worm/a.jpg") === "worm/a.jpg" &&
+          s.evidenceKey("/uploads/b.jpg") === "uploads/b.jpg" &&
+          s.evidenceKey("/demo-evidence/c.jpg") === "demo-evidence/c.jpg" &&
+          s.evidenceKey("/etc/passwd") === null;
+        console.log(JSON.stringify({ local, memory, keys }));
+      })().catch((e) => { console.error(e); process.exit(1); });
     `],
     { env: { ...process.env, OBV_DATA_DIR: DATA }, encoding: "utf8" }
   );
-  const st = JSON.parse(storeProbe.trim());
-  assert(st.roundTrip && st.exists, "the local object store reads back what it wrote, by logical key");
-  assert(st.hashOk && st.hashDetects, "stored bytes are verifiable by hash, and a wrong hash is rejected");
-  assert(st.derivedOverwrites, "a DERIVED object (a regenerable report) may be replaced");
-  assert(st.immutableRefused && st.immutableIntact, "an IMMUTABLE object refuses replacement — the WORM guarantee is enforced, not assumed");
-  assert(st.traversalRejected, "logical keys cannot traverse out of the storage root");
-  assert(st.evidenceKeys, "served evidence paths map to object keys in exactly one place");
-  assert(st.underRoot, "every resolved object stays under the configured data root");
+  const { local: st, memory: mem, keys: keySec } = JSON.parse(storeProbe.trim());
+  for (const [label, r] of [["local store", st], ["memory test double", mem]]) {
+    assert(r.roundTrip && r.exists, `${label}: reads back what it wrote, by logical key`);
+    assert(r.hashOk && r.hashDetects, `${label}: bytes verifiable by hash; a wrong hash is rejected`);
+    assert(r.derivedOverwrites, `${label}: a DERIVED object may be replaced`);
+    assert(r.immutableRefused && r.immutableIntact, `${label}: an IMMUTABLE object refuses replacement`);
+    assert(r.streamIsReadable && r.streamedBytes, `${label}: streams are generic Readable and carry the right bytes`);
+    assert(r.materializedBytes && r.missingRejected, `${label}: withLocalFile lends a real path and rejects missing objects`);
+  }
+  assert(st.tempCleaned, "the local store lends its original file — no copy churn on the pilot");
+  assert(mem.tempCleaned, "a pathless store's temporary materialization is removed after the callback");
+  assert(
+    keySec.plainTraversal && keySec.encodedTraversal && keySec.backslashTraversal && keySec.dotSegment && keySec.badDecode,
+    "traversal is rejected in plain, percent-encoded, backslash and dot-segment disguises"
+  );
+  assert(
+    keySec.leadingSlash && keySec.backslashNormalized && keySec.nestedValid,
+    "honest keys normalise (leading slash, backslashes) and nested keys stay valid"
+  );
+  assert(keySec.evidenceKeys, "served evidence paths map to object keys in exactly one place");
+  // Compile-time neutrality: the provider-neutral CONTRACT exposes no
+  // filesystem type and no physical path, and no caller outside the
+  // storage layer asks for one.
+  const contractSrc = readFileSync(path.join(ROOT, "src/server/services/storage/objectStore.ts"), "utf8");
+  // Method SIGNATURES only — comments stripped, so prose about what the
+  // contract avoids cannot satisfy (or fail) a check about what it does.
+  const iface = contractSrc
+    .split("export interface ObjectStore")[1]
+    .split("}")[0]
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+  assert(!/fs\.ReadStream/.test(iface), "the ObjectStore contract exposes generic Readable, never fs.ReadStream");
+  assert(!/physicalPath/.test(iface), "the ObjectStore contract exposes no physical path");
+  assert(/Promise</.test(iface), "every ObjectStore method is asynchronous — implementable by a remote store");
+  const pathAskers = [];
+  for (const f of files) {
+    if (f.includes(path.join("services", "storage"))) continue;
+    if (/objectStore\.physicalPath|\.physicalPath\(/.test(readFileSync(f, "utf8"))) pathAskers.push(path.relative(ROOT, f));
+  }
+  assert(
+    pathAskers.length === 0,
+    `no provider-neutral caller asks the store for a physical path${pathAskers.length ? " — " + pathAskers.join(", ") : ""}`
+  );
 
   // ============ 4. boot with no platform variables whatsoever =========
   let squatter = false;
@@ -348,10 +429,16 @@ async function main() {
   server = null;
 
   // SIGINT must behave identically: a developer's Ctrl-C and a platform's
-  // stop signal take the same path.
+  // stop signal take the same path. This run also proves two more
+  // lifecycle properties: an IDLE server exits promptly instead of
+  // sitting out its grace period, and a repeated signal (platforms often
+  // re-send; humans double-tap Ctrl-C) does not restart the shutdown.
+  const secondLog = path.join(DATA, "second.log");
+  writeFileSync(secondLog, "");
+  const secondFd = require("node:fs").openSync(secondLog, "a");
   const second = spawn(process.execPath, [path.join(ROOT, "dist/server/http/server.js")], {
     env: { ...cleanEnv, OBV_DATA_DIR: DATA, PORT: String(PORT + 1), OBV_BANKING_MODE: "demo", OBV_SHUTDOWN_GRACE_MS: "3000" },
-    stdio: "ignore",
+    stdio: ["ignore", secondFd, secondFd],
   });
   server = second;
   for (let i = 0; i < 60; i++) {
@@ -359,9 +446,24 @@ async function main() {
     await new Promise((r) => setTimeout(r, 250));
   }
   const sigintExit = new Promise((resolve) => second.once("exit", (code) => resolve(code)));
+  const drainStart = Date.now();
   second.kill("SIGINT");
+  second.kill("SIGINT"); // duplicate — must be absorbed by the first shutdown
+  setTimeout(() => { try { second.kill("SIGTERM"); } catch { /* exited */ } }, 100).unref();
   const sigintCode = await Promise.race([sigintExit, new Promise((r) => setTimeout(() => r("timeout"), 6000))]);
+  const drainMs = Date.now() - drainStart;
   assert(sigintCode === 0, `SIGINT drains on the same path as SIGTERM (exit ${sigintCode})`);
+  assert(
+    drainMs < 2000,
+    `an idle server exits promptly (${drainMs}ms) instead of sitting out its ${3000}ms grace period`
+  );
+  const secondOut = readFileSync(secondLog, "utf8");
+  const drainAnnouncements = (secondOut.match(/received — draining/g) ?? []).length;
+  const completions = (secondOut.match(/shutdown complete/g) ?? []).length;
+  assert(
+    drainAnnouncements === 1 && completions === 1,
+    `repeated stop signals do not restart the shutdown (${drainAnnouncements} drain start, ${completions} completion)`
+  );
   server = null;
 
   // ============ 10. provider seams remain usable =====================

@@ -11,6 +11,7 @@
  *   node scripts/whatsapp-sync-test.js
  */
 const { spawn } = require("node:child_process");
+const { stopProcessAndWait } = require("./lib/proc");
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -291,7 +292,9 @@ const WA_ENV = {
       intg0.includes("WhatsApp") && intg0.includes("Not Configured"),
       "integrations page shows honest WhatsApp Not Configured state"
     );
-    noCreds.kill();
+    // Wait for the full exit: the drain holds the SQLite write lock while
+    // checkpointing, and the next server opens the same OBV_DATA_DIR.
+    await stopProcessAndWait(noCreds);
 
     // ---- configured (stub) server ----
     startObv(OBV_PORT, WA_ENV);
