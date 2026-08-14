@@ -12,6 +12,7 @@
  * schema-version refusal, and the pilot:check verdict.
  */
 const { spawn, spawnSync } = require("node:child_process");
+const { stopProcessAndWait } = require("./lib/proc");
 const http = require("node:http");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -209,8 +210,7 @@ async function main() {
 
     // Restart preserves state (same data dir): kill, restart, session…
     // sessions are server-side rows, so the SAME cookie must survive.
-    pilotServer.kill();
-    await new Promise((r) => setTimeout(r, 500));
+    await stopProcessAndWait(pilotServer);
     const pilotServer2 = spawn(process.execPath, [SERVER], {
       env: {
         ...process.env, ...pilotBase, PORT: String(PORT),

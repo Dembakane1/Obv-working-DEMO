@@ -24,7 +24,9 @@ import {
   sessionCookieHeader,
   sessionStartupNotice,
 } from "./session";
-import { getDb, REPORTS_DIR, WORM_DIR, UPLOADS_DIR } from "../db/index";
+import { closeDb, getDb, REPORTS_DIR, WORM_DIR, UPLOADS_DIR } from "../db/index";
+import { dataStorePosture, dataStoreStartupNotice } from "../services/platform/datastore";
+import { platformName, publicBaseUrl, runtimeStartupNotice, shortCommit } from "../services/platform/runtime";
 import * as repo from "../db/repo";
 import * as authz from "../services/authz";
 import { AccessError } from "../services/authz";
@@ -393,7 +395,7 @@ function signInPath(): string {
  *  activation, sign-in). The explicit public URL wins; the request host is
  *  a development fallback only. */
 function invitationBaseUrl(req: http.IncomingMessage): string {
-  const configured = (process.env.OBV_PUBLIC_BASE_URL ?? process.env.RENDER_EXTERNAL_URL ?? "")
+  const configured = publicBaseUrl()
     .trim()
     .replace(/\/$/, "");
   if (configured) return configured;
@@ -1383,7 +1385,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         teamsMode: TEAMS_CONFIG.configured() ? "configured" : "demo",
         // Deployed commit (Render injects RENDER_GIT_COMMIT) so the live
         // version is verifiable from the outside. Short hash only.
-        version: (process.env.RENDER_GIT_COMMIT ?? process.env.OBV_GIT_COMMIT ?? "").slice(0, 7) || "unknown",
+        // Generic OBV_APP_COMMIT wins; platform variables are only a
+        // compatibility fallback (services/platform/runtime.ts).
+        version: shortCommit(),
         timestamp: new Date().toISOString(),
       },
       database === "connected" ? 200 : 503
@@ -1422,11 +1426,31 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     } catch {
       checks.email = false;
     }
+    // A draining instance is alive but must not receive new traffic: the
+    // load balancer learns that here, not by having a request cut off.
+    checks.accepting = !shuttingDown;
     const ready = Object.values(checks).every(Boolean);
     // Backup freshness is reported, not gating: readiness gates rollout,
     // and a fresh deployment's first backup necessarily comes after it.
     const backupFresh = backups.hoursSinceLastBackup() <= 24;
-    sendJson(res, { ready, checks, backupWithin24h: backupFresh }, ready ? 200 : 503);
+    // Deployment-shape disclosure, so an operator scaling this service can
+    // see the single-writer constraint without reading the source.
+    const store = dataStorePosture();
+    sendJson(
+      res,
+      {
+        ready,
+        checks,
+        backupWithin24h: backupFresh,
+        dataStore: {
+          engine: store.engine,
+          maxWriterInstances: store.maxWriterInstances,
+          supportsHorizontalScale: store.supportsHorizontalScale,
+        },
+        platform: platformName(),
+      },
+      ready ? 200 : 503
+    );
     return;
   }
 
@@ -6686,6 +6710,7 @@ startupCheck("official sources configuration", () => officialSourcesSvc.assertOf
 startupCheck("official source registry", () => officialSourcesSvc.ensureSourceRegistry());
 // Optional periodic webhook dispatch (off by default; tests and demos
 // trigger dispatch explicitly so behavior stays deterministic).
+const backgroundTimers: NodeJS.Timeout[] = [];
 if (integrationsSvc.integrationsConfig().webhookDispatchIntervalMs > 0) {
   const timer = setInterval(() => {
     void integrationsSvc.dispatchDueDeliveries().catch(() => {
@@ -6693,13 +6718,93 @@ if (integrationsSvc.integrationsConfig().webhookDispatchIntervalMs > 0) {
     });
   }, integrationsSvc.integrationsConfig().webhookDispatchIntervalMs);
   timer.unref();
+  backgroundTimers.push(timer);
+}
+
+/**
+ * Container lifecycle.
+ *
+ * Every container platform — Render, Azure Container Apps, AKS, plain
+ * Docker — stops a process by sending SIGTERM and then waiting a fixed
+ * grace period before SIGKILL. Node installs no SIGTERM handler of its
+ * own, so before this the process died the instant the signal arrived:
+ * in-flight requests were cut off mid-response and the SQLite handle was
+ * never closed, leaving the write-ahead log to be replayed by whatever
+ * started next. As PID 1 — which the image's `exec node` makes it — a
+ * signal with no handler installed is ignored outright by the kernel, so
+ * the container would instead sit out the whole grace period and die to
+ * SIGKILL anyway.
+ *
+ * The fix is the ordinary containerised-service shutdown, nothing more:
+ * stop accepting new connections, let in-flight requests finish inside a
+ * bounded grace period, stop background timers, close the database.
+ *
+ * No orchestration, no draining protocol, no coordination with peers.
+ */
+const SHUTDOWN_GRACE_MS = Math.max(
+  1000,
+  Number(process.env.OBV_SHUTDOWN_GRACE_MS ?? "") || 10_000
+);
+let shuttingDown = false;
+
+export function shutdown(signal: string, exit: (code: number) => void = (c) => process.exit(c)): void {
+  // A platform may send SIGTERM more than once, and a human may follow it
+  // with Ctrl-C. The first one owns the shutdown.
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received — draining (grace ${SHUTDOWN_GRACE_MS}ms)`);
+
+  for (const t of backgroundTimers) clearInterval(t);
+
+  // Readiness starts failing immediately so a load balancer stops sending
+  // new traffic while the in-flight requests we already accepted finish.
+  // Idle keep-alive sockets would otherwise hold the server open for the
+  // full grace period even when nothing is being served. Sweeping REPEATS
+  // because a connection serving an in-flight request becomes idle only
+  // when that request finishes — a single sweep at the start of the drain
+  // never sees it, and the shutdown then waits out the whole grace period
+  // for a connection nobody is using.
+  const idleSweep = setInterval(() => server.closeIdleConnections?.(), 50);
+  idleSweep.unref();
+
+  // Bounded: if a request hangs, the platform's own SIGKILL is coming
+  // regardless, and exiting cleanly first is strictly better.
+  const forceTimer = setTimeout(() => {
+    console.warn("grace period elapsed with requests still in flight — exiting anyway");
+    clearInterval(idleSweep);
+    closeDb();
+    exit(0);
+  }, SHUTDOWN_GRACE_MS);
+  forceTimer.unref();
+
+  const finish = (code: number) => {
+    clearTimeout(forceTimer);
+    clearInterval(idleSweep);
+    closeDb();
+    console.log("shutdown complete");
+    exit(code);
+  };
+
+  server.close(() => finish(0));
+  server.closeIdleConnections?.();
+}
+
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.on(signal, () => shutdown(signal));
+}
+
+/** True once a stop signal has been received — readiness must fail. */
+export function isShuttingDown(): boolean {
+  return shuttingDown;
 }
 server.listen(PORT, () => {
   console.log(`OBV running at http://localhost:${PORT}`);
   // Posture is disclosed at boot: a reader must never have to guess
   // which environment this is or whether cookies use a durable secret.
   console.log(postureStartupNotice());
+  console.log(runtimeStartupNotice());
   console.log(storageStartupNotice());
+  console.log(dataStoreStartupNotice());
   console.log(sessionStartupNotice());
   console.log(identitySvc.identityStartupNotice());
   console.log(integrationsSvc.integrationsStartupNotice());

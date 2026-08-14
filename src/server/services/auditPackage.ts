@@ -27,6 +27,7 @@ import { buildLenderFiles } from "./lenderReporting";
 import * as permitService from "./permits";
 import { AUDIT_PACKAGES_DIR, DATA_DIR, REPORTS_DIR, UPLOADS_DIR } from "../db/index";
 import { wormEvidenceStore } from "./WormEvidenceStore";
+import { evidenceKey, objectStore } from "./storage/objectStore";
 import { assessFinancialProgress, assessPhysicalProgress, canAccessProjectFinance } from "./budgetProgress";
 import { retainageSummary } from "./retainage";
 import { audit } from "./pilot/onboarding";
@@ -230,15 +231,11 @@ function mimeForFilename(name: string): string {
   return MEDIA_MIME[ext] ?? "application/octet-stream";
 }
 
-/** Resolve a served evidence path to a file on disk, where accessible. */
-function evidenceDiskPath(photoPath: string): string | null {
-  if (photoPath.startsWith("/worm/")) return path.join(DATA_DIR, "worm", path.basename(photoPath));
-  if (photoPath.startsWith("/uploads/")) return path.join(UPLOADS_DIR, path.basename(photoPath));
-  if (photoPath.startsWith("/demo-evidence/")) {
-    return path.join(process.cwd(), "public", "demo-evidence", path.basename(photoPath));
-  }
-  return null;
-}
+// Evidence artifacts are reached ONLY through the object-storage
+// boundary: `evidenceKey` maps the served path to a logical key, and the
+// store answers existence/bytes questions. No physical path enters this
+// module — which is exactly what lets a future remote store satisfy
+// these callers unchanged.
 
 export async function validateProjectIntegrity(projectId: string): Promise<IntegrityValidation> {
   const findings: IntegrityFinding[] = [];
@@ -316,10 +313,10 @@ export async function validateProjectIntegrity(projectId: string): Promise<Integ
   const missing: string[] = [];
   let notCheckable = 0;
   for (const ev of evidence) {
-    const p = evidenceDiskPath(ev.photoPath);
-    if (!p) {
+    const key = evidenceKey(ev.photoPath);
+    if (!key) {
       notCheckable++;
-    } else if (!fs.existsSync(p)) {
+    } else if (!(await objectStore.exists(key))) {
       missing.push(ev.id);
     }
   }
@@ -473,12 +470,12 @@ interface BuiltRegisters {
  *  package when its timestamp is at or before the as-of point. */
 const atOrBefore = (ts: string | null | undefined, asOf: string) => Boolean(ts && ts <= asOf);
 
-function buildRegisters(
+async function buildRegisters(
   project: Project,
   asOf: string,
   opts: { includeReports: boolean; includeCommMetadata: boolean; includeEvidenceMedia: boolean },
   integrity: IntegrityValidation
-): BuiltRegisters {
+): Promise<BuiltRegisters> {
   const files: PackageFile[] = [];
   const counts: Record<string, number> = {};
   const sections: string[] = [];
@@ -1292,13 +1289,13 @@ function buildRegisters(
   if (opts.includeEvidenceMedia) {
     const mediaRows: unknown[][] = [];
     for (const ev of evidence) {
-      const diskPath = evidenceDiskPath(ev.photoPath);
+      const key = evidenceKey(ev.photoPath);
       const safeBase = path
         .basename(ev.photoPath)
         .replace(/[^A-Za-z0-9._-]/g, "_")
         .slice(0, 80);
-      if (diskPath && fs.existsSync(diskPath)) {
-        const bytes = fs.readFileSync(diskPath);
+      const bytes = key ? await objectStore.get(key) : null;
+      if (bytes) {
         const packagedHash = createHash("sha256").update(bytes).digest("hex");
         const name = `03_evidence/media/${ev.id}__${safeBase}`;
         add(name, bytes, "03_evidence");
@@ -1486,7 +1483,7 @@ export async function generateAuditPackage(
     const integrity = await validateProjectIntegrity(project.id);
 
     // 2. Structured registers.
-    const { files, counts, sections, notes } = buildRegisters(
+    const { files, counts, sections, notes } = await buildRegisters(
       project,
       asOf,
       { includeReports, includeCommMetadata, includeEvidenceMedia },

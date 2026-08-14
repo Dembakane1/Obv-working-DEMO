@@ -4,6 +4,7 @@
  * imply that AI released funds, that Teams approved anything, or that a
  * real bank transfer occurred in the demo.
  */
+import { publicBaseUrl } from "./platform/runtime";
 import type {
   ApprovalRecord,
   ApprovalRequest,
@@ -63,13 +64,10 @@ function header(eventLabel: string, tone: "good" | "warning" | "attention" | "ac
 }
 
 function card(body: CardElement[], linkPath?: string): AdaptiveCard {
-  // Explicit OBV_PUBLIC_BASE_URL wins; RENDER_EXTERNAL_URL is provided
-  // automatically by Render so links work without extra configuration.
-  const base = (
-    process.env.OBV_PUBLIC_BASE_URL ??
-    process.env.RENDER_EXTERNAL_URL ??
-    ""
-  ).replace(/\/$/, "");
+  // Resolved by the runtime platform boundary: the generic
+  // OBV_PUBLIC_BASE_URL wins, and platform-injected URLs remain a
+  // compatibility fallback so links keep working without extra config.
+  const base = publicBaseUrl();
   const actions =
     base && linkPath
       ? [{ type: "Action.OpenUrl", title: "Open in OBV", url: `${base}${linkPath}` }]

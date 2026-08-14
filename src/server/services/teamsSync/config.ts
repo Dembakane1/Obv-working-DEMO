@@ -8,6 +8,7 @@
  * deployments leave them at the Microsoft defaults.
  */
 import { createHash } from "node:crypto";
+import { publicBaseUrl } from "../platform/runtime";
 
 export const GRAPH_CONFIG = {
   tenantId: () => process.env.MICROSOFT_TENANT_ID ?? "",
@@ -20,7 +21,7 @@ export const GRAPH_CONFIG = {
   webhookPublicUrl: () =>
     (
       process.env.OBV_TEAMS_WEBHOOK_PUBLIC_URL ??
-      `${process.env.OBV_PUBLIC_BASE_URL ?? process.env.RENDER_EXTERNAL_URL ?? ""}/api/teams-sync/notifications`
+      `${publicBaseUrl()}/api/teams-sync/notifications`
     ).replace(/^\/api/, "/api"),
   timeoutMs: () => {
     const n = Number(process.env.OBV_TEAMS_SYNC_TIMEOUT_MS ?? 8000);

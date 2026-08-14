@@ -11,6 +11,7 @@
  * that nothing mutated (balances, rows, append-only events, bank book).
  */
 const { spawn, spawnSync } = require("node:child_process");
+const { stopProcessAndWait } = require("./lib/proc");
 const { createHash } = require("node:crypto");
 const { mkdtempSync, readFileSync, readdirSync } = require("node:fs");
 const os = require("node:os");
@@ -238,7 +239,9 @@ async function main() {
     //   the demo simulation surface in production banking mode. The demo
     //   switcher supports an explicit OBV_DEMO_AUTH=1 override — used here
     //   as a test-only key past wall 1 so wall 2 is proven independently.
-    prodServer.kill();
+    // Full exit before rebinding the same port and reopening the same
+    // data dir — kill() only STARTS the graceful drain.
+    await stopProcessAndWait(prodServer);
     prodServer = spawn(process.execPath, [path.join(__dirname, "..", "dist", "server", "http", "server.js")], {
       env: { ...prodEnv, OBV_DEMO_AUTH: "1" },
       stdio: "ignore",

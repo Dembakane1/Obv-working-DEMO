@@ -9,6 +9,7 @@
  *   node scripts/teams-sync-test.js
  */
 const { spawn } = require("node:child_process");
+const { stopProcessAndWait } = require("./lib/proc");
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -338,7 +339,11 @@ const GRAPH_ENV = {
         !intg0.includes("Run Diagnostic"),
       "integrations page: honest no-config state (setup requirements, no dead buttons, WhatsApp not faked)"
     );
-    noCreds.kill();
+    // The no-credentials server must be FULLY exited before another
+    // server opens the same OBV_DATA_DIR: its graceful drain checkpoints
+    // the WAL (a write lock), and a second opener racing that lock fails
+    // to start. This is the lifecycle race that broke CI.
+    await stopProcessAndWait(noCreds);
 
     // ---- configured (stub) server ----
     startObv(OBV_PORT, GRAPH_ENV);
