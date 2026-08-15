@@ -6,7 +6,7 @@
  * reader mistakes a finding for a control decision.
  */
 import { h, Fragment, renderDocument } from "./jsx";
-import { AppShell, NavContext, PageHeader, enumLabel } from "./components";
+import { AppShell, NavContext, PageHeader, enumLabel, WorkHeader, KpiRail } from "./components";
 import { ADVISORY_NOTICE } from "../services/evidenceIntel";
 import type {
   EvidenceItem,
@@ -49,28 +49,27 @@ export function renderEvidenceIntelDashboard(input: {
   const d = input.dashboard;
   return renderDocument(
     <AppShell title="Evidence Intelligence" nav={input.nav} context="Evidence Intelligence">
-      <PageHeader
+      <div className="page-wrap ws">
+      <WorkHeader
         title="Evidence Intelligence"
-        sub="Explainable, advisory analysis of the evidence you already hold — completeness, consistency, duplicates, and what deserves a closer human look."
+        sub="Explainable, ADVISORY analysis of the evidence you already hold — the authoritative record is never changed by a finding"
       >
         <a className="btn ghost sm" href="/evidence-intelligence/queue">Review Queue →</a>
         <a className="btn ghost sm" href="/evidence-intelligence/analytics">Analytics →</a>
         <form method="POST" action="/api/evidence-intel/analyze" style="display:inline">
           <button className="btn secondary sm" type="submit">Analyze My Evidence</button>
         </form>
-      </PageHeader>
+      </WorkHeader>
       <AdvisoryBanner note={d.advisoryNotice} />
 
-      <section className="evi-stats">
-        <div className="evi-stat"><b>{String(d.signals.total)}</b><span>Advisory findings</span>
-          <span className="sub">{d.signals.bySeverity.HIGH} high · {d.signals.bySeverity.MEDIUM} medium · {d.signals.bySeverity.LOW} low · {d.signals.bySeverity.INFO} info</span></div>
-        <div className="evi-stat"><b>{String(d.queue.open)}</b><span>Open in review queue</span>
-          <span className="sub">{d.queue.acknowledged} acknowledged · {d.queue.promoted} promoted · {d.queue.dismissed} dismissed</span></div>
-        <div className="evi-stat"><b>{String(d.recentRuns.length)}</b><span>Recent analysis runs</span>
-          <span className="sub">{d.recentRuns[0] ? `last ${when(d.recentRuns[0].startedAt)}` : "not yet run"}</span></div>
-        <div className="evi-stat"><b>{d.futureAi.enabled ? "On" : "Off"}</b><span>Future AI engines</span>
-          <span className="sub">{d.futureAi.catalog.length} capabilities, all disabled</span></div>
-      </section>
+      <KpiRail
+        items={[
+          { label: "Advisory findings", value: String(d.signals.total), detail: `${d.signals.bySeverity.HIGH} high · ${d.signals.bySeverity.MEDIUM} medium · ${d.signals.bySeverity.LOW} low · ${d.signals.bySeverity.INFO} info` },
+          { label: "Open in review queue", value: String(d.queue.open), tone: d.queue.open > 0 ? "warn" : undefined, detail: `${d.queue.acknowledged} acknowledged · ${d.queue.promoted} promoted · ${d.queue.dismissed} dismissed` },
+          { label: "Recent analysis runs", value: String(d.recentRuns.length), detail: d.recentRuns[0] ? `last ${when(d.recentRuns[0].startedAt)}` : "not yet run" },
+          { label: "Future AI engines", value: d.futureAi.enabled ? "On" : "Off", detail: `${d.futureAi.catalog.length} capabilities, all disabled` },
+        ]}
+      />
 
       <section className="evi-card">
         <h2>Analysis providers</h2>
@@ -120,6 +119,7 @@ export function renderEvidenceIntelDashboard(input: {
           </tbody>
         </table>
       </section>
+      </div>
     </AppShell>
   );
 }

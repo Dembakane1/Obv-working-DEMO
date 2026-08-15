@@ -4716,3 +4716,36 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
   text-decoration: none;
 }
 .more-sub:hover { background: var(--surface-3); color: var(--text-1); }
+
+/* ============================================================
+   v27 — WORKSTATION COMPLETION
+
+   Utilities for the register tables and dense compositions that bring
+   the remaining operational pages (Projects, Evidence, Governance,
+   Project Controls, Reports) into the workstation system.
+   ============================================================ */
+
+/* Two-line table cell: primary identity over a muted context line. */
+.dtable .t-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.dtable a.t-id { text-decoration: none; }
+.dtable a.t-id:hover span:first-child { text-decoration: underline; }
+.dtable .t-sub { font-size: 10.5px; color: var(--ink-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 230px; }
+.dtable .t-dim { color: var(--ink-4); }
+.dtable .t-next { font-size: 11.5px; color: var(--ink-2); font-weight: 550; display: inline-block; max-width: 200px; }
+
+/* Numeric tones inside facts/tables, matched to the status palette. */
+.ok-t { color: var(--ok); }
+.warn-t { color: var(--warn); }
+
+/* Milestone list inside a flush panel: rows separate with hairlines
+   instead of floating card gaps. */
+.ms-list-dense { display: flex; flex-direction: column; }
+.ms-list-dense > * { border: 0; border-radius: 0; border-bottom: 1px solid var(--line); margin: 0; }
+.ms-list-dense > *:last-child { border-bottom: 0; }
+
+/* Ledger register: proof hashes disclose in place instead of a chain of
+   decorated cards. */
+.hash-cell summary { cursor: pointer; list-style: none; color: var(--ink-3); font-size: 11px; }
+.hash-cell summary::-webkit-details-marker { display: none; }
+.hash-cell summary:hover { color: var(--ink-1); text-decoration: underline; }
+.hash-cell[open] .hash-pop { padding: 8px 0 4px; max-width: 360px; }

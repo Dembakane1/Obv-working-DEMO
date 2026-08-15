@@ -17,6 +17,9 @@ import {
   Metric,
   EmptyStateV2,
   enumLabel,
+  WorkHeader,
+  KpiRail,
+  AboutView,
 } from "./components";
 import type {
   ExceptionEvent,
@@ -98,17 +101,17 @@ export function renderExceptionRegister(input: {
   );
   return renderDocument(
     <AppShell title="Exceptions" nav={input.nav} context="Exceptions">
-      <PageHeader
-        title="Exceptions"
-        sub="One governed register for anything preventing clean progression. Every exception references an authoritative source record — the source stays the truth, and no exception action can release funds."
+      <div className="page-wrap ws">
+      <WorkHeader title="Exceptions" sub="One governed register for anything preventing clean progression — every exception references an authoritative source record" />
+      <KpiRail
+        items={[
+          { label: "Open exceptions", value: String(open.length), tone: open.length > 0 ? "warn" : "ok", detail: open.length > 0 ? "preventing clean progression" : "nothing open" },
+          { label: "High / critical", value: String(highCrit.length), tone: highCrit.length > 0 ? "bad" : undefined, detail: highCrit.length > 0 ? "one-day SLA target" : "none recorded" },
+          { label: "Past SLA target", value: String(overdue.length), tone: overdue.length > 0 ? "warn" : undefined, detail: overdue.length > 0 ? "operational target, not a certification" : "all within target" },
+          { label: "Awaiting response", value: String(awaiting.length), detail: awaiting.length > 0 ? "blocked on a named owner" : "no responses pending" },
+          { label: "Resolved / closed / waived", value: String(input.allRows.length - open.length), detail: "source truth is never rewritten" },
+        ]}
       />
-      <div className="metric-strip">
-        <Metric d={{ value: String(open.length), label: "Open exceptions", sub: open.length > 0 ? "Preventing clean progression" : "Nothing open", dim: open.length === 0 }} />
-        <Metric d={{ value: String(highCrit.length), label: "High / critical", tone: highCrit.length > 0 ? "bad" : undefined, edge: highCrit.length > 0 ? "bad" : undefined, sub: highCrit.length > 0 ? "One-day SLA target" : "None recorded", dim: highCrit.length === 0 }} />
-        <Metric d={{ value: String(overdue.length), label: "Past SLA target", tone: overdue.length > 0 ? "warn" : undefined, edge: overdue.length > 0 ? "warn" : undefined, sub: overdue.length > 0 ? "Operational target, not a certification" : "All within target", dim: overdue.length === 0 }} />
-        <Metric d={{ value: String(awaiting.length), label: "Awaiting response", sub: awaiting.length > 0 ? "Blocked on a named owner" : "No responses pending", dim: awaiting.length === 0 }} />
-        <Metric d={{ value: String(input.allRows.length - open.length), label: "Resolved / closed / waived", sub: "Source truth is never rewritten", dim: input.allRows.length - open.length === 0 }} />
-      </div>
 
       <form method="GET" action="/exceptions" className="panel panel-pad filter-grid">
         <label className="f-lab">Severity
@@ -155,10 +158,10 @@ export function renderExceptionRegister(input: {
         <button className="btn ghost sm" type="submit">Filter</button>
       </form>
 
-      <div className="panel">
-        <div className="panel-head">
-          <h3>Exception register</h3>
-          <span className="right">{input.rows.length} shown</span>
+      <div className="dpanel">
+        <div className="dpanel-head">
+          <h2>Exception register</h2>
+          <span className="dp-right">{input.rows.length} shown · owner, age and required action at a glance</span>
         </div>
         {input.rows.length === 0 ? (
           <EmptyStateV2
@@ -205,20 +208,20 @@ export function renderExceptionRegister(input: {
         )}
       </div>
 
-      <details style="margin:12px 2px">
-        <summary style="font-size:11.5px;color:var(--ink-3);cursor:pointer">Deterministic auto-creation rules ({input.rules.length})</summary>
-        <ul style="margin:8px 0 0;padding-left:18px;font-size:11.5px;color:var(--ink-2)">
+      <AboutView label={`Deterministic auto-creation rules (${input.rules.length})`}>
+        <ul style="margin:0;padding-left:18px">
           {input.rules.map((r) => (
             <li style="margin:2px 0"><b>{r.key}</b> ({enumLabel(r.severity)}) — {r.rule}</li>
           ))}
         </ul>
-        <p className="sub" style="font-size:10.5px;margin:6px 0 0">
+        <p style="margin:6px 0 0">
           Rules are idempotent: repeated evaluation never duplicates an exception, source-cleared
           conditions auto-resolve, and recurring conditions reopen. SLA targets (High/Critical 1 day,
           Medium 3, Low 7 — configurable) drive the within-target / due-soon / overdue display; they
           are operational targets, not compliance certifications.
         </p>
-      </details>
+      </AboutView>
+      </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );
