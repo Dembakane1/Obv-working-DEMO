@@ -7,7 +7,7 @@
  */
 import { h, Fragment, VNode, renderDocument } from "./jsx";
 import { icons } from "./icons";
-import { AppShell, NavContext, PageHeader, fmtDate, money, roleLabel, Metric, EmptyStateV2, enumLabel, Methodology } from "./components";
+import { AppShell, NavContext, PageHeader, fmtDate, money, roleLabel, Metric, EmptyStateV2, enumLabel, Methodology, WorkHeader, KpiRail, AboutView } from "./components";
 import type {
   ApprovalRecord,
   ApprovalRequest,
@@ -65,22 +65,22 @@ export function renderCoRegister(input: {
   );
   return renderDocument(
     <AppShell title="Change Orders" nav={input.nav} context="Change Orders">
-      <PageHeader
-        title="Change Orders"
-        sub="Governed construction change control. A submitted change order modifies nothing — only formal approval applies budget and schedule impact, transactionally and with an audited configuration snapshot."
-      >
-        {input.canCreate ? <a className="btn" href="/change-orders/new">Create Change Order</a> : null}
-      </PageHeader>
-      <div className="metric-strip">
-        <Metric d={{ value: String(input.rows.length), label: "Change orders", sub: "All recorded change control", dim: input.rows.length === 0 }} />
-        <Metric d={{ value: String(open.length), label: "In review", tone: open.length > 0 ? "warn" : undefined, sub: open.length > 0 ? "Submitted — nothing applied yet" : "Review queue clear", dim: open.length === 0 }} />
-        <Metric d={{ value: String(approved.length), label: "Approved / implemented", sub: "Applied through formal approval only", dim: approved.length === 0 }} />
-        <Metric d={{ value: money(approved.reduce((s, r) => s + (r.co.approvedAmount ?? 0), 0)), label: "Approved value", sub: "Approved amounts may differ from requested", dim: approved.length === 0 }} />
-      </div>
-      <div className="panel">
-        <div className="panel-head">
-          <h3>Change order register</h3>
-          <span className="right">{input.rows.length} record(s)</span>
+      <div className="page-wrap ws">
+      <WorkHeader title="Change Orders" sub="Governed construction change control — a submitted change order modifies nothing until formal approval applies its impact">
+        {input.canCreate ? <a className="btn sm" href="/change-orders/new">Create Change Order</a> : null}
+      </WorkHeader>
+      <KpiRail
+        items={[
+          { label: "Change orders", value: String(input.rows.length), detail: "all recorded change control" },
+          { label: "In review", value: String(open.length), tone: open.length > 0 ? "warn" : "ok", detail: open.length > 0 ? "submitted — nothing applied yet" : "review queue clear" },
+          { label: "Approved / implemented", value: String(approved.length), detail: "applied through formal approval only" },
+          { label: "Approved value", value: money(approved.reduce((s, r) => s + (r.co.approvedAmount ?? 0), 0)), detail: "approved amounts may differ from requested" },
+        ]}
+      />
+      <div className="dpanel">
+        <div className="dpanel-head">
+          <h2>Change order register</h2>
+          <span className="dp-right">{input.rows.length} record(s) · budget impact applies only at approval</span>
         </div>
         {input.rows.length === 0 ? (
           <EmptyStateV2
@@ -123,6 +123,14 @@ export function renderCoRegister(input: {
             </table>
           </div>
         )}
+      </div>
+      <AboutView label="How change control works">
+        <p>
+          A submitted change order modifies nothing. Only formal approval applies budget and
+          schedule impact — transactionally, with an audited configuration snapshot. Approved
+          amounts may differ from requested amounts, and the register keeps both.
+        </p>
+      </AboutView>
       </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>

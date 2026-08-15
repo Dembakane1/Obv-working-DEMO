@@ -31,22 +31,30 @@ const fail = (m) => {
   process.exit(1);
 };
 
-/** route → { role, title, summary?: selector, work: selector } */
+/** route → { role, title, summary?: selector, work: selector }
+ *
+ * The workstation completion moved the converted operational pages from
+ * the document generation (.metric-strip + .register/.panel stacks) onto
+ * the workstation system (.kpi-rail + .dtable/.dpanel/.workbench). The
+ * PROPERTY asserted is unchanged — a summary/metric zone and a real work
+ *  area render on every page — expressed against the current
+ * architecture. Unconverted pages keep their original selectors.
+ */
 const ROUTES = [
   { path: "/overview", title: "Overview", work: ".cap-grid", summary: ".metric-card" },
-  { path: "/projects", title: "Projects", work: ".asset, .register", summary: ".metric-strip" },
-  { path: "/project/proj-r47", title: null, work: ".proj-head" },
+  { path: "/projects", title: "Projects", work: ".dtable, .dpanel", summary: ".kpi-rail" },
+  { path: "/project/proj-r47", title: null, work: ".workbench, .wstabs" },
   { path: "/milestone/ms-1", title: null, work: ".evidence-panel" },
-  { path: "/approvals", title: "Approvals", work: ".panel, .ap-card", summary: ".metric-strip" },
+  { path: "/approvals", title: "Approvals", work: ".dpanel, .ap-card", summary: ".kpi-rail" },
   { path: "/draws", title: "Draw Requests", work: ".panel", summary: ".metric-strip" },
-  { path: "/compliance", title: "Evidence review", work: ".panel", summary: ".metric-strip" },
+  { path: "/compliance", title: "Evidence Review", work: ".workbench", summary: ".kpi-rail" },
   { path: "/issues", title: "Field Issues", work: ".register", summary: ".metric-strip" },
-  { path: "/exceptions", title: "Exceptions", work: ".panel", summary: ".metric-strip" },
-  { path: "/ledger", title: "Evidence ledger", work: ".register .chain, .register .empty-state", summary: ".metric-strip" },
+  { path: "/exceptions", title: "Exceptions", work: ".dpanel", summary: ".kpi-rail" },
+  { path: "/ledger", title: "Evidence Ledger", work: ".dpanel .dtable, .dpanel .empty-mini, .dpanel .empty-state", summary: ".kpi-rail" },
   { path: "/insights", title: "OBV Intelligence", work: ".intel-main", summary: ".metric-strip" },
-  { path: "/change-orders", title: "Change Orders", work: ".panel", summary: ".metric-strip" },
-  { path: "/budget", title: "Budget & Progress", work: ".register", summary: ".metric-strip" },
-  { path: "/reports", title: null, work: ".panel" },
+  { path: "/change-orders", title: "Change Orders", work: ".dpanel", summary: ".kpi-rail" },
+  { path: "/budget", title: "Budget & Progress", work: ".dtable, .dpanel", summary: ".kpi-rail" },
+  { path: "/reports", title: null, work: ".panel, .dpanel" },
   { path: "/communications", title: null, work: ".comms" },
   { path: "/setup", title: null, work: ".panel, .setup-grid" },
   { path: "/pilot", title: "Pilot Operations", work: ".panel", summary: ".metric-strip" },
@@ -66,6 +74,18 @@ async function chipsInside(page) {
     const vw = document.documentElement.clientWidth;
     let out = 0;
     for (const el of document.querySelectorAll(".status, .chip, .sync-tag")) {
+      // The rule this guards is "no chip is unreachable" — a chip inside a
+      // deliberate horizontal scroll container (a dense register on a
+      // phone) is reachable by scrolling that container, which the mobile
+      // composition rules explicitly permit. Chips outside any scroller
+      // must still sit inside the viewport, so genuine layout breakage
+      // (content pushed off-canvas) keeps failing here.
+      const scroller = el.closest(".dtable-wrap, .table-scroll, .intg-table-wrap");
+      if (scroller) {
+        const overflows = scroller.scrollWidth > scroller.clientWidth + 1;
+        const style = getComputedStyle(scroller);
+        if (overflows && /(auto|scroll)/.test(style.overflowX)) continue;
+      }
       const r = el.getBoundingClientRect();
       if (r.width > 0 && (r.right > vw + 1 || r.left < -1)) out++;
     }

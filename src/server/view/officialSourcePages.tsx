@@ -7,7 +7,7 @@
  * or manual data "live". No secret value ever reaches a view model.
  */
 import { h, Fragment, renderDocument } from "./jsx";
-import { AppShell, NavContext, PageHeader, enumLabel } from "./components";
+import { AppShell, NavContext, PageHeader, enumLabel, WorkHeader, KpiRail } from "./components";
 import {
   SOURCE_DOCTRINE_NOTICE,
   freshnessLabel,
@@ -73,28 +73,27 @@ export function renderSourceWorkspace(input: {
   const a = input.analytics;
   return renderDocument(
     <AppShell title="Official Sources" nav={input.nav} context="Official Sources">
-      <PageHeader
+      <div className="page-wrap ws">
+      <WorkHeader
         title="Official Sources"
-        sub="Government and licensing records retrieved as evidence for human review — never as an automatic OBV determination."
+        sub="Government and licensing records retrieved as evidence for human review — never as an automatic OBV determination"
       >
         <a className="btn ghost sm" href="/official-sources/queue">Review Queue →</a>
         <a className="btn ghost sm" href="/official-sources/lookup">Lookup →</a>
         <form method="POST" action="/api/official-sources/refresh-portfolio" style="display:inline">
           <button className="btn secondary sm" type="submit" data-busy-label="Refreshing…">Refresh My Portfolio</button>
         </form>
-      </PageHeader>
+      </WorkHeader>
       <DoctrineBanner />
 
-      <section className="evi-stats">
-        <div className="evi-stat"><b>{String(input.stats.open ?? 0)}</b><span>Open review items</span>
-          <span className="sub">{input.stats.manualVerification ?? 0} awaiting manual verification · {input.stats.deferred ?? 0} deferred</span></div>
-        <div className="evi-stat"><b>{`${a.coverage.coveragePct}%`}</b><span>Permit official-record coverage</span>
-          <span className="sub">{a.coverage.permitsWithOfficialRecord} of {a.coverage.permits} permits</span></div>
-        <div className="evi-stat"><b>{String(a.enforcementAlerts)}</b><span>Enforcement-type alerts</span>
-          <span className="sub">stop-work, enforcement, failed inspections</span></div>
-        <div className="evi-stat"><b>{String(a.licenseAlerts)}</b><span>License alerts</span>
-          <span className="sub">expired / suspended / not found</span></div>
-      </section>
+      <KpiRail
+        items={[
+          { label: "Open review items", value: String(input.stats.open ?? 0), tone: (input.stats.open ?? 0) > 0 ? "warn" : undefined, detail: `${input.stats.manualVerification ?? 0} awaiting manual verification · ${input.stats.deferred ?? 0} deferred` },
+          { label: "Permit official-record coverage", value: `${a.coverage.coveragePct}%`, detail: `${a.coverage.permitsWithOfficialRecord} of ${a.coverage.permits} permits` },
+          { label: "Enforcement-type alerts", value: String(a.enforcementAlerts), tone: a.enforcementAlerts > 0 ? "bad" : undefined, detail: "stop-work, enforcement, failed inspections" },
+          { label: "License alerts", value: String(a.licenseAlerts), tone: a.licenseAlerts > 0 ? "warn" : undefined, detail: "expired / suspended / not found" },
+        ]}
+      />
 
       <section className="evi-card">
         <h2>Source registry</h2>
@@ -147,6 +146,7 @@ export function renderSourceWorkspace(input: {
           </div>
         ) : null}
       </section>
+      </div>
     </AppShell>
   );
 }

@@ -9,7 +9,7 @@
  */
 import { h, Fragment, VNode, renderDocument } from "./jsx";
 import { icons } from "./icons";
-import { AppShell, NavContext, PageHeader, fmtDate, money, Metric, EmptyStateV2 } from "./components";
+import { AppShell, NavContext, PageHeader, fmtDate, money, Metric, EmptyStateV2, WorkHeader, KpiRail, DensePanel, DenseTable, AboutView } from "./components";
 import type {
   BudgetLine,
   BudgetLineProgressRow,
@@ -83,26 +83,23 @@ export function renderBudgetPortfolio(input: { nav: NavContext; rows: BudgetPort
   const flagged = input.rows.filter((r) => ["WATCH", "FINANCIAL_AHEAD"].includes(r.financial.varianceState));
   return renderDocument(
     <AppShell title="Budget & Progress" nav={input.nav} context="Budget & Progress">
-      <PageHeader
-        title="Budget & Progress"
-        sub="Money claimed or paid, compared with physical progress supported by verified evidence. Two different measurements — compared side by side, never merged."
-        asOf={
-          incomplete.length > 0
-            ? `${complete.length} of ${input.rows.length} projects have complete budget data — totals below cover recorded data only`
-            : `${input.rows.length} project${input.rows.length === 1 ? "" : "s"} with recorded budget data`
-        }
+      <div className="page-wrap ws">
+      <WorkHeader title="Budget & Progress" sub="Money claimed or paid, compared with physical progress supported by verified evidence — two measurements, never merged" />
+      <KpiRail
+        items={[
+          { label: "Recorded budget basis", value: money(totalBudget), detail: incomplete.length > 0 ? "partial — some projects lack budget data" : "across all active projects" },
+          { label: "Paid to date", value: money(totalPaid), detail: "released tranches and recorded payments" },
+          { label: "In open draw requests", value: openDraws > 0 ? money(openDraws) : "$0", detail: openDraws > 0 ? "requested, not yet released" : "no open draw value" },
+          { label: "Variance flags", value: String(flagged.length), tone: flagged.length > 0 ? "warn" : "ok", detail: flagged.length > 0 ? "financial ahead of verified physical" : "all within range" },
+          { label: "Data coverage", value: `${complete.length}/${input.rows.length}`, detail: "projects with complete budget data" },
+        ]}
       />
-      <div className="metric-strip">
-        <Metric d={{ value: money(totalBudget), label: "Recorded budget basis", sub: incomplete.length > 0 ? "Partial — some projects lack budget data" : "Across all active projects" }} />
-        <Metric d={{ value: money(totalPaid), label: "Paid to date", sub: "Released tranches and recorded payments" }} />
-        <Metric d={{ value: openDraws > 0 ? money(openDraws) : "$0", label: "In open draw requests", sub: openDraws > 0 ? "Requested, not yet released" : "No open draw value", dim: openDraws === 0 }} />
-        <Metric d={{ value: String(flagged.length), label: "Variance flags", tone: flagged.length > 0 ? "warn" : undefined, edge: flagged.length > 0 ? "warn" : undefined, sub: flagged.length > 0 ? "Financial progress ahead of verified physical" : "All within range", dim: flagged.length === 0 }} />
-      </div>
-      <div className="register">
-        <div className="reg-head">
-          <h3>Project comparison</h3>
-          <span className="hint">Financial vs verified physical, same scale</span>
-        </div>
+      <DensePanel
+        title="Project comparison"
+        right={<span>financial vs verified physical, same scale</span>}
+        flush
+        foot="Figures come from stored budget lines, released tranches, open draw requests and the verified-evidence record. A variance means financial progress is ahead of currently verified physical progress — it is not a finding about conduct."
+      >
         {input.rows.length === 0 ? (
           <EmptyStateV2
             icon={icons.ledger()}
@@ -112,33 +109,49 @@ export function renderBudgetPortfolio(input: { nav: NavContext; rows: BudgetPort
             action={<a className="btn secondary sm" href="/setup">Open pilot setup</a>}
           />
         ) : (
-          input.rows.map((r) => (
-            <div className="bvp-proj">
-              <div className="bvp-proj-head">
-                <a className="p" href={`/project/${r.project.id}/budget`}>{r.project.name}</a>
-                <VarianceTag state={r.financial.varianceState} />
-                {!r.financial.dataComplete ? <span className="data-incomplete">Data incomplete</span> : null}
-                <span className="bvp-figs num">
-                  Budget {money(r.financial.budgetBasis)} · paid {money(r.financial.paidToDate)}
-                  {r.financial.openDrawRequested > 0 ? ` · ${money(r.financial.openDrawRequested)} in open draws` : ""}
-                </span>
-              </div>
-              <div className="bvp-proj-bars">
-                <ProgressCompareBars
-                  financialPct={r.financial.dataComplete ? r.financial.claimedPct : null}
-                  verifiedPct={r.financial.dataComplete ? r.financial.verifiedPhysicalPct : null}
-                  financialLabel="Financial progress (paid + claimed)"
-                />
-              </div>
-              <a className="bvp-open" href={`/project/${r.project.id}/budget`}>Open budget register →</a>
-            </div>
-          ))
+          <DenseTable
+            columns={[
+              { key: "project", label: "Project" },
+              { key: "budget", label: "Budget basis", num: true },
+              { key: "paid", label: "Paid to date", num: true },
+              { key: "open", label: "Open draws", num: true },
+              { key: "compare", label: "Financial vs verified physical" },
+              { key: "variance", label: "Variance" },
+              { key: "action", label: "" },
+            ]}
+            rows={input.rows.map((r) => ({
+              project: (
+                <a className="t-id" href={`/project/${r.project.id}/budget`}>
+                  <span>{r.project.name}</span>
+                  {!r.financial.dataComplete ? <span className="t-sub">data incomplete</span> : null}
+                </a>
+              ),
+              budget: <span className="num">{money(r.financial.budgetBasis)}</span>,
+              paid: <span className="num">{money(r.financial.paidToDate)}</span>,
+              open: r.financial.openDrawRequested > 0 ? <span className="num">{money(r.financial.openDrawRequested)}</span> : <span className="t-dim">—</span>,
+              compare: (
+                <div className="cell-bars">
+                  <ProgressCompareBars
+                    financialPct={r.financial.dataComplete ? r.financial.claimedPct : null}
+                    verifiedPct={r.financial.dataComplete ? r.financial.verifiedPhysicalPct : null}
+                    financialLabel="Financial"
+                  />
+                </div>
+              ),
+              variance: <VarianceTag state={r.financial.varianceState} />,
+              action: <a className="btn ghost sm" href={`/project/${r.project.id}/budget`}>Register</a>,
+            }))}
+          />
         )}
-        <div className="reg-foot">
-          Figures come from stored budget lines, released tranches, open draw requests and the
-          verified-evidence record. A variance means financial progress is ahead of currently
-          verified physical progress — it is not a finding about conduct.
-        </div>
+      </DensePanel>
+      <AboutView label="How the comparison works">
+        <p>
+          Financial progress counts money paid plus claimed in open draws. Verified physical
+          progress counts only milestone value supported by verified evidence. A variance means
+          financial progress is ahead of currently verified physical progress — it is not a
+          finding about conduct, and the two measurements are never merged.
+        </p>
+      </AboutView>
       </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
@@ -187,22 +200,26 @@ export function renderBudgetPage(d: BudgetPageData): string {
   );
   return renderDocument(
     <AppShell title="Budget & Progress" nav={d.nav} context={`Budget & Progress · ${d.project.name.slice(0, 40)}`}>
-      <PageHeader
+      <div className="page-wrap ws">
+      <WorkHeader
         title="Budget & Progress"
         sub={`${d.project.name} — financial progress vs physical progress supported by verified evidence. Two measurements, compared — never merged.`}
         crumb={{ href: `/project/${d.project.id}`, label: d.project.name.slice(0, 40) }}
       >
         <VarianceTag state={f.varianceState} />
-      </PageHeader>
+      </WorkHeader>
 
-      <div className="fin-band" style="margin-bottom:12px">
-        {kpi("Original budget", money(f.originalBudget))}
-        {kpi("Approved changes", f.approvedChanges !== 0 ? money(f.approvedChanges) : "—")}
-        {kpi("Current budget", money(f.budgetBasis))}
-        {kpi("Paid to date", `${money(f.paidToDate)} · ${f.paidPct}%`)}
-        {kpi("Open draw requested", f.openDrawRequested > 0 ? money(f.openDrawRequested) : "—")}
-        {kpi("Retainage held", f.retainageHeld > 0 ? money(f.retainageHeld) : "—")}
-      </div>
+      <KpiRail
+        items={[
+          { label: "Original budget", value: money(f.originalBudget) },
+          { label: "Approved changes", value: f.approvedChanges !== 0 ? money(f.approvedChanges) : "—", detail: "governed change orders only" },
+          { label: "Current budget", value: money(f.budgetBasis) },
+          { label: "Paid to date", value: money(f.paidToDate), detail: `${f.paidPct}% of current budget` },
+          { label: "Open draw requested", value: f.openDrawRequested > 0 ? money(f.openDrawRequested) : "—", detail: "requested, not released" },
+          { label: "Retainage held", value: f.retainageHeld > 0 ? money(f.retainageHeld) : "—" },
+          { label: "Verified physical", value: f.dataComplete ? `${f.verifiedPhysicalPct}%` : "—", detail: "from verified evidence only" },
+        ]}
+      />
 
       <div className="grid-2col">
         <div className="panel panel-pad">
@@ -605,9 +622,10 @@ export function renderBudgetPage(d: BudgetPageData): string {
         </div>
       ) : null}
 
-      <p className="sub" style="margin:12px 2px;font-size:11px">
-        <b>Methodology.</b> {d.physical.methodology}
-      </p>
+      <AboutView label="Methodology">
+        <p>{d.physical.methodology}</p>
+      </AboutView>
+      </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );

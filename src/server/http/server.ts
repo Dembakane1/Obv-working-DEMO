@@ -5258,6 +5258,29 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
             fieldOps.listFieldIssuesForUser(user!).filter((i) => i.projectId === p.id && !["RESOLVED", "CLOSED"].includes(i.status)).length,
           ])
         ),
+        // Per-project operational state for the register — existing repo
+        // reads only (draw + exception rows are already indexed by
+        // project); no new query shape, no aggregation service.
+        opsByProject: new Map(
+          authz.accessibleProjects(user!).map((p) => {
+            const OPEN_DRAW = new Set(["SUBMITTED", "UNDER_REVIEW", "CLARIFICATION_REQUIRED", "READY_FOR_GOVERNANCE", "PARTIALLY_APPROVED"]);
+            const draw = repo
+              .listDrawRequestsForProject(p.id)
+              .filter((d) => OPEN_DRAW.has(d.status))
+              .sort((a, b) => b.drawNumber - a.drawNumber)[0];
+            return [
+              p.id,
+              {
+                activeDraw: draw
+                  ? { id: draw.id, drawNumber: draw.drawNumber, status: draw.status, requested: draw.requestedAmount ?? null }
+                  : null,
+                openExceptions: repo
+                  .listExceptionsForProject(p.id)
+                  .filter((e) => !["RESOLVED", "CLOSED", "WAIVED"].includes(e.status)).length,
+              },
+            ];
+          })
+        ),
       })
     );
     return;
@@ -6061,6 +6084,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         nav: navFor(user!, "compliance"),
         data,
         users: usersById(),
+        projects,
+        focus: url.searchParams.get("focus"),
         fieldIssues: {
           open: openIssues.length,
           critical: openIssues.filter((i) => i.severity === "CRITICAL").length,

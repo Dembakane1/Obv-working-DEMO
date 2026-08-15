@@ -51,6 +51,17 @@ import {
   NAV_GROUPS,
   navGroupsFor,
   bottomNavFor,
+  WorkHeader,
+  KpiRail,
+  DensePanel,
+  DenseTable,
+  DenseFacts,
+  SignalList,
+  Workbench,
+  AboutView,
+  FilterBar,
+  NextActionBanner,
+  WorkspaceTabs,
 } from "./components";
 import type {
   ApprovalRecord,
@@ -767,80 +778,188 @@ export function renderOverview(input: {
 
 // ------------------------------------------------------------ projects
 
+/** Per-project operational state computed by the route from existing
+ *  draw/exception records. Absent values render as absent — never faked. */
+export interface ProjectOps {
+  activeDraw: { id: string; drawNumber: number; status: string; requested: number | null } | null;
+  openExceptions: number;
+}
+
 export function renderProjects(input: {
   nav: NavContext;
   projects: ProjectCardData[];
   filters?: { q: string; state: string };
   openIssuesByProject?: Map<string, number>;
+  opsByProject?: Map<string, ProjectOps>;
 }): string {
   const f = input.filters ?? { q: "", state: "" };
+  const ops = (p: ProjectCardData): ProjectOps =>
+    input.opsByProject?.get(p.project.id) ?? { activeDraw: null, openExceptions: 0 };
   const totalBudget = input.projects.reduce((s, p) => s + p.summary.totalBudget, 0);
   const held = input.projects.reduce((s, p) => s + p.summary.held, 0);
   const released = input.projects.reduce((s, p) => s + p.summary.released, 0);
   const attention = input.projects.filter((p) => projectRisk(p).tone !== "ok" || p.pendingApprovals > 0);
+  const activeDraws = input.projects.filter((p) => ops(p).activeDraw !== null);
+  const totalExceptions = input.projects.reduce((s, p) => s + ops(p).openExceptions, 0);
+  const totalApprovals = input.projects.reduce((s, p) => s + p.pendingApprovals, 0);
+  const waitingOnEvidence = (p: ProjectCardData) => nextMilestone(p)?.milestone.status === "PENDING_EVIDENCE";
   const rows = input.projects.filter((p) => {
     if (f.q) {
       const hay = `${p.project.name} ${p.project.location} ${p.project.projectType}`.toLowerCase();
       if (!hay.includes(f.q.toLowerCase())) return false;
     }
-    if (f.state === "attention" && projectRisk(p).tone === "ok" && p.pendingApprovals === 0) return false;
-    if (f.state === "approvals" && p.pendingApprovals === 0) return false;
-    return true;
+    switch (f.state) {
+      case "attention": return projectRisk(p).tone !== "ok" || p.pendingApprovals > 0;
+      case "draw": return ops(p).activeDraw !== null;
+      case "evidence": return waitingOnEvidence(p);
+      case "approvals": return p.pendingApprovals > 0;
+      case "exceptions": return ops(p).openExceptions > 0;
+      default: return true;
+    }
   });
   const filtered = Boolean(f.q || f.state);
+  const registerRows = rows.map((p) => {
+    const o = ops(p);
+    const risk = projectRisk(p);
+    const next = nextMilestone(p);
+    const nextAction = next ? milestoneNextAction(next) : null;
+    const physPct = verifiedValuePct(p);
+    const finPct = projectProgressPct(p);
+    const issues = input.openIssuesByProject?.get(p.project.id) ?? 0;
+    return {
+      project: (
+        <span className="t-id">
+          <a className="t-name" href={`/project/${p.project.id}`}>{p.project.name}</a>
+          <span className="t-sub">{p.project.location} · {enumLabel(p.project.projectType)}</span>
+        </span>
+      ),
+      org: (
+        <span className="t-id">
+          <span>{p.org?.name ?? "—"}</span>
+          {p.implementingOrg ? <span className="t-sub">impl. {p.implementingOrg.name}</span> : null}
+        </span>
+      ),
+      stage: next
+        ? <span className="t-id"><span>M{next.milestone.seq} · {MILESTONE_STATUS_LABEL[next.milestone.status] ?? enumLabel(next.milestone.status)}</span></span>
+        : <span className="status ok"><span className="g">✓</span>Released</span>,
+      draw: o.activeDraw ? (
+        <a href={`/draw/${o.activeDraw.id}`} className="t-id">
+          <span>Draw #{o.activeDraw.drawNumber}</span>
+          <span className="t-sub">{enumLabel(o.activeDraw.status)}{o.activeDraw.requested !== null ? ` · ${money(o.activeDraw.requested)}` : ""}</span>
+        </a>
+      ) : (
+        <span className="t-dim">—</span>
+      ),
+      physical: <span className="num">{physPct}%</span>,
+      financial: <span className="num">{finPct}%</span>,
+      held: <span className="num">{money(p.summary.held)}</span>,
+      approvals: p.pendingApprovals > 0
+        ? <a href="/approvals" className="chip warn">{String(p.pendingApprovals)}</a>
+        : <span className="t-dim">0</span>,
+      exceptions: o.openExceptions > 0
+        ? <a href="/exceptions" className="chip warn">{String(o.openExceptions)}</a>
+        : <span className="t-dim">0</span>,
+      issues: issues > 0 ? <a href="/issues" className="chip warn">{String(issues)}</a> : <span className="t-dim">0</span>,
+      risk: <span className={`sev-dot ${risk.tone}`}>{risk.label}</span>,
+      next: nextAction ? <span className="t-next">{nextAction}</span> : <span className="t-dim">None outstanding</span>,
+    };
+  });
   return renderDocument(
     <AppShell title="Projects" nav={input.nav}>
-      <PageHeader
-        title="Projects"
-        sub="All projects under milestone-based financial governance."
-        asOf={`${input.projects.length} project${input.projects.length === 1 ? "" : "s"} · ${money(totalBudget)} under control`}
-      />
-      <div className="metric-strip">
-        <Metric d={{ value: String(input.projects.length), label: "Active projects", sub: "Under milestone governance" }} />
-        <Metric d={{ value: money(held), label: "Funds held", sub: "Released only through governed approval" }} />
-        <Metric d={{ value: money(released), label: "Released to date", tone: "ok", sub: totalBudget > 0 ? `${Math.round((released / totalBudget) * 100)}% of controlled amount` : "—" }} />
-        <Metric d={{ value: String(attention.length), label: "Needing attention", tone: attention.length > 0 ? "warn" : undefined, edge: attention.length > 0 ? "warn" : undefined, sub: attention.length > 0 ? "Flagged evidence or pending approvals" : "Nothing flagged", dim: attention.length === 0, href: "/projects?state=attention" }} />
-      </div>
-      <form className="filter-bar" method="GET" action="/projects">
-        <label className="search">
-          <input type="search" name="q" value={f.q} placeholder="Search by name, location or type" aria-label="Search projects" />
-        </label>
-        <select name="state" aria-label="Filter by state">
-          <option value="">All projects</option>
-          <option value="attention" selected={f.state === "attention"}>Needing attention</option>
-          <option value="approvals" selected={f.state === "approvals"}>With pending approvals</option>
-        </select>
-        <button className="btn secondary sm" type="submit">Apply</button>
-        <span className="f-count">{rows.length} of {input.projects.length} shown{filtered ? <> · <a href="/projects">clear</a></> : null}</span>
-      </form>
-      {rows.length === 0 ? (
-        <div className="register">
-          <EmptyStateV2
-            icon={icons.projects()}
-            title={filtered ? "No projects match" : "No projects yet"}
-            what={
-              filtered
-                ? "Projects exist but none match the current search or state filter."
-                : "Projects appear here once configured through pilot setup with milestones, evidence requirements and approval policies."
-            }
-            condition={filtered ? undefined : "unconfigured"}
-            action={filtered ? <a className="btn secondary sm" href="/projects">Clear filters</a> : <a className="btn secondary sm" href="/setup">Open pilot setup</a>}
-          />
-        </div>
-      ) : (
-        <div className="register">
-          <div className="reg-head">
-            <h3>Project register</h3>
-            <span className="hint">Identity, progress, capital state and next governed action</span>
-          </div>
-          {rows.map((p) => <ProjectRow data={p} openIssues={input.openIssuesByProject?.get(p.project.id) ?? 0} />)}
-          <div className="reg-foot">
+      <div className="page-wrap ws">
+        <WorkHeader title="Projects" sub="Portfolio operations under milestone-based financial governance">
+          <a className="btn secondary sm" href="/draws">Draw pipeline</a>
+          <a className="btn secondary sm" href="/insights">Analytics</a>
+        </WorkHeader>
+        <KpiRail
+          items={[
+            { label: "Active projects", value: String(input.projects.length), detail: `${money(totalBudget)} under control` },
+            {
+              label: "Needing attention",
+              value: String(attention.length),
+              detail: attention.length > 0 ? "flagged evidence or pending approvals" : "nothing flagged",
+              tone: attention.length > 0 ? "warn" : "ok",
+              href: "/projects?state=attention",
+            },
+            { label: "Active draws", value: String(activeDraws.length), detail: "open lender reviews", href: "/projects?state=draw" },
+            {
+              label: "Open exceptions",
+              value: String(totalExceptions),
+              tone: totalExceptions > 0 ? "warn" : undefined,
+              detail: totalExceptions > 0 ? "control surveillance" : "none open",
+              href: "/projects?state=exceptions",
+            },
+            {
+              label: "Pending approvals",
+              value: String(totalApprovals),
+              tone: totalApprovals > 0 ? "warn" : undefined,
+              detail: totalApprovals > 0 ? "awaiting governed decision" : "queue clear",
+              href: "/approvals",
+            },
+            { label: "Released to date", value: money(released), detail: totalBudget > 0 ? `${Math.round((released / totalBudget) * 100)}% of controlled` : "—", tone: "ok" },
+          ]}
+        />
+        <FilterBar
+          action="/projects"
+          searchName="q"
+          searchValue={f.q}
+          searchPlaceholder="Search by name, location or type"
+          count={`${rows.length} of ${input.projects.length} shown`}
+        >
+          <select name="state" aria-label="Filter by state">
+            <option value="">All projects</option>
+            <option value="attention" selected={f.state === "attention"}>Needs attention</option>
+            <option value="draw" selected={f.state === "draw"}>Active draw</option>
+            <option value="evidence" selected={f.state === "evidence"}>Waiting on evidence</option>
+            <option value="approvals" selected={f.state === "approvals"}>Waiting on approval</option>
+            <option value="exceptions" selected={f.state === "exceptions"}>With open exceptions</option>
+          </select>
+        </FilterBar>
+        <DensePanel
+          title="Project register"
+          right={filtered ? <a href="/projects">Clear filters</a> : <span>identity · stage · capital · next action</span>}
+          flush
+        >
+          {rows.length === 0 ? (
+            <EmptyStateV2
+              icon={icons.projects()}
+              title={filtered ? "No projects match" : "No projects yet"}
+              what={
+                filtered
+                  ? "Projects exist but none match the current search or state filter."
+                  : "Projects appear here once configured through pilot setup with milestones, evidence requirements and approval policies."
+              }
+              condition={filtered ? undefined : "unconfigured"}
+              action={filtered ? <a className="btn secondary sm" href="/projects">Clear filters</a> : <a className="btn secondary sm" href="/setup">Open pilot setup</a>}
+            />
+          ) : (
+            <DenseTable
+              columns={[
+                { key: "project", label: "Project" },
+                { key: "org", label: "Organization" },
+                { key: "stage", label: "Stage" },
+                { key: "draw", label: "Active draw" },
+                { key: "physical", label: "Verified physical", num: true },
+                { key: "financial", label: "Released", num: true },
+                { key: "held", label: "Held", num: true },
+                { key: "approvals", label: "Appr.", num: true },
+                { key: "exceptions", label: "Exc.", num: true },
+                { key: "issues", label: "Issues", num: true },
+                { key: "risk", label: "State" },
+                { key: "next", label: "Next action" },
+              ]}
+              rows={registerRows}
+            />
+          )}
+        </DensePanel>
+        <AboutView label="How progress is measured">
+          <p>
             Verified physical progress is the share of controlled value whose milestone has
             verified evidence. Financial progress is the share released through governed
-            approval. The two are compared, never merged.
-          </div>
-        </div>
-      )}
+            approval. The two are compared, never merged, and neither is ever estimated.
+          </p>
+        </AboutView>
+      </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );
@@ -925,126 +1044,129 @@ export function renderProjectDetail(input: {
     { key: "activity", label: "Activity" },
   ];
 
+  const nextActionText = bottleneck
+    ? milestoneNextAction(bottleneck)
+    : front
+      ? milestoneNextAction(front) ?? "Begin next milestone"
+      : "All milestones released";
+
   return renderDocument(
     <AppShell title={project.name} nav={input.nav} context={project.name}>
-      <div style="display:flex;align-items:center;gap:12px;margin:2px 0 10px">
-        <a className="crumb" href="/projects" style="font-size:12px;color:var(--ink-3)">← Projects</a>
-        <form method="POST" action="/api/reports/generate" style="margin:0 0 0 auto">
-          <input type="hidden" name="projectId" value={project.id} />
-          <button className="btn sm" type="submit" data-busy-label="Generating report…" title="Generate the Project Verification & Fund Release Report (PDF)">
-            {icons.file(13)} Generate funder report
-          </button>
-        </form>
-      </div>
-
-      <div className="proj-head">
-        <div className="ph-top">
-          <div className="ph-id">
-            <h1>
-              {project.name}
-              <span className={`status ${project.status === "ACTIVE" ? "ok" : ""}`} style="vertical-align:4px;margin-left:10px"><span className="g">●</span>{project.status}</span>
-            </h1>
-            <div className="meta" style="margin-top:4px">{project.location}</div>
-            <div className="meta" style="margin-top:2px">
-              Project code: <b style="color:var(--ink-2);font-weight:600">{project.pilot?.code ?? project.id.toUpperCase()}</b>
-              {" · "}Funder: <b style="color:var(--ink-2);font-weight:600">{data.org?.name ?? "—"}</b>
-              {data.implementingOrg ? <> · Implementing: {data.implementingOrg.name}</> : null}
-            </div>
-            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
-              <IntegrityChip valid={input.chainValid} />
-              {flagged > 0 ? <span className="status warn"><span className="g">!</span>{flagged} flagged</span> : null}
-            </div>
-          </div>
-          <div className="ph-figs">
-            <div className="ph-fig">
-              <div className="v num">{money(data.summary.totalBudget)}</div>
-              <div className="l">Controlled amount</div>
-            </div>
-            <div className="ph-fig">
-              <div className="v amber num">{money(data.summary.held)}</div>
-              <div className="l">Held</div>
-            </div>
-            <div className="ph-fig">
-              <div className="v green num">{money(data.summary.released)} <span style="font-size:11px;color:var(--ink-4);font-weight:500">{pct}%</span></div>
-              <div className="l">Released</div>
-            </div>
-            <div className="ph-fig">
-              <div className="v" style="font-size:14px;line-height:1.3;padding-top:3px">
-                {front ? `M${front.milestone.seq} ${front.milestone.title.split(",")[0].slice(0, 22)}` : "All released"}
-              </div>
-              <div className="l">Current milestone</div>
-            </div>
-          </div>
+      <div className="page-wrap ws">
+        <WorkHeader
+          title={project.name}
+          sub={`${project.location} · ${project.pilot?.code ?? project.id.toUpperCase()} · Funder: ${data.org?.name ?? "—"}${data.implementingOrg ? ` · Implementing: ${data.implementingOrg.name}` : ""}`}
+          crumb={{ href: "/projects", label: "Projects" }}
+        >
+          <span className={`status ${project.status === "ACTIVE" ? "ok" : ""}`}><span className="g">●</span>{project.status}</span>
+          <form method="POST" action="/api/reports/generate" style="margin:0">
+            <input type="hidden" name="projectId" value={project.id} />
+            <button className="btn sm" type="submit" data-busy-label="Generating report…" title="Generate the Project Verification & Fund Release Report (PDF)">
+              {icons.file(13)} Funder report
+            </button>
+          </form>
+        </WorkHeader>
+        {bottleneck ? (
+          <NextActionBanner
+            label={`Approval bottleneck: M${bottleneck.milestone.seq} "${bottleneck.milestone.title}" is verified`}
+            detail={milestoneNextAction(bottleneck) ?? undefined}
+            right={<a className="btn sm" href="/approvals">Review</a>}
+            tone="warn"
+          />
+        ) : null}
+        <KpiRail
+          items={[
+            { label: "Controlled amount", value: money(data.summary.totalBudget), detail: `${data.milestones.length} milestones` },
+            { label: "Held", value: money(data.summary.held), tone: data.summary.held > 0 ? "warn" : undefined, detail: "released only through approval" },
+            { label: "Released", value: money(data.summary.released), tone: "ok", detail: `${pct}% of controlled` },
+            {
+              label: "Current milestone",
+              value: front ? `M${front.milestone.seq}` : "Done",
+              detail: front ? MILESTONE_STATUS_LABEL[front.milestone.status] ?? enumLabel(front.milestone.status) : "all released",
+            },
+            {
+              label: "Flagged verifications",
+              value: String(flagged),
+              tone: flagged > 0 ? "warn" : "ok",
+              detail: flagged > 0 ? "needs review" : "none",
+            },
+            {
+              label: "Pending approvals",
+              value: String(data.pendingApprovals),
+              tone: data.pendingApprovals > 0 ? "warn" : undefined,
+              detail: data.pendingApprovals > 0 ? "awaiting decision" : "queue clear",
+              href: "/approvals",
+            },
+          ]}
+        />
+        <div className="dpanel" style="margin-bottom:var(--ws-gap)">
+          <div className="dpanel-body"><LifecycleStrip stage={stage} anyReleased={data.summary.released > 0} /></div>
         </div>
-        <LifecycleStrip stage={stage} anyReleased={data.summary.released > 0} />
-      </div>
 
-      <nav className="tabs">
-        {tabs.map((t) => (
-          <a href={`/project/${project.id}?tab=${t.key}`} className={tab === t.key ? "active" : ""}>
-            {t.label}
-          </a>
-        ))}
-        <a href={`/project/${project.id}/budget`}>Budget &amp; Progress</a>
-      </nav>
+        <WorkspaceTabs
+          label="Project record domains"
+          items={[
+            ...tabs.map((t) => ({
+              href: `/project/${project.id}?tab=${t.key}`,
+              label: t.label,
+              active: tab === t.key,
+            })),
+            { href: `/project/${project.id}/budget`, label: "Budget & Progress" },
+          ]}
+        />
 
       {tab === "overview" ? (
-        <div className="op-grid">
-          <div>
-            <div className="panel panel-pad">
-              <h3 style="margin:0 0 4px;font-size:13px;font-weight:650">About this project</h3>
-              <p className="sub" style="margin:0">{project.description}</p>
-            </div>
-            {bottleneck ? (
-              <div className="banner warn" style="margin:12px 0 0">
-                <b>Approval bottleneck:</b> M{bottleneck.milestone.seq} "{bottleneck.milestone.title}" is verified —{" "}
-                {milestoneNextAction(bottleneck)?.toLowerCase()}. <a href="/approvals">Review →</a>
-              </div>
-            ) : null}
-            <h2 className="section">Milestones</h2>
-            <div className="ms-list">
-              {data.milestones.map((row) => (
-                <MilestoneCard data={row} />
-              ))}
-            </div>
-          </div>
-
-          <div className="panel" style="position:sticky;top:calc(var(--topbar-h) + 14px)">
-            <div className="side-block">
-              <div className="l">Financial state</div>
-              <div className="side-kv"><span className="k">Total budget</span><span className="v">{money(data.summary.totalBudget)}</span></div>
-              <div className="side-kv"><span className="k">Released</span><span className="v green">{money(data.summary.released)}</span></div>
-              <div className="side-kv"><span className="k">Held</span><span className="v amber">{money(data.summary.held)}</span></div>
-              <div className="side-kv"><span className="k">Release progress</span><span className="v">{pct}%</span></div>
-            </div>
-            <div className="side-block">
-              <div className="l">Ledger integrity</div>
-              <IntegrityChip valid={input.chainValid} />
-              <div className="sub" style="margin-top:5px">{input.ledger.length} hash-chained entries · <a href="/ledger">register →</a></div>
-            </div>
-            <div className="side-block">
-              <div className="l">Risk indicators</div>
-              <div className="side-kv"><span className="k">Flagged verifications</span><span className="v">{flagged}</span></div>
-              <div className="side-kv"><span className="k">Pending approvals</span><span className="v">{data.pendingApprovals}</span></div>
-              <div className="side-kv"><span className="k">Rejected approvals</span><span className="v">{input.approvals.filter((a) => a.approval.status === "REJECTED").length}</span></div>
-            </div>
-            <div className="side-block">
-              <div className="l">Next required action</div>
-              <p style="margin:0;font-size:12.5px;color:var(--ink-2);font-weight:550">
-                {bottleneck
-                  ? milestoneNextAction(bottleneck)
-                  : front
-                    ? milestoneNextAction(front) ?? "Begin next milestone"
-                    : "All milestones released"}
-              </p>
-              {bottleneck ? (
-                <a className="btn sm" href="/approvals" style="margin-top:9px">Open approval queue</a>
-              ) : front && front.milestone.status === "PENDING_EVIDENCE" ? (
-                <a className="btn secondary sm" href="/field" style="margin-top:9px">Open field capture</a>
-              ) : null}
-            </div>
-          </div>
-        </div>
+        <Workbench
+          main={
+            <>
+              <DensePanel title="Milestones" right={<span>{data.milestones.filter((m) => m.milestone.status === "RELEASED").length} of {data.milestones.length} released</span>} flush>
+                <div className="ms-list ms-list-dense">
+                  {data.milestones.map((row) => (
+                    <MilestoneCard data={row} />
+                  ))}
+                </div>
+              </DensePanel>
+              <AboutView label="About this project">
+                <p>{project.description}</p>
+              </AboutView>
+            </>
+          }
+          rail={
+            <>
+              <DensePanel title="Financial state">
+                <DenseFacts
+                  rows={[
+                    { k: "Total budget", v: <span className="num">{money(data.summary.totalBudget)}</span> },
+                    { k: "Released", v: <span className="num ok-t">{money(data.summary.released)}</span> },
+                    { k: "Held", v: <span className="num warn-t">{money(data.summary.held)}</span> },
+                    { k: "Release progress", v: <span className="num">{pct}%</span> },
+                  ]}
+                />
+              </DensePanel>
+              <DensePanel title="Ledger integrity">
+                <IntegrityChip valid={input.chainValid} />
+                <p className="sub" style="margin:6px 0 0">{input.ledger.length} hash-chained entries · <a href="/ledger">register →</a></p>
+              </DensePanel>
+              <DensePanel title="Risk indicators">
+                <DenseFacts
+                  rows={[
+                    { k: "Flagged verifications", v: String(flagged) },
+                    { k: "Pending approvals", v: String(data.pendingApprovals) },
+                    { k: "Rejected approvals", v: String(input.approvals.filter((a) => a.approval.status === "REJECTED").length) },
+                  ]}
+                />
+              </DensePanel>
+              <DensePanel title="Required next action">
+                <p style="margin:0;font-size:12.5px;color:var(--ink-2);font-weight:550">{nextActionText}</p>
+                {bottleneck ? (
+                  <a className="btn sm" href="/approvals" style="margin-top:9px">Open approval queue</a>
+                ) : front && front.milestone.status === "PENDING_EVIDENCE" ? (
+                  <a className="btn secondary sm" href="/field" style="margin-top:9px">Open field capture</a>
+                ) : null}
+              </DensePanel>
+            </>
+          }
+        />
       ) : null}
 
       {tab === "milestones" ? (
@@ -1189,6 +1311,7 @@ export function renderProjectDetail(input: {
           </div>
         </>
       ) : null}
+      </div>
 
       <script src="/js/poll.js" defer></script>
     </AppShell>
@@ -1713,38 +1836,96 @@ export function renderApprovals(input: {
   const pending = input.items.filter((i) => i.approval.status === "PENDING");
   const resolved = input.items.filter((i) => i.approval.status !== "PENDING");
   const atStake = pending.reduce((s, i) => s + i.milestone.trancheAmount, 0);
+  const oldestPendingLabel = (() => {
+    const oldest = pending.reduce<string | null>((min, i) => (!min || i.approval.createdAt < min ? i.approval.createdAt : min), null);
+    if (!oldest) return "—";
+    const days = Math.floor((Date.now() - Date.parse(oldest)) / 86400000);
+    return days <= 0 ? "today" : `${days}d`;
+  })();
+  const ageOf = (iso: string): string => {
+    const days = Math.floor((Date.now() - Date.parse(iso)) / 86400000);
+    return days <= 0 ? "today" : `${days}d`;
+  };
+  const awaitingMine = pending.filter((i) => i.canDecide).length;
+  const awaitingOthers = pending.filter((i) => !i.canDecide && i.alreadyDecided).length;
+  const queueRows = pending.map((item) => {
+    const approved = item.records.filter((r) => r.decision === "APPROVED").length;
+    const missing = item.approval.requiredRoles.filter((role) => !item.records.some((r) => r.role === role));
+    return {
+      request: (
+        <a className="t-id" href={`#ap-${item.approval.id}`}>
+          <span>M{item.milestone.seq} · {item.milestone.title}</span>
+          <span className="t-sub">requested {fmtDate(item.approval.createdAt).slice(0, 16)}</span>
+        </a>
+      ),
+      project: <span>{item.project.name}</span>,
+      amount: <span className="num">{money(item.milestone.trancheAmount)}</span>,
+      state: item.canDecide
+        ? <span className="chip warn">Awaiting my action</span>
+        : item.alreadyDecided
+          ? <span className="chip">Awaiting second approval</span>
+          : <span className="chip">Awaiting {missing.map(roleLabel).join(", ") || "decision"}</span>,
+      progress: <span className="num">{approved} of {item.approval.requiredRoles.length}</span>,
+      required: <span>{missing.length > 0 ? missing.map(roleLabel).join(", ") : "—"}</span>,
+      age: <span className="num">{ageOf(item.approval.createdAt)}</span>,
+      action: <a className="btn ghost sm" href={`#ap-${item.approval.id}`}>Review</a>,
+    };
+  });
   return renderDocument(
     <AppShell title="Pending approvals" nav={input.nav}>
-      <div className="page-wrap">
-      <PageHeader
-        title="Approvals"
-        sub="Release governance — every required role must approve verified evidence before a tranche becomes release-eligible."
-        asOf={`${pending.length} pending request${pending.length === 1 ? "" : "s"} for your portfolio`}
-      >
-        <a
-          className="btn secondary sm"
-          href="/approvals/export.csv"
-          title="Download the approval register (read-only CSV)"
-        >
-          {icons.download(14)} Export approvals
+      <div className="page-wrap ws">
+      <WorkHeader title="Approvals" sub="Release governance — every required role must approve verified evidence before a tranche becomes release-eligible">
+        <a className="btn secondary sm" href="/approvals/export.csv" title="Download the approval register (read-only CSV)">
+          {icons.download(14)} Export
         </a>
-      </PageHeader>
+      </WorkHeader>
 
-      <div className="metric-strip">
-        <Metric d={{ value: String(pending.length), label: "Awaiting decision", tone: pending.length > 0 ? "warn" : undefined, edge: pending.length > 0 ? "warn" : undefined, sub: pending.length > 0 ? "Every required role must sign" : "Queue clear", dim: pending.length === 0 }} />
-        <Metric d={{ value: money(atStake), label: "Value awaiting approval", sub: "Held until governance completes", dim: atStake === 0 }} />
-        <Metric d={{
-          value: (() => {
-            const oldest = pending.reduce<string | null>((min, i) => (!min || i.approval.createdAt < min ? i.approval.createdAt : min), null);
-            if (!oldest) return "—";
-            const days = Math.floor((Date.now() - Date.parse(oldest)) / 86400000);
-            return days <= 0 ? "today" : `${days}d`;
-          })(),
-          label: "Oldest pending request",
-          sub: pending.length > 0 ? "Waiting time for the earliest submission" : "Nothing waiting",
-          dim: pending.length === 0,
-        }} />
-        <Metric d={{ value: String(resolved.length), label: "Resolved approvals", sub: "Full audit trail retained below", dim: resolved.length === 0 }} />
+      <KpiRail
+        items={[
+          {
+            label: "Awaiting my action",
+            value: String(awaitingMine),
+            tone: awaitingMine > 0 ? "warn" : "ok",
+            detail: awaitingMine > 0 ? "your role is required" : "nothing needs you",
+          },
+          {
+            label: "Awaiting second approval",
+            value: String(awaitingOthers),
+            detail: awaitingOthers > 0 ? "your decision is recorded" : "none in dual-control wait",
+          },
+          { label: "Value awaiting approval", value: money(atStake), detail: "held until governance completes" },
+          { label: "Oldest pending", value: oldestPendingLabel, detail: pending.length > 0 ? "earliest submission" : "nothing waiting" },
+          { label: "Recently completed", value: String(resolved.length), detail: "full audit trail retained" },
+        ]}
+      />
+
+      <div className="ws-row ws-row-2">
+        <DensePanel title="Approval queue" right={<span>{pending.length} pending</span>} flush>
+          <DenseTable
+            columns={[
+              { key: "request", label: "Request" },
+              { key: "project", label: "Project" },
+              { key: "amount", label: "Held", num: true },
+              { key: "state", label: "State" },
+              { key: "progress", label: "Progress", num: true },
+              { key: "required", label: "Awaiting role" },
+              { key: "age", label: "Age", num: true },
+              { key: "action", label: "" },
+            ]}
+            rows={queueRows}
+            empty="Nothing is awaiting approval."
+          />
+        </DensePanel>
+        <DensePanel title="What an approval authorizes">
+          <DenseFacts
+            rows={[
+              { k: "It authorizes", v: "Release eligibility of the held tranche for verified construction progress" },
+              { k: "It does NOT authorize", v: "Settlement, payment execution, or any movement outside governed release" },
+              { k: "Dual control", v: "Every required role must approve — one signature is never sufficient" },
+              { k: "Basis", v: "Verified evidence, deterministic checks and the hash-anchored ledger record" },
+            ]}
+          />
+        </DensePanel>
       </div>
 
       {pending.length === 0 ? (
@@ -1823,7 +2004,7 @@ export function renderApprovals(input: {
           }
 
           return (
-            <div className="panel ap-card">
+            <div className="panel ap-card" id={`ap-${item.approval.id}`}>
               {/* ---- header: identity + held amount + n-of-m ---- */}
               <div className="ap-head">
                 <span className="ap-badge" aria-hidden="true">{icons.clock(16)}</span>
@@ -1997,39 +2178,37 @@ export function renderApprovals(input: {
       )}
 
       {resolved.length > 0 ? (
-        <>
-          <h2 className="section" style="display:inline-flex;align-items:center;gap:8px">
-            <span className="res-h-ic">{icons.check(14)}</span>Resolved approvals
-          </h2>
-          <div className="res-list">
-            {resolved.map((item) => {
+        <DensePanel title="Resolved approvals" right={<span>{resolved.length} completed · full audit trail retained</span>} flush>
+          <DenseTable
+            columns={[
+              { key: "request", label: "Request" },
+              { key: "project", label: "Project" },
+              { key: "amount", label: "Amount released", num: true },
+              { key: "status", label: "Status" },
+              { key: "decided", label: "Decided / released" },
+              { key: "action", label: "" },
+            ]}
+            rows={resolved.map((item) => {
               const ok = item.approval.status === "APPROVED";
-              return (
-                <div className={`panel res-row ${ok ? "ok" : "bad"}`}>
-                  <span className={`res-ic ${ok ? "ok" : "bad"}`}>{ok ? icons.check(14) : icons.x(14)}</span>
-                  <span className="res-id">
-                    <b>M{item.milestone.seq} · {item.milestone.title}</b>
-                    <span className="sub">{item.project.name}</span>
-                  </span>
-                  <span className="res-cell">
-                    <span className="l">Amount released</span>
-                    <span className="v num">{ok && item.releasedAt ? money(item.milestone.trancheAmount) : "—"}</span>
-                  </span>
-                  <span className="res-cell">
-                    <span className="l">Status</span>
-                    <span className={`chip ${ok ? "ok" : "bad"}`}>{ok ? "Approved · released through governance" : "Rejected — returned to project"}</span>
-                  </span>
-                  <span className="res-cell">
-                    <span className="l">{ok ? "Released on" : "Decided on"}</span>
-                    <span className="v mono">{fmtDate(item.releasedAt ?? item.approval.createdAt).slice(0, 16)}</span>
-                  </span>
-                  <a className="btn ghost sm res-view" href={`/milestone/${item.milestone.id}`}>View approval ↗</a>
-                </div>
-              );
+              return {
+                request: <span className="t-id"><span>M{item.milestone.seq} · {item.milestone.title}</span></span>,
+                project: <span>{item.project.name}</span>,
+                amount: <span className="num">{ok && item.releasedAt ? money(item.milestone.trancheAmount) : "—"}</span>,
+                status: <span className={`chip ${ok ? "ok" : "bad"}`}>{ok ? "Approved · released through governance" : "Rejected — returned to project"}</span>,
+                decided: <span className="num">{fmtDate(item.releasedAt ?? item.approval.createdAt).slice(0, 16)}</span>,
+                action: <a className="btn ghost sm" href={`/milestone/${item.milestone.id}`}>View</a>,
+              };
             })}
-          </div>
-        </>
+          />
+        </DensePanel>
       ) : null}
+      <AboutView label="How release governance works">
+        <p>
+          A pending approval means verified evidence reached governance and the tranche is
+          HELD. Approval records release eligibility only — it is not settlement and moves no
+          funds. Rejection returns the milestone to the project with the reason on record.
+        </p>
+      </AboutView>
       </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
@@ -2178,147 +2357,134 @@ export function renderLedger(input: {
   const entrySuspect = (e: LedgerEntry): boolean =>
     !input.chainValid && input.brokenAt !== undefined && e.seq >= input.brokenAt;
 
+  // Audit register rows: newest last, exactly as the chain is recorded.
+  const registerRows = rows.map((e) => {
+    const m = input.milestoneById.get(e.milestoneId);
+    const p = projectOf(e);
+    const v = input.verificationByEntry?.get(e.id) ?? null;
+    const suspect = entrySuspect(e);
+    return {
+      seq: <span className="num">#{e.seq}</span>,
+      timestamp: <span className="num">{fmtDate(e.timestamp)}</span>,
+      record: (
+        <a className="t-id" href={m ? `/milestone/${m.id}` : "#"}>
+          <span>M{m?.seq}: {m?.title ?? "Unknown milestone"}</span>
+          <span className="t-sub">{v ? (v.source === "LIVE_AI" ? "AI-assisted visual check" : "Demo verification") : "verified evidence"}{v?.policyVersion ? ` · policy v${v.policyVersion}` : ""}</span>
+        </a>
+      ),
+      project: <span>{p?.name ?? "—"}</span>,
+      actor: <span>{input.actorByEntry.get(e.id) ?? "—"}</span>,
+      state: suspect
+        ? <span className="status bad"><span className="g">✕</span>Suspect after break</span>
+        : <span className="status ok"><span className="g">✓</span>Verified</span>,
+      hash: (
+        <details className="hash-cell">
+          <summary className="mono">{shortHash(e.currentHash, 10)}</summary>
+          <div className="hash-pop">
+            <TechnicalHash label="Previous entry hash" value={e.previousHash} />
+            <TechnicalHash label={`Entry #${e.seq} hash (content + previous hash)`} value={e.currentHash} />
+            <TechnicalHash label="Evidence payload hash" value={e.payloadHash} />
+          </div>
+        </details>
+      ),
+    };
+  });
+
   return renderDocument(
     <AppShell title="Evidence ledger" nav={input.nav}>
-      <PageHeader
-        title="Evidence ledger"
-        sub="Append-only, hash-chained register of every verified evidence item. Tamper-evident by construction."
-        asOf={
-          input.lastCheckAt
-            ? `Last integrity check ${fmtDate(input.lastCheckAt).slice(0, 16)} UTC`
-            : "Integrity has not been manually checked in this session"
-        }
-      >
-        <form method="POST" action="/api/ledger/verify" style="margin:0">
-          <button className="btn" type="submit">Verify integrity</button>
-        </form>
-      </PageHeader>
+      <div className="page-wrap ws">
+        <WorkHeader title="Evidence Ledger" sub="Append-only, hash-chained register of every verified evidence item — tamper-evident by construction">
+          <form method="POST" action="/api/ledger/verify" style="margin:0">
+            <button className="btn sm" type="submit">Verify integrity</button>
+          </form>
+        </WorkHeader>
 
-      {!input.chainValid ? (
-        <AttentionBanner
-          tone="bad"
-          title={`Tampering detected at entry #${input.brokenAt}`}
-          detail="Entries at and after this point cannot be relied upon. Investigate before accepting any report generated from this ledger."
-        />
-      ) : null}
-      {input.checkedBanner ? (
-        <AttentionBanner
-          tone={input.chainValid ? "info" : "bad"}
-          icon={input.chainValid ? icons.check() : icons.alert()}
-          title={input.checkedBanner}
-          detail="Every entry hash was recomputed from stored content and compared against the recorded chain."
-        />
-      ) : null}
-
-      <div className="metric-strip">
-        <Metric d={{
-          value: input.chainValid ? "Intact" : "Broken",
-          label: "Chain integrity",
-          tone: input.chainValid ? "ok" : "bad",
-          edge: input.chainValid ? undefined : "bad",
-          sub: input.chainValid ? "All hashes recompute cleanly" : `First failure at entry #${input.brokenAt}`,
-        }} />
-        <Metric d={{ value: String(input.ledger.length), label: "Ledger entries", sub: "Verified evidence only — nothing else enters", dim: input.ledger.length === 0 }} />
-        <Metric d={{ value: head ? `#${head.seq}` : "—", label: "Head sequence", sub: head ? `Recorded ${fmtDate(head.timestamp).slice(0, 16)} UTC` : "Ledger is empty", dim: !head }} />
-      </div>
-      {head ? (
-        <TechnicalHash label="Ledger head hash (sha-256)" value={head.currentHash} />
-      ) : null}
-
-      {projects.length > 1 ? (
-        <form className="filter-bar" method="GET" action="/ledger" style="margin-top:12px">
-          <select name="project" aria-label="Filter by project">
-            <option value="">All projects</option>
-            {projects.map((p) => (
-              <option value={p.id} selected={filter === p.id}>{p.name}</option>
-            ))}
-          </select>
-          <button className="btn secondary sm" type="submit">Apply</button>
-          <span className="f-count">{rows.length} of {input.ledger.length} entries{filter ? <> · <a href="/ledger">clear</a></> : null}</span>
-        </form>
-      ) : null}
-
-      <div className="register" style="margin-top:12px">
-        <div className="reg-head">
-          <h3>Hash chain</h3>
-          <span className="hint">Newest last — each entry commits to the one before it</span>
-        </div>
-        {rows.length === 0 ? (
-          <EmptyStateV2
-            icon={icons.ledger()}
-            title={filter ? "No entries for this project" : "Ledger is empty"}
-            what="Evidence enters this register only after the VerificationAggregator records a VERIFIED outcome. An empty ledger means no evidence has completed verification yet — uploads and reviews in progress do not appear here."
-            condition={filter ? undefined : "healthy"}
-            action={filter ? <a className="btn secondary sm" href="/ledger">Show all entries</a> : undefined}
+        {!input.chainValid ? (
+          <AttentionBanner
+            tone="bad"
+            title={`Tampering detected at entry #${input.brokenAt}`}
+            detail="Entries at and after this point cannot be relied upon. Investigate before accepting any report generated from this ledger."
           />
-        ) : (
-          <div className="chain">
-            {rows.map((e) => {
-              const m = input.milestoneById.get(e.milestoneId);
-              const p = projectOf(e);
-              const v = input.verificationByEntry?.get(e.id) ?? null;
-              const suspect = entrySuspect(e);
-              return (
-                <div className={`chain-row ${suspect ? "suspect" : ""}`}>
-                  <span className="ch-rail" aria-hidden="true">
-                    <span className="ch-node">{e.seq}</span>
-                  </span>
-                  <div className="ch-body">
-                    <div className="ch-top">
-                      <a className="ch-title" href={m ? `/milestone/${m.id}` : "#"}>
-                        M{m?.seq}: {m?.title ?? "Unknown milestone"}
-                      </a>
-                      <span className="ch-chips">
-                        {suspect ? (
-                          <span className="status bad"><span className="g">✕</span>Suspect after break</span>
-                        ) : (
-                          <span className="status ok"><span className="g">✓</span>Verified evidence</span>
-                        )}
-                      </span>
-                    </div>
-                    <div className="ch-meta">
-                      {p ? <span>{p.name}</span> : null}
-                      <span className="num">{fmtDate(e.timestamp)}</span>
-                      <span>Captured by {input.actorByEntry.get(e.id) ?? "—"}</span>
-                      {v ? (
-                        <span>
-                          {v.source === "LIVE_AI" ? "AI-assisted visual check" : "Demo verification"}
-                          {v.policyVersion ? ` · policy v${v.policyVersion}` : ""}
-                        </span>
-                      ) : null}
-                    </div>
-                    <details className="ch-proof">
-                      <summary>Proof detail</summary>
-                      <TechnicalHash label="Previous entry hash" value={e.previousHash} />
-                      <TechnicalHash label={`Entry #${e.seq} hash (content + previous hash)`} value={e.currentHash} />
-                      <TechnicalHash label="Evidence payload hash" value={e.payloadHash} />
-                      <p className="sub" style="margin:8px 0 0">
-                        <a href={m ? `/milestone/${m.id}` : "#"}>Open the milestone</a> for the full
-                        evidence record, verification checks and approval history behind this entry.
-                      </p>
-                    </details>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        <div className="reg-foot">
-          Each entry's hash covers its content plus the previous entry's hash — any retroactive
-          edit breaks every later hash. Verified evidence is the only thing that enters this
-          register; approvals and fund movements are recorded in their own governed workflows.
-        </div>
-      </div>
+        ) : null}
+        {input.checkedBanner ? (
+          <AttentionBanner
+            tone={input.chainValid ? "info" : "bad"}
+            icon={input.chainValid ? icons.check() : icons.alert()}
+            title={input.checkedBanner}
+            detail="Every entry hash was recomputed from stored content and compared against the recorded chain."
+          />
+        ) : null}
 
-      <Methodology title="How this ledger works">
-        <p>
-          When the VerificationAggregator records a VERIFIED outcome, the evidence item's
-          content hash is appended here with a hash that also commits to the previous entry.
-          Verify integrity recomputes the whole chain from stored content — it never mutates
-          records. A ledger entry is proof of verified evidence, not of legal completion,
-          inspection outcome, or payment.
-        </p>
-      </Methodology>
+        <KpiRail
+          items={[
+            {
+              label: "Chain integrity",
+              value: input.chainValid ? "Intact" : "Broken",
+              tone: input.chainValid ? "ok" : "bad",
+              detail: input.chainValid ? "all hashes recompute cleanly" : `first failure at entry #${input.brokenAt}`,
+            },
+            { label: "Ledger entries", value: String(input.ledger.length), detail: "verified evidence only — nothing else enters" },
+            { label: "Head sequence", value: head ? `#${head.seq}` : "—", detail: head ? `recorded ${fmtDate(head.timestamp).slice(0, 16)} UTC` : "ledger is empty" },
+            {
+              label: "Last integrity check",
+              value: input.lastCheckAt ? fmtDate(input.lastCheckAt).slice(0, 16) : "—",
+              detail: input.lastCheckAt ? "UTC" : "not checked this session",
+            },
+          ]}
+        />
+        {head ? <TechnicalHash label="Ledger head hash (sha-256)" value={head.currentHash} /> : null}
+
+        {projects.length > 1 ? (
+          <FilterBar action="/ledger" count={`${rows.length} of ${input.ledger.length} entries`}>
+            <select name="project" aria-label="Filter by project">
+              <option value="">All projects</option>
+              {projects.map((p) => (
+                <option value={p.id} selected={filter === p.id}>{p.name}</option>
+              ))}
+            </select>
+          </FilterBar>
+        ) : null}
+
+        <DensePanel
+          title="Hash chain"
+          right={<span>newest last — each entry commits to the one before it</span>}
+          flush
+          foot="Each entry's hash covers its content plus the previous entry's hash — any retroactive edit breaks every later hash. Verified evidence is the only thing that enters this register; approvals and fund movements are recorded in their own governed workflows."
+        >
+          {rows.length === 0 ? (
+            <EmptyStateV2
+              icon={icons.ledger()}
+              title={filter ? "No entries for this project" : "Ledger is empty"}
+              what="Evidence enters this register only after the VerificationAggregator records a VERIFIED outcome. An empty ledger means no evidence has completed verification yet — uploads and reviews in progress do not appear here."
+              condition={filter ? undefined : "healthy"}
+              action={filter ? <a className="btn secondary sm" href="/ledger">Show all entries</a> : undefined}
+            />
+          ) : (
+            <DenseTable
+              columns={[
+                { key: "seq", label: "Seq", num: true },
+                { key: "timestamp", label: "Recorded (UTC)" },
+                { key: "record", label: "Record" },
+                { key: "project", label: "Project" },
+                { key: "actor", label: "Captured by" },
+                { key: "state", label: "State" },
+                { key: "hash", label: "Hash / proof" },
+              ]}
+              rows={registerRows}
+            />
+          )}
+        </DensePanel>
+
+        <AboutView label="How this ledger works">
+          <p>
+            When the VerificationAggregator records a VERIFIED outcome, the evidence item's
+            content hash is appended here with a hash that also commits to the previous entry.
+            Verify integrity recomputes the whole chain from stored content — it never mutates
+            records. A ledger entry is proof of verified evidence, not of legal completion,
+            inspection outcome, or payment.
+          </p>
+        </AboutView>
+      </div>
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );
@@ -2351,9 +2517,11 @@ export function renderReports(input: {
     if (pkg.status === "SUPERSEDED") return <span className="status"><span className="g">○</span>Superseded</span>;
     return <span className="status warn"><span className="g">●</span>{pkg.status === "GENERATING" ? "Generating" : "Queued"}</span>;
   };
+  const failedPackages = input.auditPackages.filter((pkg) => pkg.status === "FAILED").length;
   return renderDocument(
     <AppShell title="Reports" nav={input.nav}>
-      <PageHeader title="Reports" sub="Audit-ready document registry for funders, project offices and compliance teams." />
+      <div className="page-wrap ws">
+      <WorkHeader title="Reports & Packages" sub="Audit-ready document registry — every artifact is generated from recorded data and kept immutable once ready" />
 
       {input.pdfError ? (
         <div className="banner warn">
@@ -2362,6 +2530,21 @@ export function renderReports(input: {
         </div>
       ) : null}
 
+      <KpiRail
+        items={[
+          { label: "Generated reports", value: String(input.reports.length), detail: "available for download" },
+          { label: "Audit packages", value: String(input.auditPackages.length), detail: "immutable once ready" },
+          {
+            label: "Failed generations",
+            value: String(failedPackages),
+            tone: failedPackages > 0 ? "warn" : "ok",
+            detail: failedPackages > 0 ? "see register for category" : "none",
+          },
+          { label: "Projects covered", value: String(input.projects.length), detail: "in your accessible portfolio" },
+        ]}
+      />
+
+      <div className="ws-row ws-row-3 reports-gen">
       <div className="panel">
         <div className="panel-head">
           <h3>Project Verification &amp; Fund Release Report</h3>
@@ -2460,6 +2643,8 @@ export function renderReports(input: {
             available as SUPERSEDED.
           </p>
         </div>
+      </div>
+
       </div>
 
       {input.auditPackages.length ? (
@@ -2663,10 +2848,14 @@ export function renderReports(input: {
         </div>
       )}
 
-      <p className="footer-note">
-        Reports are point-in-time snapshots generated from live application data and stored in
-        the demo environment. Regenerating reflects the current state.
-      </p>
+      <AboutView label="How report artifacts behave">
+        <p>
+          Reports are point-in-time snapshots generated from live application data. Regenerating
+          reflects the current state and never edits a prior artifact — audit packages stay
+          immutable once ready, with superseded versions retained.
+        </p>
+      </AboutView>
+      </div>
     </AppShell>
   );
 }
@@ -2686,100 +2875,184 @@ export function renderCompliance(input: {
   data: ComplianceData;
   users: Map<string, User>;
   fieldIssues: { open: number; critical: number; overdue: number };
+  /** Projects visible to the caller, for register context columns. */
+  projects?: Map<string, Project>;
+  /** Evidence id selected from the queue (?focus=). */
+  focus?: string | null;
 }): string {
   const d = input.data;
   const fi = input.fieldIssues;
+  const queue = [...d.needsReview, ...d.rejected];
+  const projectOf = (b: EvidenceBundle): Project | null => input.projects?.get(b.milestone.projectId) ?? null;
+  // The selected bundle drives the workbench: default to the first item
+  // awaiting review so the reviewer always lands on real work.
+  const selected = queue.find((b) => b.evidence.id === input.focus) ?? queue[0] ?? null;
+  const verdictChip = (b: EvidenceBundle): VNode =>
+    b.verification ? <VerdictChip verdict={b.verification.verdict} /> : <span className="t-dim">pending</span>;
+  const queueRows = queue.map((b) => ({
+    evidence: (
+      <a className="t-id" href={`/compliance?focus=${encodeURIComponent(b.evidence.id)}`}>
+        <span>{b.evidence.id}</span>
+        <span className="t-sub">captured {fmtDate(b.evidence.capturedAt)}</span>
+      </a>
+    ),
+    project: <span>{projectOf(b)?.name ?? "—"}</span>,
+    milestone: <span className="t-id"><span>M{b.milestone.seq}</span><span className="t-sub">{b.milestone.title}</span></span>,
+    submitted: <span>{b.submittedBy?.name ?? "Field submission"}</span>,
+    state: verdictChip(b),
+    confidence: b.verification ? <span className="num">{b.verification.confidence.toFixed(2)}</span> : <span className="t-dim">—</span>,
+    ledger: b.ledgerEntry ? <span className="status ok"><span className="g">✓</span>anchored</span> : <span className="t-dim">—</span>,
+    action: (
+      <a className="btn ghost sm" href={`/compliance?focus=${encodeURIComponent(b.evidence.id)}`}>
+        {selected?.evidence.id === b.evidence.id ? "Selected" : "Review"}
+      </a>
+    ),
+  }));
   return renderDocument(
     <AppShell title="Risk & Compliance" nav={input.nav}>
-      <PageHeader
-        title="Evidence review"
-        sub="Human review of flagged evidence, plus open compliance items summarized from recorded verification and governance data."
-        asOf={`${d.needsReview.length} item${d.needsReview.length === 1 ? "" : "s"} awaiting a reviewer decision`}
-      />
-
-      <div className="metric-strip">
-        <Metric d={{ value: String(d.needsReview.length), label: "Evidence awaiting review", tone: d.needsReview.length > 0 ? "warn" : undefined, edge: d.needsReview.length > 0 ? "warn" : undefined, sub: d.needsReview.length > 0 ? "Flagged by deterministic checks or AI assessment" : "Review queue clear", dim: d.needsReview.length === 0 }} />
-        <Metric d={{ value: String(d.rejected.length), label: "Rejected evidence", tone: d.rejected.length > 0 ? "bad" : undefined, sub: d.rejected.length > 0 ? "Requires recapture in the field" : "None rejected", dim: d.rejected.length === 0 }} />
-        <Metric d={{ value: String(d.awaitingApproval.length), label: "Verified, awaiting approval", sub: d.awaitingApproval.length > 0 ? "With governance — see Approvals" : "Nothing at governance", dim: d.awaitingApproval.length === 0, href: "/approvals" }} />
-        <Metric d={{ value: d.chainValid ? "Intact" : "Broken", label: "Ledger integrity", tone: d.chainValid ? "ok" : "bad", edge: d.chainValid ? undefined : "bad", sub: d.chainValid ? "Hash chain recomputes cleanly" : `First failure at entry #${d.brokenAt}`, href: "/ledger" }} />
+      <div className="page-wrap ws">
+        <WorkHeader title="Evidence Review" sub="Human review queue for flagged evidence — verification and governance state from recorded data only">
+          <a className="btn secondary sm" href="/issues">Field issues</a>
+          <a className="btn secondary sm" href="/ledger">Ledger</a>
+        </WorkHeader>
+        <KpiRail
+          items={[
+            {
+              label: "Awaiting review",
+              value: String(d.needsReview.length),
+              tone: d.needsReview.length > 0 ? "warn" : "ok",
+              detail: d.needsReview.length > 0 ? "flagged by checks or AI assessment" : "review queue clear",
+            },
+            {
+              label: "Rejected",
+              value: String(d.rejected.length),
+              tone: d.rejected.length > 0 ? "bad" : undefined,
+              detail: d.rejected.length > 0 ? "requires field recapture" : "none rejected",
+            },
+            {
+              label: "Verified, at governance",
+              value: String(d.awaitingApproval.length),
+              detail: d.awaitingApproval.length > 0 ? "with approvals" : "nothing at governance",
+              href: "/approvals",
+            },
+            {
+              label: "Ledger integrity",
+              value: d.chainValid ? "Intact" : "Broken",
+              tone: d.chainValid ? "ok" : "bad",
+              detail: d.chainValid ? "hash chain recomputes cleanly" : `first failure at entry #${d.brokenAt}`,
+              href: "/ledger",
+            },
+            {
+              label: "Open field issues",
+              value: String(fi.open),
+              tone: fi.critical > 0 ? "bad" : fi.overdue > 0 ? "warn" : undefined,
+              detail: `${fi.critical} critical · ${fi.overdue} overdue`,
+              href: "/issues",
+            },
+          ]}
+        />
+        <Workbench
+          main={
+            <>
+              <DensePanel title="Review queue" right={<span>{queue.length} item{queue.length === 1 ? "" : "s"}</span>} flush>
+                <DenseTable
+                  columns={[
+                    { key: "evidence", label: "Evidence" },
+                    { key: "project", label: "Project" },
+                    { key: "milestone", label: "Milestone" },
+                    { key: "submitted", label: "Submitted by" },
+                    { key: "state", label: "Verification" },
+                    { key: "confidence", label: "Conf.", num: true },
+                    { key: "ledger", label: "Ledger" },
+                    { key: "action", label: "" },
+                  ]}
+                  rows={queueRows}
+                  empty="No evidence is awaiting review."
+                />
+              </DensePanel>
+              {selected ? (
+                <DensePanel title={`Record detail — ${selected.evidence.id}`} flush className="ev-detail">
+                  <EvidencePanel
+                    evidence={selected.evidence}
+                    verification={selected.verification}
+                    ledgerEntry={selected.ledgerEntry}
+                    requirement={selected.milestone.requirement}
+                    submittedBy={selected.submittedBy}
+                    accountStatus={selected.milestone.accountStatus}
+                  />
+                </DensePanel>
+              ) : (
+                <DensePanel title="Record detail">
+                  <EmptyStateV2
+                    icon={icons.check()}
+                    title="No evidence is awaiting review"
+                    what="Evidence flagged by deterministic checks or visual assessment appears here for a reviewer decision."
+                    condition="healthy"
+                  />
+                </DensePanel>
+              )}
+            </>
+          }
+          rail={
+            <>
+              <DensePanel title="Verification state">
+                {selected?.verification ? (
+                  <>
+                    <VerdictChip verdict={selected.verification.verdict} />
+                    <DenseFacts
+                      rows={[
+                        { k: "Confidence", v: <span className="num">{selected.verification.confidence.toFixed(2)}</span> },
+                        { k: "Source", v: selected.verification.source === "LIVE_AI" ? "Live assessment" : "Demo fallback" },
+                        { k: "Checks", v: `${selected.verification.checks.filter((c) => c.passed).length} of ${selected.verification.checks.length} passed` },
+                      ]}
+                    />
+                  </>
+                ) : (
+                  <p className="empty-mini">Select a record from the queue.</p>
+                )}
+              </DensePanel>
+              {selected?.verification ? (
+                <DensePanel title="Flagged checks" flush>
+                  <SignalList
+                    items={selected.verification.checks
+                      .filter((c) => !c.passed)
+                      .map((c) => ({ title: c.name, sub: c.detail ?? undefined, severity: "med" as const }))}
+                    empty="No failed checks — flagged on aggregate confidence."
+                  />
+                </DensePanel>
+              ) : null}
+              <DensePanel title="Milestones at governance" flush>
+                <SignalList
+                  items={d.awaitingApproval.slice(0, 6).map((a) => ({
+                    title: `${a.project.name} — M${a.milestone.seq}`,
+                    sub: `${money(a.milestone.trancheAmount)} held · requested ${fmtDate(a.approval.createdAt)}`,
+                    href: "/approvals",
+                    severity: "low" as const,
+                  }))}
+                  empty="Nothing at governance."
+                />
+              </DensePanel>
+              <DensePanel title="Required next action">
+                <p style="margin:0;font-size:12.5px;color:var(--ink-2);font-weight:550">
+                  {selected
+                    ? selected.verification?.verdict === "REJECTED"
+                      ? "Coordinate field recapture — rejected evidence never becomes releasable."
+                      : "Record a reviewer decision on the selected evidence."
+                    : "Review queue clear — no reviewer decision outstanding."}
+                </p>
+              </DensePanel>
+            </>
+          }
+        />
+        <AboutView label="How review relates to release">
+          <p>
+            Field issues coordinate response and inform reviewers; they never change financial
+            state. Release eligibility is controlled only by the formal approval workflow.
+            Visual assessment is advisory — a human reviewer decision is recorded for every
+            flagged item, and the Evidence Ledger anchors each record with a hash chain.
+          </p>
+        </AboutView>
       </div>
-
-      <h2 className="section">Field issues</h2>
-      <div className="panel">
-        <div className="panel-head">
-          <h3>Operational field issues</h3>
-          <span className="right"><a href="/issues" style="color:var(--action);font-weight:600">Open register →</a></span>
-        </div>
-        <div className="issue-stats" style="border:0;margin:0">
-          <span><b className="num">{fi.open}</b> Open</span>
-          <span><b className="num" style={fi.critical ? "color:var(--bad)" : ""}>{fi.critical}</b> Critical</span>
-          <span><b className="num" style={fi.overdue ? "color:var(--warn)" : ""}>{fi.overdue}</b> Overdue</span>
-        </div>
-        <p className="sub" style="padding:0 16px 12px;font-size:11.5px">
-          Issues coordinate field response and inform reviewers. They never
-          change financial state — release eligibility is controlled only by
-          the formal approval workflow.
-        </p>
-      </div>
-
-      <h2 className="section">Evidence needing review</h2>
-      {d.needsReview.length === 0 ? (
-        <div className="panel"><EmptyState icon={icons.check()} title="Nothing flagged" message="No evidence currently requires human review." /></div>
-      ) : (
-        d.needsReview.map((b) => (
-          <div style="margin-bottom:12px">
-            <EvidencePanel
-              evidence={b.evidence}
-              verification={b.verification}
-              ledgerEntry={b.ledgerEntry}
-              requirement={b.milestone.requirement}
-              submittedBy={b.submittedBy}
-              accountStatus={b.milestone.accountStatus}
-            />
-          </div>
-        ))
-      )}
-
-      <h2 className="section">Milestones awaiting approval</h2>
-      {d.awaitingApproval.length === 0 ? (
-        <div className="panel"><EmptyState icon={icons.approvals()} title="No open approvals" message="All verified milestones have completed governance." /></div>
-      ) : (
-        <div className="panel">
-          <ul className="activity">
-            {d.awaitingApproval.map((a) => (
-              <li>
-                <span className="ico warn">{icons.clock()}</span>
-                <span className="body">
-                  <span className="msg"><b>{a.project.name}</b> — M{a.milestone.seq}: {a.milestone.title}</span>
-                  <span className="meta">
-                    <span className="when">requested {fmtDate(a.approval.createdAt)}</span>
-                    <span className="num" style="font-weight:650;color:var(--ink-2)">{money(a.milestone.trancheAmount)} held</span>
-                    <a href="/approvals">Review →</a>
-                  </span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {d.rejected.length > 0 ? (
-        <>
-          <h2 className="section">Rejected evidence</h2>
-          {d.rejected.map((b) => (
-            <div style="margin-bottom:12px">
-              <EvidencePanel
-                evidence={b.evidence}
-                verification={b.verification}
-                ledgerEntry={b.ledgerEntry}
-                requirement={b.milestone.requirement}
-                submittedBy={b.submittedBy}
-                accountStatus={b.milestone.accountStatus}
-              />
-            </div>
-          ))}
-        </>
-      ) : null}
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );
