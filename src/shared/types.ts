@@ -941,7 +941,9 @@ export interface DrawEvent {
     | "EVIDENCE_LINKED" | "EVIDENCE_UNLINKED" | "CLARIFICATION_REQUESTED"
     | "CLARIFICATION_RESOLVED" | "RECOMMENDATION_FINALIZED"
     | "SENT_TO_GOVERNANCE" | "GOVERNANCE_DECISION" | "RELEASE_TRANSITION"
-    | "RETURNED" | "CANCELLED";
+    | "RETURNED" | "CANCELLED"
+    // Readiness engine: decision-time snapshot + governed state transition.
+    | "READINESS_SNAPSHOT" | "READINESS_TRANSITION";
   detail: string;
   actorUserId: string | null;
   createdAt: string;

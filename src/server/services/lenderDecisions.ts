@@ -86,6 +86,13 @@ export function recordLenderDecision(
     notes?: string | null;
     conditions?: Array<{ conditionType: string; description: string; dueAt?: string | null; responsiblePartyOrganizationId?: string | null }>;
     supersedesDecisionId?: string | null;
+  },
+  hooks?: {
+    /** Runs after the ENTIRE refusal ladder above has passed and before
+     *  anything persists — a governing layer may refuse a decision that
+     *  would otherwise be recorded (by throwing), without reordering or
+     *  masking this service's own 400/403/409 refusals. */
+    beforePersist?: () => void;
   }
 ): LenderDrawDecision {
   const draw = getDrawFor(user, input.drawRequestId);
@@ -239,6 +246,10 @@ export function recordLenderDecision(
     }
     if (!supersedeIds.includes(superseded.id)) supersedeIds.push(superseded.id);
   }
+
+  // Every refusal above has passed — the decision WILL record unless a
+  // governing layer (e.g. the readiness exception gate) refuses now.
+  hooks?.beforePersist?.();
 
   const now = new Date().toISOString();
   // Distinct amount provenance (never copied from one another):

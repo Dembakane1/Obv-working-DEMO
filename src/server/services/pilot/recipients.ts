@@ -56,6 +56,7 @@ export const RECIPIENT_RULES: Record<PilotEventKind, RecipientRule> = {
   DRAW_SUBMITTED:        { memberships: ["LENDER_REVIEWER", "OBV_REVIEWER"], fallbackRoles: ["FUNDER_REP", "COMPLIANCE_REVIEWER"], includeSubmitter: false },
   EVIDENCE_RESUBMITTED:  { memberships: ["LENDER_REVIEWER", "OBV_REVIEWER"], fallbackRoles: ["FUNDER_REP", "COMPLIANCE_REVIEWER"], includeSubmitter: false },
   DRAW_READY_FOR_REVIEW: { memberships: ["LENDER_REVIEWER", "OBV_REVIEWER"], fallbackRoles: ["FUNDER_REP", "COMPLIANCE_REVIEWER"], includeSubmitter: false },
+  DRAW_READINESS_HOLD:   { memberships: ["LENDER_REVIEWER", "OBV_REVIEWER"], fallbackRoles: ["FUNDER_REP", "COMPLIANCE_REVIEWER"], includeSubmitter: false },
   EVIDENCE_MISSING:      { memberships: ["CONTRACTOR", "BORROWER"], fallbackRoles: ["PROJECT_MANAGER"], includeSubmitter: true },
   APPROVAL_REQUIRED:     { memberships: ["LENDER_REVIEWER", "ADMINISTRATOR"], fallbackRoles: ["FUNDER_REP", "COMPLIANCE_REVIEWER"], includeSubmitter: false },
   DRAW_RETURNED:         { memberships: ["CONTRACTOR", "BORROWER"], fallbackRoles: ["PROJECT_MANAGER"], includeSubmitter: true },

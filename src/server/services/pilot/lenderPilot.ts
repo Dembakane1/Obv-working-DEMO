@@ -38,8 +38,8 @@ export interface NextAction {
  * AUTHORITATIVE records only, checked in workflow order. Two calls on
  * the same records always return the same answer.
  */
-export function drawNextAction(drawRequestId: string): NextAction {
-  const summary = draws.drawHeaderSummary(drawRequestId);
+export function drawNextAction(drawRequestId: string, precomputed?: draws.DrawHeaderSummary): NextAction {
+  const summary = precomputed ?? draws.drawHeaderSummary(drawRequestId);
   const draw = summary.draw;
   const done = (code: NextAction["code"], label: string, actor: NextAction["actor"], detail: string): NextAction =>
     ({ code, label, actor, detail });
