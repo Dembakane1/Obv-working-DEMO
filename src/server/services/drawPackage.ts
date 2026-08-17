@@ -32,8 +32,10 @@ import type {
 import { slaState, ageDays } from "./exceptions";
 import * as completionGates from "./completionGates";
 import { effectiveStatus as permitEffectiveStatus } from "./permits";
+import * as drawReadiness from "./drawReadiness";
 
-export const DRAW_PACKAGE_SCHEMA_VERSION = 1;
+// v2: adds the obvReadiness block (additive) — readiness at generation time.
+export const DRAW_PACKAGE_SCHEMA_VERSION = 2;
 export const NOT_AVAILABLE = "NOT AVAILABLE";
 
 /** Same institutional-export roles as the Project Audit Package. */
@@ -274,6 +276,12 @@ export interface DrawPackageData {
   /** DMV Draw Control Record — only for projects using the DMV
    *  compliance layer; null keeps every other package unchanged. */
   dmv: import("./dmvCompliance").DrawControlRecord | null;
+  /** OBV readiness evaluated at package generation — a labelled synthesis
+   *  of the governed records this package already carries, never a new
+   *  determination. Null only if evaluation fails; the package still
+   *  builds. Historical packages are generated files and are never
+   *  rewritten when readiness later changes. */
+  readiness: drawReadiness.DrawReadinessResult | null;
   generatedAt: string;
   generatedBy: User;
   users: Map<string, User>;
@@ -803,6 +811,9 @@ export async function assembleDrawPackageData(user: User, drawId: string): Promi
     dmv: dmvCompliance.projectUsesDmvCompliance(project.id)
       ? dmvCompliance.drawControlRecord(user, draw.id)
       : null,
+    readiness: (() => {
+      try { return drawReadiness.drawReadiness(draw.id); } catch { return null; }
+    })(),
     generatedAt: new Date().toISOString(),
     generatedBy: user,
     users,
@@ -880,6 +891,20 @@ export function buildDrawPackageFiles(d: DrawPackageData): {
       `   manifest follow in this package. Every figure above restates the governed records —`,
       `   this summary authorizes nothing and is not a determination.`,
       ``,
+      `10. OBV READINESS (AT GENERATION)`,
+      ...(d.readiness
+        ? [
+            `   Status: ${d.readiness.status.replace(/_/g, " ")} · evaluated ${d.readiness.evaluatedAt} · policy v${d.readiness.policyVersion}`,
+            `   Requested $${d.readiness.requestedAmount.toLocaleString("en-US")} · currently supportable $${d.readiness.supportableAmount.toLocaleString("en-US")}` +
+              (d.readiness.supportBasis === "FULL_REVIEW" ? "" : " (provisional — lines still under review)"),
+            d.readiness.blockingReasons.length > 0
+              ? `   ${d.readiness.blockingReasons.length} blocking requirement(s). Primary: ${d.readiness.primaryBlocker?.message ?? d.readiness.blockingReasons[0].message}`
+              : `   No blocking requirements at evaluation time.`,
+            `   Readiness states what blocks lender review of this draw. It is not lender approval,`,
+            `   not release eligibility, not a legal conclusion and not payment authorization.`,
+          ]
+        : [`   ${NOT_AVAILABLE} — readiness could not be evaluated when this package was generated.`]),
+      ``,
       `All release eligibility is recorded through OBV's governed approval workflow.`,
     ].join("\n")
   );
@@ -946,6 +971,20 @@ export function buildDrawPackageFiles(d: DrawPackageData): {
           advisory: true,
           note: "A reviewer recommendation is ADVISORY — only the formal approval path creates release eligibility.",
         },
+        obvReadiness: d.readiness
+          ? {
+              status: d.readiness.status,
+              evaluatedAt: d.readiness.evaluatedAt,
+              policyVersion: d.readiness.policyVersion,
+              requestedAmount: d.readiness.requestedAmount,
+              supportableAmount: d.readiness.supportableAmount,
+              supportBasis: d.readiness.supportBasis,
+              blockingReasons: d.readiness.blockingReasons,
+              warnings: d.readiness.warnings,
+              satisfiedRequirements: d.readiness.satisfiedRequirements,
+              note: "Readiness synthesizes the governed records in this package at generation time. It is not approval, release eligibility, a legal conclusion or payment authorization.",
+            }
+          : null,
         governance: d.approval
           ? { approvalRequestId: d.approval.id, status: d.approval.status, requiredRoles: d.approval.requiredRoles }
           : null,

@@ -133,6 +133,7 @@ import { RetainageError } from "../services/retainage";
 import * as auditPackages from "../services/auditPackage";
 import * as drawPackage from "../services/drawPackage";
 import * as completionGates from "../services/completionGates";
+import * as drawReadinessSvc from "../services/drawReadiness";
 import { GateError } from "../services/completionGates";
 import * as permits from "../services/permits";
 import { PermitError } from "../services/permits";
@@ -836,6 +837,15 @@ function assembleDrawDetail(
       ),
     canEdit: draws.canAccessDraw(user, draw) && user.role !== "FIELD",
     canReview: draws.canReviewDraw(user, draw),
+    // OBV Readiness — deterministic synthesis over the same governed
+    // registers assembled above. Advisory presentation; never a decision.
+    readiness: (() => {
+      try {
+        return drawReadinessSvc.drawReadiness(draw.id);
+      } catch {
+        return null;
+      }
+    })(),
     nextAction: (() => {
       try {
         return lenderPilot.drawNextAction(draw.id);
@@ -3278,9 +3288,25 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
             else if (decisionBody[k] !== undefined) decisionBody[k] = Number(decisionBody[k]);
           }
         }
-        const decision = lenderDecisions.recordLenderDecision(user, { ...decisionBody, drawRequestId: drawId } as never);
+        // Readiness-governed path: computes OBV readiness at decision
+        // time, requires explicit justification for an approving decision
+        // over a HOLD/EXCEPTION_REVIEW readiness (no unlabeled bypass),
+        // and persists the decision-time snapshot with any overridden
+        // blockers. The underlying decision workflow is unchanged.
+        const recorded = drawReadinessSvc.recordDecisionWithReadiness(user, drawId, decisionBody as never);
+        const decision = recorded.decision;
         drawWorkflow.syncDrawStage(drawId, user, `Lender decision ${decision.decision}`, decision.id);
-        finishLenderPost(drawId, { decision, conditions: lrepo.listDecisionConditions(decision.id) }, 201);
+        drawReadinessSvc.recordReadinessTransition(drawId, user.id);
+        finishLenderPost(
+          drawId,
+          {
+            decision,
+            conditions: lrepo.listDecisionConditions(decision.id),
+            readinessAtDecision: recorded.readinessAtDecision.status,
+            proceededByException: recorded.proceededByException,
+          },
+          201
+        );
         return;
       }
       const decision = lenderDecisions.currentDecision(drawId);
@@ -3581,6 +3607,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           percentCompleteVerified:
             p.percentCompleteVerified !== undefined && p.percentCompleteVerified !== "" ? Number(p.percentCompleteVerified) : null,
         });
+        // A governed mutation point (never page render): detect and record
+        // a readiness state transition, notifying only on actual change.
+        try { drawReadinessSvc.recordReadinessTransition(drawId, user.id); } catch { /* advisory */ }
         finishDrawPost(drawId, "lines", { line });
         return;
       }
@@ -5797,18 +5826,33 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   // ---- draw request pages ----
   if (method === "GET" && pathname === "/draws") {
+    const TERMINAL_DRAW = new Set(["RELEASED", "CANCELLED"]);
     const rows: DrawRegisterRow[] = draws.listDrawsForUser(user!).map((draw) => {
       const summary = draws.drawHeaderSummary(draw.id);
+      const project = repo.getProject(draw.projectId);
       return {
         draw,
-        project: repo.getProject(draw.projectId),
+        project,
+        org: project ? repo.getOrganization(project.organizationId) : null,
         summary,
-        nextAction: draws.nextAction(draw, summary),
+        // Live readiness is bounded to open draws; closed draws keep their
+        // terminal status and any decision-time snapshot instead.
+        readiness: TERMINAL_DRAW.has(draw.status)
+          ? null
+          : (() => { try { return drawReadinessSvc.drawReadiness(draw.id); } catch { return null; } })(),
+        next: lenderPilot.drawNextAction(draw.id, summary),
       };
     });
+    const filterParam = url.searchParams.get("readiness") ?? "";
     sendHtml(
       res,
-      renderDrawRegister({ nav: navFor(user!, "draws"), rows, canCreate: user!.role !== "FIELD" })
+      renderDrawRegister({
+        nav: navFor(user!, "draws"),
+        rows,
+        canCreate: user!.role !== "FIELD",
+        viewerRole: user!.role,
+        filter: ["READY", "HOLD", "EXCEPTION_REVIEW", "INCOMPLETE"].includes(filterParam) ? filterParam : "",
+      })
     );
     return;
   }
