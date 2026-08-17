@@ -46,7 +46,7 @@ const ROUTES = [
   { path: "/project/proj-r47", title: null, work: ".workbench, .wstabs" },
   { path: "/milestone/ms-1", title: null, work: ".evidence-panel" },
   { path: "/approvals", title: "Approvals", work: ".dpanel, .ap-card", summary: ".kpi-rail" },
-  { path: "/draws", title: "Draw Requests", work: ".panel", summary: ".metric-strip" },
+  { path: "/draws", title: "Draw Requests", work: ".dtable, .dpanel", summary: ".kpi-rail" },
   { path: "/compliance", title: "Evidence Review", work: ".workbench", summary: ".kpi-rail" },
   { path: "/issues", title: "Field Issues", work: ".register", summary: ".metric-strip" },
   { path: "/exceptions", title: "Exceptions", work: ".dpanel", summary: ".kpi-rail" },
