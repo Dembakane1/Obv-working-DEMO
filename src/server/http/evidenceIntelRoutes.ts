@@ -36,6 +36,10 @@ export interface EvidenceIntelRouteContext {
   isForm: () => boolean;
   redirect: (location: string) => void;
   sendJson: (data: unknown, status?: number) => void;
+  /** Called after a promotion creates a governed exception — the server
+   *  wires this to the central readiness-transition fan-out for the
+   *  exception's linkage. Advisory: must never fail the mutation. */
+  afterException?: (exception: { drawRequestId: string | null; milestoneId: string | null; projectId: string }, actorUserId: string) => void;
   sendHtml: (html: string, status?: number) => void;
 }
 
@@ -232,6 +236,7 @@ export async function handleEvidenceIntelRoutes(ctx: EvidenceIntelRouteContext):
       else ctx.sendJson({ item });
     } else {
       const result = ei.promote(user, id, note);
+      try { ctx.afterException?.(result.exception, user.id); } catch { /* advisory */ }
       if (ctx.isForm()) ctx.redirect(`${PAGE_PREFIX}/queue/${id}`);
       else ctx.sendJson(result, 201);
     }

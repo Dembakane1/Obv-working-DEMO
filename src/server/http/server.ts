@@ -2967,6 +2967,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       isForm: () => isFormPost(req),
       redirect: (location) => redirect(res, location),
       sendJson: (data, status) => sendJson(res, data, status ?? 200),
+      // DMV basis / line-requirement / cost records feed per-line
+      // eligibility — the central fan-out covers the project's draws.
+      afterEligibilityMutation: (projectId, actorUserId) =>
+        drawReadinessSvc.recordReadinessTransitionsForProject(projectId, actorUserId),
     })
   ) {
     return;
@@ -3067,6 +3071,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       redirect: (location) => redirect(res, location),
       sendJson: (data, status) => sendJson(res, data, status ?? 200),
       sendHtml: (html, status) => sendHtml(res, html, status ?? 200),
+      // A promoted advisory finding becomes a governed exception — the
+      // central fan-out follows the exception's own linkage.
+      afterException: (exception, actorUserId) =>
+        drawReadinessSvc.recordReadinessTransitionsForException(exception, actorUserId),
     })
   ) {
     return;
