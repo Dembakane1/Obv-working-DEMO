@@ -168,10 +168,50 @@ capability, submitter excluded, governance truth table intact):
 - **Reproducibility**: every result carries `policyVersion` and
   `evaluatedAt`; a historical snapshot is never recomputed or rewritten when
   current readiness changes.
-- **Transitions** are detected at governed mutation points (line review
-  completion, lender decision) — never on page render — and recorded as
-  `READINESS_TRANSITION` events; notifications fire only on a state change
-  (existing `notifyGovernedEvent` seam, tenant-scoped deterministic routing).
+- **Transitions** are detected at governed mutation points — never on page
+  render — through ONE central mechanism: `recordReadinessTransition`
+  recomputes live readiness, compares it with the last recorded
+  `READINESS_TRANSITION` event and no-ops when the status is unchanged, so
+  repeated or overlapping invocations never duplicate an event or a
+  notification. Scope fan-outs (`…ForMilestone` / `…ForPermit` /
+  `…ForProject` / `…ForException`) route non-draw-addressed mutations to
+  only the relevant active draws of the mutated record's own project —
+  never another tenant. Notifications fire only on a state change:
+  `DRAW_READY_FOR_REVIEW` on any transition to READY;
+  `DRAW_READINESS_HOLD` when a READY draw moves to HOLD or
+  EXCEPTION_REVIEW (one policy, no new kinds). HOLD→HOLD blocker-wording
+  changes produce nothing.
+
+### Transition coverage — mutation-point audit
+
+`assembleReadinessInput` is the authoritative input map. Every mutation
+owner below was audited for whether it can change a readiness STATUS and
+whether the central transition mechanism runs after it. Warning-only
+inputs deliberately carry **no hook** — warnings never change status.
+
+| Input | Mutation owner (routes) | Can change status | Hook |
+|---|---|---|---|
+| Draw fields, lines, line reviews, checklist requirements, documents, document reviews, evidence links, lifecycle (submit/return/cancel/…) | `draws.*` via the single `POST /api/draws/:id/<action>` dispatcher | Yes (structure, reconciliation, LINE_REVIEW_INCOMPLETE, REQUIRED_DOCUMENT_*, DMV per-line evidence) | **Central** — one call inside `finishDrawPost`, the same seam every draw mutation already funnels through for stage sync |
+| Lender decision | `recordDecisionWithReadiness` (`POST …/lender-decision`) | No status input, but decision-time snapshot + disposition | Hooked (kept — anchors the snapshot) |
+| Lien waivers | `createLienWaiver` / `transitionLienWaiver` | Yes on DMV projects (lien EVIDENCE_INCOMPLETE) | Hooked (draw-scoped) |
+| Decision conditions | `updateCondition` | No — `DECISION_CONDITIONS_OPEN` is a warning ("blocks funding, not review") | No hook, by design |
+| External funding | funding routes | No — not a readiness input | No hook |
+| Lender draw inspections | `drawInspections.*` | No — reach readiness only as advisory warnings | No hook |
+| Evidence submission + verdict | `processEvidenceSubmission` (`POST /api/evidence`, `POST /api/evidence-drafts/:id/submit`) | Yes (EVIDENCE_NOT_SUBMITTED / REQUIRED_EVIDENCE_MISSING / NEEDS_REVIEW / REJECTED) | Hooked (milestone fan-out) |
+| Configured evidence requirements | pilot onboarding (`POST /api/pilot/requirements[…/delete]`) | Yes (flips `requiredEvidenceConfigured`) | Hooked (milestone fan-out) |
+| Inspection-requirement determination | `determineInspectionRequirement` | Yes (whole requirement family incl. the UNKNOWN unknown-info blocker) | Hooked (milestone fan-out) |
+| Jurisdictional inspections (create / schedule / complete / result / reinspection / cancel) | `completionGates.*` inspection routes | Yes (result recording above all; schedule/complete are state-equivalent and dedup to no-ops) | Hooked (milestone fan-out) |
+| Inspection record metadata correction | `correctInspectionRecord` | No — metadata only | No hook |
+| Contractor completion | `reportContractorCompletion` | No — code is skipped by the evaluator | No hook |
+| Permit create | `createPermit` | No — unlinked permits are readiness-invisible | No hook |
+| Permit update / code basis / milestone link | `updatePermit`, `recordCodeBasis`, `linkMilestone` | Yes (PERMIT_*, CODE_BASIS_MISSING, linked-permit set) | Hooked (permit / milestone fan-out) |
+| Official source (direct record) | `recordOfficialSource` | Yes (OFFICIAL_SOURCE_MISSING, surface-clean) | Hooked (milestone / permit fan-out) |
+| Official-source review queue (confirm / reject / defer / discrepancy / promote) | `officialSources/review.*` | No — permit-scoped or advisory records no eligibility path consumes | No hook |
+| Exceptions (create / lifecycle / waive) | `exceptions.*` routes | Yes (OPEN_BLOCKING_EXCEPTION by id) | Hooked (exception-linkage fan-out). The auto-evaluator (`evaluateExceptions`) runs during page reads and is deliberately NOT hooked — reads never write transitions; its changes surface at the next governed mutation |
+| Change-order lifecycle | `changeOrders.*` | No — `CHANGE_ORDER_NOT_APPROVED` is a warning | No hook |
+| Formal approval decision | `POST /api/approvals/:id/decision` | MILESTONE: yes (release short-circuit collapses the milestone's reason surface); CHANGE_ORDER: yes on DMV projects (budget basis for OVER_BUDGET_REVIEW_REQUIRED); DRAW / RETAINAGE: no | Hooked per subject (milestone / project fan-out) |
+| Disputes (open / transition / legal hold / resolve / close) | `disputes.*` via dispute routes | Yes on DMV projects (LEGAL_HOLD / DISPUTE_HOLD) | Hooked (`afterHoldMutation` → project fan-out). Dispute sub-records (responses, cures, dispute evidence…) never touch hold posture — no hook |
+| DMV basis / line-requirement records | `dmv` repo (no HTTP mutation surface in this build) | Would be (per-line eligibility) | N/A today — when a mutation route is added, use the project fan-out |
 
 ## 9. Engine design
 

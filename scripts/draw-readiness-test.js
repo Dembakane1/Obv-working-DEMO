@@ -140,11 +140,11 @@ async function main() {
   assert(typeof g2.evaluatedAt === "string" && g2.evaluatedAt.length > 0, "every result carries evaluatedAt");
   assert(g2.satisfiedRequirements.some((s) => s.code === "REQUIRED_DOCUMENT_ON_FILE" && s.category === "LIEN"),
     "the accepted lien waiver is an explicit satisfied requirement");
-  assert(g2.warnings.some((w) => w.code === "INSPECTION_REQUIREMENT_UNKNOWN"),
-    "the undetermined inspection requirement stays visible as a warning even on a READY draw");
+  assert(g2.satisfiedRequirements.some((s) => s.code === "REQUIRED_INSPECTION_PASSED"),
+    "the REQUIRED framing inspection with its passed reviewed chain is an explicit satisfied requirement");
   const rA = dr.evaluateDrawReadiness(synInput([], { requirementValue: "REQUIRED", inspectionGate: "PASSED" }));
   assert(rA.status === "READY" && rA.satisfiedRequirements.some((s) => s.code === "REQUIRED_INSPECTION_PASSED"),
-    "a REQUIRED inspection with a PASSED reviewed result is an explicit satisfied requirement");
+    "all required inspection information reviewed and satisfied → READY");
 
   // ================= B · missing required evidence → HOLD =============
   console.log("\n== B · configured required evidence missing → HOLD ==");
@@ -242,23 +242,42 @@ async function main() {
   const rE6 = dr.evaluateDrawReadiness(released);
   assert(rE6.warnings.some((w) => w.code === "RELEASED_MILESTONE_SURFACE_NOT_CLEAN"),
     "a released milestone with a dirty inspection surface is surfaced, never silently clean");
-  // Unmapped lines: no jurisdictional surface — surfaced, never a
-  // vacuous pass.
+  // Unmapped lines: the jurisdictional surface cannot be evaluated —
+  // missing information, never READY and never a vacuous pass.
   const unmapped = synInput([]);
   unmapped.gates = [];
   unmapped.unmappedLineCount = 1;
   const rE7 = dr.evaluateDrawReadiness(unmapped);
-  assert(rE7.warnings.some((w) => w.code === "LINE_WITHOUT_MILESTONE"),
-    "a line with no milestone mapping warns that its gates cannot be evaluated");
+  assert(rE7.status === "INCOMPLETE" && codes(rE7).includes("LINE_WITHOUT_MILESTONE"),
+    "a line with no milestone mapping alone → INCOMPLETE, never READY");
+  const rE7b = rE7.blockingReasons.find((b) => b.code === "LINE_WITHOUT_MILESTONE");
+  assert(rE7b.exceptionAllowed === false, "the unmapped-line unknown is never exceptionable");
+  // On a DMV project the control record evaluates EVERY line through its
+  // own line-scoped requirements — the surface IS evaluated there.
+  const unmappedDmv = synInput([]);
+  unmappedDmv.gates = [];
+  unmappedDmv.unmappedLineCount = 1;
+  unmappedDmv.dmv = { disputeHold: { blocked: false, legalHold: false, reasons: [] }, lines: [] };
+  assert(!codes(dr.evaluateDrawReadiness(unmappedDmv)).includes("LINE_WITHOUT_MILESTONE"),
+    "a DMV-adopting project's lines are evaluated by the control record — no unmapped-line unknown");
+  // §8 — UNKNOWN regression contract.
   const rE3 = dr.evaluateDrawReadiness(synInput([
-    { code: "INSPECTION_REQUIREMENT_UNKNOWN", detail: "Undetermined.", blocking: false },
+    { code: "INSPECTION_REQUIREMENT_UNKNOWN", detail: "Whether a jurisdictional inspection is required has not been determined — UNKNOWN never behaves as NOT REQUIRED.", blocking: false },
   ], { requirementValue: "UNKNOWN", inspectionGate: "REQUIREMENT_UNKNOWN" }));
-  assert(rE3.status === "READY" && warnCodes(rE3).includes("INSPECTION_REQUIREMENT_UNKNOWN"),
-    "an ungated UNKNOWN requirement surfaces as a warning — visible, never a silent pass");
-  assert(rE3.categories.find((c) => c.category === "GOVERNMENT_INSPECTION").state === "WARNING",
-    "the category rollup shows WARNING, not PASS, for the undetermined requirement");
+  assert(rE3.status === "INCOMPLETE", "INSPECTION_REQUIREMENT_UNKNOWN alone → INCOMPLETE, never READY");
+  assert(rE3.categories.find((c) => c.category === "GOVERNMENT_INSPECTION").state === "UNKNOWN",
+    "the category rollup shows UNKNOWN, not PASS, for the undetermined requirement");
   assert(!rE3.satisfiedRequirements.some((s) => s.category === "GOVERNMENT_INSPECTION"),
     "UNKNOWN never appears among satisfied requirements");
+  const rE3b = rE3.blockingReasons.find((b) => b.code === "INSPECTION_REQUIREMENT_UNKNOWN");
+  assert(rE3b && rE3b.exceptionAllowed === false, "the missing-information reason is never exceptionable");
+  const rE8 = dr.evaluateDrawReadiness(synInput([
+    { code: "INSPECTION_REQUIREMENT_UNKNOWN", detail: "Undetermined on a second milestone.", blocking: false },
+    { code: "INSPECTION_FAILED", detail: "Required framing inspection FAILED — reinspection required.", blocking: true },
+  ], { requirementValue: "REQUIRED", inspectionGate: "FAILED" }));
+  assert(rE8.status === "HOLD", "UNKNOWN + a failed inspection → HOLD (the substantive failure drives the state)");
+  assert(codes(rE8).includes("INSPECTION_REQUIREMENT_UNKNOWN") && codes(rE8).includes("INSPECTION_FAILED"),
+    "both the unknown and the failed requirement stay visible in blockingReasons");
 
   // ================= F · requested > supported → variance =============
   console.log("\n== F · requested vs supported variance ==");
@@ -675,6 +694,172 @@ async function main() {
   assert(foreignView.status === 404, "a foreign tenant receives 404 for the golden draw — existence undisclosed");
   const foreignList = await get("/draws", foreignCookie);
   assert(!foreignList.html.includes("draw-g2"), "the foreign tenant's register contains no golden draws");
+
+  // ============ transitions · REAL governed mutation paths ============
+  console.log("\n== transitions · real mutation paths, exact-once events and notifications ==");
+  const pmCookie = await signIn("user-dmv-pm");
+  const complianceCookie = await signIn("user-compliance");
+  const post = async (p, bodyObj, cookie, expect) => {
+    const res = await fetch(`${BASE}${p}`, {
+      method: "POST", headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify(bodyObj ?? {}),
+    });
+    const text = await res.text();
+    if (expect !== undefined && res.status !== expect) {
+      fail(`POST ${p} -> ${res.status} (expected ${expect}): ${text.slice(0, 220)}`);
+    }
+    try { return { status: res.status, json: JSON.parse(text) }; } catch { return { status: res.status, json: null }; }
+  };
+  const transitions = (id) =>
+    Number(db.prepare("SELECT COUNT(*) c FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_TRANSITION'").get(id).c);
+  const lastTransition = (id) =>
+    JSON.parse(db.prepare("SELECT detail FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_TRANSITION' ORDER BY rowid DESC LIMIT 1").get(id).detail);
+  // One broadcast row (recipient_user_id IS NULL) per notify invocation.
+  const notifCount = (kind) =>
+    Number(db.prepare("SELECT COUNT(*) c FROM notifications WHERE type = ? AND recipient_user_id IS NULL").get(kind).c);
+
+  // ---- A · required document: HOLD -> document recorded -> READY ----
+  const dA = (await post("/api/draws", {
+    projectId: "proj-golden", requestedAmount: 30000, periodStart: "2026-10-01", periodEnd: "2026-10-31",
+  }, pmCookie, 201)).json.draw;
+  await post(`/api/draws/${dA.id}/lines`, {
+    description: "Interior finishes balance (transition test)", milestoneId: "ms-g5",
+    scheduledValue: 30000, currentRequested: 30000,
+  }, pmCookie, 201);
+  await post(`/api/draws/${dA.id}/submit`, {}, pmCookie);
+  assert(lastTransition(dA.id).status === "HOLD",
+    "A: submitted with required documents outstanding → transition records HOLD");
+  const evA = transitions(dA.id);
+  // Reviewer records the line so documents are the ONLY remaining blocker.
+  const lineA = db.prepare("SELECT id FROM draw_line_items WHERE draw_request_id = ?").get(dA.id).id;
+  await post(`/api/draws/${dA.id}/lines/${lineA}/review`, { decision: "SUPPORTED" }, funderCookie);
+  assert(lastTransition(dA.id).status === "HOLD", "A: still HOLD while documents are outstanding");
+  const reqRowsA = db.prepare("SELECT id, title, doc_type t FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1").all(dA.id);
+  const readyBeforeA = notifCount("DRAW_READY_FOR_REVIEW");
+  for (const r of reqRowsA) {
+    await post(`/api/draws/${dA.id}/documents`, {
+      requirementId: r.id, title: `${r.title} (fictional)`, docType: r.t,
+      waiverKind: /LIEN_WAIVER/.test(r.t) ? "CONDITIONAL" : null,
+      waiverScope: /LIEN_WAIVER/.test(r.t) ? "PROGRESS" : null,
+      coveredThrough: /LIEN_WAIVER/.test(r.t) ? "2026-10-31" : null,
+      invoiceNumber: r.t === "CONTRACTOR_INVOICE" ? "TT-1001" : null,
+      amount: r.t === "CONTRACTOR_INVOICE" ? 30000 : null,
+    }, pmCookie, 201);
+  }
+  assert(lastTransition(dA.id).status === "READY",
+    "A: recording the required documents through the normal API flips readiness to READY");
+  assert(transitions(dA.id) === evA + 1,
+    "A: exactly ONE readiness transition for the whole document sequence (HOLD→HOLD dedup, then HOLD→READY)");
+  assert(notifCount("DRAW_READY_FOR_REVIEW") === readyBeforeA + 1,
+    "A: exactly ONE ready-for-review notification");
+
+  // ---- E · repeated same-state mutation: no duplicates ----
+  const evE = transitions(dA.id);
+  await post(`/api/draws/${dA.id}/documents`, {
+    requirementId: null, title: "Duplicate supplemental photo log (fictional)", docType: "PROGRESS_PHOTOS",
+  }, pmCookie, 201);
+  assert(transitions(dA.id) === evE && notifCount("DRAW_READY_FOR_REVIEW") === readyBeforeA + 1,
+    "E: a mutation that leaves readiness READY records no transition and no duplicate notification");
+
+  // ---- C · READY draw gains a blocking governed condition -> HOLD ----
+  const holdBeforeC = notifCount("DRAW_READINESS_HOLD");
+  const excC = (await post("/api/exceptions", {
+    projectId: "proj-golden", drawRequestId: dA.id, severity: "HIGH",
+    category: "QUALITY", title: "Transition test exception (fictional)",
+    description: "Opened against a READY draw to prove the HOLD transition.",
+  }, complianceCookie, 201)).json.exception;
+  const cT = lastTransition(dA.id);
+  assert(cT.status === "EXCEPTION_REVIEW" && cT.from === "READY" && transitions(dA.id) === evE + 1,
+    "C: a newly blocking exception on a READY draw records exactly one READY→EXCEPTION_REVIEW transition");
+  assert(notifCount("DRAW_READINESS_HOLD") === holdBeforeC + 1,
+    "C: exactly one no-longer-ready notification, reusing the configured HOLD policy");
+  await post(`/api/exceptions/${excC.id}/acknowledge`, {}, complianceCookie);
+  assert(transitions(dA.id) === evE + 1,
+    "acknowledging (still open) leaves the state unchanged — no duplicate transition");
+  await post(`/api/exceptions/${excC.id}/resolve`, { summary: "Resolved for the transition test." }, complianceCookie);
+  assert(lastTransition(dA.id).status === "READY" && transitions(dA.id) === evE + 2,
+    "resolving the exception through the exception workflow flips the draw back to READY — one transition");
+  assert(notifCount("DRAW_READY_FOR_REVIEW") === readyBeforeA + 2,
+    "the return to READY notifies exactly once more");
+
+  // ---- B · required jurisdictional inspection: HOLD -> PASSED -> READY ----
+  const dB = (await post("/api/draws", {
+    projectId: "proj-golden", requestedAmount: 20000, periodStart: "2026-11-01", periodEnd: "2026-11-30",
+  }, pmCookie, 201)).json.draw;
+  await post(`/api/draws/${dB.id}/lines`, {
+    description: "Punchlist scope (transition test)", milestoneId: "ms-g6",
+    scheduledValue: 20000, currentRequested: 20000,
+  }, pmCookie, 201);
+  await post(`/api/draws/${dB.id}/submit`, {}, pmCookie);
+  const lineB2 = db.prepare("SELECT id FROM draw_line_items WHERE draw_request_id = ?").get(dB.id).id;
+  await post(`/api/draws/${dB.id}/lines/${lineB2}/review`, { decision: "SUPPORTED" }, funderCookie);
+  const reqRowsB = db.prepare("SELECT id, title, doc_type t FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1").all(dB.id);
+  for (const r of reqRowsB) {
+    await post(`/api/draws/${dB.id}/documents`, {
+      requirementId: r.id, title: `${r.title} (fictional)`, docType: r.t,
+      waiverKind: /LIEN_WAIVER/.test(r.t) ? "CONDITIONAL" : null,
+      waiverScope: /LIEN_WAIVER/.test(r.t) ? "PROGRESS" : null,
+      coveredThrough: /LIEN_WAIVER/.test(r.t) ? "2026-11-30" : null,
+      invoiceNumber: r.t === "CONTRACTOR_INVOICE" ? "TT-2001" : null,
+      amount: r.t === "CONTRACTOR_INVOICE" ? 20000 : null,
+    }, pmCookie, 201);
+  }
+  // ms-g6 has no recorded determination → missing information, INCOMPLETE.
+  assert(lastTransition(dB.id).status === "INCOMPLETE",
+    "B: an undetermined inspection requirement resolves INCOMPLETE, never READY");
+  // The reviewed determination REQUIRED arrives through the normal API —
+  // the milestone-scoped fan-out flips the draw to HOLD.
+  await post(`/api/milestones/ms-g6/inspection-requirement`, {
+    requirement: "REQUIRED", requirementBasis: "Final completion requires a DC final inspection (fictional test determination).",
+    inspectionType: "FINAL", mustPassBeforeGovernance: true,
+  }, complianceCookie);
+  assert(lastTransition(dB.id).status === "HOLD",
+    "B: the REQUIRED determination moves the draw to HOLD via the milestone fan-out");
+  const evB2 = transitions(dB.id);
+  const readyBeforeB = notifCount("DRAW_READY_FOR_REVIEW");
+  const insp = (await post(`/api/milestones/ms-g6/inspections`, {
+    inspectionType: "FINAL", jurisdiction: "District of Columbia",
+    issuingAuthority: "DC Department of Buildings", inspectionReference: "TT-INS-9001",
+  }, complianceCookie, 201)).json.inspection;
+  await post(`/api/inspections/${insp.id}/schedule`, { scheduledAt: "2026-11-15" }, complianceCookie);
+  await post(`/api/inspections/${insp.id}/complete`, { completedAt: "2026-11-15" }, complianceCookie);
+  assert(transitions(dB.id) === evB2,
+    "B: scheduling and completion without a result leave HOLD — no transition events");
+  await post(`/api/inspections/${insp.id}/result`, {
+    result: "PASSED", governmentInspectorName: "Fictional DC inspector",
+  }, complianceCookie);
+  assert(lastTransition(dB.id).status === "READY" && transitions(dB.id) === evB2 + 1,
+    "B: the PASSED recorded result flips the draw to READY — exactly one transition");
+  assert(notifCount("DRAW_READY_FOR_REVIEW") === readyBeforeB + 1,
+    "B: exactly one ready-for-review notification for the inspection path");
+
+  // ---- D · repeated page reads: zero writes ----
+  const evD = transitions(dA.id) + transitions(dB.id);
+  const allEventsBefore = Number(db.prepare("SELECT COUNT(*) c FROM draw_events WHERE type IN ('READINESS_TRANSITION','READINESS_SNAPSHOT')").get().c);
+  for (let i = 0; i < 3; i += 1) {
+    await get(`/draw/${dA.id}`);
+    await get(`/draw/${dB.id}`);
+    await get("/draws");
+  }
+  assert(transitions(dA.id) + transitions(dB.id) === evD,
+    "D: repeated page reads record zero readiness events for the watched draws");
+  assert(Number(db.prepare("SELECT COUNT(*) c FROM draw_events WHERE type IN ('READINESS_TRANSITION','READINESS_SNAPSHOT')").get().c) === allEventsBefore,
+    "D: repeated page reads write nothing readiness-related anywhere");
+
+  // ---- F · cross-tenant mutation cannot touch another tenant ----
+  const evF = transitions(dA.id) + transitions(dB.id);
+  const foreignDrawT = (await post("/api/draws", {
+    projectId: "proj-r47", requestedAmount: 4000, periodStart: "2026-10-01", periodEnd: "2026-10-31",
+  }, foreignCookie, 201)).json.draw;
+  await post(`/api/draws/${foreignDrawT.id}/lines`, {
+    description: "Foreign tenant line (test)", milestoneId: "ms-3", scheduledValue: 4000, currentRequested: 4000,
+  }, foreignCookie, 201);
+  await post(`/api/draws/${foreignDrawT.id}/submit`, {}, foreignCookie);
+  assert(transitions(dA.id) + transitions(dB.id) === evF,
+    "F: a foreign tenant's mutations record no transitions on this tenant's draws");
+  const crossAttempt = await post(`/api/draws/${dA.id}/documents`, { title: "cross-tenant doc", docType: "OTHER" }, foreignCookie);
+  assert(crossAttempt.status === 404 && transitions(dA.id) + transitions(dB.id) === evF,
+    "F: a cross-tenant mutation attempt is refused and records nothing");
 
   stopServer();
   console.log(`\nDRAW READINESS TESTS PASSED — ${passed} checkpoints.`);

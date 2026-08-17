@@ -193,13 +193,17 @@ const UNKNOWN_INFO_CODES = new Set([
   "DRAW_CANCELLED",
   "NO_LINE_ITEMS",
   "DRAW_STRUCTURE_INCOMPLETE",
-  // Note: an unknown-status permit arrives from the gates as
-  // PERMIT_NOT_ACTIVE ("UNKNOWN never behaves as ACTIVE") and blocks as a
-  // PERMIT-category HOLD where configuration gates it; an undetermined
-  // inspection requirement is recorded by the gates as a non-gating
-  // condition and surfaces as a readiness warning. Neither has a
-  // dedicated unknown-info code — this set covers draw-structure gaps.
+  // Missing INFORMATION about the jurisdictional surface — not a failed
+  // requirement. Alone these resolve INCOMPLETE (never READY: UNKNOWN is
+  // never converted into readiness); alongside a substantive blocker the
+  // draw HOLDs and the unknown stays visible in blockingReasons. Both
+  // are non-exceptionable — missing information cannot be waived into
+  // existence — and the category rolls up UNKNOWN, never PASS.
+  // (An unknown-status PERMIT is different: the gates record it as
+  // PERMIT_NOT_ACTIVE — "UNKNOWN never behaves as ACTIVE" — a
+  // substantive PERMIT-category HOLD where configuration gates it.)
   "INSPECTION_REQUIREMENT_UNKNOWN",
+  "LINE_WITHOUT_MILESTONE",
 ]);
 
 /** Reasons a lender exception can never bypass, regardless of category
@@ -540,13 +544,16 @@ export function evaluateDrawReadiness(
   // ---- 4. milestone gates: permits, code basis, official sources,
   //         jurisdictional inspections, evidence review ---------------
   // A draw line with no milestone mapping has NO jurisdictional surface
-  // to evaluate — never a silent pass. drawWorkflow treats the same fact
-  // as stage-incomplete; readiness surfaces it as a warning so the
-  // GOVERNMENT_INSPECTION category shows WARNING, not NOT_APPLICABLE.
-  if (input.unmappedLineCount > 0) {
-    warn("LINE_WITHOUT_MILESTONE", "GOVERNMENT_INSPECTION",
-      `${input.unmappedLineCount} line item(s) reference no milestone — jurisdictional gates cannot be evaluated for them.`,
-      input.draw.id);
+  // to evaluate — missing information, never a silent pass and never
+  // READY (drawWorkflow treats the same fact as stage-incomplete). On a
+  // DMV-adopting project the DMV control record evaluates EVERY draw
+  // line through its own line-scoped requirements, so the surface IS
+  // evaluated there and no unknown is recorded here.
+  if (input.unmappedLineCount > 0 && !input.dmv) {
+    block("LINE_WITHOUT_MILESTONE", "GOVERNMENT_INSPECTION",
+      `${input.unmappedLineCount} line item(s) reference no milestone — the jurisdictional surface cannot be evaluated for them.`,
+      input.draw.id, null,
+      "Map each line to its milestone so the configured gates apply.");
   }
   for (const ref of input.gates) {
     const elig = ref.gates.eligibility;
@@ -593,14 +600,17 @@ export function evaluateDrawReadiness(
         warn("CHANGE_ORDER_NOT_APPROVED", "CHANGE_ORDER", `${ref.label}: ${reason.detail}`, ref.milestoneId);
         continue;
       }
-      // An undetermined inspection requirement is never a silent pass —
-      // the gate records it as a non-gating condition (that IS the
-      // governed model's decision: UNKNOWN never behaves as NOT_REQUIRED,
-      // and it also does not gate eligibility), so readiness adapts it as
-      // a warning: the category shows WARNING, never PASS, and no
-      // satisfied-requirement claim is emitted for it.
+      // An undetermined inspection requirement is missing INFORMATION
+      // about the draw's jurisdictional surface: readiness must not
+      // conclude READY over it. Recorded as an unknown-info blocking
+      // reason — alone it resolves INCOMPLETE, with a substantive
+      // blocker the draw HOLDs and the unknown stays visible; the
+      // category rolls up UNKNOWN and it is never exceptionable. (The
+      // same doctrine the payment boundary already applies: "an
+      // UNDETERMINED requirement honestly blocks payment".)
       if (reason.code === "INSPECTION_REQUIREMENT_UNKNOWN") {
-        warn("INSPECTION_REQUIREMENT_UNKNOWN", "GOVERNMENT_INSPECTION", `${ref.label}: ${reason.detail}`, ref.milestoneId);
+        block("INSPECTION_REQUIREMENT_UNKNOWN", "GOVERNMENT_INSPECTION", `${ref.label}: ${reason.detail}`, ref.milestoneId, null,
+          "An authorized reviewer must record the inspection-requirement determination for this milestone.");
         continue;
       }
       // Stage-aware reading owned by completionGates: the reasons'
@@ -745,9 +755,12 @@ export function evaluateDrawReadiness(
         : "PARTIAL_REVIEW";
 
   // ---- per-line readiness -------------------------------------------
+  // Only SUBSTANTIVE gate failures mark a line HOLD — an undetermined
+  // requirement is draw-level missing information (INCOMPLETE), not a
+  // per-line failed condition.
   const gateBlockedMilestones = new Set(
     blocking
-      .filter((b) => ["GOVERNMENT_INSPECTION", "PERMIT"].includes(b.category))
+      .filter((b) => ["GOVERNMENT_INSPECTION", "PERMIT"].includes(b.category) && !UNKNOWN_INFO_CODES.has(b.code))
       .map((b) => b.sourceRecordId)
       .filter(Boolean)
   );
@@ -984,7 +997,17 @@ export function recordDecisionWithReadiness(
           422
         );
       }
-      const nonExceptionable = readiness.blockingReasons.filter((b) => !b.exceptionAllowed);
+      // Hard refusal applies to SUBSTANTIVE non-exceptionable blockers
+      // (incomplete reviewer work, structural reconciliation failure).
+      // Unknown-information reasons are equally non-exceptionable — they
+      // can never be waived into satisfaction, they keep the requirement
+      // outstanding and they persist into the snapshot — but the
+      // authority to record a justified decision over an undetermined
+      // surface remains the pre-existing lender-decision workflow's,
+      // which this engine synthesizes and never strengthens.
+      const nonExceptionable = readiness.blockingReasons.filter(
+        (b) => !b.exceptionAllowed && !UNKNOWN_INFO_CODES.has(b.code)
+      );
       if (nonExceptionable.length > 0) {
         throw new LenderError(
           "The configured readiness policy does not permit proceeding by exception past: " +
@@ -1053,5 +1076,64 @@ export function recordReadinessTransition(drawRequestId: string, actorUserId: st
         `OBV readiness for draw #${draw.drawNumber} moved to ${result.status}. ` +
         (result.primaryBlocker ? `Primary reason: ${result.primaryBlocker.message}` : "See the readiness detail."),
     });
+  }
+}
+
+// The SINGLE transition mechanism above is fanned out by scope for
+// governed mutations that are not draw-addressed. Every helper stays
+// inside the mutated record's own project — no cross-tenant evaluation —
+// and each affected draw passes through recordReadinessTransition's
+// same-state dedup, so repeated or overlapping fan-outs never duplicate
+// an event or a notification. None of these run from page reads.
+
+/** Terminal draws' readiness no longer transitions. */
+const TRANSITION_TERMINAL = new Set<DrawRequest["status"]>(["RELEASED", "CANCELLED"]);
+
+/** Fan-out for milestone-scoped mutations (evidence verdicts,
+ *  jurisdictional inspections, requirement determinations, permit links,
+ *  official sources, change orders): only active draws of the
+ *  milestone's project whose lines reference the milestone. */
+export function recordReadinessTransitionsForMilestone(milestoneId: string, actorUserId: string | null): void {
+  const milestone = repo.getMilestone(milestoneId);
+  if (!milestone) return;
+  for (const draw of repo.listDrawRequestsForProject(milestone.projectId)) {
+    if (TRANSITION_TERMINAL.has(draw.status)) continue;
+    if (!repo.listDrawLines(draw.id).some((l) => l.milestoneId === milestoneId)) continue;
+    try { recordReadinessTransition(draw.id, actorUserId); } catch { /* advisory — never fails the mutation */ }
+  }
+}
+
+/** Fan-out for permit mutations: every milestone the permit is linked to. */
+export function recordReadinessTransitionsForPermit(permitId: string, actorUserId: string | null): void {
+  for (const link of repo.listPermitLinksForPermit(permitId)) {
+    recordReadinessTransitionsForMilestone(link.milestoneId, actorUserId);
+  }
+}
+
+/** Fan-out for project-scoped mutations (DMV requirement/basis changes,
+ *  budget-line-scoped records): every active draw of THAT project. */
+export function recordReadinessTransitionsForProject(projectId: string, actorUserId: string | null): void {
+  for (const draw of repo.listDrawRequestsForProject(projectId)) {
+    if (TRANSITION_TERMINAL.has(draw.status)) continue;
+    try { recordReadinessTransition(draw.id, actorUserId); } catch { /* advisory */ }
+  }
+}
+
+/** Fan-out for exception mutations, following the exception's own
+ *  linkage: its draw, its milestone's draws, or — for budget-line /
+ *  project-scoped exceptions (the DMV per-line rules) — the project's
+ *  active draws. */
+export function recordReadinessTransitionsForException(
+  exception: { drawRequestId: string | null; milestoneId: string | null; budgetLineId?: string | null; projectId: string },
+  actorUserId: string | null
+): void {
+  if (exception.drawRequestId) {
+    try { recordReadinessTransition(exception.drawRequestId, actorUserId); } catch { /* advisory */ }
+  }
+  if (exception.milestoneId) {
+    recordReadinessTransitionsForMilestone(exception.milestoneId, actorUserId);
+  }
+  if (!exception.drawRequestId && !exception.milestoneId) {
+    recordReadinessTransitionsForProject(exception.projectId, actorUserId);
   }
 }

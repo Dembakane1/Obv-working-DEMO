@@ -2264,6 +2264,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     const result = await submitDraft(draftSubmitMatch[1], user);
+    // Second entry point into the same governed capture+verification
+    // pipeline as POST /api/evidence — same readiness effects.
+    try { drawReadinessSvc.recordReadinessTransitionsForMilestone(result.milestone.id, user.id); } catch { /* advisory */ }
     if (isFormPost(req)) {
       redirect(res, `/milestone/${result.milestone.id}`);
     } else {
@@ -2403,6 +2406,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     const result = await processEvidenceSubmission(submission, user.id);
+    // The governed capture + verification pipeline just changed this
+    // milestone's evidence-review state (and possibly its latest
+    // verdict) — detect readiness transitions for its active draws.
+    try {
+      if (submission.milestoneId) {
+        drawReadinessSvc.recordReadinessTransitionsForMilestone(String(submission.milestoneId), user.id);
+      }
+    } catch { /* advisory */ }
     sendJson(res, result, 201);
     return;
   }
@@ -2435,6 +2446,20 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           : subjectType === "RETAINAGE"
             ? await retainage.processRetainageApprovalDecision(approvalMatch[1], user.id, decision)
             : await processApprovalDecision(approvalMatch[1], user.id, decision);
+    // Two approval outcomes can change readiness: a completed MILESTONE
+    // approval releases the tranche (the gates' RELEASED short-circuit
+    // then collapses that milestone's reason surface), and a completed
+    // CHANGE_ORDER approval applies budget-line approvedChanges (the DMV
+    // over-budget basis). DRAW/RETAINAGE approvals change no readiness
+    // input — the evaluator never branches on those statuses.
+    try {
+      if (subject?.subjectType === "MILESTONE" && subject.milestoneId) {
+        drawReadinessSvc.recordReadinessTransitionsForMilestone(subject.milestoneId, user.id);
+      } else if (subject?.subjectType === "CHANGE_ORDER") {
+        const coSubject = subject.changeOrderId ? repo.getChangeOrder(subject.changeOrderId) : null;
+        if (coSubject) drawReadinessSvc.recordReadinessTransitionsForProject(coSubject.projectId, user.id);
+      }
+    } catch { /* advisory */ }
     if (form) {
       const back = form.get("redirect") ?? "";
       redirect(res, back.startsWith("/") && !back.startsWith("//") ? back : "/approvals");
@@ -2650,6 +2675,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       ownerUserId: p.ownerUserId ? String(p.ownerUserId) : null,
       dueAt: p.dueAt ? String(p.dueAt) : null,
     });
+    // A new exception can flip readiness for its draw / its milestone's
+    // draws — one central transition mechanism, deduped by state.
+    try { drawReadinessSvc.recordReadinessTransitionsForException(exception, user.id); } catch { /* advisory */ }
     if (isFormPost(req)) {
       redirect(res, `/exception/${exception.id}`);
     } else {
@@ -2701,6 +2729,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         exception = repo.getException(excId)!;
       }
     }
+    // Lifecycle transitions (resolve/close/waive most of all) can clear
+    // an OPEN_BLOCKING_EXCEPTION and flip a draw to READY; comments and
+    // references pass through the same-state dedup as no-ops.
+    try { drawReadinessSvc.recordReadinessTransitionsForException(exception, user.id); } catch { /* advisory */ }
     if (isFormPost(req)) {
       redirect(res, `/exception/${excId}`);
     } else {
@@ -2836,6 +2868,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   const finishDrawPost = (drawId: string, tab: DrawTab, json: unknown, status = 200): void => {
     // Derived-stage observation: every draw mutation funnels through here.
     try { drawWorkflow.syncDrawStage(drawId, currentUser(req)); } catch { /* stage log must never break the action */ }
+    // Readiness transition detection at the SAME governed seam — one
+    // central mechanism after every successful draw-scoped mutation
+    // (documents, requirements, evidence links, line reviews, lifecycle).
+    // Same-state re-evaluation is a no-op, so this records exactly one
+    // transition (and one notification) per actual state change and
+    // never runs on page reads.
+    try { drawReadinessSvc.recordReadinessTransition(drawId, currentUser(req)?.id ?? null); } catch { /* advisory */ }
     if (isFormPost(req)) {
       redirect(res, `/draw/${drawId}?tab=${tab}`);
     } else {
@@ -2903,6 +2942,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       isForm: () => isFormPost(req),
       redirect: (location) => redirect(res, location),
       sendJson: (data, status) => sendJson(res, data, status ?? 200),
+      // Dispute holds feed the DMV layer's LEGAL_HOLD / DISPUTE_HOLD
+      // readiness blockers — the central fan-out covers the project.
+      afterHoldMutation: (projectId, actorUserId) =>
+        drawReadinessSvc.recordReadinessTransitionsForProject(projectId, actorUserId),
     })
   ) {
     return;
@@ -3331,6 +3374,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         }
         const waiver = lenderDecisions.createLienWaiver(user, { ...waiverBody, drawRequestId: drawId } as never);
         drawWorkflow.syncDrawStage(drawId, user, "Lien waiver required", waiver.id);
+        try { drawReadinessSvc.recordReadinessTransition(drawId, user.id); } catch { /* advisory */ }
         finishLenderPost(drawId, { waiver }, 201);
         return;
       }
@@ -3481,6 +3525,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const body = await readParams();
     const waiver = lenderDecisions.transitionLienWaiver(user, waiverId, body as never);
     drawWorkflow.syncDrawStage(waiver.drawRequestId, user, `Lien waiver ${waiver.status}`, waiver.id);
+    try { drawReadinessSvc.recordReadinessTransition(waiver.drawRequestId, user.id); } catch { /* advisory */ }
     finishLenderPost(waiver.drawRequestId, { waiver });
     return;
   }
@@ -3607,9 +3652,6 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           percentCompleteVerified:
             p.percentCompleteVerified !== undefined && p.percentCompleteVerified !== "" ? Number(p.percentCompleteVerified) : null,
         });
-        // A governed mutation point (never page render): detect and record
-        // a readiness state transition, notifying only on actual change.
-        try { drawReadinessSvc.recordReadinessTransition(drawId, user.id); } catch { /* advisory */ }
         finishDrawPost(drawId, "lines", { line });
         return;
       }
@@ -4202,6 +4244,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       permitMustBeActiveBeforeGovernance:
         p.permitMustBeActiveBeforeGovernance === undefined ? undefined : gateTruthy(p.permitMustBeActiveBeforeGovernance),
     });
+    // Governed mutation of the jurisdictional surface — detect readiness
+    // transitions for the active draws referencing this milestone.
+    try { drawReadinessSvc.recordReadinessTransitionsForMilestone(requirementMatch[1], user2.id); } catch { /* advisory */ }
     if (isFormPost(req)) {
       redirect(res, `/milestone/${requirementMatch[1]}`);
     } else {
@@ -4228,6 +4273,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       permitId: p.permitId ? String(p.permitId) : null,
       notes: p.notes ? String(p.notes) : null,
     });
+    try { drawReadinessSvc.recordReadinessTransitionsForMilestone(inspCreateMatch[1], user2.id); } catch { /* advisory */ }
     if (isFormPost(req)) {
       redirect(res, `/milestone/${inspCreateMatch[1]}`);
     } else {
@@ -4276,6 +4322,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     } else {
       inspection = completionGates.cancelInspection(user2, inspId, p.reason ? String(p.reason) : null);
     }
+    try { drawReadinessSvc.recordReadinessTransitionsForMilestone(inspection.milestoneId, user2.id); } catch { /* advisory */ }
     if (isFormPost(req)) {
       redirect(res, `/milestone/${inspection.milestoneId}`);
     } else {
@@ -4362,6 +4409,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           codeBasis: String(p.codeBasis ?? ""),
           reason: p.reason ? String(p.reason) : null,
         });
+        try { drawReadinessSvc.recordReadinessTransitionsForPermit(permitId, user2.id); } catch { /* advisory */ }
         if (isFormPost(req)) redirect(res, `/project/${permit.projectId}/permits`);
         else sendJson(res, { permit });
         return;
@@ -4370,6 +4418,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         const link = permits.linkMilestone(
           user2, permitId, String(p.milestoneId ?? ""), p.scopeNote ? String(p.scopeNote) : null
         );
+        try { drawReadinessSvc.recordReadinessTransitionsForMilestone(link.milestoneId, user2.id); } catch { /* advisory */ }
         if (isFormPost(req)) {
           redirect(res, `/milestone/${link.milestoneId}`);
         } else {
@@ -4393,6 +4442,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         notes: p.notes !== undefined ? (p.notes ? String(p.notes) : null) : undefined,
         reason: p.reason ? String(p.reason) : null,
       });
+      // A permit status/expiry change can flip PERMIT_* blockers on every
+      // milestone the permit is linked to.
+      try { drawReadinessSvc.recordReadinessTransitionsForPermit(permitId, user2.id); } catch { /* advisory */ }
       if (isFormPost(req)) redirect(res, `/project/${permit.projectId}/permits`);
       else sendJson(res, { permit });
       return;
@@ -4451,6 +4503,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       artifactFilename: p.artifactFilename ? String(p.artifactFilename) : null,
       notes: p.notes ? String(p.notes) : null,
     });
+    // A reviewed official-source record can clear OFFICIAL_SOURCE_MISSING
+    // and flip inspectionSurfaceClean for its milestone (or, via a permit
+    // record, every linked milestone).
+    try {
+      if (record.milestoneId) drawReadinessSvc.recordReadinessTransitionsForMilestone(record.milestoneId, user2.id);
+      else if (record.permitId) drawReadinessSvc.recordReadinessTransitionsForPermit(record.permitId, user2.id);
+    } catch { /* advisory */ }
     if (isFormPost(req)) {
       redirect(res, record.milestoneId ? `/milestone/${record.milestoneId}` : `/project/${record.projectId}/permits`);
     } else {
@@ -4934,6 +4993,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const params = await pilotForm();
     const requirement = pilot.saveRequirement(Object.fromEntries(params) as never, actor);
     const ms = repo.getMilestone(requirement.milestoneId);
+    // Configured required evidence flips REQUIRED_EVIDENCE_MISSING on and
+    // off for the milestone's active draws.
+    try { drawReadinessSvc.recordReadinessTransitionsForMilestone(requirement.milestoneId, actor.id); } catch { /* advisory */ }
     pilotRespond(ms ? `/setup/project/${ms.projectId}?stage=evidence` : "/setup", { requirement }, 201);
     return;
   }
@@ -4944,6 +5006,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const requirement = repo.getRequirement(reqDeleteMatch[1]);
     const ms = requirement ? repo.getMilestone(requirement.milestoneId) : null;
     pilot.removeRequirement(reqDeleteMatch[1], actor);
+    try {
+      if (requirement) drawReadinessSvc.recordReadinessTransitionsForMilestone(requirement.milestoneId, actor.id);
+    } catch { /* advisory */ }
     pilotRespond(ms ? `/setup/project/${ms.projectId}?stage=evidence` : "/setup", { ok: true });
     return;
   }

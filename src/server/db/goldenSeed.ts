@@ -142,6 +142,61 @@ export function seedGoldenProject(): void {
     resultRecordedAt: null, result: null, reviewedByUserId: null,
   });
 
+  // ---- inspection-requirement determinations (reviewed, attributable) ----
+  // The readiness engine treats an UNDETERMINED requirement as missing
+  // information (INCOMPLETE) — the same doctrine the payment boundary
+  // applies. The demo therefore records the reviewed determinations its
+  // story already implies: framing REQUIRED (chain passed), electrical
+  // rough-in REQUIRED (result outstanding; review sequencing carried by
+  // the exception workflow in this demo), the rest NOT_REQUIRED. All
+  // fictional demo determinations.
+  const reqBase = {
+    projectId: GOLDEN_PROJECT_ID,
+    determinedBy: "user-compliance",
+    determinedAt: "2026-03-10T10:00:00.000Z",
+    jurisdiction: "District of Columbia",
+    issuingAuthority: "DC Department of Buildings",
+    mustPassBeforeDrawReview: false,
+    mustPassBeforeGovernance: false,
+    finalCompletionOnly: false,
+    resultDocumentRequired: false,
+    permitRequired: false,
+    requiredPermitType: null,
+    officialSourceRequired: false,
+    codeBasisRequired: false,
+    permitMustBeActiveBeforeDrawReview: false,
+    permitMustBeActiveBeforeGovernance: false,
+    configurationVersion: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  repo.upsertInspectionRequirement({
+    ...reqBase, id: "insreq-g1", milestoneId: "ms-g1",
+    requirement: "NOT_REQUIRED", inspectionType: null,
+    requirementBasis: "Interior demolition below the jurisdictional inspection threshold — reviewed determination (fictional demo).",
+  });
+  repo.upsertInspectionRequirement({
+    ...reqBase, id: "insreq-g2", milestoneId: "ms-g2",
+    requirement: "REQUIRED", inspectionType: "FRAMING",
+    mustPassBeforeGovernance: true,
+    requirementBasis: "Structural framing requires a DC framing inspection — reviewed determination (fictional demo). The recorded chain passed on reinspection.",
+  });
+  repo.upsertInspectionRequirement({
+    ...reqBase, id: "insreq-g3", milestoneId: "ms-g3",
+    requirement: "NOT_REQUIRED", inspectionType: null,
+    requirementBasis: "Roof membrane work within the existing building-permit scope — reviewed determination (fictional demo).",
+  });
+  repo.upsertInspectionRequirement({
+    ...reqBase, id: "insreq-g4", milestoneId: "ms-g4",
+    requirement: "REQUIRED", inspectionType: "ELECTRICAL_ROUGH_IN",
+    requirementBasis: "MEP rough-in requires DC electrical inspection — reviewed determination (fictional demo). Result outstanding; the review hold is carried by the open exception.",
+  });
+  repo.upsertInspectionRequirement({
+    ...reqBase, id: "insreq-g5", milestoneId: "ms-g5",
+    requirement: "NOT_REQUIRED", inspectionType: null,
+    requirementBasis: "Interior finishes carry no jurisdictional inspection — reviewed determination (fictional demo).",
+  });
+
   // ---- one approved change order (referenced by draw #2's story) ----
   repo.insertChangeOrder({
     id: "co-g1", organizationId: "org-cdfc", projectId: GOLDEN_PROJECT_ID,
