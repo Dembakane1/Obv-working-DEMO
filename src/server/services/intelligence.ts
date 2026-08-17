@@ -541,16 +541,7 @@ export function computeIntelligence(opts: { chainValid: boolean; viewer: User })
         actionHref: `${href}?tab=documents`,
       });
     }
-    const supported = lines.reduce(
-      (s, l) =>
-        s +
-        (l.status === "SUPPORTED"
-          ? l.currentRequested
-          : l.status === "PARTIALLY_SUPPORTED"
-            ? l.supportedAmount ?? 0
-            : 0),
-      0,
-    );
+    const supported = lines.reduce((s, l) => s + drawsService.lineSupported(l), 0);
     if (lines.length > 0 && lines.every((l) => l.status !== "PENDING") && supported < draw.requestedAmount) {
       signals.push({
         severity: "MEDIUM",

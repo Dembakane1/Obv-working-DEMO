@@ -23,6 +23,8 @@
 import * as repo from "../db/repo";
 import * as draws from "./draws";
 import * as completionGates from "./completionGates";
+import * as dmvCompliance from "./dmvCompliance";
+import { isOpen as isOpenException, isBlockingException } from "./exceptions";
 import * as lenderDecisions from "./lenderDecisions";
 import { LenderError } from "./lenderAccess";
 import { notifyGovernedEvent } from "./pilot/notify";
@@ -91,10 +93,18 @@ export interface DrawReadinessResult {
   drawRequestId: string;
   status: ReadinessStatus;
   requestedAmount: number;
-  /** The recorded support formula (identical to the lender-decision
-   *  verified amount): SUPPORTED→current, PARTIALLY→recorded amount,
-   *  EXCEPTION/REJECTED/PENDING→0. Never derived from percentages. */
+  /** Sum of draws.lineSupported over the draw's lines — the SAME per-line
+   *  formula the lender-decision verifiedAmount and the recommendation
+   *  engine consume (SUPPORTED→current, PARTIALLY→recorded amount,
+   *  EXCEPTION/REJECTED/PENDING→0; never derived from percentages). The
+   *  AGGREGATES intentionally differ on a partial review: verifiedAmount
+   *  stays null until every line is reviewed, while this is the partial
+   *  sum, disclosed via supportBasis and the LINE_REVIEW_INCOMPLETE
+   *  blocker. */
   supportableAmount: number;
+  /** requestedAmount − supportableAmount, floored at zero — the engine
+   *  owns this figure so no view re-derives it. */
+  unsupportedAmount: number;
   supportBasis: "FULL_REVIEW" | "PARTIAL_REVIEW" | "NO_REVIEW";
   blockingReasons: ReadinessReason[];
   /** Advisory findings and non-blocking conditions. Never change status. */
@@ -183,8 +193,13 @@ const UNKNOWN_INFO_CODES = new Set([
   "DRAW_CANCELLED",
   "NO_LINE_ITEMS",
   "DRAW_STRUCTURE_INCOMPLETE",
+  // Note: an unknown-status permit arrives from the gates as
+  // PERMIT_NOT_ACTIVE ("UNKNOWN never behaves as ACTIVE") and blocks as a
+  // PERMIT-category HOLD where configuration gates it; an undetermined
+  // inspection requirement is recorded by the gates as a non-gating
+  // condition and surfaces as a readiness warning. Neither has a
+  // dedicated unknown-info code — this set covers draw-structure gaps.
   "INSPECTION_REQUIREMENT_UNKNOWN",
-  "PERMIT_STATUS_UNKNOWN",
 ]);
 
 /** Reasons a lender exception can never bypass, regardless of category
@@ -212,6 +227,11 @@ export interface ReadinessGateRef {
    *  requirement can make absent evidence a blocker — the engine never
    *  invents a stricter rule than project configuration. */
   requiredEvidenceConfigured: boolean;
+  /** completionGates.inspectionSurfaceClean — the gates module's own
+   *  chain-clean determination (requirement, result, result document,
+   *  official source, permit activity, code basis), independent of the
+   *  tranche's release bookkeeping. */
+  inspectionSurfaceClean: boolean;
 }
 
 export interface DrawReadinessInput {
@@ -227,10 +247,30 @@ export interface DrawReadinessInput {
   }>;
   evidenceLinkCount: number;
   gates: ReadinessGateRef[];
+  /** Draw lines with no milestone mapping — their jurisdictional surface
+   *  cannot be evaluated and is surfaced, never silently passed. */
+  unmappedLineCount: number;
   openExceptions: ObvException[];
+  /** Blocking exceptions linked to the draw's milestones (not the draw
+   *  itself), already deduplicated by id against openExceptions. */
+  milestoneExceptions: ObvException[];
   decision: { record: LenderDrawDecision; blockingConditions: number } | null;
   /** Advisory INFO reasons from the recommendation engine — warnings only. */
   advisoryNotes: string[];
+  /** DMV per-line eligibility (drawControlRecordView, read-only) for
+   *  projects that adopted the DMV compliance layer; null elsewhere.
+   *  Adapted verbatim — the readiness engine never recomputes DMV
+   *  eligibility, and the read never pins a basis. */
+  dmv: {
+    disputeHold: { blocked: boolean; legalHold: boolean; reasons: string[] };
+    lines: Array<{
+      drawLineItemId: string;
+      scopeDescription: string;
+      finalEligibilityStatus: string;
+      eligibilityReasons: Array<{ code: string; status: string; message: string }>;
+      openExceptions: Array<{ id: string; severity: string; title: string; blocking: boolean }>;
+    }>;
+  } | null;
   evaluatedAt: string;
 }
 
@@ -264,12 +304,24 @@ export function assembleReadinessInput(drawRequestId: string, evaluatedAt?: stri
       label: ms ? `M${ms.seq} · ${ms.title}` : milestoneId,
       gates: completionGates.milestoneGates(milestoneId),
       requiredEvidenceConfigured: repo.listRequirementsForMilestone(milestoneId).some((r) => r.required),
+      inspectionSurfaceClean: completionGates.inspectionSurfaceClean(milestoneId),
     };
   });
-  const openExceptions = repo
-    .listExceptionsForProject(draw.projectId)
+  const unmappedLineCount = lines.filter((l) => !l.milestoneId).length;
+  // Exceptions come from the register through the exception service's own
+  // predicates — never a re-literalized status/severity set. Draw-linked
+  // open exceptions (any severity: HIGH/CRITICAL block, others warn) plus
+  // blocking exceptions linked to the draw's milestones, deduplicated by
+  // id so one recorded exception is reported exactly once.
+  const projectExceptions = repo.listExceptionsForProject(draw.projectId);
+  const openExceptions = projectExceptions
     .filter((e) => e.drawRequestId === drawRequestId)
-    .filter((e) => ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_RESPONSE"].includes(e.status));
+    .filter(isOpenException);
+  const drawLinkedIds = new Set(openExceptions.map((e) => e.id));
+  const milestoneExceptions = projectExceptions
+    .filter((e) => !drawLinkedIds.has(e.id))
+    .filter((e) => e.milestoneId !== null && milestoneIds.includes(e.milestoneId!))
+    .filter(isBlockingException);
   const decisionRecord = lenderDecisions.currentDecision(drawRequestId);
   const decision = decisionRecord
     ? { record: decisionRecord, blockingConditions: lenderDecisions.blockingConditions(decisionRecord.id).length }
@@ -280,6 +332,12 @@ export function assembleReadinessInput(drawRequestId: string, evaluatedAt?: stri
     .computeRecommendation(drawRequestId)
     .reasons.filter((r) => r.kind === "INFO")
     .map((r) => r.detail);
+  // DMV per-line eligibility, read-only (no basis pin, no writes). Only
+  // the eligibility facts are extracted — generation timestamps stay out
+  // of the input so identical state assembles identically.
+  const dmvControl = dmvCompliance.projectUsesDmvCompliance(draw.projectId)
+    ? dmvCompliance.drawControlRecordView(drawRequestId)
+    : null;
   return {
     draw,
     lines,
@@ -287,9 +345,27 @@ export function assembleReadinessInput(drawRequestId: string, evaluatedAt?: stri
     checklist,
     evidenceLinkCount,
     gates,
+    unmappedLineCount,
     openExceptions,
+    milestoneExceptions,
     decision,
     advisoryNotes,
+    dmv: dmvControl
+      ? {
+          disputeHold: {
+            blocked: dmvControl.disputeHold.blocked,
+            legalHold: dmvControl.disputeHold.legalHold,
+            reasons: dmvControl.disputeHold.reasons,
+          },
+          lines: dmvControl.lines.map((l) => ({
+            drawLineItemId: l.drawLineItemId,
+            scopeDescription: l.scopeDescription,
+            finalEligibilityStatus: l.finalEligibilityStatus,
+            eligibilityReasons: l.eligibilityReasons.map((r) => ({ code: r.code, status: r.status, message: r.message })),
+            openExceptions: l.openExceptions.map((x) => ({ id: x.id, severity: x.severity, title: x.title, blocking: x.blocking })),
+          })),
+        }
+      : null,
     evaluatedAt: evaluatedAt ?? new Date().toISOString(),
   };
 }
@@ -298,13 +374,9 @@ export function assembleReadinessInput(drawRequestId: string, evaluatedAt?: stri
 
 const money = (n: number): string => "$" + n.toLocaleString("en-US");
 
-/** The single recorded support formula — identical to the one the lender
- *  decision workflow and recommendation engine already apply. */
-function lineSupport(line: DrawLineItem): number {
-  if (line.status === "SUPPORTED") return line.currentRequested;
-  if (line.status === "PARTIALLY_SUPPORTED") return line.supportedAmount ?? 0;
-  return 0;
-}
+/** THE recorded support formula, imported from its owner (the service
+ *  that records line reviews) — never a local copy. */
+const lineSupport = draws.lineSupported;
 
 function gateReasonCategory(code: string): ReadinessCategory {
   if (code.startsWith("PERMIT") || code === "REQUIRED_PERMIT_MISSING") return "PERMIT";
@@ -467,14 +539,26 @@ export function evaluateDrawReadiness(
 
   // ---- 4. milestone gates: permits, code basis, official sources,
   //         jurisdictional inspections, evidence review ---------------
-  let anyUnknownRequirement = false;
+  // A draw line with no milestone mapping has NO jurisdictional surface
+  // to evaluate — never a silent pass. drawWorkflow treats the same fact
+  // as stage-incomplete; readiness surfaces it as a warning so the
+  // GOVERNMENT_INSPECTION category shows WARNING, not NOT_APPLICABLE.
+  if (input.unmappedLineCount > 0) {
+    warn("LINE_WITHOUT_MILESTONE", "GOVERNMENT_INSPECTION",
+      `${input.unmappedLineCount} line item(s) reference no milestone — jurisdictional gates cannot be evaluated for them.`,
+      input.draw.id);
+  }
   for (const ref of input.gates) {
     const elig = ref.gates.eligibility;
-    let inspectionChainBlocked = false;
     for (const reason of elig.reasons) {
       // Milestone-lifecycle codes that do not describe a lender-review
       // requirement for the draw itself.
       if (["TRANCHE_RELEASED", "FORMAL_APPROVAL_PENDING", "CONTRACTOR_COMPLETION_NOT_REPORTED"].includes(reason.code)) continue;
+      // Exceptions are reported once, by exception id, from the register
+      // (section 5 covers draw-linked AND milestone-linked) — the gate's
+      // milestone-scoped restatement of the same record is skipped so one
+      // recorded exception never appears as two blockers.
+      if (reason.code === "HIGH_SEVERITY_EXCEPTION_OPEN") continue;
       // Evidence pipeline states get readiness-specific handling: the
       // governed verdict decides, and only CONFIGURED required evidence
       // can make absence a blocker. (The gate marks most evidence states
@@ -509,27 +593,26 @@ export function evaluateDrawReadiness(
         warn("CHANGE_ORDER_NOT_APPROVED", "CHANGE_ORDER", `${ref.label}: ${reason.detail}`, ref.milestoneId);
         continue;
       }
-      // An undetermined inspection requirement is never a silent pass:
-      // where the jurisdiction model does not gate it (legacy projects,
-      // no configured profile) it surfaces as a warning — the category
-      // shows WARNING, never PASS. Where configuration makes it gating
-      // it blocks below and resolves to INCOMPLETE.
-      if (reason.code === "INSPECTION_REQUIREMENT_UNKNOWN" && !reason.blocking) {
+      // An undetermined inspection requirement is never a silent pass —
+      // the gate records it as a non-gating condition (that IS the
+      // governed model's decision: UNKNOWN never behaves as NOT_REQUIRED,
+      // and it also does not gate eligibility), so readiness adapts it as
+      // a warning: the category shows WARNING, never PASS, and no
+      // satisfied-requirement claim is emitted for it.
+      if (reason.code === "INSPECTION_REQUIREMENT_UNKNOWN") {
         warn("INSPECTION_REQUIREMENT_UNKNOWN", "GOVERNMENT_INSPECTION", `${ref.label}: ${reason.detail}`, ref.milestoneId);
         continue;
       }
-      if (!reason.blocking) continue;
-      const category = gateReasonCategory(reason.code);
-      const code = reason.code === "INSPECTION_REQUIREMENT_UNKNOWN" ? "INSPECTION_REQUIREMENT_UNKNOWN" : reason.code;
-      if (code === "INSPECTION_REQUIREMENT_UNKNOWN") anyUnknownRequirement = true;
-      if (category === "GOVERNMENT_INSPECTION" || category === "PERMIT") inspectionChainBlocked = true;
-      block(code, category, `${ref.label}: ${reason.detail}`, ref.milestoneId);
+      // Stage-aware reading owned by completionGates: the reasons'
+      // blocking flag encodes the GOVERNANCE stage; draw-review-only
+      // permit/inspection gates block lender-review readiness too.
+      if (!completionGates.reasonBlocksDrawReview(elig, reason)) continue;
+      block(reason.code, gateReasonCategory(reason.code), `${ref.label}: ${reason.detail}`, ref.milestoneId);
     }
-    // The satisfied claim is suppressed while ANY part of the inspection
-    // chain (result, permit, code basis, official source) is blocked — a
-    // PASSED result without its reviewed official source is not a
-    // satisfied requirement.
-    if (ref.gates.requirementValue === "REQUIRED" && ref.gates.inspectionGate === "PASSED" && !inspectionChainBlocked) {
+    // Satisfied / surface claims come from the gates module's own
+    // chain-clean determination (result document + official source
+    // included) — never a local heuristic.
+    if (ref.gates.requirementValue === "REQUIRED" && ref.gates.inspectionGate === "PASSED" && ref.inspectionSurfaceClean) {
       satisfied.push({
         code: "REQUIRED_INSPECTION_PASSED",
         category: "GOVERNMENT_INSPECTION",
@@ -543,16 +626,98 @@ export function evaluateDrawReadiness(
         message: `${ref.label}: reviewed determination — no jurisdictional inspection required.`,
       });
     }
+    // A RELEASED milestone's eligibility short-circuits to release
+    // bookkeeping; its inspection truth is preserved by the gates
+    // module's surface check. A dirty surface on a released milestone
+    // cannot un-release the tranche — it is surfaced, not blocking.
+    if (elig.reasons.some((r) => r.code === "TRANCHE_RELEASED") && !ref.inspectionSurfaceClean) {
+      warn("RELEASED_MILESTONE_SURFACE_NOT_CLEAN", "GOVERNMENT_INSPECTION",
+        `${ref.label}: the tranche is released but the inspection/permit surface is not clean — review the underlying records.`,
+        ref.milestoneId);
+    }
   }
 
   // ---- 5. exception register ----------------------------------------
+  // Blocking is decided by the exception service's own predicate; every
+  // recorded exception is reported exactly once, keyed by its id —
+  // whether it reached the draw through a draw link or a milestone link.
   for (const e of input.openExceptions) {
-    if (e.severity === "HIGH" || e.severity === "CRITICAL") {
+    if (isBlockingException(e)) {
       block("OPEN_BLOCKING_EXCEPTION", "EXCEPTION",
         `${e.severity} exception open: ${e.title}.`, e.id, null,
         "Resolve the exception or disposition it through the exception workflow.");
     } else {
       warn("OPEN_EXCEPTION", "EXCEPTION", `${e.severity} exception open: ${e.title}.`, e.id);
+    }
+  }
+  for (const e of input.milestoneExceptions) {
+    const label = input.gates.find((g) => g.milestoneId === e.milestoneId)?.label ?? e.milestoneId;
+    block("OPEN_BLOCKING_EXCEPTION", "EXCEPTION",
+      `${e.severity} exception open on ${label}: ${e.title}.`, e.id, null,
+      "Resolve the exception or disposition it through the exception workflow.");
+  }
+
+  // ---- 5b. DMV per-line eligibility — ADAPTED, never recomputed ------
+  // The DMV Draw Control Record already expresses these blockers with its
+  // own documented precedence; the engine translates each recorded reason
+  // into a readiness reason and adds nothing of its own. Facts the engine
+  // already carries from their governing source stay single-sourced:
+  // reviewer line findings (REVIEW_PENDING / LINE_REJECTED /
+  // LINE_EXCEPTION_FINDING) come from the line-review layer, exception
+  // reasons are deduplicated by exception id against the register scan,
+  // and draw-wide dispute holds are reported once, not per line.
+  const dmvLineHold = new Map<string, string>();
+  if (input.dmv) {
+    if (input.dmv.disputeHold.legalHold) {
+      block("LEGAL_HOLD", "PROJECT_CONTROL",
+        "A legal hold on an attached dispute holds this draw.", input.draw.id, null,
+        "Resolve the legal hold through the dispute workflow.");
+    } else if (input.dmv.disputeHold.blocked) {
+      block("DISPUTE_HOLD", "PROJECT_CONTROL",
+        input.dmv.disputeHold.reasons[0] ?? "An active dispute holds this draw.", input.draw.id, null,
+        "Resolve or release the dispute hold through the dispute workflow.");
+    }
+    const reportedExceptionIds = new Set(
+      blocking.filter((b) => b.code === "OPEN_BLOCKING_EXCEPTION").map((b) => b.sourceRecordId)
+    );
+    const DMV_STATUS_CATEGORY: Record<string, ReadinessCategory> = {
+      INELIGIBLE: "PERMIT",
+      INSPECTION_REQUIRED: "GOVERNMENT_INSPECTION",
+      OFFICIAL_STATUS_PENDING: "GOVERNMENT_INSPECTION",
+      EVIDENCE_INCOMPLETE: "EVIDENCE",
+      OVER_BUDGET_REVIEW_REQUIRED: "BUDGET",
+      NOT_READY: "PERMIT",
+    };
+    const OWNED_ELSEWHERE = new Set([
+      "ELIGIBLE", "REVIEW_PENDING", "LINE_REJECTED", "LINE_EXCEPTION_FINDING",
+      "OPEN_EXCEPTION", "LEGAL_HOLD", "DISPUTE_HOLD",
+    ]);
+    for (const dl of input.dmv.lines) {
+      for (const x of dl.openExceptions) {
+        if (!x.blocking || reportedExceptionIds.has(x.id)) continue;
+        reportedExceptionIds.add(x.id);
+        block("OPEN_BLOCKING_EXCEPTION", "EXCEPTION",
+          `${x.severity} exception open: ${x.title}.`, x.id, dl.drawLineItemId,
+          "Resolve the exception or disposition it through the exception workflow.");
+        if (!dmvLineHold.has(dl.drawLineItemId)) {
+          dmvLineHold.set(dl.drawLineItemId, `Open ${x.severity} exception: ${x.title}.`);
+        }
+      }
+      for (const r of dl.eligibilityReasons) {
+        if (OWNED_ELSEWHERE.has(r.code)) continue;
+        const category = DMV_STATUS_CATEGORY[r.status];
+        if (!category) continue;
+        block(r.code, category, `${dl.scopeDescription}: ${r.message}`,
+          dl.drawLineItemId, dl.drawLineItemId, GATE_NEXT_ACTION[category]);
+        if (!dmvLineHold.has(dl.drawLineItemId)) dmvLineHold.set(dl.drawLineItemId, r.message);
+      }
+      if (dl.finalEligibilityStatus === "ELIGIBLE_FOR_LENDER_REVIEW") {
+        satisfied.push({
+          code: "DMV_LINE_ELIGIBLE",
+          category: "PROJECT_CONTROL",
+          message: `${dl.scopeDescription}: verification controls satisfied — eligible for lender review.`,
+        });
+      }
     }
   }
 
@@ -600,6 +765,9 @@ export function evaluateDrawReadiness(
     } else if (l.status === "EXCEPTION" || l.status === "REJECTED") {
       status = "HOLD";
       reason = l.reviewNotes ?? "Reviewer recorded the line as not supported.";
+    } else if (dmvLineHold.has(l.id)) {
+      status = "HOLD";
+      reason = dmvLineHold.get(l.id)!;
     } else if (variance !== null && variance > 0) {
       reason = l.reviewNotes ?? "Evidence supports the recorded amount only.";
     }
@@ -630,7 +798,7 @@ export function evaluateDrawReadiness(
     status = substantive.every((b) => b.category === "EXCEPTION" && b.exceptionAllowed)
       ? "EXCEPTION_REVIEW"
       : "HOLD";
-  } else if (unknownInfo.length > 0 || anyUnknownRequirement) {
+  } else if (unknownInfo.length > 0) {
     status = "INCOMPLETE";
   } else {
     status = "READY";
@@ -688,6 +856,7 @@ export function evaluateDrawReadiness(
     status,
     requestedAmount: input.draw.requestedAmount,
     supportableAmount: supportable,
+    unsupportedAmount: Math.max(0, input.draw.requestedAmount - supportable),
     supportBasis,
     blockingReasons: ordered,
     warnings,

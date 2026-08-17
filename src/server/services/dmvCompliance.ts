@@ -1326,22 +1326,45 @@ const ELIGIBILITY_PRECEDENCE: LineEligibilityStatus[] = [
  *  Never sets any "approved" state and never reaches banking tables. */
 export function drawControlRecord(user: User, drawRequestId: string): DrawControlRecord {
   const { draw, project } = getDrawFor(user, drawRequestId);
+  return buildDrawControlRecord(draw, project, user);
+}
+
+/**
+ * Read-only control record for internal synthesis (the Draw Readiness
+ * Engine). SAME eligibility logic as drawControlRecord — one source of
+ * truth — but it never writes: no basis pin is created. Unpinned permits
+ * resolve to the currently authoritative basis, which is exactly the
+ * version a pin would record; existing pins always win. No route-level
+ * access check: callers are governed read paths that already enforced
+ * project access (same contract as milestoneGates / completeness).
+ */
+export function drawControlRecordView(drawRequestId: string): DrawControlRecord {
+  const draw = repo.getDrawRequest(drawRequestId);
+  const project = draw ? repo.getProject(draw.projectId) : null;
+  if (!draw || !project) throw new ComplianceError("Draw request not found", 404);
+  return buildDrawControlRecord(draw, project, null);
+}
+
+function buildDrawControlRecord(draw: DrawRequest, project: Project, pinAs: User | null): DrawControlRecord {
   const generatedAt = nowIso();
 
   // Pin the authoritative basis of every project permit that has one.
   // INSERT OR IGNORE: an existing pin for (draw, permit) always wins.
+  // In read-only mode (pinAs null) nothing is written.
   const permits = repo.listPermitsForProject(project.id);
-  for (const p of permits) {
-    const auth = dmv.authoritativeBasisForPermit(p.id);
-    if (auth) {
-      dmv.pinDrawBasis({
-        id: dmv.newId(),
-        drawRequestId: draw.id,
-        permitId: p.id,
-        permitBasisVersionId: auth.id,
-        pinnedAt: generatedAt,
-        pinnedByUserId: user.id,
-      });
+  if (pinAs) {
+    for (const p of permits) {
+      const auth = dmv.authoritativeBasisForPermit(p.id);
+      if (auth) {
+        dmv.pinDrawBasis({
+          id: dmv.newId(),
+          drawRequestId: draw.id,
+          permitId: p.id,
+          permitBasisVersionId: auth.id,
+          pinnedAt: generatedAt,
+          pinnedByUserId: pinAs.id,
+        });
+      }
     }
   }
   const pins = dmv.listPinsForDraw(draw.id);
@@ -1349,6 +1372,16 @@ export function drawControlRecord(user: User, drawRequestId: string): DrawContro
   for (const pin of pins) {
     const b = dmv.getPermitBasis(pin.permitBasisVersionId);
     if (b) basisByPermit.set(pin.permitId, b);
+  }
+  // A permit that WOULD be pinned on the next consequential generation
+  // (authoritative basis exists, no pin yet) resolves to that same basis,
+  // so the read-only view matches what pinning would produce. A no-op in
+  // pinning mode, where every such permit was just pinned above.
+  for (const p of permits) {
+    if (!basisByPermit.has(p.id)) {
+      const auth = dmv.authoritativeBasisForPermit(p.id);
+      if (auth) basisByPermit.set(p.id, auth);
+    }
   }
   const permitById = new Map(permits.map((p) => [p.id, p]));
 

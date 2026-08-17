@@ -27,10 +27,10 @@ overwrites a government record, or treats advisory AI output as authoritative.
 | Completeness checks (amount, period, lines, reconcile, documents, evidence) | `draws.completeness()` | Authoritative |
 | Recommendation reasons (BLOCKER / EXCEPTION / INFO), supported amount | `draws.computeRecommendation()` | Authoritative derivation |
 | Document checklist + lien waiver requirements | `draws.documentChecklist()` | Authoritative |
-| Milestone gates: contractor completion, evidence review, inspection requirement/gate, permit, code basis, official source | `completionGates.milestoneGates()` | Authoritative (reviewed determinations) |
+| Milestone gates: contractor completion, evidence review, inspection requirement/gate, permit, code basis, official source | `completionGates.milestoneGates()` | Authoritative (reviewed determinations). Stage semantics stay with the gates module: reason `blocking` flags encode the governance stage, so readiness consumes `completionGates.reasonBlocksDrawReview()` for the draw-review reading and `inspectionSurfaceClean()` for satisfied-inspection claims and released-milestone surface truth — never a local re-derivation. Lines with no milestone mapping surface as a warning (their jurisdictional surface cannot be evaluated), never a silent pass. |
 | Jurisdictional inspections (sequence, reinspection, result) | `completionGates` / DMV layer | Authoritative (recorded results) |
 | Permits (`effectiveStatus`, UNKNOWN never ACTIVE) | `permits.ts` | Authoritative |
-| DMV per-line eligibility (`drawControlRecord`) where adopted | `dmvCompliance.ts` | Authoritative |
+| DMV per-line eligibility (`drawControlRecordView`, read-only) where adopted | `dmvCompliance.ts` | Authoritative — adapted verbatim, never recomputed. The view shares the exact eligibility body with `drawControlRecord`; only the deliberate basis-pin write stays with consequential generation (packages), so readiness reads never write. Reasons already owned by another layer (reviewer line findings, register exceptions — deduped by id, draw-wide dispute holds) stay single-sourced. |
 | Open exceptions (severity, status, draw linkage) | `exceptions.ts` | Authoritative register |
 | Lender decision + conditions | `lenderDecisions.ts` | Authoritative |
 | Draw inspection (lender's independent inspector) | `drawInspections.ts` | Authoritative |
@@ -54,7 +54,7 @@ requirement than project configuration.
 | `READY` | Every configured required condition is satisfied. Means **ready for lender review** — not approval. |
 | `HOLD` | ≥1 blocking requirement is unmet and at least one is not exception-eligible under policy. |
 | `EXCEPTION_REVIEW` | Every configured requirement is satisfied **except** formally recorded exceptions awaiting the lender's disposition, and policy permits proceeding past them. Any other outstanding requirement is a HOLD — status describes what is outstanding; whether a documented override may proceed at decision time is a separate, policy-governed axis. |
-| `INCOMPLETE` | OBV lacks enough recorded/configured information for a meaningful conclusion (e.g. inspection requirement UNKNOWN on a gated milestone, permit status UNKNOWN where a permit is required, no lines). UNKNOWN is never converted to READY. |
+| `INCOMPLETE` | OBV lacks enough recorded information about the draw itself for a meaningful conclusion (draft, cancelled, no lines, structure incomplete). Jurisdictional UNKNOWNs follow the gates' own recording: an unknown-status permit arrives as `PERMIT_NOT_ACTIVE` and **blocks** where configuration gates it (UNKNOWN never behaves as ACTIVE); an undetermined inspection requirement is recorded by the gates as a non-gating condition and surfaces as a readiness **warning** — visible, never a silent pass, never a satisfied claim, and never converted to a synthetic PASS. |
 
 ## 3. Blocker model
 
@@ -87,9 +87,13 @@ identical inputs always produce the identical primary blocker.
 
 ## 4. Supportable amount
 
-`supportableAmount` is the **existing recorded formula**, not a new invention —
-the same computation `lenderDecisions.verifiedAmount` and
-`computeRecommendation().supportedAmount` already use:
+`supportableAmount` sums `draws.lineSupported` — the exported single
+source of the recorded per-line formula, which `lenderDecisions.verifiedAmount`,
+`computeRecommendation().supportedAmount` and the draw package all import
+rather than re-implement. (The aggregates intentionally differ on a partial
+review: `verifiedAmount` stays null until every line carries a review, while
+`supportableAmount` is the partial sum, disclosed via `supportBasis` and the
+`LINE_REVIEW_INCOMPLETE` blocker.)
 
 ```
 per line:  SUPPORTED            → currentRequested

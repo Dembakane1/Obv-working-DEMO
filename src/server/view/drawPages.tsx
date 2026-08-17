@@ -627,9 +627,10 @@ export function renderDrawDetail(d: DrawDetailData): string {
   const missingDocs = d.checklist.filter((c) => c.state === "MISSING" || c.state === "REJECTED" || c.state === "EXPIRED").length;
   const released = d.accountEvents.find((e) => e.type === "RELEASED");
 
-  // Blockers come from the readiness engine — the same governed
-  // registers, synthesized once with deterministic ordering — with the
-  // pre-engine derivation kept as fallback if readiness is unavailable.
+  // Blockers come ONLY from the readiness engine — the same governed
+  // registers, synthesized once with deterministic ordering. The view
+  // never re-derives its own blocker list: if the engine is unavailable
+  // the panel says so honestly instead of running a parallel algorithm.
   const r = d.readiness ?? null;
   const blockers: Array<{ title: string; sub: string; severity: "high" | "med" }> = r
     ? r.blockingReasons.map((b) => ({
@@ -637,14 +638,11 @@ export function renderDrawDetail(d: DrawDetailData): string {
         sub: `${enumLabel(b.category)} · ${b.nextAction}`,
         severity: "high" as const,
       }))
-    : [
-        ...checks.filter((c) => !c.ok).map((c) => ({ title: c.label, sub: c.detail, severity: "high" as const })),
-        ...exceptions.slice(0, 4).map((l) => ({
-          title: `${enumLabel(l.status)} — ${l.description}`,
-          sub: l.reviewNotes ?? `${money(l.currentRequested)} requested`,
-          severity: "med" as const,
-        })),
-      ];
+    : [{
+        title: "Readiness evaluation unavailable",
+        sub: "The blocker synthesis could not run for this draw — the underlying registers remain authoritative.",
+        severity: "med" as const,
+      }];
   const readinessTone = r
     ? r.status === "READY" ? "ok" : r.status === "INCOMPLETE" ? "" : r.status === "EXCEPTION_REVIEW" ? "warn" : "bad"
     : "";
@@ -792,7 +790,7 @@ export function renderDrawDetail(d: DrawDetailData): string {
                           </span>
                         ),
                       },
-                      { k: "Unsupported", v: <span className="num">{money(Math.max(0, r.requestedAmount - r.supportableAmount))}</span> },
+                      { k: "Unsupported", v: <span className="num">{money(r.unsupportedAmount)}</span> },
                       { k: "Blocking requirements", v: String(r.blockingReasons.length) },
                     ]}
                   />
@@ -1031,15 +1029,17 @@ function renderOverviewTab(d: DrawDetailData, editable: boolean): VNode {
 
 function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolean): VNode {
   const { draw } = d;
-  const rec = d.lines.reduce((s, l) => s + l.currentRequested, 0);
-  const reconciled = rec === draw.requestedAmount;
+  // Reconciliation is the governed completeness check — the view renders
+  // its recorded verdict and detail, never its own arithmetic.
+  const reconcileCheck = d.completeness.checks.find((c) => c.key === "reconcile");
+  const reconciled = reconcileCheck?.ok ?? false;
   return (
     <>
       <DensePanel
         title="Line items"
         right={
           <span style={reconciled ? "color:var(--ok)" : "color:var(--warn)"}>
-            {money(rec)} / {money(draw.requestedAmount)} {reconciled ? "· reconciled" : `· off by ${money(Math.abs(draw.requestedAmount - rec))}`}
+            {reconcileCheck ? `${reconcileCheck.detail}${reconciled ? " · reconciled" : ""}` : "—"}
           </span>
         }
         flush

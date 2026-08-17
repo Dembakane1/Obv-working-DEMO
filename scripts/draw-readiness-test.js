@@ -92,6 +92,7 @@ const gateRef = (reasons, over = {}) => ({
   milestoneId: "ms-syn",
   label: "M1 · Synthetic milestone",
   requiredEvidenceConfigured: over.requiredEvidenceConfigured ?? false,
+  inspectionSurfaceClean: over.inspectionSurfaceClean ?? true,
   gates: {
     milestoneId: "ms-syn",
     contractor: { status: "REPORTED_COMPLETE", reportedByUserId: null, reportedAt: null, notes: null, linkedEvidenceIds: [] },
@@ -118,8 +119,10 @@ const synInput = (reasons, over = {}) => ({
   evidenceLinkCount: 1,
   gates: [gateRef(reasons, over)],
   openExceptions: over.openExceptions ?? [],
+  milestoneExceptions: over.milestoneExceptions ?? [],
   decision: over.decision ?? null,
   advisoryNotes: over.advisoryNotes ?? [],
+  dmv: over.dmv ?? null,
   evaluatedAt: T0,
 });
 
@@ -203,15 +206,50 @@ async function main() {
 
   // ================= E · unknown → INCOMPLETE / HOLD per policy =======
   console.log("\n== E · UNKNOWN states → INCOMPLETE or HOLD per configured policy ==");
-  const rE1 = dr.evaluateDrawReadiness(synInput([
-    { code: "INSPECTION_REQUIREMENT_UNKNOWN", detail: "Whether a jurisdictional inspection is required has not been determined — UNKNOWN never behaves as NOT REQUIRED.", blocking: true },
-  ], { requirementValue: "UNKNOWN", inspectionGate: "REQUIREMENT_UNKNOWN" }));
-  assert(rE1.status === "INCOMPLETE", "a gating UNKNOWN inspection requirement → INCOMPLETE, never READY");
+  const incompleteInput = synInput([]);
+  incompleteInput.completeness = {
+    ok: false,
+    checks: COMPLETE_CHECKS.map((c) => (c.key === "period" ? { ...c, ok: false, detail: "Set the period this draw covers." } : c)),
+  };
+  const rE1 = dr.evaluateDrawReadiness(incompleteInput);
+  assert(rE1.status === "INCOMPLETE", "missing draw-structure information → INCOMPLETE, never READY");
   const rE2 = dr.evaluateDrawReadiness(synInput([
     { code: "PERMIT_NOT_ACTIVE", detail: "Linked permit DCRA-000 is UNKNOWN — not an active permit. Blocks: governance.", blocking: true },
   ]));
   assert(rE2.status === "HOLD" && rE2.primaryBlocker.category === "PERMIT",
     "an unknown-status permit where configuration gates it → HOLD (UNKNOWN never behaves as ACTIVE)");
+  // Stage semantics are owned by completionGates.reasonBlocksDrawReview:
+  // a draw-review-only permit rule arrives with blocking=false (the flag
+  // encodes governance) plus permitBlocksDrawReview=true on eligibility.
+  const drawReviewPermit = synInput([
+    { code: "PERMIT_EXPIRED", detail: "Linked permit DCRA-001 is expired. Blocks: draw review.", blocking: false },
+  ]);
+  drawReviewPermit.gates[0].gates.eligibility.permitBlocksDrawReview = true;
+  const rE4 = dr.evaluateDrawReadiness(drawReviewPermit);
+  assert(rE4.status === "HOLD" && codes(rE4).includes("PERMIT_EXPIRED"),
+    "a draw-review-only permit gate blocks readiness even though its governance flag is off");
+  const rE5 = dr.evaluateDrawReadiness(synInput([
+    { code: "INSPECTION_NOT_SCHEDULED", detail: "Required inspection has not been scheduled. Blocks: draw review.", blocking: false },
+  ], { requirementValue: "REQUIRED", inspectionGate: "REQUIRED_UNSCHEDULED" }));
+  assert(rE5.status === "HOLD" && codes(rE5).includes("INSPECTION_NOT_SCHEDULED"),
+    "a draw-review-only inspection gate (emitted non-blocking by the governance flag) still holds lender review");
+  // A RELEASED milestone keeps its inspection truth: eligibility
+  // short-circuits to bookkeeping, but a dirty surface is surfaced.
+  const released = synInput([
+    { code: "TRANCHE_RELEASED", detail: "The tranche was released by completed formal governance (exactly once).", blocking: false },
+  ], { requirementValue: "REQUIRED", inspectionGate: "FAILED" });
+  released.gates[0].inspectionSurfaceClean = false;
+  const rE6 = dr.evaluateDrawReadiness(released);
+  assert(rE6.warnings.some((w) => w.code === "RELEASED_MILESTONE_SURFACE_NOT_CLEAN"),
+    "a released milestone with a dirty inspection surface is surfaced, never silently clean");
+  // Unmapped lines: no jurisdictional surface — surfaced, never a
+  // vacuous pass.
+  const unmapped = synInput([]);
+  unmapped.gates = [];
+  unmapped.unmappedLineCount = 1;
+  const rE7 = dr.evaluateDrawReadiness(unmapped);
+  assert(rE7.warnings.some((w) => w.code === "LINE_WITHOUT_MILESTONE"),
+    "a line with no milestone mapping warns that its gates cannot be evaluated");
   const rE3 = dr.evaluateDrawReadiness(synInput([
     { code: "INSPECTION_REQUIREMENT_UNKNOWN", detail: "Undetermined.", blocking: false },
   ], { requirementValue: "UNKNOWN", inspectionGate: "REQUIREMENT_UNKNOWN" }));
@@ -309,6 +347,13 @@ async function main() {
     "once only recorded exceptions remain, status is EXCEPTION_REVIEW — the lender may proceed by documented exception");
   assert(codes(g5).some((c) => c === "OPEN_BLOCKING_EXCEPTION" || c === "HIGH_SEVERITY_EXCEPTION_OPEN"),
     "the open HIGH-severity exception is the blocking reason");
+  // exc-g5 is linked to BOTH the draw and milestone ms-g4 — one recorded
+  // exception must appear as exactly ONE blocker, keyed by its id.
+  assert(g5.blockingReasons.filter((b) => b.sourceRecordId === "exc-g5").length === 1,
+    "a dual-linked exception (draw + milestone) is reported exactly once, by exception id");
+  const g6 = dr.drawReadiness("draw-g6");
+  assert(g6.blockingReasons.filter((b) => b.sourceRecordId === "exc-g5").length === 1,
+    "a milestone-linked exception reaches sibling draws on the milestone exactly once, by id");
   const strict = JSON.parse(JSON.stringify(dr.DEFAULT_READINESS_POLICY));
   strict.exceptionEligible.EXCEPTION = false;
   const g5strict = dr.evaluateDrawReadiness(dr.assembleReadinessInput("draw-g5", T0), strict);
@@ -345,9 +390,11 @@ async function main() {
 
   // ================= N · unknown official source → never PASS =========
   console.log("\n== N · official-source gaps can never become PASS ==");
+  // The gates module records the dirty surface itself: a PASSED result
+  // without its COMPLETE official source is not surface-clean.
   const rN = dr.evaluateDrawReadiness(synInput([
     { code: "OFFICIAL_SOURCE_MISSING", detail: "A PASSED result is recorded but no COMPLETE official source record supports it.", blocking: true },
-  ], { requirementValue: "REQUIRED", inspectionGate: "PASSED" }));
+  ], { requirementValue: "REQUIRED", inspectionGate: "PASSED", inspectionSurfaceClean: false }));
   assert(rN.status === "HOLD" && codes(rN).includes("OFFICIAL_SOURCE_MISSING"),
     "a passed inspection without its reviewed official source blocks — retrieval candidates are not authoritative");
   assert(!rN.satisfiedRequirements.some((s) => s.code === "REQUIRED_INSPECTION_PASSED"),
@@ -505,6 +552,36 @@ async function main() {
     "draw-summary.json carries the structured readiness block with its policy version");
   assert(typeof machine.obvReadiness.evaluatedAt === "string" && machine.obvReadiness.supportableAmount === 40000,
     "the machine block pins as-of timestamp and supportable amount");
+
+  // ============ DMV · line eligibility adapted, never recomputed ======
+  console.log("\n== DMV · control-record eligibility adapted into readiness ==");
+  const dmvCompliance = require(path.join(ROOT, "dist/server/services/dmvCompliance"));
+  const pinsBefore = db.prepare("SELECT COUNT(*) c FROM draw_permit_basis_pins WHERE draw_request_id = 'draw-dmv-1'").get().c;
+  const rDmv = dr.drawReadiness("draw-dmv-1");
+  const pinsAfterRead = db.prepare("SELECT COUNT(*) c FROM draw_permit_basis_pins WHERE draw_request_id = 'draw-dmv-1'").get().c;
+  assert(Number(pinsAfterRead) === Number(pinsBefore),
+    "live readiness reads the DMV layer WITHOUT pinning a basis — reads never write");
+  assert(rDmv.status === "HOLD", "the DMV demo draw holds on its recorded line eligibility");
+  for (const code of ["PHOTO_EVIDENCE_MISSING", "INSPECTION_CORRECTION_REQUIRED"]) {
+    const b = rDmv.blockingReasons.find((x) => x.code === code);
+    assert(b && b.lineItemId, `DMV reason ${code} is adapted verbatim as a line-scoped blocker`);
+  }
+  assert(rDmv.satisfiedRequirements.some((s) => s.code === "DMV_LINE_ELIGIBLE"),
+    "the eligible DMV line surfaces as a satisfied requirement, not silence");
+  const dmvHeld = rDmv.lineReadiness.find((l) => l.status === "HOLD" && /inspection requires correction/i.test(l.reason ?? ""));
+  assert(Boolean(dmvHeld), "line readiness carries the DMV hold reason on the affected line");
+  // Single source of truth: the read-only view and the pinning generator
+  // compute IDENTICAL eligibility — same function, one flag.
+  const view = dmvCompliance.drawControlRecordView("draw-dmv-1");
+  const pinned = dmvCompliance.drawControlRecord(funder, "draw-dmv-1");
+  const elig = (rec) => rec.lines.map((l) => `${l.drawLineItemId}:${l.finalEligibilityStatus}:${l.eligibilityReasons.map((r) => r.code).join(",")}`);
+  assert(JSON.stringify(elig(view)) === JSON.stringify(elig(pinned)),
+    "drawControlRecordView and drawControlRecord agree on every line's eligibility — one source of truth");
+  assert(db.prepare("SELECT COUNT(*) c FROM draw_permit_basis_pins WHERE draw_request_id = 'draw-dmv-1'").get().c > 0,
+    "the deliberate pin write stays with the consequential generation path only");
+  const dmvA = JSON.stringify(dr.evaluateDrawReadiness(dr.assembleReadinessInput("draw-dmv-1", T0)));
+  const dmvB = JSON.stringify(dr.evaluateDrawReadiness(dr.assembleReadinessInput("draw-dmv-1", T0)));
+  assert(dmvA === dmvB, "readiness over the DMV layer is byte-identical for identical state");
 
   // ================= HTTP · register, module, language ================
   console.log("\n== HTTP · Draws List, readiness module, §29 language ==");

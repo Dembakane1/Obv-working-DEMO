@@ -23,6 +23,7 @@ import { audit, snapshotProject } from "./pilot/onboarding";
 import { canAccessProjectFinance } from "./budgetProgress";
 import { requireAuthority, hasActiveMembership, LenderError } from "./lenderAccess";
 import { effectiveStatus as permitEffectiveStatus, completeSourcesForInspection } from "./permits";
+import { isBlockingException } from "./exceptions";
 import type {
   ContractorCompletionStatus, EvidenceReviewStatus, GateReason,
   InspectionGateState, InspectionRequirement, InspectionRequirementValue,
@@ -684,7 +685,6 @@ function inspectionGates(m: Milestone, req: InspectionRequirement | null, stage:
   return stage === "DRAW_REVIEW" ? req.mustPassBeforeDrawReview : req.mustPassBeforeGovernance;
 }
 
-const UNRESOLVED_EXC = new Set(["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_RESPONSE"]);
 
 /** Deterministic MilestoneDrawEligibility. NEVER releases funds — it is
  *  a derived reading of authoritative gates with structured reasons. */
@@ -865,15 +865,11 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
     }
   }
 
-  // Blocking exceptions linked to this milestone.
+  // Blocking exceptions linked to this milestone — THE shared predicate
+  // from the exception service, never a re-literalized status set.
   const highExc = repo
     .listExceptionsForProject(milestone.projectId)
-    .filter(
-      (e) =>
-        e.milestoneId === milestoneId &&
-        UNRESOLVED_EXC.has(e.status) &&
-        ["HIGH", "CRITICAL"].includes(e.severity)
-    );
+    .filter((e) => e.milestoneId === milestoneId && isBlockingException(e));
   for (const e of highExc) {
     add("HIGH_SEVERITY_EXCEPTION_OPEN", `${e.severity} exception open: "${e.title}".`, true);
   }
@@ -957,6 +953,37 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
  *   - configured permit-activity rules with outstanding permit issues,
  *     and a configured-but-missing code basis, are never clean.
  */
+/** Permit-issue codes emitted by evaluateDrawEligibility whose blocking
+ *  flag encodes the GOVERNANCE stage (permitBlocksGovernance). */
+const PERMIT_ISSUE_CODES = new Set([
+  "REQUIRED_PERMIT_MISSING", "PERMIT_EXPIRED", "PERMIT_REVOKED", "PERMIT_SUSPENDED", "PERMIT_NOT_ACTIVE",
+]);
+/** Inspection-progress codes emitted ONLY inside the REQUIRED &&
+ *  (governanceGated || drawReviewGated) branch with blocking =
+ *  governanceGated. Their PRESENCE with blocking=false therefore records
+ *  a draw-review-only gate by construction. (FAILED / CORRECTIONS /
+ *  EXPIRED variants are always emitted blocking=true.) */
+const DRAW_REVIEW_IMPLIED_CODES = new Set([
+  "INSPECTION_NOT_SCHEDULED", "JURISDICTIONAL_INSPECTION_NOT_PASSED",
+  "INSPECTION_PENDING", "REINSPECTION_PENDING", "REINSPECTION_NOT_SCHEDULED",
+]);
+
+/**
+ * Stage-aware reading of one eligibility reason for the DRAW-REVIEW
+ * stage. The reasons' `blocking` flag encodes the GOVERNANCE stage;
+ * draw-review gating is configured separately
+ * (permitMustBeActiveBeforeDrawReview / mustPassBeforeDrawReview /
+ * codeBasis flags) and recorded on the eligibility result. Owned HERE so
+ * no consumer re-derives stage semantics from raw configuration.
+ */
+export function reasonBlocksDrawReview(eligibility: MilestoneDrawEligibility, reason: GateReason): boolean {
+  if (reason.blocking) return true;
+  if (PERMIT_ISSUE_CODES.has(reason.code)) return eligibility.permitBlocksDrawReview;
+  if (reason.code === "CODE_BASIS_MISSING") return eligibility.codeBasisBlocksDrawReview;
+  if (DRAW_REVIEW_IMPLIED_CODES.has(reason.code)) return true;
+  return false;
+}
+
 export function inspectionSurfaceClean(milestoneId: string): boolean {
   const milestone = repo.getMilestone(milestoneId);
   if (!milestone) return false;

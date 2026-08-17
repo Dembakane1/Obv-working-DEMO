@@ -81,16 +81,8 @@ export interface DrawAmounts {
   cumulativeDrawNumbers: number[];
 }
 
-function lineSupported(line: DrawLineItem): number {
-  switch (line.status) {
-    case "SUPPORTED":
-      return line.currentRequested;
-    case "PARTIALLY_SUPPORTED":
-      return line.supportedAmount ?? 0;
-    default:
-      return 0;
-  }
-}
+// THE recorded-support formula, from its owner — never a local copy.
+const lineSupported = draws.lineSupported;
 
 export function computeDrawAmounts(draw: DrawRequest): DrawAmounts {
   const lines = repo.listDrawLines(draw.id);

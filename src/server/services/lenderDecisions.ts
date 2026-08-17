@@ -17,6 +17,7 @@ import { teamsNotifier } from "./TeamsNotifier";
 import { LenderError, assertCapability, assertProjectAccess } from "./lenderAccess";
 import { parseIsoDate, PermitError } from "./permits";
 import { drawDisputeHold } from "./disputes";
+import { lineSupported } from "./draws";
 import { makeWholeCurrency } from "./money";
 import type {
   DrawRequest,
@@ -263,11 +264,7 @@ export function recordLenderDecision(
   const lines = repo.listDrawLines(draw.id);
   const allLinesReviewed = lines.length > 0 && lines.every((l) => l.status !== "PENDING");
   const verifiedFromLines = allLinesReviewed
-    ? lines.reduce((sum, l) => {
-        if (l.status === "SUPPORTED") return sum + l.currentRequested;
-        if (l.status === "PARTIALLY_SUPPORTED") return sum + (l.supportedAmount ?? 0);
-        return sum; // EXCEPTION / REJECTED contribute nothing
-      }, 0)
+    ? lines.reduce((sum, l) => sum + lineSupported(l), 0)
     : null;
   const decision: LenderDrawDecision = {
     id: lrepo.newId(),
