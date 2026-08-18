@@ -782,6 +782,78 @@ async function main() {
   assert(notifCount("DRAW_READY_FOR_REVIEW") === readyBeforeA + 2,
     "the return to READY notifies exactly once more");
 
+  // ---- G · INCOMPLETE is never approvable: the bypass is closed ----
+  // A draw whose ONLY remaining problem is missing information resolves
+  // INCOMPLETE — here through the one shape that can coexist with
+  // completed formal governance: a line with no milestone mapping
+  // (an undetermined milestone requirement honestly blocks governance
+  // itself, so it can never reach the decision ladder). An approving
+  // lender decision over INCOMPLETE is refused outright, justified or
+  // not: OBV does not have enough governed information to support a
+  // readiness conclusion, and missing information cannot be waived into
+  // existence. Non-approving dispositions stay with the existing lender
+  // workflow.
+  const dC = (await post("/api/draws", {
+    projectId: "proj-golden", requestedAmount: 15000, periodStart: "2026-11-01", periodEnd: "2026-11-30",
+  }, pmCookie, 201)).json.draw;
+  await post(`/api/draws/${dC.id}/lines`, {
+    description: "Unmapped allowance (incomplete-gate test)",
+    scheduledValue: 15000, currentRequested: 15000,
+  }, pmCookie, 201);
+  await post(`/api/draws/${dC.id}/submit`, {}, pmCookie);
+  const lineC = db.prepare("SELECT id FROM draw_line_items WHERE draw_request_id = ?").get(dC.id).id;
+  await post(`/api/draws/${dC.id}/lines/${lineC}/review`, { decision: "SUPPORTED" }, funderCookie);
+  const reqRowsC = db.prepare("SELECT id, title, doc_type t FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1").all(dC.id);
+  for (const r of reqRowsC) {
+    await post(`/api/draws/${dC.id}/documents`, {
+      requirementId: r.id, title: `${r.title} (fictional)`, docType: r.t,
+      waiverKind: /LIEN_WAIVER/.test(r.t) ? "CONDITIONAL" : null,
+      waiverScope: /LIEN_WAIVER/.test(r.t) ? "PROGRESS" : null,
+      coveredThrough: /LIEN_WAIVER/.test(r.t) ? "2026-11-30" : null,
+      invoiceNumber: r.t === "CONTRACTOR_INVOICE" ? "TT-4001" : null,
+      amount: r.t === "CONTRACTOR_INVOICE" ? 15000 : null,
+    }, pmCookie, 201);
+  }
+  assert(lastTransition(dC.id).status === "INCOMPLETE",
+    "G: every requirement satisfied but a line without milestone mapping → INCOMPLETE, never READY");
+  await post(`/api/draws/${dC.id}/governance`, {}, funderCookie, 200);
+  const apC = db.prepare("SELECT id FROM approval_requests WHERE draw_request_id = ?").get(dC.id).id;
+  await post(`/api/approvals/${apC}/decision`, { decision: "APPROVED" }, funderCookie, 200);
+  await post(`/api/approvals/${apC}/decision`, { decision: "APPROVED" }, complianceCookie, 200);
+  const decCountC = () => Number(db.prepare("SELECT COUNT(*) c FROM lender_draw_decisions WHERE draw_request_id = ?").get(dC.id).c);
+  const snapCountC = () => Number(db.prepare("SELECT COUNT(*) c FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_SNAPSHOT'").get(dC.id).c);
+  const bareC = await post(`/api/draws/${dC.id}/lender-decision`, {
+    decision: "APPROVED", approvedAmount: 15000,
+  }, funderCookie);
+  assert(bareC.status === 422 && /INCOMPLETE/.test(JSON.stringify(bareC.json)),
+    "G: an authorized APPROVED with NO justification over INCOMPLETE is refused 422");
+  assert(decCountC() === 0 && snapCountC() === 0,
+    "G: the refusal persisted NO decision and NO snapshot");
+  const justifiedC = await post(`/api/draws/${dC.id}/lender-decision`, {
+    decision: "APPROVED", approvedAmount: 15000,
+    decisionReason: "Attempting to justify past missing information (must be refused).",
+    exceptionsAccepted: "Missing milestone mapping accepted by lender (must be refused).",
+  }, funderCookie);
+  assert(justifiedC.status === 422 && /INCOMPLETE/.test(JSON.stringify(justifiedC.json)) &&
+    /enough governed information/i.test(JSON.stringify(justifiedC.json)),
+    "G: justification does NOT unlock INCOMPLETE — OBV lacks the governed information to support a conclusion");
+  assert(decCountC() === 0 && snapCountC() === 0,
+    "G: the justified attempt also persisted NO decision and NO snapshot");
+  const rejC = await post(`/api/draws/${dC.id}/lender-decision`, {
+    decision: "REJECTED", decisionReason: "Non-approving-path check (fictional).",
+  }, funderCookie);
+  assert(rejC.status === 409 && !/INCOMPLETE/.test(JSON.stringify(rejC.json)),
+    "G: REJECTED is answered by the EXISTING governance truth table — the readiness gate never intercepts non-approving dispositions");
+  const pendC = await post(`/api/draws/${dC.id}/lender-decision`, { decision: "PENDING" }, funderCookie, 201);
+  assert(pendC.json.proceededByException === false && decCountC() === 1,
+    "G: a non-approving PENDING records over INCOMPLETE through the untouched lender workflow");
+  const snapRowsC = db.prepare("SELECT detail FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_SNAPSHOT'").all(dC.id);
+  assert(snapRowsC.length === 1 && JSON.parse(snapRowsC[0].detail).overriddenBlockers.length === 0,
+    "G: the snapshot carries NO overridden blockers — INCOMPLETE is never recorded as PROCEEDED BY EXCEPTION");
+  const actC = await get(`/draw/${dC.id}?tab=activity`);
+  assert(!actC.html.includes("PROCEEDED BY EXCEPTION"),
+    "G: no proceed-by-exception disposition ever appears for the incomplete draw");
+
   // ---- B · required jurisdictional inspection: HOLD -> PASSED -> READY ----
   const dB = (await post("/api/draws", {
     projectId: "proj-golden", requestedAmount: 20000, periodStart: "2026-11-01", periodEnd: "2026-11-30",
@@ -832,6 +904,47 @@ async function main() {
     "B: the PASSED recorded result flips the draw to READY — exactly one transition");
   assert(notifCount("DRAW_READY_FOR_REVIEW") === readyBeforeB + 1,
     "B: exactly one ready-for-review notification for the inspection path");
+
+  // ---- G2 · once the missing information is resolved, the normal
+  // approval path works with NO justification. ms-g6's requirement is
+  // now a reviewed REQUIRED determination with a PASSED inspection
+  // (scenario B resolved it through the governed workflow), so a fresh
+  // draw billing it reaches READY — and READY needs no exception path.
+  const dD = (await post("/api/draws", {
+    projectId: "proj-golden", requestedAmount: 12000, periodStart: "2026-12-01", periodEnd: "2026-12-31",
+  }, pmCookie, 201)).json.draw;
+  await post(`/api/draws/${dD.id}/lines`, {
+    description: "Punchlist closeout (resolved-information test)", milestoneId: "ms-g6",
+    scheduledValue: 12000, currentRequested: 12000,
+  }, pmCookie, 201);
+  await post(`/api/draws/${dD.id}/submit`, {}, pmCookie);
+  const lineD = db.prepare("SELECT id FROM draw_line_items WHERE draw_request_id = ?").get(dD.id).id;
+  await post(`/api/draws/${dD.id}/lines/${lineD}/review`, { decision: "SUPPORTED" }, funderCookie);
+  const reqRowsD = db.prepare("SELECT id, title, doc_type t FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1").all(dD.id);
+  for (const r of reqRowsD) {
+    await post(`/api/draws/${dD.id}/documents`, {
+      requirementId: r.id, title: `${r.title} (fictional)`, docType: r.t,
+      waiverKind: /LIEN_WAIVER/.test(r.t) ? "CONDITIONAL" : null,
+      waiverScope: /LIEN_WAIVER/.test(r.t) ? "PROGRESS" : null,
+      coveredThrough: /LIEN_WAIVER/.test(r.t) ? "2026-12-31" : null,
+      invoiceNumber: r.t === "CONTRACTOR_INVOICE" ? "TT-5001" : null,
+      amount: r.t === "CONTRACTOR_INVOICE" ? 12000 : null,
+    }, pmCookie, 201);
+  }
+  assert(lastTransition(dD.id).status === "READY",
+    "G2: with the requirement determined and the inspection passed, the same milestone now yields READY — resolution recomputes, never waives");
+  await post(`/api/draws/${dD.id}/governance`, {}, funderCookie, 200);
+  const apD = db.prepare("SELECT id FROM approval_requests WHERE draw_request_id = ?").get(dD.id).id;
+  await post(`/api/approvals/${apD}/decision`, { decision: "APPROVED" }, funderCookie, 200);
+  await post(`/api/approvals/${apD}/decision`, { decision: "APPROVED" }, complianceCookie, 200);
+  const decD = await post(`/api/draws/${dD.id}/lender-decision`, {
+    decision: "APPROVED", approvedAmount: 12000,
+  }, funderCookie, 201);
+  assert(decD.json.proceededByException === false && decD.json.readinessAtDecision === "READY",
+    "G2: at READY the normal approval path works with no justification and no exception disposition");
+  const snapRowsD = db.prepare("SELECT detail FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_SNAPSHOT'").all(dD.id);
+  assert(snapRowsD.length === 1 && JSON.parse(snapRowsD[0].detail).overriddenBlockers.length === 0,
+    "G2: the decision snapshot records a READY state with no overridden blockers");
 
   // ---- D · repeated page reads: zero writes ----
   const evD = transitions(dA.id) + transitions(dB.id);

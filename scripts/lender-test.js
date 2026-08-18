@@ -450,6 +450,28 @@ function readZip(buf) {
     const fundedDirect = await api("funder", "POST", `${D}/lender-decision`, { decision: "FUNDED" });
     assert(fundedDirect.status === 409, "FUNDED cannot be recorded without an external funding record");
 
+    // The draw bills ms-3, whose jurisdictional inspection requirement is
+    // still UNDETERMINED at this point — an unknown-information blocker
+    // that is never exception-eligible. Even with full justification, the
+    // readiness gate refuses the approving decision (the unknown cannot
+    // be waived into existence) — so the lender resolves the missing
+    // information first through the governed determination workflow (the
+    // same reviewed determination S·2 records for the remaining
+    // milestones later in this suite).
+    const incompleteRefusal = await api("funder", "POST", `${D}/lender-decision`, {
+      decision: "CONDITIONALLY_APPROVED", approvedAmount: 400000,
+      decisionReason: "Approved subject to final lien waiver",
+      conditions: [{ conditionType: "LIEN_WAIVER", description: "Unconditional lien waiver from primary contractor", dueAt: "2026-08-01" }],
+    });
+    assert(
+      incompleteRefusal.status === 422,
+      "an approving decision over an UNDETERMINED inspection requirement is refused even with justification — missing information is resolved, never waived"
+    );
+    await j("funder", "POST", "/api/milestones/ms-3/inspection-requirement", {
+      requirement: "NOT_REQUIRED",
+      requirementBasis: "Base-course works: no jurisdictional inspection applies (district determination)",
+    }, 200);
+
     const decision = (await j("funder", "POST", `${D}/lender-decision`, {
       decision: "CONDITIONALLY_APPROVED",
       approvedAmount: 400000,
@@ -628,7 +650,7 @@ function readZip(buf) {
     const d3 = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 100000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
     const D3 = `/api/draws/${d3.id}`;
     const l3 = (await j("pm", "POST", `${D3}/lines`, {
-      description: "Drainage channel lining", scheduledValue: 200000, currentRequested: 100000, percentCompleteClaimed: 60,
+      description: "Drainage channel lining", scheduledValue: 200000, currentRequested: 100000, percentCompleteClaimed: 60, milestoneId: "ms-3",
     }, 201)).line;
     await j("pm", "POST", `${D3}/submit`, undefined, 200);
     const app3 = q1("SELECT policy_version AS v FROM draw_policy_applications WHERE draw_request_id = ?", d3.id);
@@ -677,7 +699,7 @@ function readZip(buf) {
     const d4 = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 200000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
     const D4 = `/api/draws/${d4.id}`;
     const l4 = (await j("pm", "POST", `${D4}/lines`, {
-      description: "Shoulder regrading km 11–14", scheduledValue: 400000, currentRequested: 200000, percentCompleteClaimed: 55,
+      description: "Shoulder regrading km 11–14", scheduledValue: 400000, currentRequested: 200000, percentCompleteClaimed: 55, milestoneId: "ms-3",
     }, 201)).line;
     await j("pm", "POST", `${D4}/submit`, undefined, 200);
     await j("compliance", "POST", `${D4}/lines/${l4.id}/review`, {
@@ -698,10 +720,33 @@ function readZip(buf) {
     for (const id of docIds4) {
       await j("compliance", "POST", `${D4}/documents/${id}/review`, { decision: "ACCEPTED" }, 200);
     }
+    // The unmapped-line stage semantics live on their own fixture draw:
+    // d4 bills the determined ms-3 (an approving lender decision over an
+    // unmapped line would be an approval over missing information, which
+    // readiness now refuses outright), so a throwaway draw with no
+    // milestone mapping carries the stage assertion instead.
+    {
+      const dStage = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 30000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
+      const DS = `/api/draws/${dStage.id}`;
+      const lS = (await j("pm", "POST", `${DS}/lines`, {
+        description: "Unmapped stage fixture", scheduledValue: 60000, currentRequested: 30000, percentCompleteClaimed: 50,
+      }, 201)).line;
+      await j("pm", "POST", `${DS}/submit`, undefined, 200);
+      await j("compliance", "POST", `${DS}/lines/${lS.id}/review`, { decision: "SUPPORTED" }, 200);
+      for (const r of q("SELECT id, title FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1", dStage.id)) {
+        const doc = (await j("pm", "POST", `${DS}/documents`, { requirementId: r.id, title: r.title }, 201)).document;
+        await j("compliance", "POST", `${DS}/documents/${doc.id}/review`, { decision: "ACCEPTED" }, 200);
+      }
+      const stageUnmapped = await j("funder", "GET", `${DS}/stage`, undefined, 200);
+      assert(
+        stageUnmapped.stage === "FINANCIAL_DOCUMENTS_REVIEWED",
+        "reviewed documents ground the stage AND an unmapped line blocks GOVERNMENT_INSPECTION_CHECKED (all lines missing milestone mapping)"
+      );
+    }
     const stagePostDocReview = await j("funder", "GET", `${D4}/stage`, undefined, 200);
     assert(
-      stagePostDocReview.stage === "FINANCIAL_DOCUMENTS_REVIEWED",
-      "reviewed documents ground the stage AND an unmapped line blocks GOVERNMENT_INSPECTION_CHECKED (all lines missing milestone mapping)"
+      ["FINANCIAL_DOCUMENTS_REVIEWED", "GOVERNMENT_INSPECTION_CHECKED", "EVIDENCE_REVIEW_COMPLETED"].includes(stagePostDocReview.stage),
+      `d4 (mapped, determined ms-3) grounds at least the document-review stage (got ${stagePostDocReview.stage})`
     );
     await j("compliance", "POST", `${D4}/governance`, {}, 200);
     const ap4 = q1("SELECT id FROM approval_requests WHERE draw_request_id = ?", d4.id).id;
@@ -876,10 +921,10 @@ function readZip(buf) {
     const d5 = (await j("pm", "POST", "/api/draws", { projectId: P, requestedAmount: 100000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
     const D5 = `/api/draws/${d5.id}`;
     const L1 = (await j("pm", "POST", `${D5}/lines`, {
-      description: "Base course km 15–16", scheduledValue: 120000, currentRequested: 60000, percentCompleteClaimed: 50,
+      description: "Base course km 15–16", scheduledValue: 120000, currentRequested: 60000, percentCompleteClaimed: 50, milestoneId: "ms-3",
     }, 201)).line;
     const L2 = (await j("pm", "POST", `${D5}/lines`, {
-      description: "Guard rail installation", scheduledValue: 80000, currentRequested: 40000, percentCompleteClaimed: 50,
+      description: "Guard rail installation", scheduledValue: 80000, currentRequested: 40000, percentCompleteClaimed: 50, milestoneId: "ms-3",
     }, 201)).line;
     await j("pm", "POST", `${D5}/submit`, undefined, 200);
     const fieldReview = await api("field", "POST", `${D5}/lines/${L1.id}/review`, { decision: "SUPPORTED" });
@@ -1181,15 +1226,17 @@ function readZip(buf) {
     // ================= PART S · merge-readiness micro-patch =================
 
     /** Full fixture flow: pm-authored draw through governance to a lender
-     *  decision, returning ids. Lines carry no milestone (funding tests do
-     *  not exercise the inspection surface). */
+     *  decision, returning ids. Lines bill ms-3 — its jurisdictional
+     *  requirement was determined in Part G, so the fixture surface holds
+     *  no unknown information (an unmapped line would be missing
+     *  information, and readiness refuses approving decisions over it). */
     async function fundableDraw(amount, decisionInput) {
       const d = (await j("pm", "POST", "/api/draws", {
         projectId: P, requestedAmount: amount, periodStart: "2026-07-01", periodEnd: "2026-07-31",
       }, 201)).draw;
       const D_ = `/api/draws/${d.id}`;
       const l = (await j("pm", "POST", `${D_}/lines`, {
-        description: "Fixture works package", scheduledValue: amount * 2, currentRequested: amount, percentCompleteClaimed: 50,
+        description: "Fixture works package", scheduledValue: amount * 2, currentRequested: amount, percentCompleteClaimed: 50, milestoneId: "ms-3",
       }, 201)).line;
       await j("pm", "POST", `${D_}/submit`, undefined, 200);
       await j("compliance", "POST", `${D_}/lines/${l.id}/review`, { decision: "SUPPORTED" }, 200);

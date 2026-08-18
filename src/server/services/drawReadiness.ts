@@ -960,9 +960,17 @@ export function readinessSnapshots(drawRequestId: string): Array<{
  * Record a lender decision WITH readiness governance:
  *
  *  - computes readiness at decision time (what OBV showed);
+ *  - an approving-type decision over an INCOMPLETE readiness is refused
+ *    outright (422), justified or not: OBV does not hold enough governed
+ *    information to support a readiness conclusion, and missing
+ *    information cannot be waived into existence. Nothing is persisted —
+ *    no decision, no snapshot, no exception disposition. Non-approving
+ *    dispositions (reject, return, clarification) remain governed solely
+ *    by the pre-existing lender-decision workflow;
  *  - an approving-type decision over a HOLD / EXCEPTION_REVIEW readiness
  *    requires explicit justification — either accepted exceptions or a
- *    decision reason. There is no unlabeled one-click bypass;
+ *    decision reason — and every outstanding blocker must be
+ *    exception-eligible. There is no unlabeled one-click bypass;
  *  - the decision itself still goes through the untouched lender-decision
  *    workflow (capability check, submitter exclusion, amount
  *    reconciliation, governance truth table, dual control);
@@ -986,6 +994,24 @@ export function recordDecisionWithReadiness(
   // exactly when it would otherwise be recorded.
   const decision = lenderDecisions.recordLenderDecision(user, { ...decisionInput, drawRequestId }, {
     beforePersist: () => {
+      if (!approvingType) return;
+      // INCOMPLETE: OBV does not hold enough governed information to
+      // support a readiness conclusion, so an approving decision is
+      // refused outright — justification cannot substitute for missing
+      // information. The refusal persists nothing; once the unknown is
+      // resolved, readiness recomputes and the normal path (READY) or
+      // the documented-exception path (HOLD) applies.
+      if (readiness.status === "INCOMPLETE") {
+        const unknown = readiness.blockingReasons.filter((b) => UNKNOWN_INFO_CODES.has(b.code));
+        throw new LenderError(
+          `OBV readiness is INCOMPLETE — recording ${decisionInput.decision} is not permitted because OBV ` +
+            "does not have enough governed information to support a readiness conclusion (" +
+            unknown.map((b) => b.code).join(", ") +
+            "). Missing information cannot be waived into existence, with or without justification. " +
+            "Resolve the missing information first; readiness recomputes from governed state.",
+          422
+        );
+      }
       if (!overriding) return;
       const justification =
         (decisionInput.exceptionsAccepted ?? "").trim() || (decisionInput.decisionReason ?? "").trim();
@@ -997,17 +1023,14 @@ export function recordDecisionWithReadiness(
           422
         );
       }
-      // Hard refusal applies to SUBSTANTIVE non-exceptionable blockers
-      // (incomplete reviewer work, structural reconciliation failure).
-      // Unknown-information reasons are equally non-exceptionable — they
-      // can never be waived into satisfaction, they keep the requirement
-      // outstanding and they persist into the snapshot — but the
-      // authority to record a justified decision over an undetermined
-      // surface remains the pre-existing lender-decision workflow's,
-      // which this engine synthesizes and never strengthens.
-      const nonExceptionable = readiness.blockingReasons.filter(
-        (b) => !b.exceptionAllowed && !UNKNOWN_INFO_CODES.has(b.code)
-      );
+      // Hard refusal: every non-exceptionable blocker refuses the
+      // override — incomplete reviewer work, structural reconciliation
+      // failure, AND unknown-information reasons alike. exceptionAllowed
+      // is the one shared invariant (evaluator, gate, UI, snapshots):
+      // what the evaluator marks non-exceptionable, no decision path can
+      // waive. Missing information in particular cannot be waived into
+      // existence — it must be resolved, not justified past.
+      const nonExceptionable = readiness.blockingReasons.filter((b) => !b.exceptionAllowed);
       if (nonExceptionable.length > 0) {
         throw new LenderError(
           "The configured readiness policy does not permit proceeding by exception past: " +

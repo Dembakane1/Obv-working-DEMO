@@ -54,7 +54,7 @@ requirement than project configuration.
 | `READY` | Every configured required condition is satisfied. Means **ready for lender review** — not approval. |
 | `HOLD` | ≥1 blocking requirement is unmet and at least one is not exception-eligible under policy. |
 | `EXCEPTION_REVIEW` | Every configured requirement is satisfied **except** formally recorded exceptions awaiting the lender's disposition, and policy permits proceeding past them. Any other outstanding requirement is a HOLD — status describes what is outstanding; whether a documented override may proceed at decision time is a separate, policy-governed axis. |
-| `INCOMPLETE` | OBV lacks enough recorded information about the draw itself for a meaningful conclusion (draft, cancelled, no lines, structure incomplete). Jurisdictional UNKNOWNs follow the gates' own recording: an unknown-status permit arrives as `PERMIT_NOT_ACTIVE` and **blocks** where configuration gates it (UNKNOWN never behaves as ACTIVE); an undetermined inspection requirement is recorded by the gates as a non-gating condition and surfaces as a readiness **warning** — visible, never a silent pass, never a satisfied claim, and never converted to a synthetic PASS. |
+| `INCOMPLETE` | OBV lacks enough **governed information** to support a readiness conclusion — about the draw itself (draft, cancelled, no lines, structure incomplete) or about the jurisdictional surface. An undetermined inspection requirement (`INSPECTION_REQUIREMENT_UNKNOWN`) and a line with no milestone mapping (`LINE_WITHOUT_MILESTONE`; not raised on DMV projects, whose control record evaluates lines by its own line-scoped requirements) are unknown-information **blocking** reasons: alone they resolve INCOMPLETE — never READY, never a satisfied claim, and the category rolls up `UNKNOWN` — and beside a substantive blocker the draw HOLDs with the unknown still visible. They are never exception-eligible: missing information is resolved through the governed workflows, never waived into existence. (An unknown-status permit is different — the gates record it as `PERMIT_NOT_ACTIVE`, a substantive PERMIT-category blocker where configuration gates it: UNKNOWN never behaves as ACTIVE.) |
 
 ## 3. Blocker model
 
@@ -148,9 +148,23 @@ Built on the existing lender-decision workflow (`RECORD_LENDER_DECISION`
 capability, submitter excluded, governance truth table intact):
 
 - When an approving-type decision (`APPROVED` / `CONDITIONALLY_APPROVED` /
-  `REDUCED`) is recorded while OBV readiness is `HOLD` or `EXCEPTION_REVIEW`,
+  `REDUCED`) is recorded while OBV readiness is `INCOMPLETE`, it is **refused
+  outright** (422), with or without justification: OBV does not have enough
+  governed information to support a readiness conclusion, and missing
+  information cannot be waived into existence. Nothing persists — no decision,
+  no snapshot, no exception disposition. Once the missing information is
+  resolved, readiness recomputes from governed state: `READY` proceeds
+  normally, `HOLD` follows the documented-exception rules below.
+  Non-approving dispositions (reject, return, clarification, `PENDING`)
+  remain governed solely by the pre-existing lender-decision workflow.
+- When it is recorded while readiness is `HOLD` or `EXCEPTION_REVIEW`,
   the service **requires explicit justification** (`exceptionsAccepted` or a
-  decision reason) — a one-click unlabeled bypass is refused (422).
+  decision reason) — a one-click unlabeled bypass is refused (422) — and
+  every outstanding blocker must be exception-eligible: `exceptionAllowed`
+  is the one shared invariant (evaluator, decision gate, UI, snapshots), so
+  the never-exceptionable reasons — incomplete reviewer work, reconciliation
+  failure, and the unknown-information codes — refuse the override regardless
+  of justification.
 - Every decision persists a **readiness snapshot** (`draw_events` type
   `READINESS_SNAPSHOT`): full result JSON, overridden blockers, requested and
   supportable amounts, policy version, actor, timestamp, decision id.
