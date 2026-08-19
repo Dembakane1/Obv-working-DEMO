@@ -9,6 +9,15 @@ document already exists, this file points at it instead of restating it.
 If this file and the code ever disagree, **the code wins** — and this file
 should be corrected.
 
+**Fresh-session bootstrap:**
+
+1. Pull the latest `main`.
+2. Read this handoff.
+3. Read the authoritative topic document for the task (§16 maps them).
+4. Inspect the current implementation and tests before editing anything.
+5. If the docs and the code disagree, **the code wins** — and the docs should
+   be corrected.
+
 **Reconstructed from:** `main` at `d95fd3fbf8933186ce8248384206b4be2020bcc0`
 (merge of PR #24). Verified against source, tests, `.test-logs/summary.json`,
 git merge history and the existing `docs/` set. Sections are marked

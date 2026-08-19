@@ -1,5 +1,12 @@
 # OBV — OpenBuild Verify
 
+> **CURRENT PROJECT STATE:** For the current lender-focused product
+> definition, completed milestones, architectural invariants, deferred work
+> and continuation instructions, see **[`docs/PROJECT_HANDOFF.md`](docs/PROJECT_HANDOFF.md)**.
+>
+> README remains the broad system reference, but some introductory
+> positioning predates the lender-pilot direction.
+
 **The truth layer for physical projects.**
 
 OBV is verification and milestone-tracking software for organizations that
