@@ -17,6 +17,7 @@ import {
   DensePanel,
   DenseTable,
   EmptyStateV2,
+  FilterBar,
   KpiRail,
   Methodology,
   Metric,
@@ -39,6 +40,8 @@ import {
   roleLabel,
   shortHash,
 } from "./components";
+import type { DrawReadinessResult } from "../services/drawReadiness";
+import type { NextAction } from "../services/pilot/lenderPilot";
 import type {
   ApprovalRecord,
   ApprovalRequest,
@@ -151,113 +154,241 @@ const docTypeLabel = (t: string) => t.replace(/_/g, " ").toLowerCase();
 
 // ------------------------------------------------------------ register
 
+const READINESS_META: Record<DrawReadinessResult["status"], { label: string; tone: string; glyph: string }> = {
+  READY: { label: "Ready", tone: "ok", glyph: "✓" },
+  HOLD: { label: "Hold", tone: "bad", glyph: "✕" },
+  EXCEPTION_REVIEW: { label: "Exception review", tone: "warn", glyph: "!" },
+  INCOMPLETE: { label: "Incomplete", tone: "", glyph: "?" },
+};
+
+function ReadinessChip(props: { status: DrawReadinessResult["status"]; title?: string }): VNode {
+  const m = READINESS_META[props.status];
+  return (
+    <span className={`status ${m.tone}`} title={props.title}>
+      <span className="g" aria-hidden="true">{m.glyph}</span>
+      {m.label}
+    </span>
+  );
+}
+
+/** Which workflow side each OBV role acts as, for the role-aware next
+ *  action. Restatement for display only — authorization stays with the
+ *  governed routes. */
+const ROLE_ACTOR_SIDES: Record<User["role"], Array<NextAction["actor"]>> = {
+  FUNDER_REP: ["LENDER", "APPROVER"],
+  COMPLIANCE_REVIEWER: ["REVIEWER", "APPROVER"],
+  PROJECT_MANAGER: ["CONTRACTOR"],
+  FIELD: ["INSPECTOR"],
+};
+
 export interface DrawRegisterRow {
   draw: DrawRequest;
   project: Project | null;
+  org: Organization | null;
   summary: DrawHeaderSummary;
-  nextAction: string;
+  /** Live OBV readiness — computed for open draws only; closed draws show their terminal state instead. */
+  readiness: DrawReadinessResult | null;
+  next: NextAction;
 }
+
+const OPEN_DRAW_STATUSES: DrawRequestStatus[] = [
+  "DRAFT", "SUBMITTED", "UNDER_REVIEW", "CLARIFICATION_REQUIRED",
+  "READY_FOR_GOVERNANCE", "PARTIALLY_APPROVED", "APPROVED", "RETURNED",
+];
 
 export function renderDrawRegister(input: {
   nav: NavContext;
   rows: DrawRegisterRow[];
   canCreate: boolean;
+  viewerRole: User["role"];
+  /** Readiness filter from the query string: READY | HOLD | EXCEPTION_REVIEW | INCOMPLETE | "". */
+  filter: string;
 }): string {
-  const active = input.rows.filter(
-    (r) => !["RELEASED", "CANCELLED"].includes(r.draw.status)
-  );
-  const awaitingGov = input.rows.filter((r) => r.draw.status === "READY_FOR_GOVERNANCE");
-  const inReview = input.rows.filter((r) =>
-    ["SUBMITTED", "UNDER_REVIEW", "CLARIFICATION_REQUIRED"].includes(r.draw.status)
-  );
-  const released = input.rows.filter((r) => r.draw.status === "RELEASED");
+  const open = input.rows.filter((r) => OPEN_DRAW_STATUSES.includes(r.draw.status));
+  const byReadiness = (s: DrawReadinessResult["status"]) => open.filter((r) => r.readiness?.status === s);
+  const ready = byReadiness("READY");
+  const hold = byReadiness("HOLD");
+  const exceptionReview = byReadiness("EXCEPTION_REVIEW");
+  const requestedOpen = open.reduce((sum, r) => sum + (r.readiness?.requestedAmount ?? r.summary.requested), 0);
+  const supportedOpen = open.reduce((sum, r) => sum + (r.readiness?.supportableAmount ?? r.summary.supported), 0);
+  const anyPartial = open.some((r) => r.readiness && r.readiness.supportBasis !== "FULL_REVIEW");
+  const viewerSides = ROLE_ACTOR_SIDES[input.viewerRole];
+
+  const shown = input.filter
+    ? input.rows.filter((r) => r.readiness?.status === input.filter)
+    : input.rows;
+  const filterLabel: Record<string, string> = {
+    READY: "Ready for lender review",
+    HOLD: "On hold",
+    EXCEPTION_REVIEW: "Exception review",
+    INCOMPLETE: "Incomplete",
+  };
+
+  const registerRows = shown.map((r) => {
+    const s = r.summary;
+    const rd = r.readiness;
+    const primary = rd?.primaryBlocker ?? null;
+    const yours = r.next.actor !== "NONE" && viewerSides.includes(r.next.actor);
+    return {
+      draw: (
+        <a className="t-id" href={`/draw/${r.draw.id}`}>
+          <span className="strong">Draw #{r.draw.drawNumber}</span>
+          <span className="t-sub">{DRAW_STATUS_META[r.draw.status].label}</span>
+        </a>
+      ),
+      project: r.project ? <span className="t-name" title={r.project.name}>{r.project.name.slice(0, 34)}</span> : "—",
+      org: r.org ? <span className="t-sub" title={r.org.name}>{r.org.name.slice(0, 26)}</span> : <span className="t-dim">—</span>,
+      requested: <span className="num">{money(s.requested)}</span>,
+      supported: rd ? (
+        <span
+          className="num"
+          title={rd.supportBasis === "FULL_REVIEW"
+            ? "All lines carry a recorded reviewer decision."
+            : "Provisional — unreviewed lines contribute zero; the amount can only grow as reviews are recorded."}
+        >
+          {money(rd.supportableAmount)}
+          {rd.supportBasis !== "FULL_REVIEW" ? <span className="t-dim">*</span> : null}
+        </span>
+      ) : (
+        <span className="num">{money(s.supported)}</span>
+      ),
+      readiness: rd ? (
+        <ReadinessChip
+          status={rd.status}
+          title={`OBV readiness at last evaluation — ${rd.blockingReasons.length} blocking requirement${rd.blockingReasons.length === 1 ? "" : "s"}. Not an approval.`}
+        />
+      ) : (
+        <span className="t-dim" title="Closed draw — live readiness applies to open draws only.">—</span>
+      ),
+      blocker: primary ? (
+        <span className="t-next" title={`${primary.message} Next: ${primary.nextAction}`}>
+          {primary.message.length > 46 ? `${primary.message.slice(0, 46)}…` : primary.message}
+        </span>
+      ) : rd?.status === "READY" ? (
+        <span className="t-dim">None outstanding</span>
+      ) : (
+        <span className="t-dim">—</span>
+      ),
+      exception: s.exception > 0
+        ? <span className="num warn-t" title="Reviewer-recorded exception amount on line items.">{money(s.exception)}</span>
+        : <span className="t-dim">—</span>,
+      age: <span className="num">{s.ageDays}d</span>,
+      next: (
+        <span className="t-next" title={r.next.detail}>
+          {yours ? <span className="chip warn" style="margin-right:5px">You</span> : null}
+          {r.next.label}
+        </span>
+      ),
+    };
+  });
+
   return renderDocument(
     <AppShell title="Draw Requests" nav={input.nav} context="Draw Requests">
-      <PageHeader
-        title="Draw Requests"
-        sub="Lender review of construction draw requests. A draw request asks for review; a recommendation advises. Release eligibility is created only by the formal approval workflow."
-      >
-        {input.canCreate ? (
-          <a className="btn" href="/draws/new">Create Draw Request</a>
-        ) : null}
-      </PageHeader>
-      <div className="metric-strip">
-        <Metric d={{ value: String(active.length), label: "Active draw requests", sub: active.length > 0 ? "In the review pipeline" : "None active", dim: active.length === 0 }} />
-        <Metric d={{ value: String(inReview.length), label: "In lender review", sub: inReview.length > 0 ? "Documents and evidence being checked" : "Review queue clear", dim: inReview.length === 0 }} />
-        <Metric d={{ value: String(awaitingGov.length), label: "Awaiting formal approval", tone: awaitingGov.length > 0 ? "warn" : undefined, edge: awaitingGov.length > 0 ? "warn" : undefined, sub: awaitingGov.length > 0 ? "Review complete — roles must sign" : "Nothing at governance", dim: awaitingGov.length === 0 }} />
-        <Metric d={{ value: String(released.length), label: "Released", tone: released.length > 0 ? "ok" : undefined, sub: "Through governed approval only", dim: released.length === 0 }} />
+      <div className="page-wrap ws">
+        <WorkHeader
+          title="Draw Requests"
+          sub="Lender review of construction draw requests. OBV readiness states what blocks lender review — it is not approval, release eligibility or payment authorization."
+        >
+          {input.canCreate ? <a className="btn sm" href="/draws/new">Create Draw Request</a> : null}
+        </WorkHeader>
+        <KpiRail
+          items={[
+            { label: "Open draws", value: String(open.length), detail: open.length > 0 ? "in the review pipeline" : "pipeline clear" },
+            {
+              label: "Ready for review",
+              value: String(ready.length),
+              tone: ready.length > 0 ? "ok" : undefined,
+              detail: ready.length > 0 ? "configured requirements satisfied" : "none ready",
+              href: "/draws?readiness=READY",
+            },
+            {
+              label: "On hold",
+              value: String(hold.length),
+              tone: hold.length > 0 ? "bad" : undefined,
+              detail: hold.length > 0 ? "blocking requirements outstanding" : "none held",
+              href: "/draws?readiness=HOLD",
+            },
+            {
+              label: "Exception review",
+              value: String(exceptionReview.length),
+              tone: exceptionReview.length > 0 ? "warn" : undefined,
+              detail: exceptionReview.length > 0 ? "may proceed by documented exception" : "none pending",
+              href: "/draws?readiness=EXCEPTION_REVIEW",
+            },
+            { label: "Requested (open)", value: money(requestedOpen), detail: "sum of open draw requests" },
+            {
+              label: "Supportable (open)",
+              value: money(supportedOpen),
+              detail: anyPartial ? "provisional — lines still under review" : "from recorded line reviews",
+            },
+          ]}
+        />
+        <FilterBar
+          action="/draws"
+          count={input.filter ? `${shown.length} of ${input.rows.length} shown` : `${input.rows.length} draw${input.rows.length === 1 ? "" : "s"}`}
+        >
+          <select name="readiness" aria-label="Filter by OBV readiness">
+            <option value="">All draws</option>
+            <option value="READY" selected={input.filter === "READY"}>Ready for lender review</option>
+            <option value="HOLD" selected={input.filter === "HOLD"}>On hold</option>
+            <option value="EXCEPTION_REVIEW" selected={input.filter === "EXCEPTION_REVIEW"}>Exception review</option>
+            <option value="INCOMPLETE" selected={input.filter === "INCOMPLETE"}>Incomplete</option>
+          </select>
+        </FilterBar>
+        <DensePanel
+          title="Draw register"
+          right={input.filter
+            ? <a href="/draws">Clear filter</a>
+            : <span>requested · supportable · readiness · next action</span>}
+          flush
+        >
+          {shown.length === 0 ? (
+            <EmptyStateV2
+              icon={icons.dollar()}
+              title={input.filter ? `No draws in ${filterLabel[input.filter] ?? "this state"}` : "No draw requests yet"}
+              what={
+                input.filter
+                  ? "Draws exist but none are currently in the selected readiness state."
+                  : "Draw requests run the governed review: budget lines, required documents, field-evidence support, exceptions and formal approval. None have been submitted for this portfolio."
+              }
+              condition={input.filter ? undefined : "healthy"}
+              action={
+                input.filter
+                  ? <a className="btn secondary sm" href="/draws">Clear filter</a>
+                  : input.canCreate
+                    ? <a className="btn secondary sm" href="/draws/new">Create the first draw request</a>
+                    : undefined
+              }
+            />
+          ) : (
+            <DenseTable
+              columns={[
+                { key: "draw", label: "Draw" },
+                { key: "project", label: "Project" },
+                { key: "org", label: "Borrower org" },
+                { key: "requested", label: "Requested", num: true },
+                { key: "supported", label: "Supportable", num: true },
+                { key: "readiness", label: "Readiness" },
+                { key: "blocker", label: "Primary blocker" },
+                { key: "exception", label: "Exception", num: true },
+                { key: "age", label: "Age", num: true },
+                { key: "next", label: "Next action" },
+              ]}
+              rows={registerRows}
+            />
+          )}
+        </DensePanel>
+        <AboutView label="What OBV readiness means on this register">
+          <p>
+            Readiness synthesizes recorded requirements — line reviews, documents, evidence,
+            jurisdictional gates and open exceptions — into READY, HOLD, EXCEPTION REVIEW or
+            INCOMPLETE. READY means ready for lender review, nothing more. Supportable amounts
+            come only from recorded reviewer line decisions (* marks a provisional figure while
+            lines are unreviewed). Milestone tranche HELD / RELEASED state on the virtual
+            project account is governed separately and is never changed by a draw review.
+          </p>
+        </AboutView>
       </div>
-      <div className="panel">
-        <div className="panel-head">
-          <h3>Draw register</h3>
-          <span className="right">{input.rows.length} draw{input.rows.length === 1 ? "" : "s"}</span>
-        </div>
-        {input.rows.length === 0 ? (
-          <EmptyStateV2
-            icon={icons.dollar()}
-            title="No draw requests yet"
-            what="Draw requests run the governed review: budget lines, required documents, field-evidence support, exceptions and formal approval. None have been submitted for this portfolio."
-            condition="healthy"
-            action={input.canCreate ? <a className="btn secondary sm" href="/draws/new">Create the first draw request</a> : undefined}
-          />
-        ) : (
-          <div className="intg-table-wrap">
-            <table className="intg-table">
-              <thead>
-                <tr>
-                  <th>Draw #</th><th>Project</th><th>Requested</th><th>Supported</th>
-                  <th>Exception</th><th>Retainage</th><th>Recommendation</th>
-                  <th>Governance</th><th>Age</th><th>Next action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {input.rows.map((r) => {
-                  const s = r.summary;
-                  const gov = s.approval
-                    ? s.approval.status === "PENDING"
-                      ? `${s.approvalRecords.filter((rec) => rec.decision === "APPROVED").length} of ${s.approval.requiredRoles.length} approvals`
-                      : s.approval.status
-                    : "—";
-                  return (
-                    <tr>
-                      <td data-l="Draw">
-                        <a href={`/draw/${r.draw.id}`} style="font-weight:600;color:var(--action)">
-                          Draw #{r.draw.drawNumber}
-                        </a>{" "}
-                        <DrawStatusChip status={r.draw.status} />
-                      </td>
-                      <td data-l="Project">{r.project?.name.slice(0, 34) ?? "—"}</td>
-                      <td data-l="Requested" style="font-variant-numeric:tabular-nums">{money(s.requested)}</td>
-                      <td data-l="Supported" style="font-variant-numeric:tabular-nums">{money(s.supported)}</td>
-                      <td data-l="Exception" style={`font-variant-numeric:tabular-nums;${s.exception > 0 ? "color:var(--warn);font-weight:600" : ""}`}>
-                        {s.exception > 0 ? money(s.exception) : "—"}
-                      </td>
-                      <td data-l="Retainage" style="font-variant-numeric:tabular-nums">{s.retainage > 0 ? money(s.retainage) : "—"}</td>
-                      <td data-l="Recommendation">
-                        {r.draw.reviewRecommendation ? (
-                          <span className={`sync-tag ${RECOMMENDATION_TONE[r.draw.reviewRecommendation]}`} style="margin-left:0">
-                            {RECOMMENDATION_LABEL[r.draw.reviewRecommendation]}
-                          </span>
-                        ) : (
-                          <span className="sub">Not finalized</span>
-                        )}
-                      </td>
-                      <td data-l="Governance">{gov}</td>
-                      <td data-l="Age">{s.ageDays}d</td>
-                      <td data-l="Next action" className="sub">{r.nextAction}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-      <p className="sub" style="margin:10px 2px;font-size:11px">
-        Draw amounts are review-layer figures. Milestone tranche HELD / RELEASED
-        state on the virtual project account is governed separately by the
-        milestone verification workflow and is never changed by a draw review.
-      </p>
       <script src="/js/poll.js" defer></script>
     </AppShell>
   );
@@ -446,6 +577,8 @@ export interface DrawDetailData {
   canReview: boolean;
   /** Deterministic next action derived from authoritative state. */
   nextAction?: { code: string; label: string; actor: string; detail: string } | null;
+  /** OBV Readiness — deterministic synthesis; presentation only. */
+  readiness?: DrawReadinessResult | null;
   canDecide: boolean;
   alreadyDecided: boolean;
   isSubmitter: boolean;
@@ -494,15 +627,25 @@ export function renderDrawDetail(d: DrawDetailData): string {
   const missingDocs = d.checklist.filter((c) => c.state === "MISSING" || c.state === "REJECTED" || c.state === "EXPIRED").length;
   const released = d.accountEvents.find((e) => e.type === "RELEASED");
 
-  // Blockers = the failing completeness checks plus governed line exceptions.
-  const blockers: Array<{ title: string; sub: string; severity: "high" | "med" }> = [
-    ...checks.filter((c) => !c.ok).map((c) => ({ title: c.label, sub: c.detail, severity: "high" as const })),
-    ...exceptions.slice(0, 4).map((l) => ({
-      title: `${enumLabel(l.status)} — ${l.description}`,
-      sub: l.reviewNotes ?? `${money(l.currentRequested)} requested`,
-      severity: "med" as const,
-    })),
-  ];
+  // Blockers come ONLY from the readiness engine — the same governed
+  // registers, synthesized once with deterministic ordering. The view
+  // never re-derives its own blocker list: if the engine is unavailable
+  // the panel says so honestly instead of running a parallel algorithm.
+  const r = d.readiness ?? null;
+  const blockers: Array<{ title: string; sub: string; severity: "high" | "med" }> = r
+    ? r.blockingReasons.map((b) => ({
+        title: b.message,
+        sub: `${enumLabel(b.category)} · ${b.nextAction}`,
+        severity: "high" as const,
+      }))
+    : [{
+        title: "Readiness evaluation unavailable",
+        sub: "The blocker synthesis could not run for this draw — the underlying registers remain authoritative.",
+        severity: "med" as const,
+      }];
+  const readinessTone = r
+    ? r.status === "READY" ? "ok" : r.status === "INCOMPLETE" ? "" : r.status === "EXCEPTION_REVIEW" ? "warn" : "bad"
+    : "";
 
   const decisionControls = (
     <>
@@ -621,6 +764,79 @@ export function renderDrawDetail(d: DrawDetailData): string {
           }
           rail={
             <>
+              {r ? (
+                <DensePanel title="OBV Readiness" className="readiness-panel">
+                  <div className={`rd-status ${readinessTone}`}>
+                    <span className="rd-badge">{r.status === "EXCEPTION_REVIEW" ? "EXCEPTION REVIEW" : r.status}</span>
+                    <span className="rd-caption">
+                      {r.status === "READY"
+                        ? "Ready for lender review — not an approval"
+                        : r.status === "INCOMPLETE"
+                          ? "Insufficient recorded information for a conclusion"
+                          : r.status === "EXCEPTION_REVIEW"
+                            ? "Blocked — lender may proceed by documented exception"
+                            : "Blocking requirements outstanding"}
+                    </span>
+                  </div>
+                  <DenseFacts
+                    rows={[
+                      { k: "Requested", v: <span className="num">{money(r.requestedAmount)}</span> },
+                      {
+                        k: "Currently supported",
+                        v: (
+                          <span className="num">
+                            {money(r.supportableAmount)}
+                            {r.supportBasis !== "FULL_REVIEW" ? <span className="t-dim"> · {r.supportBasis === "NO_REVIEW" ? "no line reviews yet" : "partial review"}</span> : null}
+                          </span>
+                        ),
+                      },
+                      { k: "Unsupported", v: <span className="num">{money(r.unsupportedAmount)}</span> },
+                      { k: "Blocking requirements", v: String(r.blockingReasons.length) },
+                    ]}
+                  />
+                  {r.primaryBlocker ? (
+                    <p className="rd-primary">
+                      <b>Primary reason.</b> {r.primaryBlocker.message}
+                    </p>
+                  ) : null}
+                  {r.primaryBlocker ? (
+                    <p className="rd-next"><b>Next action.</b> {r.primaryBlocker.nextAction}</p>
+                  ) : null}
+                  {r.proceededByException ? (
+                    <p className="rd-primary">
+                      <b>Lender disposition.</b> PROCEEDED BY EXCEPTION — the requirement remains
+                      OUTSTANDING; the recorded {enumLabel(r.proceededByException.decision)} decision
+                      does not satisfy it.
+                      {r.proceededByException.justification ? ` Justification: ${r.proceededByException.justification}` : ""}
+                    </p>
+                  ) : null}
+                  <details className="about-view rd-detail">
+                    <summary>Readiness detail — {r.categories.filter((c) => c.state !== "NOT_APPLICABLE").length} categories</summary>
+                    <div className="av-body">
+                      <table className="rd-cats">
+                        {r.categories
+                          .filter((c) => c.state !== "NOT_APPLICABLE")
+                          .map((c) => (
+                            <tr>
+                              <td>{enumLabel(c.category)}</td>
+                              <td>
+                                <span className={`status ${c.state === "PASS" ? "ok" : c.state === "HOLD" ? "bad" : c.state === "WARNING" ? "warn" : ""}`}>
+                                  <span className="g">{c.state === "PASS" ? "✓" : c.state === "HOLD" ? "✕" : c.state === "WARNING" ? "!" : "?"}</span>
+                                  {c.state === "NOT_APPLICABLE" ? "N/A" : c.state}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                      </table>
+                      <p className="rd-doctrine">
+                        OBV Readiness synthesizes recorded requirements (evaluated {fmtDate(r.evaluatedAt).slice(0, 16)},
+                        policy v{r.policyVersion}). It is not lender approval, not release eligibility, not a legal
+                        conclusion and not payment authorization — those remain separate governed workflows.
+                      </p>
+                    </div>
+                  </details>
+                </DensePanel>
+              ) : null}
               <DensePanel title="Decision status">
                 <DenseFacts
                   rows={[
@@ -813,15 +1029,17 @@ function renderOverviewTab(d: DrawDetailData, editable: boolean): VNode {
 
 function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolean): VNode {
   const { draw } = d;
-  const rec = d.lines.reduce((s, l) => s + l.currentRequested, 0);
-  const reconciled = rec === draw.requestedAmount;
+  // Reconciliation is the governed completeness check — the view renders
+  // its recorded verdict and detail, never its own arithmetic.
+  const reconcileCheck = d.completeness.checks.find((c) => c.key === "reconcile");
+  const reconciled = reconcileCheck?.ok ?? false;
   return (
     <>
       <DensePanel
         title="Line items"
         right={
           <span style={reconciled ? "color:var(--ok)" : "color:var(--warn)"}>
-            {money(rec)} / {money(draw.requestedAmount)} {reconciled ? "· reconciled" : `· off by ${money(Math.abs(draw.requestedAmount - rec))}`}
+            {reconcileCheck ? `${reconcileCheck.detail}${reconciled ? " · reconciled" : ""}` : "—"}
           </span>
         }
         flush
@@ -838,11 +1056,14 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
             { key: "ret", label: "Retainage", num: true },
             { key: "claimed", label: "Claimed", num: true },
             { key: "verified", label: "Verified physical", num: true },
+            { key: "supported", label: "Supported", num: true },
             { key: "variance", label: "Variance" },
+            { key: "readiness", label: "Readiness" },
             { key: "status", label: "Status" },
           ]}
           rows={d.lines.map((l) => {
             const ms = l.milestoneId ? d.milestones.find((m) => m.id === l.milestoneId) : null;
+            const lr = d.readiness?.lineReadiness.find((x) => x.lineItemId === l.id) ?? null;
             const cmp = d.lineComparisons.get(l.id);
             const co = d.lineChangeOrders.get(l.id);
             const gate = l.milestoneId ? d.lineMilestoneGates.get(l.milestoneId) : null;
@@ -874,6 +1095,9 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
               ret: l.retainageAmount != null ? money(l.retainageAmount) : "—",
               claimed: l.percentCompleteClaimed != null ? `${l.percentCompleteClaimed}%` : "—",
               verified: cmp?.verifiedPct != null ? `${cmp.verifiedPct}%` : "—",
+              supported: lr && lr.supported !== null
+                ? <span className="num" title={lr.variance && lr.variance > 0 ? `${money(lr.variance)} unsupported — ${lr.reason ?? "recorded reviewer decision"}` : undefined}>{money(lr.supported)}</span>
+                : <span className="t-dim" title="Awaiting reviewer decision — unreviewed value is never presumed.">—</span>,
               variance: cmp ? (
                 <>
                   <VarianceTag state={cmp.varianceState} />
@@ -884,6 +1108,14 @@ function renderLinesTab(d: DrawDetailData, editable: boolean, reviewOpen: boolea
                   ) : null}
                 </>
               ) : "—",
+              readiness: lr ? (
+                <span
+                  className={`sync-tag ${lr.status === "READY" ? "ok" : lr.status === "HOLD" ? "bad" : "warn"}`}
+                  title={lr.reason ?? (lr.status === "PENDING" ? "Awaiting reviewer decision." : undefined)}
+                >
+                  {lr.status === "READY" ? "Ready" : lr.status === "HOLD" ? "Hold" : "Pending"}
+                </span>
+              ) : <span className="t-dim">—</span>,
               status: <LineStatusTag status={l.status} />,
             };
           })}
@@ -2258,6 +2490,29 @@ function renderLenderTab(d: DrawDetailData, L: LenderTabData): VNode {
   );
 }
 
+/** Readiness events store structured JSON in detail — render a readable
+ *  line instead of the raw payload. Null for every other event type. */
+function readinessEventLabel(e: DrawEvent): string | null {
+  if (e.type !== "READINESS_SNAPSHOT" && e.type !== "READINESS_TRANSITION") return null;
+  try {
+    const p = JSON.parse(e.detail) as {
+      status?: string; from?: string | null;
+      blockingReasons?: unknown[]; overriddenBlockers?: string[];
+    };
+    if (e.type === "READINESS_TRANSITION") {
+      return `OBV readiness transition: ${p.from ? enumLabel(p.from) : "not previously recorded"} → ${enumLabel(p.status ?? "?")}.`;
+    }
+    const n = p.blockingReasons?.length ?? 0;
+    const overridden = (p.overriddenBlockers?.length ?? 0) > 0;
+    return `OBV readiness snapshot at lender decision — ${enumLabel(p.status ?? "?")}, ` +
+      `${n} blocking requirement(s)${overridden
+        ? "; PROCEEDED BY EXCEPTION — the outstanding requirements are preserved, not satisfied"
+        : ""}.`;
+  } catch {
+    return "OBV readiness record.";
+  }
+}
+
 function renderActivityTab(d: DrawDetailData): VNode {
   return (
     <div className="panel">
@@ -2275,7 +2530,7 @@ function renderActivityTab(d: DrawDetailData): VNode {
                 {icons.activity()}
               </span>
               <span className="body">
-                <span className="msg">{e.detail}</span>
+                <span className="msg">{readinessEventLabel(e) ?? e.detail}</span>
                 <span className="meta">
                   <span className="when">{fmtDate(e.createdAt)}</span>
                   {e.actorUserId ? <span>{d.users.get(e.actorUserId)?.name}</span> : null}

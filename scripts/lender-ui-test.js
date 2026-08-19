@@ -208,7 +208,11 @@ const financialState = () =>
     // ---- 8 + 10 + 5b. full governed flow on a fresh draw ----
     const d2 = (await j("pm", "POST", "/api/draws", { projectId: "proj-r47", requestedAmount: 120000, periodStart: "2026-07-01", periodEnd: "2026-07-31" }, 201)).draw;
     const D2 = `/api/draws/${d2.id}`;
-    const l2 = (await j("pm", "POST", `${D2}/lines`, { description: "Culvert ring supply", scheduledValue: 240000, currentRequested: 120000, percentCompleteClaimed: 50 }, 201)).line;
+    // Bills ms-2 — the milestone whose jurisdictional requirement the seed
+    // records as a reviewed NOT_REQUIRED determination. An unmapped line
+    // would be missing information, and readiness refuses an approving
+    // lender decision over missing information outright.
+    const l2 = (await j("pm", "POST", `${D2}/lines`, { description: "Culvert ring supply", scheduledValue: 240000, currentRequested: 120000, percentCompleteClaimed: 50, milestoneId: "ms-2" }, 201)).line;
     await j("pm", "POST", `${D2}/submit`, undefined, 200);
     // Separation of duties: PM submitted d2 — the funder decides; the pm
     // (submitter) must be rejected even with a lender capability granted.

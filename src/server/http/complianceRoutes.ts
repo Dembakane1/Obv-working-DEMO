@@ -24,6 +24,11 @@ export interface ComplianceRouteContext {
   isForm: () => boolean;
   redirect: (location: string) => void;
   sendJson: (data: unknown, status?: number) => void;
+  /** Called after a mutation that can change DMV per-line eligibility
+   *  (basis lifecycle, line requirements, cost-to-complete) — the server
+   *  wires this to the central readiness-transition fan-out for the
+   *  record's project. Advisory: must never fail the mutation. */
+  afterEligibilityMutation?: (projectId: string, actorUserId: string) => void;
 }
 
 /** Returns true when the request was handled by a compliance route. */
@@ -82,6 +87,7 @@ export async function handleComplianceRoutes(ctx: ComplianceRouteContext): Promi
         sourceEvidenceId: body.sourceEvidenceId || null,
         notes: body.notes || null,
       });
+      try { ctx.afterEligibilityMutation?.(basis.projectId, user.id); } catch { /* advisory */ }
       finish(`/project/${basis.projectId}/compliance`, { basis }, 201);
       return true;
     }
@@ -95,6 +101,7 @@ export async function handleComplianceRoutes(ctx: ComplianceRouteContext): Promi
     const id = basisActionApi[1];
     if (basisActionApi[2] === "finalize") {
       const basis = compliance.finalizePermitBasis(user, id);
+      try { ctx.afterEligibilityMutation?.(basis.projectId, user.id); } catch { /* advisory */ }
       finish(`/project/${basis.projectId}/compliance`, { basis });
       return true;
     }
@@ -111,6 +118,7 @@ export async function handleComplianceRoutes(ctx: ComplianceRouteContext): Promi
       if (body[k] !== undefined && body[k] !== "") (patch as Record<string, unknown>)[k] = body[k];
     }
     const basis = compliance.correctPermitBasis(user, id, patch, body.correctionReason ?? "");
+    try { ctx.afterEligibilityMutation?.(basis.projectId, user.id); } catch { /* advisory */ }
     finish(`/project/${basis.projectId}/compliance`, { basis }, 201);
     return true;
   }
@@ -180,6 +188,7 @@ export async function handleComplianceRoutes(ctx: ComplianceRouteContext): Promi
       requiredBeforeFinal: flag(body.requiredBeforeFinal),
       notes: body.notes || null,
     });
+    try { ctx.afterEligibilityMutation?.(requirement.projectId, user.id); } catch { /* advisory */ }
     finish(`/project/${requirement.projectId}/compliance`, { requirement }, 201);
     return true;
   }
@@ -205,6 +214,7 @@ export async function handleComplianceRoutes(ctx: ComplianceRouteContext): Promi
       externalIdentifier: body.externalIdentifier || null,
       notes: body.notes || null,
     });
+    try { ctx.afterEligibilityMutation?.(requirement.projectId, user.id); } catch { /* advisory */ }
     finish(`/project/${requirement.projectId}/compliance`, { requirement });
     return true;
   }
@@ -254,6 +264,7 @@ export async function handleComplianceRoutes(ctx: ComplianceRouteContext): Promi
       confidence: body.confidence ?? "",
       notes: body.notes || null,
     });
+    try { ctx.afterEligibilityMutation?.(estimate.projectId, user.id); } catch { /* advisory */ }
     finish(`/project/${estimate.projectId}/compliance`, { estimate }, 201);
     return true;
   }

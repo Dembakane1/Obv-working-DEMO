@@ -17,6 +17,7 @@ import { teamsNotifier } from "./TeamsNotifier";
 import { LenderError, assertCapability, assertProjectAccess } from "./lenderAccess";
 import { parseIsoDate, PermitError } from "./permits";
 import { drawDisputeHold } from "./disputes";
+import { lineSupported } from "./draws";
 import { makeWholeCurrency } from "./money";
 import type {
   DrawRequest,
@@ -86,6 +87,13 @@ export function recordLenderDecision(
     notes?: string | null;
     conditions?: Array<{ conditionType: string; description: string; dueAt?: string | null; responsiblePartyOrganizationId?: string | null }>;
     supersedesDecisionId?: string | null;
+  },
+  hooks?: {
+    /** Runs after the ENTIRE refusal ladder above has passed and before
+     *  anything persists — a governing layer may refuse a decision that
+     *  would otherwise be recorded (by throwing), without reordering or
+     *  masking this service's own 400/403/409 refusals. */
+    beforePersist?: () => void;
   }
 ): LenderDrawDecision {
   const draw = getDrawFor(user, input.drawRequestId);
@@ -240,6 +248,10 @@ export function recordLenderDecision(
     if (!supersedeIds.includes(superseded.id)) supersedeIds.push(superseded.id);
   }
 
+  // Every refusal above has passed — the decision WILL record unless a
+  // governing layer (e.g. the readiness exception gate) refuses now.
+  hooks?.beforePersist?.();
+
   const now = new Date().toISOString();
   // Distinct amount provenance (never copied from one another):
   //  - verifiedAmount: derived from the COMPLETE line review — a SUPPORTED
@@ -252,11 +264,7 @@ export function recordLenderDecision(
   const lines = repo.listDrawLines(draw.id);
   const allLinesReviewed = lines.length > 0 && lines.every((l) => l.status !== "PENDING");
   const verifiedFromLines = allLinesReviewed
-    ? lines.reduce((sum, l) => {
-        if (l.status === "SUPPORTED") return sum + l.currentRequested;
-        if (l.status === "PARTIALLY_SUPPORTED") return sum + (l.supportedAmount ?? 0);
-        return sum; // EXCEPTION / REJECTED contribute nothing
-      }, 0)
+    ? lines.reduce((sum, l) => sum + lineSupported(l), 0)
     : null;
   const decision: LenderDrawDecision = {
     id: lrepo.newId(),

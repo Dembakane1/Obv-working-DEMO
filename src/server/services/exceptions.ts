@@ -52,6 +52,13 @@ export class ExceptionError extends Error {
 const OPEN_STATES: ExceptionStatus[] = ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_RESPONSE"];
 export const isOpen = (e: ObvException): boolean => OPEN_STATES.includes(e.status);
 
+/** THE blocking-exception predicate: an exception blocks milestone
+ *  eligibility and draw readiness when it is open AND HIGH or CRITICAL.
+ *  Single source of truth — completionGates and drawReadiness consume
+ *  this instead of re-literalizing the status/severity sets. */
+export const isBlockingException = (e: ObvException): boolean =>
+  isOpen(e) && (e.severity === "HIGH" || e.severity === "CRITICAL");
+
 // ------------------------------------------------------------ SLA policy
 
 /** Simple configurable age targets (hours). Descriptive only — SLA state

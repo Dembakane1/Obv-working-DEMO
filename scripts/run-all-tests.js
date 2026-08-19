@@ -118,6 +118,7 @@ const STANDALONE = [
   "design-test.js",
   "workstation-test.js",
   "workstation-completion-test.js",
+  "draw-readiness-test.js",
   "navigation-test.js",
   "cloud-portability-test.js",
   "lender-pilot-test.js",

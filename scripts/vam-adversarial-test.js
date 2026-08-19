@@ -511,6 +511,7 @@ async function main() {
         .replace(/MOCK-[A-Z]+-[0-9A-F]{6,}/g, "")            // deterministic provider refs
         .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "") // uuids (a real account number has no uuid shape)
         .replace(/[0-9a-f]{32,}/gi, "")                       // sha-256 event/file hashes
+        .replace(/styles\.css\?v=[0-9a-f]{6,}/gi, "")         // stylesheet content hash (hex, may be digit-heavy)
         .replace(/\d{4}-\d{2}-\d{2}T?\s?\d{2}:\d{2}:\d{2}(\.\d+)?/g, ""); // timestamps
     assert(
       wp.html.includes("••••") && viewJson.includes("••••") &&

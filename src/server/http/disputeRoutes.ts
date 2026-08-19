@@ -23,6 +23,11 @@ export interface DisputeRouteContext {
   isForm: () => boolean;
   redirect: (location: string) => void;
   sendJson: (data: unknown, status?: number) => void;
+  /** Called after a mutation that changes a dispute's HOLD posture
+   *  (open / status transition / legal hold / resolve / close) — the
+   *  server wires this to the central readiness-transition fan-out for
+   *  the dispute's project. Advisory: must never fail the mutation. */
+  afterHoldMutation?: (projectId: string, actorUserId: string) => void;
 }
 
 /** Returns true when the request was handled by a dispute route. */
@@ -60,6 +65,7 @@ export async function handleDisputeRoutes(ctx: DisputeRouteContext): Promise<boo
         reason: body.reason ?? "",
         responsibleReviewerUserId: body.responsibleReviewerUserId || null,
       });
+      try { ctx.afterHoldMutation?.(dispute.projectId, user.id); } catch { /* advisory */ }
       finish(dispute.id, { dispute }, 201);
       return true;
     }
@@ -81,6 +87,7 @@ export async function handleDisputeRoutes(ctx: DisputeRouteContext): Promise<boo
     switch (section) {
       case "transition": {
         const dispute = disputes.transitionDispute(user, id, body.to ?? "", body.reason || null);
+        try { ctx.afterHoldMutation?.(dispute.projectId, user.id); } catch { /* advisory */ }
         finish(dispute.id, { dispute });
         return true;
       }
@@ -146,6 +153,7 @@ export async function handleDisputeRoutes(ctx: DisputeRouteContext): Promise<boo
           active: body.active === "true" || body.active === "1",
           reason: body.reason ?? "",
         });
+        try { ctx.afterHoldMutation?.(dispute.projectId, user.id); } catch { /* advisory */ }
         finish(dispute.id, { dispute });
         return true;
       }
@@ -170,11 +178,13 @@ export async function handleDisputeRoutes(ctx: DisputeRouteContext): Promise<boo
           externalReference: body.externalReference || null,
           acknowledged: body.acknowledged === "true" || body.acknowledged === "1",
         });
+        try { ctx.afterHoldMutation?.(dispute.projectId, user.id); } catch { /* advisory */ }
         finish(dispute.id, { dispute, acknowledgement: disputes.RESOLUTION_ACKNOWLEDGEMENT });
         return true;
       }
       case "close": {
         const dispute = disputes.closeDispute(user, id, body.note || null);
+        try { ctx.afterHoldMutation?.(dispute.projectId, user.id); } catch { /* advisory */ }
         finish(dispute.id, { dispute });
         return true;
       }

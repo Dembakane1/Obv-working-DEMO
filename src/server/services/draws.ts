@@ -1012,7 +1012,14 @@ export function returnDraw(user: User, drawId: string, reason: string): DrawRequ
 
 /** Supported amount a reviewed line contributes. PENDING contributes 0
  *  (nothing unreviewed is ever counted as supported). */
-function lineSupported(line: DrawLineItem): number {
+/** THE recorded-support formula, owned by the service that records line
+ *  reviews: SUPPORTED contributes the full requested value,
+ *  PARTIALLY_SUPPORTED the reviewer-recorded amount, and EXCEPTION /
+ *  REJECTED / PENDING contribute nothing — an unreviewed value is never
+ *  presumed. Exported as the single source: the recommendation engine,
+ *  lender-decision verifiedAmount, draw packages and the readiness
+ *  engine all consume THIS function rather than re-implementing it. */
+export function lineSupported(line: DrawLineItem): number {
   switch (line.status) {
     case "SUPPORTED":
       return line.currentRequested;
