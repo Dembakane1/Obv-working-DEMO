@@ -710,6 +710,33 @@ export function evaluateDrawEligibility(milestoneId: string): MilestoneDrawEligi
       computedAt,
     };
   }
+  return assembleEligibilitySurface(milestone, computedAt);
+}
+
+/**
+ * The draw-review gate surface INDEPENDENT of release bookkeeping.
+ *
+ * Identical assembly to evaluateDrawEligibility — same reasons, same
+ * stage flags, one source of truth — WITHOUT the RELEASED short-circuit.
+ * The short-circuit is release BOOKKEEPING: it records that the tranche
+ * was released by completed formal governance, exactly once, and that
+ * history is never rewritten. It must never SUPPRESS jurisdictional
+ * truth for a LATER draw review: whether an inspection requirement is
+ * determined, whether a required inspection passed, whether a permit is
+ * active — those facts belong to the current governed records, not to
+ * the tranche ledger. The Draw Readiness engine evaluates open draws
+ * against THIS surface, so an UNDETERMINED requirement on a released
+ * milestone still resolves INCOMPLETE (UNKNOWN never behaves as
+ * NOT_REQUIRED) while the release event itself stays untouched.
+ */
+export function drawReviewSurface(milestoneId: string): MilestoneDrawEligibility {
+  const milestone = repo.getMilestone(milestoneId);
+  if (!milestone) throw new GateError("Milestone not found", 404);
+  return assembleEligibilitySurface(milestone, new Date().toISOString());
+}
+
+function assembleEligibilitySurface(milestone: Milestone, computedAt: string): MilestoneDrawEligibility {
+  const milestoneId = milestone.id;
   const reasons: GateReason[] = [];
   const add = (code: string, detail: string, blocking: boolean) => reasons.push({ code, detail, blocking });
 

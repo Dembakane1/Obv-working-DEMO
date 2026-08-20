@@ -32,6 +32,7 @@ import type {
   DrawLineItem,
   DrawRequest,
   LenderDrawDecision,
+  MilestoneDrawEligibility,
   MilestoneGates,
   ObvException,
   User,
@@ -236,6 +237,13 @@ export interface ReadinessGateRef {
    *  official source, permit activity, code basis), independent of the
    *  tranche's release bookkeeping. */
   inspectionSurfaceClean: boolean;
+  /** completionGates.drawReviewSurface — the SAME gate assembly as
+   *  eligibility, WITHOUT the RELEASED short-circuit. Release
+   *  bookkeeping never suppresses jurisdictional truth for a later draw
+   *  review: an UNDETERMINED requirement on a released milestone still
+   *  resolves INCOMPLETE. For HELD milestones this is identical to
+   *  gates.eligibility. */
+  surface: MilestoneDrawEligibility;
 }
 
 export interface DrawReadinessInput {
@@ -309,6 +317,7 @@ export function assembleReadinessInput(drawRequestId: string, evaluatedAt?: stri
       gates: completionGates.milestoneGates(milestoneId),
       requiredEvidenceConfigured: repo.listRequirementsForMilestone(milestoneId).some((r) => r.required),
       inspectionSurfaceClean: completionGates.inspectionSurfaceClean(milestoneId),
+      surface: completionGates.drawReviewSurface(milestoneId),
     };
   });
   const unmappedLineCount = lines.filter((l) => !l.milestoneId).length;
@@ -556,7 +565,11 @@ export function evaluateDrawReadiness(
       "Map each line to its milestone so the configured gates apply.");
   }
   for (const ref of input.gates) {
-    const elig = ref.gates.eligibility;
+    // The engine reads the release-independent SURFACE, never the
+    // short-circuited eligibility: tranche release bookkeeping must not
+    // suppress the jurisdictional truth a lender review depends on. For
+    // HELD milestones the two are identical by construction.
+    const elig = ref.surface;
     for (const reason of elig.reasons) {
       // Milestone-lifecycle codes that do not describe a lender-review
       // requirement for the draw itself.
@@ -636,11 +649,11 @@ export function evaluateDrawReadiness(
         message: `${ref.label}: reviewed determination — no jurisdictional inspection required.`,
       });
     }
-    // A RELEASED milestone's eligibility short-circuits to release
-    // bookkeeping; its inspection truth is preserved by the gates
-    // module's surface check. A dirty surface on a released milestone
-    // cannot un-release the tranche — it is surfaced, not blocking.
-    if (elig.reasons.some((r) => r.code === "TRANCHE_RELEASED") && !ref.inspectionSurfaceClean) {
+    // A RELEASED milestone's ELIGIBILITY short-circuits to release
+    // bookkeeping (that history is never rewritten); the blocking gate
+    // reasons above already came from the release-independent surface.
+    // The warning remains as an explicit release-vs-surface note.
+    if (ref.gates.eligibility.reasons.some((r) => r.code === "TRANCHE_RELEASED") && !ref.inspectionSurfaceClean) {
       warn("RELEASED_MILESTONE_SURFACE_NOT_CLEAN", "GOVERNMENT_INSPECTION",
         `${ref.label}: the tranche is released but the inspection/permit surface is not clean — review the underlying records.`,
         ref.milestoneId);

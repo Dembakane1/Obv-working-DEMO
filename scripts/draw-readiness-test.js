@@ -93,6 +93,14 @@ const gateRef = (reasons, over = {}) => ({
   label: "M1 · Synthetic milestone",
   requiredEvidenceConfigured: over.requiredEvidenceConfigured ?? false,
   inspectionSurfaceClean: over.inspectionSurfaceClean ?? true,
+  // The release-independent draw-review surface. Defaults to the same
+  // reasons as eligibility (identical for HELD milestones); a released
+  // fixture overrides it with the TRUE surface via over.surfaceReasons.
+  surface: {
+    milestoneId: "ms-syn", result: "NOT_ELIGIBLE", reasons: over.surfaceReasons ?? reasons,
+    permitBlocksDrawReview: over.permitBlocksDrawReview ?? false, permitBlocksGovernance: false,
+    codeBasisBlocksDrawReview: false, codeBasisBlocksGovernance: false, computedAt: T0,
+  },
   gates: {
     milestoneId: "ms-syn",
     contractor: { status: "REPORTED_COMPLETE", reportedByUserId: null, reportedAt: null, notes: null, linkedEvidenceIds: [] },
@@ -225,6 +233,7 @@ async function main() {
     { code: "PERMIT_EXPIRED", detail: "Linked permit DCRA-001 is expired. Blocks: draw review.", blocking: false },
   ]);
   drawReviewPermit.gates[0].gates.eligibility.permitBlocksDrawReview = true;
+  drawReviewPermit.gates[0].surface.permitBlocksDrawReview = true;
   const rE4 = dr.evaluateDrawReadiness(drawReviewPermit);
   assert(rE4.status === "HOLD" && codes(rE4).includes("PERMIT_EXPIRED"),
     "a draw-review-only permit gate blocks readiness even though its governance flag is off");
@@ -234,14 +243,42 @@ async function main() {
   assert(rE5.status === "HOLD" && codes(rE5).includes("INSPECTION_NOT_SCHEDULED"),
     "a draw-review-only inspection gate (emitted non-blocking by the governance flag) still holds lender review");
   // A RELEASED milestone keeps its inspection truth: eligibility
-  // short-circuits to bookkeeping, but a dirty surface is surfaced.
+  // short-circuits to release BOOKKEEPING, but the engine evaluates the
+  // release-independent SURFACE — a dirty jurisdiction surface BLOCKS a
+  // later draw review, and the release-vs-surface note is still warned.
   const released = synInput([
     { code: "TRANCHE_RELEASED", detail: "The tranche was released by completed formal governance (exactly once).", blocking: false },
-  ], { requirementValue: "REQUIRED", inspectionGate: "FAILED" });
+  ], {
+    requirementValue: "REQUIRED", inspectionGate: "FAILED",
+    // The exact pair the real gates emit for gate = FAILED
+    // (completionGates: INSPECTION_FAILED + REINSPECTION_REQUIRED).
+    surfaceReasons: [
+      { code: "INSPECTION_FAILED", detail: "Required FINAL inspection FAILED — corrective work and reinspection are required.", blocking: true },
+      { code: "REINSPECTION_REQUIRED", detail: "A reinspection must be recorded after the failed result.", blocking: true },
+    ],
+  });
   released.gates[0].inspectionSurfaceClean = false;
   const rE6 = dr.evaluateDrawReadiness(released);
+  assert(rE6.status === "HOLD" && codes(rE6).includes("INSPECTION_FAILED"),
+    "release bookkeeping never suppresses jurisdictional truth — the dirty surface BLOCKS the later draw review");
   assert(rE6.warnings.some((w) => w.code === "RELEASED_MILESTONE_SURFACE_NOT_CLEAN"),
     "a released milestone with a dirty inspection surface is surfaced, never silently clean");
+  // The P-03 shape at the pure level: RELEASED bookkeeping + an
+  // UNDETERMINED requirement on the surface → INCOMPLETE, never READY.
+  const releasedUnknown = synInput([
+    { code: "TRANCHE_RELEASED", detail: "The tranche was released by completed formal governance (exactly once).", blocking: false },
+  ], {
+    requirementValue: "UNKNOWN", inspectionGate: "REQUIREMENT_UNKNOWN",
+    surfaceReasons: [
+      { code: "INSPECTION_REQUIREMENT_UNKNOWN", detail: "Whether a jurisdictional inspection is required has not been determined — UNKNOWN never behaves as NOT REQUIRED.", blocking: false },
+    ],
+  });
+  releasedUnknown.gates[0].inspectionSurfaceClean = false;
+  const rE6b = dr.evaluateDrawReadiness(releasedUnknown);
+  assert(rE6b.status === "INCOMPLETE" && codes(rE6b).includes("INSPECTION_REQUIREMENT_UNKNOWN"),
+    "P-03: an UNDETERMINED requirement on a RELEASED milestone resolves INCOMPLETE — release bookkeeping cannot convert UNKNOWN into READY");
+  assert(rE6b.blockingReasons.find((b) => b.code === "INSPECTION_REQUIREMENT_UNKNOWN").exceptionAllowed === false,
+    "P-03: the unknown on the released milestone is never exceptionable");
   // Unmapped lines: the jurisdictional surface cannot be evaluated —
   // missing information, never READY and never a vacuous pass.
   const unmapped = synInput([]);
@@ -945,6 +982,135 @@ async function main() {
   const snapRowsD = db.prepare("SELECT detail FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_SNAPSHOT'").all(dD.id);
   assert(snapRowsD.length === 1 && JSON.parse(snapRowsD[0].detail).overriddenBlockers.length === 0,
     "G2: the decision snapshot records a READY state with no overridden blockers");
+
+  // ---- P · P-03 regression: release bookkeeping never suppresses the
+  // jurisdiction surface. A milestone with NO determination is RELEASED
+  // through the NORMAL evidence + dual-control workflow; a later draw
+  // referencing it must be INCOMPLETE, approving decisions must refuse
+  // 422 with or without justification, nothing persists, the release is
+  // never rewritten, and governed resolution recomputes readiness. ----
+  console.log("\n== P · released-milestone unknown → INCOMPLETE (P-03) ==");
+  const msP = "ms-4"; // demo project milestone, HELD, no determination
+  const r47pm = foreignCookie;             // user-pm — proj-r47's own PM
+  const fieldCookie = await signIn("user-field");
+  assert(!db.prepare("SELECT 1 FROM inspection_requirements WHERE milestone_id = ?").get(msP),
+    "P/A: the milestone starts with NO inspection-requirement determination");
+  const PNG16 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAABWklEQVR4nGNQckyon7f3zm8py4jyaVuvfBYyDMjvW3vmNZemR3rb0iOPmRQd4uvm7rn9S9IivGzqlssMOMQ/CRr45/WuOf2KU8M9rXXJ4UeMCvZxtXN232LAIf5TwjysdMrmSx8F9P1ye1afesmh7pbasvjQQwZc4vJ2sTWzd938IW4WWjJ508UP/Hq+Od2rTr5gwCHOruaa0rzo4IP/crYx1bN23vguZhpSPGnjhfcMOMT5dH2yu1aeeM6m6pLctPDA/X+yNtFVM3dc/8aAQ1zUJLho4obz73h1vLM6Vxx/xqrinNS4YP+9vww4xGWsoypnbL/2VcQ4qHDC+nNvebS9MjuWH3vKwoBDXNkpsWH+vrt/pK0iK6Zvu/pF2CiwoH/d2TfcDDjEtTwz2pcdfcKMEa8MOMRxxjcD3nSAJb4Z8KYDLPHNgD8dYMY3A950gCW+GfCmAyzxDQA/T4QQ0Nni4QAAAABJRU5ErkJggg==";
+  const evP = (await post("/api/evidence", {
+    milestoneId: msP, photoDataUrl: PNG16,
+    latitude: -11.85, longitude: 33.6,
+    capturedAt: new Date().toISOString(),
+    deviceMetadata: { userAgent: "p03-regression", platform: "test", screen: "1x1", language: "en" },
+    isDemoFallback: false,
+  }, fieldCookie, 201)).json;
+  await post(`/api/approvals/${evP.approvalRequest.id}/decision`, { decision: "APPROVED" }, funderCookie, 200);
+  const relP = (await post(`/api/approvals/${evP.approvalRequest.id}/decision`, { decision: "APPROVED" }, complianceCookie, 200)).json;
+  assert(relP.released === true &&
+    db.prepare("SELECT account_status s FROM milestones WHERE id = ?").get(msP).s === "RELEASED",
+    "P/B: the tranche is RELEASED through the normal evidence + dual-control workflow, requirement still undetermined");
+  const dP = (await post("/api/draws", {
+    projectId: "proj-r47", requestedAmount: 25000, periodStart: "2026-11-01", periodEnd: "2026-11-30",
+  }, r47pm, 201)).json.draw;
+  await post(`/api/draws/${dP.id}/lines`, {
+    description: "Post-release works on the released milestone (P-03)", milestoneId: msP,
+    scheduledValue: 50000, currentRequested: 25000,
+  }, r47pm, 201);
+  await post(`/api/draws/${dP.id}/submit`, {}, r47pm);
+  const linePId = db.prepare("SELECT id FROM draw_line_items WHERE draw_request_id = ?").get(dP.id).id;
+  await post(`/api/draws/${dP.id}/lines/${linePId}/review`, { decision: "SUPPORTED" }, complianceCookie);
+  for (const r of db.prepare("SELECT id, title, doc_type t FROM draw_document_requirements WHERE draw_request_id = ? AND required = 1").all(dP.id)) {
+    await post(`/api/draws/${dP.id}/documents`, {
+      requirementId: r.id, title: `${r.title} (fictional)`, docType: r.t,
+      waiverKind: /LIEN_WAIVER/.test(r.t) ? "CONDITIONAL" : null,
+      waiverScope: /LIEN_WAIVER/.test(r.t) ? "PROGRESS" : null,
+      coveredThrough: /LIEN_WAIVER/.test(r.t) ? "2026-11-30" : null,
+      invoiceNumber: r.t === "CONTRACTOR_INVOICE" ? "P03-1001" : null,
+      amount: r.t === "CONTRACTOR_INVOICE" ? 25000 : null,
+    }, r47pm, 201);
+  }
+  assert(lastTransition(dP.id).status === "INCOMPLETE",
+    "P/D: the draw on the RELEASED, undetermined milestone is INCOMPLETE — release bookkeeping suppresses nothing");
+  // The seeded HIGH field issue blocks governance on the demo project —
+  // resolve it through its own workflow first (as the demo story does).
+  await post("/api/issues/issue-1/status", { status: "ACKNOWLEDGED" }, r47pm);
+  await post("/api/issues/issue-1/status", {
+    status: "RESOLVED", resolutionSummary: "Alternate supplier delivered gravel; stockpile replenished (fictional).",
+  }, r47pm);
+  const govP = await post(`/api/draws/${dP.id}/governance`, {}, funderCookie);
+  if (!govP.json?.approvalRequest && !govP.json?.result?.approvalRequest) {
+    fail(`P: governance -> ${govP.status}: ${JSON.stringify(govP.json).slice(0, 240)}`);
+  }
+  const apP = (govP.json.approvalRequest ?? govP.json.result?.approvalRequest).id;
+  await post(`/api/approvals/${apP}/decision`, { decision: "APPROVED" }, funderCookie, 200);
+  await post(`/api/approvals/${apP}/decision`, { decision: "APPROVED" }, complianceCookie, 200);
+  const decCountP = () => Number(db.prepare("SELECT COUNT(*) c FROM lender_draw_decisions WHERE draw_request_id = ?").get(dP.id).c);
+  const snapCountP = () => Number(db.prepare("SELECT COUNT(*) c FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_SNAPSHOT'").get(dP.id).c);
+  const bareP = await post(`/api/draws/${dP.id}/lender-decision`, {
+    decision: "APPROVED", approvedAmount: 25000,
+  }, funderCookie);
+  assert(bareP.status === 422 && /INSPECTION_REQUIREMENT_UNKNOWN/.test(JSON.stringify(bareP.json)),
+    "P/E-F: APPROVED with no justification → 422 naming INSPECTION_REQUIREMENT_UNKNOWN");
+  const justP = await post(`/api/draws/${dP.id}/lender-decision`, {
+    decision: "APPROVED", approvedAmount: 25000,
+    decisionReason: "Attempting to approve past the undetermined requirement (must be refused).",
+    exceptionsAccepted: "Unknown accepted (must be refused).",
+  }, funderCookie);
+  assert(justP.status === 422 && /INCOMPLETE/.test(JSON.stringify(justP.json)),
+    "P/G: APPROVED WITH justification → still 422 — missing information cannot be waived into existence");
+  assert(decCountP() === 0 && snapCountP() === 0,
+    "P/H: the refusals persisted NO lender decision and NO readiness snapshot");
+  assert(db.prepare("SELECT account_status s FROM milestones WHERE id = ?").get(msP).s === "RELEASED",
+    "P/I: the milestone remains RELEASED — the readiness correction rewrites no release bookkeeping");
+  // J. Governed resolution: NOT_REQUIRED → live readiness recomputes READY.
+  await post(`/api/milestones/${msP}/inspection-requirement`, {
+    requirement: "NOT_REQUIRED",
+    requirementBasis: "Stored-materials tranche below the district inspection threshold (fictional reviewed determination).",
+  }, complianceCookie, 200);
+  const pageJ = await get(`/draw/${dP.id}`);
+  assert(pageJ.html.includes("Ready for lender review"),
+    "P/J: determining NOT_REQUIRED through the governed API recomputes readiness — the draw can reach READY");
+  // K. Separately determine REQUIRED: the outstanding inspection prevents
+  // READY under the existing stage rules; a PASSED result clears it.
+  await post(`/api/milestones/${msP}/inspection-requirement`, {
+    requirement: "REQUIRED",
+    requirementBasis: "Re-determined on review: district final inspection applies to this tranche (fictional).",
+    inspectionType: "FINAL", mustPassBeforeGovernance: true,
+  }, complianceCookie, 200);
+  const pageK1 = await get(`/draw/${dP.id}`);
+  assert(!pageK1.html.includes("Ready for lender review") && /jurisdictional inspection/i.test(pageK1.html),
+    "P/K: re-determined REQUIRED with the inspection outstanding prevents READY — the jurisdictional blocker is the rendered reason");
+  const inspP = (await post(`/api/milestones/${msP}/inspections`, {
+    inspectionType: "FINAL", jurisdiction: "Central Region",
+    issuingAuthority: "District council building office", inspectionReference: "P03-INS-1",
+  }, complianceCookie, 201)).json.inspection;
+  await post(`/api/inspections/${inspP.id}/schedule`, { scheduledAt: "2026-11-20" }, complianceCookie);
+  await post(`/api/inspections/${inspP.id}/complete`, { completedAt: "2026-11-20" }, complianceCookie);
+  await post(`/api/inspections/${inspP.id}/result`, {
+    result: "PASSED", governmentInspectorName: "Fictional district inspector",
+  }, complianceCookie);
+  const pageK2 = await get(`/draw/${dP.id}`);
+  assert(pageK2.html.includes("Ready for lender review"),
+    "P/K: the PASSED result through the normal governed workflow clears readiness");
+  const decP = (await post(`/api/draws/${dP.id}/lender-decision`, {
+    decision: "APPROVED", approvedAmount: 25000,
+  }, funderCookie, 201)).json;
+  assert(decP.readinessAtDecision === "READY" && decP.proceededByException === false,
+    "P/K: the normal approval then records at READY with no exception disposition");
+  // Register borrower-org column: the draw requested by the borrower PM
+  // shows the REQUESTING organization, never the project's owning org.
+  {
+    const regP = await get("/draws");
+    const borrowerOrgName = db.prepare(
+      "SELECT o.name n FROM draw_requests d JOIN organizations o ON o.id = d.requested_by_organization_id WHERE d.id = ?"
+    ).get(dP.id).n;
+    assert(regP.html.includes(borrowerOrgName),
+      `P: the register's Borrower org column shows the requesting organization (${borrowerOrgName})`);
+  }
+  // L. Reads write nothing.
+  const evCountL = Number(db.prepare("SELECT COUNT(*) c FROM draw_events WHERE type IN ('READINESS_TRANSITION','READINESS_SNAPSHOT')").get().c);
+  for (let i = 0; i < 3; i += 1) { await get(`/draw/${dP.id}`); await get("/draws"); }
+  assert(Number(db.prepare("SELECT COUNT(*) c FROM draw_events WHERE type IN ('READINESS_TRANSITION','READINESS_SNAPSHOT')").get().c) === evCountL,
+    "P/L: repeated page reads create no readiness writes");
 
   // ---- D · repeated page reads: zero writes ----
   const evD = transitions(dA.id) + transitions(dB.id);

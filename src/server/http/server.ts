@@ -1628,7 +1628,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           })),
       };
     });
-    sendJson(res, { projects });
+    // Posture boundary for the capture client: demo fallbacks (seeded
+    // photos, simulated site GPS) are demo affordances — a pilot /
+    // production field engineer captures real evidence or retries; the
+    // client hides the fallback offers when this is false.
+    sendJson(res, { projects, demoAffordances: !productionPosture() });
     return;
   }
 
@@ -5075,7 +5079,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   // Public enterprise homepage. Marketing surface only — the product frame
   // reads real seeded values (read-only); role selection lives at /demo.
   if (method === "GET" && pathname === "/") {
-    sendHtml(res, renderHome(homeSnapshot()));
+    // Posture boundary: the public marketing page renders the seeded
+    // demonstration snapshot ONLY in demo posture. A pilot/production
+    // deployment must never query or render tenant project data on an
+    // unauthenticated page — the preview stays generic and the CTAs
+    // route to the real /signin.
+    const production = productionPosture();
+    sendHtml(res, renderHome(production ? null : homeSnapshot(), production));
     return;
   }
 
@@ -5906,7 +5916,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return {
         draw,
         project,
-        org: project ? repo.getOrganization(project.organizationId) : null,
+        // Borrower org — the SAME authoritative source Draw Review uses
+        // (the draw's requesting organization), never the project's
+        // owning/lender organization.
+        org: draw.requestedByOrganizationId ? repo.getOrganization(draw.requestedByOrganizationId) : null,
         summary,
         // Live readiness is bounded to open draws; closed draws keep their
         // terminal status and any decision-time snapshot instead.

@@ -1,6 +1,7 @@
 /** Server-rendered pages — OBV design system v3 (institutional). */
 import { h, Fragment, VNode, renderDocument, raw } from "./jsx";
 import { brandMark, icons } from "./icons";
+import { productionPosture } from "../services/posture";
 import {
   AccountChip,
   ActivityFeed,
@@ -554,11 +555,15 @@ export function renderOverview(input: {
   return renderDocument(
     <AppShell title="Overview" nav={input.nav} context="Portfolio control center">
       <PageHeader title={roleHome.title} sub={roleHome.sub}>
-        <form method="POST" action="/api/demo/reset" style="margin:0">
-          <button className="btn ghost sm" type="submit" title="Restore the seeded demo state">
-            Reset demo data
-          </button>
-        </form>
+        {/* Demo-only affordance: the reset endpoint is a 404 in pilot /
+            production posture — never advertise a locked door. */}
+        {productionPosture() ? null : (
+          <form method="POST" action="/api/demo/reset" style="margin:0">
+            <button className="btn ghost sm" type="submit" title="Restore the seeded demo state">
+              Reset demo data
+            </button>
+          </form>
+        )}
       </PageHeader>
       <div className="role-quick" role="navigation" aria-label="Your focus areas">
         {roleHome.links.map((l) => (
@@ -3528,7 +3533,7 @@ export function renderMore(input: { nav: NavContext }): string {
             <span className="mr-t">{user.name}</span>
             <span className="mr-s">{roleLabel(user.role)}{input.nav.orgName ? ` · ${input.nav.orgName}` : ""}</span>
           </span>
-          <a className="btn secondary sm" href="/demo">Switch user</a>
+          {productionPosture() ? null : <a className="btn secondary sm" href="/demo">Switch user</a>}
         </div>
       </div>
     </AppShell>
@@ -3568,8 +3573,12 @@ export function renderFieldShell(user: User): string {
             <span className="role-tag">
               {user.name}
               <br />
-              {user.title} · <a href="/issues" style="color:#96b0f5">issues</a> ·{" "}
-              <a href="/demo" style="color:#96b0f5">switch</a>
+              {user.title} · <a href="/issues" style="color:#96b0f5">issues</a>
+              {productionPosture() ? null : (
+                <Fragment>
+                  {" "}· <a href="/demo" style="color:#96b0f5">switch</a>
+                </Fragment>
+              )}
             </span>
           </div>
           <div id="app" data-user-id={user.id} data-user-name={user.name}>
@@ -3607,7 +3616,9 @@ export function renderError(nav: NavContext | null, title: string, message: stri
             <div className="auth-box" style="text-align:center;max-width:420px">
               <h1 className="t-title">{title}</h1>
               <p className="sub">{message}</p>
-              <a className="btn" href="/demo" style="margin-top:10px">Go to demo sign-in</a>
+              <a className="btn" href={productionPosture() ? "/signin" : "/demo"} style="margin-top:10px">
+                {productionPosture() ? "Go to sign-in" : "Go to demo sign-in"}
+              </a>
             </div>
           </div>
         </body>

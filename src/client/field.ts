@@ -67,6 +67,11 @@ interface QueuedSubmission {
     location: null as LocationFix | null,
     stream: null as MediaStream | null,
     cameraFailed: false,
+    // Server-declared posture flag: demo fallbacks (seeded photos,
+    // simulated site GPS) are offered ONLY when the deployment posture
+    // allows them. In pilot/production the field engineer captures real
+    // evidence or retries — a simulated fallback is never a normal action.
+    demoAffordances: true,
   };
 
   const esc = (s: unknown): string =>
@@ -378,11 +383,11 @@ interface QueuedSubmission {
        </div>
        <div class="field-actions">
          <button class="btn secondary" id="upload">Upload a photo instead</button>
-         <button class="btn ghost" id="fallback">Use DEMO FALLBACK evidence</button>
+         ${state.demoAffordances ? `<button class="btn ghost" id="fallback">Use DEMO FALLBACK evidence</button>` : ""}
          <button class="btn ghost" id="back">← Milestones</button>
        </div>
        <input type="file" id="file" accept="image/*" capture="environment" style="display:none" />
-       <div id="fallback-zone" style="display:none">
+       ${state.demoAffordances ? `<div id="fallback-zone" style="display:none">
          <div class="field-warn">
            <b>DEMO FALLBACK.</b> Choose a seeded evidence photo. It is submitted with
            simulated site GPS and a simulated timestamp, and is clearly labelled as
@@ -397,9 +402,9 @@ interface QueuedSubmission {
              .join("")}
          </div>
          ${m.demoPhotos.length === 0 ? `<p class="field-note">No demo photos seeded for this milestone.</p>` : ""}
-       </div>
+       </div>` : ""}
        <p class="field-note">The camera and GPS of this device are the primary evidence
-       path. Fallbacks exist so the demo never dead-ends on a permission screen.</p>`
+       path.${state.demoAffordances ? " Fallbacks exist so the demo never dead-ends on a permission screen." : " Photos can also be uploaded from the device gallery."}</p>`
       );
 
     const video = document.getElementById("viewfinder") as HTMLVideoElement;
@@ -432,9 +437,11 @@ interface QueuedSubmission {
       reader.readAsDataURL(file);
     });
 
-    document.getElementById("fallback")!.addEventListener("click", () => {
-      document.getElementById("fallback-zone")!.style.display = "block";
-      document.getElementById("fallback-zone")!.scrollIntoView({ behavior: "smooth" });
+    document.getElementById("fallback")?.addEventListener("click", () => {
+      const zone = document.getElementById("fallback-zone");
+      if (!zone) return;
+      zone.style.display = "block";
+      zone.scrollIntoView({ behavior: "smooth" });
     });
     document.querySelectorAll<HTMLButtonElement>("[data-d]").forEach((btn) =>
       btn.addEventListener("click", () => {
@@ -475,10 +482,13 @@ interface QueuedSubmission {
     if (!ok) {
       cameraZone.style.display = "none";
       cameraFail.style.display = "block";
-      document.getElementById("fail-reason")!.innerHTML =
-        `<b>Camera unavailable or permission denied.</b> No problem — upload a photo
-         from your gallery, or use the DEMO FALLBACK evidence below.`;
-      document.getElementById("fallback-zone")!.style.display = "block";
+      document.getElementById("fail-reason")!.innerHTML = state.demoAffordances
+        ? `<b>Camera unavailable or permission denied.</b> No problem — upload a photo
+         from your gallery, or use the DEMO FALLBACK evidence below.`
+        : `<b>Camera unavailable or permission denied.</b> Upload a photo from your
+         gallery instead — real capture is the only evidence path on this deployment.`;
+      const zone = document.getElementById("fallback-zone");
+      if (zone) zone.style.display = "block";
     } else {
       snapButton.disabled = false;
       snapButton.textContent = "Capture evidence";
@@ -505,6 +515,9 @@ interface QueuedSubmission {
 
   function viewLocationFallback(): void {
     const p = state.project!;
+    // Simulated site GPS is a DEMO affordance. On a pilot/production
+    // deployment evidence coordinates come from the device or not at all —
+    // the engineer retries or starts over; nothing simulated is offered.
     app.innerHTML =
       stepsBar(4) +
       card(
@@ -514,15 +527,18 @@ interface QueuedSubmission {
          verify against the project geofence.
        </div>
        <div class="field-actions">
-         <button class="btn big" id="simulate">Use simulated site GPS (DEMO FALLBACK)</button>
-         <button class="btn secondary" id="retry">Retry device GPS</button>
+         ${state.demoAffordances ? `<button class="btn big" id="simulate">Use simulated site GPS (DEMO FALLBACK)</button>` : ""}
+         <button class="btn ${state.demoAffordances ? "secondary" : "big"}" id="retry">Retry device GPS</button>
          <button class="btn ghost" id="back">← Start over</button>
        </div>
-       <p class="field-note">Simulated coordinates point at the registered project site
+       ${state.demoAffordances
+         ? `<p class="field-note">Simulated coordinates point at the registered project site
        (${p.simulatedGps.latitude.toFixed(4)}, ${p.simulatedGps.longitude.toFixed(4)})
        and the submission is labelled DEMO FALLBACK.</p>`
+         : `<p class="field-note">Enable location permission for this site in your browser
+       settings, then retry. Coordinates are required for geofence verification.</p>`}`
       );
-    document.getElementById("simulate")!.addEventListener("click", () => {
+    document.getElementById("simulate")?.addEventListener("click", () => {
       state.location = {
         latitude: p.simulatedGps.latitude,
         longitude: p.simulatedGps.longitude,
@@ -750,7 +766,9 @@ interface QueuedSubmission {
   async function loadContext(): Promise<void> {
     const res = await fetch("/api/field-context", { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    state.projects = (await res.json()).projects;
+    const ctx = await res.json();
+    state.projects = ctx.projects;
+    state.demoAffordances = ctx.demoAffordances !== false;
   }
 
   async function boot(): Promise<void> {
