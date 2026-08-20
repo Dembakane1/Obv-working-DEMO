@@ -426,6 +426,23 @@ async function main() {
   }
   pass(`all ${reqRows.length} required draw documents supplied through the governed route`);
 
+  // Jurisdictional truth precedes the lender decision: the billed
+  // milestone's inspection requirement is UNDETERMINED (the template
+  // creates none), and release bookkeeping never suppresses that — an
+  // approving decision over the unknown is refused 422. The reviewer
+  // records the reviewed determination through the governed API first,
+  // exactly as the pilot SOP requires.
+  {
+    const det = await api("compliance", "POST", `/api/milestones/${m1.id}/inspection-requirement`, {
+      requirement: "NOT_REQUIRED",
+      requirementBasis: "Controlled-test scope below the jurisdictional inspection threshold (reviewed determination).",
+    });
+    if (![200, 201].includes(det.status)) {
+      fail(`inspection-requirement determination -> ${det.status}: ${(await det.text()).slice(0, 200)}`);
+    }
+    pass("reviewed inspection-requirement determination recorded through the governed API (the pilot SOP)");
+  }
+
   // Full governed review: line review → recommendation to governance →
   // dual-control formal approvals on the DRAW → only then a decision.
   const lineReview = await api("compliance", "POST", `/api/draws/${draw.id}/lines/${line.line.id}/review`, {

@@ -286,7 +286,7 @@ network access. CI forces the mock provider.
 | Artifact | Custody on this SHA |
 |---|---|
 | Field evidence photos | **Bytes stored.** Content-addressed WORM store under `DATA_DIR/worm` (create-only), plus the append-only hash-chained Evidence Ledger. |
-| **Draw / inspection documents** | **Metadata + SHA-256 only — bytes are NOT stored** (`file_path` is `null` by design; `draws.recordDocument`). For pilot 1 the lender retains originals and OBV records integrity hashes. Documented in `docs/EXTERNAL_PILOT_READINESS.md` as INTENTIONALLY_DISABLED (bytes). |
+| **Draw documents** | **Metadata-only attestation records — NO bytes and NO hash** (`file_path` is `null` by design and `draw_documents` has no hash column; `draws.recordDocument`). For pilot 1 the lender retains the originals. Integrity hashes exist on adjacent records only: inspection report versions (API-supplied `documentBase64` is hashed, bytes discarded) and lien waivers (operator-supplied `documentHash` string). Documented in `docs/EXTERNAL_PILOT_READINESS.md` as INTENTIONALLY_DISABLED (bytes). |
 | Official-source snapshots, permit source documents | Bytes under `DATA_DIR/uploads`. |
 | Generated reports / audit packages | Bytes under `REPORTS_DIR` / `DATA_DIR/audit-packages` (write-once). |
 

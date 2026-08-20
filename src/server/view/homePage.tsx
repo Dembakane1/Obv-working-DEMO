@@ -121,10 +121,17 @@ function metric(label: string, value: string, tone?: string, sub?: string): VNod
 function ProductFrame(props: { snap: HomeSnapshot | null }): VNode {
   const s = props.snap;
   if (!s) {
+    // Tenant-safe generic preview: no live values, no invented figures.
     return (
-      <div className="hp-frame" role="img" aria-label="OBV project control overview (demo data not seeded)">
-        <div className="hp-frame-bar"><span className="hp-frame-brand">{brandMark(14)} OBV</span></div>
-        <p className="hp-frame-empty">Demo data has not been seeded on this deployment yet.</p>
+      <div className="hp-frame" role="img" aria-label="OBV project control overview (illustrative preview — no live data shown)">
+        <div className="hp-frame-bar">
+          <span className="hp-frame-brand">{brandMark(14)} OBV</span>
+          <span className="hp-frame-proj">Project control overview</span>
+        </div>
+        <p className="hp-frame-empty">
+          Illustrative product preview — no live project data is shown on this page.
+          Sign in to see your organization's governed projects, draws and readiness.
+        </p>
       </div>
     );
   }
@@ -194,7 +201,21 @@ function ProductFrame(props: { snap: HomeSnapshot | null }): VNode {
   );
 }
 
-export function renderHome(snap: HomeSnapshot | null): string {
+/**
+ * Public marketing homepage.
+ *
+ * Posture boundary: in DEMO posture the hero frame renders the seeded
+ * demonstration snapshot (labeled LIVE DEMO DATA). In PILOT / PRODUCTION
+ * posture the caller passes `snap = null` — the public, unauthenticated
+ * page must never query or render tenant project names, amounts,
+ * progress, exceptions or any other tenant data — and `production =
+ * true` routes every call-to-action to the real /signin instead of the
+ * disabled /demo switcher. Nothing on the generic preview invents
+ * customer results or statistics.
+ */
+export function renderHome(snap: HomeSnapshot | null, production = false): string {
+  const entryHref = production ? "/signin" : "/demo";
+  const entryLabel = production ? "Sign In" : "Enter Demo";
   return renderDocument(
     <html lang="en">
       <head>
@@ -224,8 +245,8 @@ export function renderHome(snap: HomeSnapshot | null): string {
             ))}
           </nav>
           <div className="hp-nav-cta">
-            <a className="hp-btn ghost sm" href="/demo">Enter Demo</a>
-            <a className="hp-btn primary sm" href="/demo" title="Demonstration access — production authentication uses organization accounts">
+            {production ? null : <a className="hp-btn ghost sm" href="/demo">Enter Demo</a>}
+            <a className="hp-btn primary sm" href={entryHref} title={production ? "Sign in with your organization email" : "Demonstration access — production authentication uses organization accounts"}>
               Sign In
             </a>
           </div>
@@ -235,8 +256,8 @@ export function renderHome(snap: HomeSnapshot | null): string {
               {NAV.map(([href, label]) => (
                 <a href={href}>{label}</a>
               ))}
-              <a href="/demo">Enter Demo</a>
-              <a href="/demo" title="Demonstration access">Sign In</a>
+              {production ? null : <a href="/demo">Enter Demo</a>}
+              <a href={entryHref} title={production ? "Sign in with your organization email" : "Demonstration access"}>Sign In</a>
             </nav>
           </details>
         </header>
@@ -253,7 +274,7 @@ export function renderHome(snap: HomeSnapshot | null): string {
               </p>
               <div className="hp-cta-row">
                 <a className="hp-btn primary" href="#platform">Explore the Platform</a>
-                <a className="hp-btn ghost" href="/demo">Enter Live Demo</a>
+                <a className="hp-btn ghost" href={entryHref}>{production ? "Sign In" : "Enter Live Demo"}</a>
               </div>
             </div>
             <ProductFrame snap={snap} />
@@ -303,13 +324,14 @@ export function renderHome(snap: HomeSnapshot | null): string {
                 <i aria-hidden="true">{c.icon()}</i>
                 <span className="t">{c.title}</span>
                 <span className="c">{c.copy}</span>
-                <span className="go">View in the demo →</span>
+                <span className="go">{production ? "Open after sign-in →" : "View in the demo →"}</span>
               </a>
             ))}
           </div>
           <p className="hp-fine">
-            Capability links open the corresponding screen of the demonstration environment after
-            role selection.
+            {production
+              ? "Capability links open the corresponding screen after you sign in with your organization email."
+              : "Capability links open the corresponding screen of the demonstration environment after role selection."}
           </p>
         </section>
 
@@ -346,7 +368,9 @@ export function renderHome(snap: HomeSnapshot | null): string {
               <span className="hp-int-chip" role="listitem">{money(snap.retainageWithheld)} retainage withheld</span>
             </div>
           ) : null}
-          <p className="hp-fine">Figures above are live values from the seeded demonstration project.</p>
+          {snap ? (
+            <p className="hp-fine">Figures above are live values from the seeded demonstration project.</p>
+          ) : null}
         </section>
 
         {/* ---- 8 · enterprise trust & governance ---- */}
@@ -365,8 +389,9 @@ export function renderHome(snap: HomeSnapshot | null): string {
                 change financial state, or authorize funds release.
               </p>
               <p className="hp-fine">
-                This demonstration build makes no certification claims. Production deployments are
-                assessed against the customer's compliance requirements.
+                {production
+                  ? "OBV makes no certification claims. Deployments are assessed against the customer's compliance requirements."
+                  : "This demonstration build makes no certification claims. Production deployments are assessed against the customer's compliance requirements."}
               </p>
             </div>
           </div>
@@ -376,7 +401,7 @@ export function renderHome(snap: HomeSnapshot | null): string {
         <section className="hp-section hp-final">
           <h2>See how OBV governs a construction draw from evidence to release.</h2>
           <div className="hp-cta-row center">
-            <a className="hp-btn primary" href="/demo">Enter the Demonstration</a>
+            <a className="hp-btn primary" href={entryHref}>{production ? "Sign In" : "Enter the Demonstration"}</a>
             <a className="hp-btn ghost" href="#platform">Explore the Platform</a>
           </div>
         </section>
@@ -390,7 +415,7 @@ export function renderHome(snap: HomeSnapshot | null): string {
             <a href="#platform">Platform</a>
             <a href="#solutions">Solutions</a>
             <a href="#security">Security</a>
-            <a href="/demo">Enter Demo</a>
+            <a href={entryHref}>{entryLabel}</a>
             <span className="hp-dis" title="Available when the legal pages are published">Privacy</span>
             <span className="hp-dis" title="Available when the legal pages are published">Terms</span>
           </nav>

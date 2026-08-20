@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { h, Fragment, VNode, Child, raw } from "./jsx";
 import { brandMark, icons } from "./icons";
 import { appBranch, shortCommit } from "../services/platform/runtime";
+import { productionPosture } from "../services/posture";
 import type {
   AccountStatus,
   ApprovalRecord,
@@ -605,7 +606,11 @@ export function AppShell(props: {
                   <span className="theme-ico theme-ico-moon">{icons.moon(14)}</span>
                   <span className="theme-ico theme-ico-sun">{icons.sun(14)}</span>
                 </button>
-                <span className="env-tag">Demo environment</span>
+                {/* Posture boundary: the demo tag and role switcher exist
+                    ONLY in demo posture. A pilot/production lender must
+                    never be told they are in a demo, and /demo is a 404
+                    there — no dead affordances. */}
+                {productionPosture() ? null : <span className="env-tag">Demo environment</span>}
                 <span className="id-block">
                   <span className="avatar" aria-hidden="true">{initials(user.name)}</span>
                   <span className="who">
@@ -613,7 +618,7 @@ export function AppShell(props: {
                     <span className="r">{roleLabel(user.role)}</span>
                   </span>
                 </span>
-                <a className="switch" href="/demo" title="Switch demo user">Switch</a>
+                {productionPosture() ? null : <a className="switch" href="/demo" title="Switch demo user">Switch</a>}
               </span>
             </div>
 
@@ -624,8 +629,12 @@ export function AppShell(props: {
                 <span className="o">{props.nav.orgName ?? "OpenBuild Verify"}</span>
               </span>
               <span className="u">
-                <span className="env-tag" style="font-size:10px;padding:1px 5px">Demo</span>{" "}
-                <a href="/demo">switch</a>
+                {productionPosture() ? null : (
+                  <Fragment>
+                    <span className="env-tag" style="font-size:10px;padding:1px 5px">Demo</span>{" "}
+                    <a href="/demo">switch</a>
+                  </Fragment>
+                )}
               </span>
             </div>
 
