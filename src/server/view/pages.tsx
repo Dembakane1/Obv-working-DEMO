@@ -3559,40 +3559,44 @@ export function renderFieldShell(user: User): string {
       </head>
       <body className="field-body">
         <PreviewBanner />
-        <div className="field-shell">
-          <div className="field-head">
-            <span className="mark">{brandMark(16)}</span>
-            <span>
-              <span className="brand-sm" style="display:block">OBV Field</span>
-              <span className="brand-sub" style="display:block">Evidence capture</span>
-            </span>
-            {/* Capture keeps its own stripped shell — a field worker must
-                never navigate enterprise chrome to upload evidence. The
-                Field workspace's other destination is reachable from here
-                as a plain link rather than by importing the sidebar. */}
-            <span className="role-tag">
-              {user.name}
-              <br />
-              {user.title} · <a href="/issues" style="color:#96b0f5">issues</a>
-              {productionPosture() ? null : (
-                <Fragment>
-                  {" "}· <a href="/demo" style="color:#96b0f5">switch</a>
-                </Fragment>
-              )}
-            </span>
+        {/* Native-app header: compact, fixed, no desktop page furniture.
+            Capture keeps its own stripped shell — a field worker must
+            never navigate enterprise chrome to upload evidence. */}
+        <header className="fx-top">
+          <span className="fx-mark">{brandMark(18)}</span>
+          <span className="fx-id">
+            <span className="n">OBV Field Engineer</span>
+            <span className="s">Evidence capture</span>
+          </span>
+          <a className="fx-acct" href="/account/security" aria-label={`Account — ${user.name}, ${user.title}`}>
+            <span className="ini" aria-hidden="true">{initials(user.name)}</span>
+          </a>
+        </header>
+        <main className="field-shell" id="app" data-user-id={user.id} data-user-name={user.name}>
+          <div className="fx-card">
+            <div className="skeleton" style="height:14px;width:40%;margin-bottom:12px;background:#263a58"></div>
+            <div className="skeleton" style="height:52px;margin-bottom:8px;background:#1a2740"></div>
+            <div className="skeleton" style="height:52px;background:#1a2740"></div>
           </div>
-          <div id="app" data-user-id={user.id} data-user-name={user.name}>
-            <div className="field-card">
-              <div className="skeleton" style="height:14px;width:40%;margin-bottom:12px;background:#263a58"></div>
-              <div className="skeleton" style="height:52px;margin-bottom:8px;background:#1a2740"></div>
-              <div className="skeleton" style="height:52px;margin-bottom:8px;background:#1a2740"></div>
-              <div className="skeleton" style="height:52px;background:#1a2740"></div>
-            </div>
-          </div>
-          <noscript>
+        </main>
+        <noscript>
+          <div className="field-shell">
             <div className="field-warn">OBV Field Capture requires JavaScript.</div>
-          </noscript>
-        </div>
+          </div>
+        </noscript>
+        {/* Persistent bottom navigation. Home and Evidence are views of
+            this same capture app; Map and Issues are existing routes this
+            user is already authorized for — no destination invented. */}
+        <nav className="fx-nav" aria-label="Field navigation">
+          <button className="fx-nav-i" type="button" data-nav="home" aria-current="page">
+            {icons.overview()}<span>Home</span>
+          </button>
+          <button className="fx-nav-i" type="button" data-nav="evidence">
+            {icons.camera()}<span>Evidence</span>
+          </button>
+          <a className="fx-nav-i" href="/map">{icons.map(19)}<span>Map</span></a>
+          <a className="fx-nav-i" href="/issues">{icons.alert(19)}<span>Issues</span></a>
+        </nav>
         <script src="/js/field.js" defer></script>
       </body>
     </html>

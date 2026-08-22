@@ -43,12 +43,15 @@ async function signIn(ctx, name, urlPattern) {
 }
 
 async function captureEvidence(field) {
+  // The field home leads with the capture call to action; pressing it opens
+  // the same governed four-step workflow the milestone list always used.
+  await field.locator("#capture-cta").click();
   await waitForText(field, "Gravel base course");
   await field.getByRole("button", { name: /Gravel base course/ }).click();
   await waitForText(field, "Requirement");
 
   if (MODE === "camera") {
-    await field.getByRole("button", { name: "Capture evidence" }).click();
+    await field.locator("#snap").click();
     await waitForText(field, "Live capture — real camera photo and device GPS");
   } else {
     await waitForText(field, "Camera unavailable or permission denied");
