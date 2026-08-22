@@ -405,3 +405,223 @@ export async function submitDraft(draftId: string, submitter: User) {
   });
   return result;
 }
+
+// ==================================================================
+// Field home summary — READ-ONLY presentation read model
+// ==================================================================
+
+/**
+ * The Field home screen needs, in one payload, what a field engineer must
+ * know: what they captured recently and what needs them next.
+ *
+ * This is a READ MODEL and nothing else. It computes no new truth: every
+ * value is read from the records that already own it — evidence items and
+ * their governed verifications, milestone status, clarification requests,
+ * field issues. It never persists, never derives a new score, and never
+ * turns an advisory signal into an authoritative fact.
+ *
+ * SCOPING IS THE CALLER'S: it operates on the milestone list the
+ * /api/field-context route has ALREADY scoped through
+ * authz.accessibleProjects + the caller's field assignments. Nothing here
+ * widens that set, and no consumer filters a portfolio-wide list in the
+ * browser.
+ */
+export interface FieldSummaryMilestoneRef {
+  projectId: string;
+  projectName: string;
+  milestoneId: string;
+  seq: number;
+  title: string;
+  status: string;
+}
+
+export interface FieldRecentEvidence {
+  evidenceItemId: string;
+  milestoneId: string;
+  milestoneLabel: string;
+  projectName: string;
+  photoPath: string;
+  capturedAt: string;
+  uploadedAt: string;
+  hasLocation: boolean;
+  isDemoFallback: boolean;
+  /** The GOVERNED evidence state — the authoritative reading. */
+  state: "SUBMITTED" | "VERIFIED" | "NEEDS_REVIEW" | "REJECTED";
+  /** Advisory only: the automated assessment's confidence, 0..1, or null
+   *  when no verification has been recorded. It NEVER substitutes for
+   *  `state` and never outranks it. */
+  assessmentConfidence: number | null;
+}
+
+export interface FieldAttentionItem {
+  /** Governed state label shown to the field user. */
+  state: string;
+  tone: "info" | "warn" | "bad";
+  title: string;
+  reason: string;
+  context: string;
+  href: string | null;
+  action: string;
+}
+
+export interface FieldAdvisorySignal {
+  severity: "REVIEW_REQUIRED" | "ADVISORY";
+  name: string;
+  detail: string;
+  context: string;
+}
+
+export interface FieldHomeSummary {
+  recentEvidence: FieldRecentEvidence[];
+  attention: FieldAttentionItem[];
+  advisory: FieldAdvisorySignal[];
+  counts: { verified: number; needsReview: number; rejected: number; submitted: number };
+}
+
+const RECENT_EVIDENCE_LIMIT = 6;
+
+/** Governed evidence state for one item — the same reading
+ *  completionGates.evidenceReviewStatus applies to a milestone, resolved
+ *  per evidence item. No verification recorded yet = SUBMITTED. */
+function governedEvidenceState(evidenceItemId: string): {
+  state: FieldRecentEvidence["state"];
+  confidence: number | null;
+} {
+  const v = repo.getVerificationForEvidence(evidenceItemId);
+  if (!v) return { state: "SUBMITTED", confidence: null };
+  const state =
+    v.verdict === "VERIFIED" ? "VERIFIED" : v.verdict === "REJECTED" ? "REJECTED" : "NEEDS_REVIEW";
+  return { state, confidence: v.confidence };
+}
+
+export function fieldHomeSummary(
+  user: User,
+  scope: FieldSummaryMilestoneRef[]
+): FieldHomeSummary {
+  const recentEvidence: FieldRecentEvidence[] = [];
+  const attention: FieldAttentionItem[] = [];
+  const advisory: FieldAdvisorySignal[] = [];
+  const counts = { verified: 0, needsReview: 0, rejected: 0, submitted: 0 };
+
+  for (const ref of scope) {
+    const label = `M${ref.seq} · ${ref.title}`;
+    const items = repo.listEvidenceForMilestone(ref.milestoneId);
+
+    for (const item of items) {
+      const { state, confidence } = governedEvidenceState(item.id);
+      if (state === "VERIFIED") counts.verified += 1;
+      else if (state === "NEEDS_REVIEW") counts.needsReview += 1;
+      else if (state === "REJECTED") counts.rejected += 1;
+      else counts.submitted += 1;
+      recentEvidence.push({
+        evidenceItemId: item.id,
+        milestoneId: ref.milestoneId,
+        milestoneLabel: label,
+        projectName: ref.projectName,
+        photoPath: item.photoPath,
+        capturedAt: item.capturedAt,
+        uploadedAt: item.uploadedAt,
+        hasLocation: item.latitude !== null && item.longitude !== null,
+        isDemoFallback: item.isDemoFallback,
+        state,
+        assessmentConfidence: confidence,
+      });
+    }
+
+    // Attention — milestone still awaiting its first evidence.
+    if (ref.status === "PENDING_EVIDENCE" && items.length === 0) {
+      attention.push({
+        state: "EVIDENCE NEEDED",
+        tone: "info",
+        title: label,
+        reason: "No evidence has been captured for this milestone yet.",
+        context: ref.projectName,
+        href: null,
+        action: "Capture",
+      });
+    }
+
+    // Attention — the latest submission came back needing work. The
+    // governed verdict is the reason; the field user is who can act.
+    const latest = items[items.length - 1];
+    if (latest) {
+      const { state } = governedEvidenceState(latest.id);
+      if (state === "NEEDS_REVIEW") {
+        attention.push({
+          state: "UNDER REVIEW",
+          tone: "warn",
+          title: label,
+          reason: "Your latest submission is with a reviewer. No action needed unless they ask.",
+          context: ref.projectName,
+          href: `/milestone/${ref.milestoneId}`,
+          action: "Open",
+        });
+      } else if (state === "REJECTED") {
+        attention.push({
+          state: "RECAPTURE NEEDED",
+          tone: "bad",
+          title: label,
+          reason: "The latest evidence was rejected in verification — capture a replacement.",
+          context: ref.projectName,
+          href: `/milestone/${ref.milestoneId}`,
+          action: "Open",
+        });
+      }
+    }
+
+    // Attention — open clarification requests are an explicit ask of the
+    // field side (the reviewer's own recorded question).
+    for (const c of repo.listOpenClarificationsForMilestone(ref.milestoneId)) {
+      attention.push({
+        state: "NEEDS RESPONSE",
+        tone: "warn",
+        title: label,
+        reason: c.question,
+        context: ref.projectName,
+        href: `/milestone/${ref.milestoneId}`,
+        action: "Respond",
+      });
+    }
+
+    // Advisory — deterministic checks the recorded verification itself
+    // failed. Shown as signals, never as a governed conclusion.
+    if (latest) {
+      const v = repo.getVerificationForEvidence(latest.id);
+      for (const check of v?.checks ?? []) {
+        if (check.passed) continue;
+        advisory.push({
+          severity: v!.verdict === "VERIFIED" ? "ADVISORY" : "REVIEW_REQUIRED",
+          name: check.name,
+          detail: check.detail,
+          context: label,
+        });
+      }
+    }
+  }
+
+  // Field issues assigned to or reported by this user, already scoped by
+  // the existing service predicate.
+  const scopedProjectIds = new Set(scope.map((s) => s.projectId));
+  for (const issue of listFieldIssuesForUser(user)) {
+    if (!scopedProjectIds.has(issue.projectId)) continue;
+    if (issue.status === "RESOLVED" || issue.status === "CLOSED") continue;
+    attention.push({
+      state: issue.severity === "CRITICAL" || issue.severity === "HIGH" ? "ISSUE OPEN" : "ISSUE LOGGED",
+      tone: issue.severity === "CRITICAL" || issue.severity === "HIGH" ? "bad" : "warn",
+      title: issue.title,
+      reason: issue.description,
+      context: scope.find((s) => s.projectId === issue.projectId)?.projectName ?? "",
+      href: `/issue/${issue.id}`,
+      action: "Open",
+    });
+  }
+
+  // Newest first, capped — the phone shows what is current.
+  recentEvidence.sort((a, b) => (a.uploadedAt < b.uploadedAt ? 1 : -1));
+  return {
+    recentEvidence: recentEvidence.slice(0, RECENT_EVIDENCE_LIMIT),
+    attention,
+    advisory: advisory.slice(0, 4),
+    counts,
+  };
+}

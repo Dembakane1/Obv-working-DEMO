@@ -1628,11 +1628,36 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           })),
       };
     });
+    // Field home read model — recent evidence, what needs this engineer,
+    // and advisory signals — assembled by the field-ops service from the
+    // records that already own each fact (evidence + its governed
+    // verification, milestone status, clarifications, issues). It is
+    // scoped by the SAME visibleProjects/assignment scoping computed
+    // above: the server decides what this caller may see, never the
+    // browser. No new truth, no persistence, no scoring.
+    const summary = fieldOps.fieldHomeSummary(
+      fieldUser,
+      projects.flatMap((project) =>
+        project.milestones.map((m) => ({
+          projectId: project.id,
+          projectName: project.name,
+          milestoneId: m.id,
+          seq: m.seq,
+          title: m.title,
+          status: m.status,
+        }))
+      )
+    );
     // Posture boundary for the capture client: demo fallbacks (seeded
     // photos, simulated site GPS) are demo affordances — a pilot /
     // production field engineer captures real evidence or retries; the
     // client hides the fallback offers when this is false.
-    sendJson(res, { projects, demoAffordances: !productionPosture() });
+    sendJson(res, {
+      projects,
+      demoAffordances: !productionPosture(),
+      user: { name: fieldUser.name, title: fieldUser.title, role: fieldUser.role },
+      ...summary,
+    });
     return;
   }
 
