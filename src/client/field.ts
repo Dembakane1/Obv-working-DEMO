@@ -503,7 +503,7 @@ interface QueuedSubmission {
     setNav("evidence");
     const ev = state.recentEvidence;
     app.innerHTML =
-      `<div class="fx-sec-h"><h2>Your recent evidence</h2><span class="count">${ev.length}</span></div>` +
+      `<div class="fx-sec-h"><h2>Recent project evidence</h2><span class="count">${ev.length}</span></div>` +
       (ev.length
         ? `<div class="fx-grid">${ev.map(evidenceCard).join("")}</div>`
         : `<div class="fx-empty"><div class="t">No evidence captured yet</div>

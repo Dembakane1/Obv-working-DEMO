@@ -17,6 +17,9 @@
  *   7. FIELD sees no lender/governance authority anywhere on the surface
  *   8. mobile has no horizontal overflow and the bottom nav points only
  *      at existing authorized destinations
+ *   9. across a milestone's recapture history the NEWEST governed
+ *      submission owns the field instruction, and superseded submissions
+ *      stay visible as history without overriding it
  */
 "use strict";
 
@@ -339,6 +342,144 @@ async function main() {
     const view = fs.readFileSync(path.join(ROOT, "src/server/view/pages.tsx"), "utf8");
     assert(/import \{ productionPosture \} from "\.\.\/services\/posture"/.test(view),
       "8. the view layer resolves posture on the server, never from the browser");
+  }
+
+  // ---------- 9. recapture history: the NEWEST submission owns the instruction ----------
+  //
+  // A milestone accumulates evidence across recaptures. The field
+  // instruction must follow the newest governed submission, or an engineer
+  // who has already fixed the problem is told to fix it again — and one who
+  // has just broken it is told everything is fine.
+  //
+  // Every submission below goes through the real POST /api/evidence
+  // pipeline; the verdicts are the ones the verification engine actually
+  // returns for those coordinates. Nothing is written to the database
+  // directly and no verdict is asserted into place.
+  {
+    const MS = "ms-3";
+    const meta = { userAgent: "obv-field-suite", platform: "linux", screen: "390x844", pixelRatio: "2" };
+    // Coordinates chosen against the seeded R47 boundary (lng 33.55–33.66,
+    // lat -11.93 to -11.78) so each verdict is produced, not forced:
+    //   inside          -> all checks pass            -> VERIFIED
+    //   within margin   -> geofence REVIEW            -> NEEDS_REVIEW
+    //   clearly outside -> geofence FAIL (hard fail)  -> REJECTED
+    const INSIDE = [-11.87, 33.594];
+    const MARGIN = [-11.935, 33.594];
+    const FAR_A = [-12.5, 34.5];
+    const FAR_B = [-12.9, 35.4];
+    const coordText = ([lat, lng]) => `(${lat.toFixed(5)}, ${lng.toFixed(5)})`;
+
+    let photoIx = 0;
+    const DEMO_PHOTOS = ["demo-m3-a", "demo-m3-b", "demo-m3-c"];
+    const submit = async ([latitude, longitude], expected) => {
+      // Distinct upload timestamps: ordering is the whole point of this
+      // section, so no two submissions may share a millisecond.
+      await new Promise((r) => setTimeout(r, 25));
+      const res = await api("user-field", "POST", "/api/evidence", {
+        milestoneId: MS,
+        demoPhotoId: DEMO_PHOTOS[photoIx++ % DEMO_PHOTOS.length],
+        latitude,
+        longitude,
+        capturedAt: new Date(Date.now() - 60_000).toISOString(),
+        deviceMetadata: meta,
+        isDemoFallback: true,
+      });
+      const body = await res.json();
+      const verdict = body.verification?.verdict;
+      if (res.status !== 201 || verdict !== expected) {
+        fail(`9. setup: expected a ${expected} submission, got ${res.status} ${verdict}`);
+      }
+      return body;
+    };
+    const home = async () => {
+      const c = await (await api("user-field", "GET", "/api/field-context")).json();
+      const rows = c.recentEvidence.filter((e) => e.milestoneId === MS);
+      return {
+        rows,
+        recapture: c.attention.filter((a) => a.state === "RECAPTURE NEEDED" && a.title.startsWith("M3")),
+        underReview: c.attention.filter((a) => a.state === "UNDER REVIEW" && a.title.startsWith("M3")),
+        advisoryDetail: c.advisory.filter((a) => a.context.startsWith("M3")).map((a) => a.detail).join(" | "),
+      };
+    };
+
+    // -- case 1: older REJECTED, newer VERIFIED --
+    await submit(FAR_A, "REJECTED");
+    await submit(INSIDE, "VERIFIED");
+    {
+      const h = await home();
+      assert(h.rows[0]?.state === "VERIFIED",
+        "9.1 the newest submission is the one the read model treats as latest");
+      assert(h.recapture.length === 0,
+        "9.1 a superseded rejection raises no RECAPTURE NEEDED once a newer submission verified");
+      assert(!h.advisoryDetail.includes(coordText(FAR_A)),
+        "9.1 advisory signals do not come from the stale rejected submission");
+    }
+
+    // -- case 2: older VERIFIED, newer REJECTED --
+    await submit(FAR_B, "REJECTED");
+    {
+      const h = await home();
+      assert(h.rows[0]?.state === "REJECTED", "9.2 the newest submission is the rejected one");
+      assert(h.recapture.length === 1, "9.2 a newly rejected submission raises RECAPTURE NEEDED");
+      // The coordinates in the failed check bind the signal to a specific
+      // submission — this is what proves it is the NEWEST rejection and not
+      // the earlier one that a verified capture already superseded.
+      assert(h.advisoryDetail.includes(coordText(FAR_B)) && !h.advisoryDetail.includes(coordText(FAR_A)),
+        "9.2 RECAPTURE NEEDED reports the newest rejected submission, not an older one");
+    }
+
+    // -- case 3: older VERIFIED, newer NEEDS_REVIEW --
+    await submit(INSIDE, "VERIFIED");
+    await submit(MARGIN, "NEEDS_REVIEW");
+    {
+      const h = await home();
+      assert(h.rows[0]?.state === "NEEDS_REVIEW", "9.3 the newest submission is the one under review");
+      assert(h.underReview.length === 1 && h.recapture.length === 0,
+        "9.3 UNDER REVIEW reflects the newest submission and no stale recapture survives it");
+      assert(h.advisoryDetail.includes(coordText(MARGIN)),
+        "9.3 the advisory signal is read from the newest submission's own verification");
+    }
+
+    // -- case 4/5: history is preserved, newest first --
+    {
+      const h = await home();
+      const stamps = h.rows.map((e) => e.uploadedAt);
+      assert(stamps.every((s, i) => i === 0 || stamps[i - 1] >= s),
+        "9.4 recent evidence stays sorted newest-first");
+      assert(new Set(stamps).size === stamps.length,
+        "9.4 every submission carries its own upload timestamp (no ordering ties)");
+      assert(h.rows.some((e) => e.state === "REJECTED") && h.rows.some((e) => e.state === "VERIFIED"),
+        "9.5 superseded submissions remain visible as history, not deleted");
+      assert(h.rows.length >= 5,
+        `9.5 every submission is retained on the milestone (${h.rows.length} records)`);
+    }
+
+    // -- case 6: no governance/business logic moved into this pass --
+    {
+      const svc = fs.readFileSync(path.join(ROOT, "src/server/services/fieldOps.ts"), "utf8");
+      assert(/repo\.latestEvidenceForMilestone\(/.test(svc),
+        "9.6 latest evidence comes from the authoritative repository helper");
+      assert(!/items\[items\.length - 1\]/.test(svc),
+        "9.6 the read model no longer re-derives 'latest' by index over a newest-first list");
+      assert(!/ORDER BY|SELECT /i.test(svc),
+        "9.6 the field read model introduces no second evidence query or sort of its own");
+      const agg = fs.readFileSync(
+        path.join(ROOT, "src/server/services/verification/aggregator.ts"), "utf8");
+      assert(/verdict = "REJECTED"/.test(agg) && /verdict = "VERIFIED"/.test(agg),
+        "9.6 evidence verification semantics are untouched — verdicts still come from the engine");
+    }
+
+    // -- the section label must describe what the section actually holds --
+    {
+      const client = fs.readFileSync(path.join(ROOT, "src/client/field.ts"), "utf8");
+      assert(!/Your recent evidence|your uploads/i.test(client),
+        "9. the evidence list is not labelled as the caller's own uploads");
+      assert(/Recent project evidence/.test(client),
+        "9. the evidence list is labelled for its real scope (the authorized milestones)");
+      const svc = fs.readFileSync(path.join(ROOT, "src/server/services/fieldOps.ts"), "utf8");
+      assert(!/\.userId === |item\.userId/.test(svc),
+        "9. the read model does not silently filter by uploader — scope is the milestone");
+    }
   }
 
   await browser.close();

@@ -435,6 +435,18 @@ export interface FieldSummaryMilestoneRef {
   status: string;
 }
 
+/**
+ * One evidence record on the field home.
+ *
+ * Scope is the MILESTONE, not the uploader: this is every item on the
+ * milestones the caller is authorized to see, whoever captured them. That
+ * matches the rest of the platform — no read model here filters evidence by
+ * `userId` — and it is what keeps the cards consistent with the attention
+ * rows, which are themselves milestone-level. A per-uploader filter would
+ * let "RECAPTURE NEEDED" appear with no visible evidence behind it whenever
+ * a crewmate captured the latest submission. The surface is therefore
+ * labelled "Recent project evidence", never "your uploads".
+ */
 export interface FieldRecentEvidence {
   evidenceItemId: string;
   milestoneId: string;
@@ -543,7 +555,14 @@ export function fieldHomeSummary(
 
     // Attention — the latest submission came back needing work. The
     // governed verdict is the reason; the field user is who can act.
-    const latest = items[items.length - 1];
+    //
+    // This MUST be the newest submission. A milestone accumulates evidence
+    // across recaptures, so an older rejected item still sitting in the
+    // history would otherwise tell the engineer to recapture work that a
+    // newer submission has already verified. The repository owns "latest";
+    // deriving it here by index would re-encode an ordering this service
+    // does not own.
+    const latest = repo.latestEvidenceForMilestone(ref.milestoneId);
     if (latest) {
       const { state } = governedEvidenceState(latest.id);
       if (state === "NEEDS_REVIEW") {
@@ -551,7 +570,9 @@ export function fieldHomeSummary(
           state: "UNDER REVIEW",
           tone: "warn",
           title: label,
-          reason: "Your latest submission is with a reviewer. No action needed unless they ask.",
+          reason:
+            "The latest submission for this milestone is with a reviewer. " +
+            "No action needed unless they ask.",
           context: ref.projectName,
           href: `/milestone/${ref.milestoneId}`,
           action: "Open",
