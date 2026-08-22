@@ -36,6 +36,39 @@ interface FieldProject {
   milestones: FieldMilestone[];
 }
 
+/** Server-assembled field home read model (see services/fieldOps). The
+ *  client renders it; it never derives governed state itself. */
+interface FieldRecentEvidence {
+  evidenceItemId: string;
+  milestoneId: string;
+  milestoneLabel: string;
+  projectName: string;
+  photoPath: string;
+  capturedAt: string;
+  uploadedAt: string;
+  hasLocation: boolean;
+  isDemoFallback: boolean;
+  state: "SUBMITTED" | "VERIFIED" | "NEEDS_REVIEW" | "REJECTED";
+  assessmentConfidence: number | null;
+}
+
+interface FieldAttentionItem {
+  state: string;
+  tone: "info" | "warn" | "bad";
+  title: string;
+  reason: string;
+  context: string;
+  href: string | null;
+  action: string;
+}
+
+interface FieldAdvisorySignal {
+  severity: "REVIEW_REQUIRED" | "ADVISORY";
+  name: string;
+  detail: string;
+  context: string;
+}
+
 interface CapturedPhoto {
   kind: "camera" | "upload" | "demo";
   dataUrl?: string; // camera/upload
@@ -72,6 +105,13 @@ interface QueuedSubmission {
     // allows them. In pilot/production the field engineer captures real
     // evidence or retries — a simulated fallback is never a normal action.
     demoAffordances: true,
+    // Server read model — rendered, never recomputed here.
+    recentEvidence: [] as FieldRecentEvidence[],
+    attention: [] as FieldAttentionItem[],
+    advisory: [] as FieldAdvisorySignal[],
+    counts: { verified: 0, needsReview: 0, rejected: 0, submitted: 0 },
+    queued: 0,
+    syncing: false,
   };
 
   const esc = (s: unknown): string =>
@@ -80,8 +120,6 @@ interface QueuedSubmission {
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
-
-  const money = (n: number): string => "$" + n.toLocaleString("en-US");
 
   function deviceMetadata(): Record<string, string> {
     return {
@@ -294,13 +332,225 @@ interface QueuedSubmission {
     }
   }
 
+  // ------------------------------------------------------------------
+  // Field home — "where am I working, what needs me, capture now"
+  // ------------------------------------------------------------------
+
+  /** Governed evidence state → presentation tone + label. The label IS
+   *  the governed state; nothing here invents a score or a grade. */
+  function govChip(state: string): { cls: string; label: string; glyph: string } {
+    switch (state) {
+      case "VERIFIED": return { cls: "ok", label: "VERIFIED", glyph: "✓" };
+      case "NEEDS_REVIEW": return { cls: "warn", label: "NEEDS REVIEW", glyph: "!" };
+      case "REJECTED": return { cls: "bad", label: "REJECTED", glyph: "×" };
+      default: return { cls: "info", label: "SUBMITTED", glyph: "•" };
+    }
+  }
+
+  function shortWhen(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return `${date} · ${time}`;
+  }
+
+  /** Connectivity + offline-queue state. A working queue is normal
+   *  operation, never an error. */
+  function syncLine(): string {
+    const online = navigator.onLine;
+    if (state.syncing) {
+      return `<div class="fx-sync"><span class="d on"></span>Syncing ${state.queued} queued capture${state.queued === 1 ? "" : "s"}…</div>`;
+    }
+    if (!online) {
+      return `<div class="fx-sync"><span class="d off"></span>Offline${
+        state.queued ? ` · <span class="q">${state.queued} capture${state.queued === 1 ? "" : "s"} queued</span>` : " · captures will queue on this device"
+      }</div>`;
+    }
+    return `<div class="fx-sync"><span class="d on"></span>Online${
+      state.queued ? ` · <span class="q">${state.queued} queued — sending</span>` : " · all captures synced"
+    }</div>`;
+  }
+
+  function projectCard(): string {
+    const p = state.project;
+    if (!p) {
+      return `<div class="fx-proj"><div class="lbl">Project</div>
+        <div class="nm">No project selected</div>
+        <div class="loc">Choose the site you are working on to begin capture.</div></div>`;
+    }
+    const m = state.milestone;
+    const swap =
+      state.projects.length > 1
+        ? `<button class="swap" id="swap-project" type="button" aria-label="Switch project">Switch</button>`
+        : "";
+    return `<div class="fx-proj">
+      <div class="row">
+        <div style="min-width:0">
+          <div class="lbl">Project</div>
+          <div class="nm">${esc(p.name)}</div>
+          <div class="loc">${esc(p.location)}</div>
+        </div>
+        ${swap}
+      </div>
+      ${
+        m
+          ? `<div class="fx-ms">
+               <span style="min-width:0"><span class="t">M${m.seq} · ${esc(m.title)}</span>
+               <span class="rq">${esc(m.requirement.length > 84 ? m.requirement.slice(0, 83) + "…" : m.requirement)}</span></span>
+               ${milestoneChip(m.status)}
+             </div>`
+          : ""
+      }
+    </div>`;
+  }
+
+  /** Governed evidence counts — the authoritative summary. */
+  function statesRow(): string {
+    const c = state.counts;
+    return `<div class="fx-states">
+      <div class="fx-state ok"><span class="v">${c.verified}</span><span class="k">Verified</span></div>
+      <div class="fx-state warn"><span class="v">${c.needsReview}</span><span class="k">Needs review</span></div>
+      <div class="fx-state"><span class="v">${c.submitted}</span><span class="k">Submitted</span></div>
+      ${c.rejected ? `<div class="fx-state bad"><span class="v">${c.rejected}</span><span class="k">Rejected</span></div>` : ""}
+    </div>`;
+  }
+
+  function evidenceCard(e: FieldRecentEvidence): string {
+    const g = govChip(e.state);
+    return `<button class="fx-ev" type="button" data-ev="${esc(e.milestoneId)}">
+      <span class="shot">
+        <img src="${esc(e.photoPath)}" alt="Evidence captured for ${esc(e.milestoneLabel)}" loading="lazy" />
+        <span class="pin ${g.cls}" aria-hidden="true">${g.glyph}</span>
+      </span>
+      <span class="meta">
+        <span class="ttl">${esc(e.milestoneLabel)}</span>
+        <span class="when">${esc(shortWhen(e.capturedAt))}${e.hasLocation ? " · GPS" : " · no GPS"}</span>
+        <span class="gov ${g.cls}">${g.label}</span>
+        ${
+          e.assessmentConfidence !== null
+            ? `<span class="adv">Automated assessment confidence ${e.assessmentConfidence.toFixed(2)}</span>`
+            : ""
+        }
+        ${e.isDemoFallback ? `<span class="adv">Demo fallback submission</span>` : ""}
+      </span>
+    </button>`;
+  }
+
+  function attentionRow(a: FieldAttentionItem): string {
+    const glyph = a.tone === "bad" ? "!" : a.tone === "warn" ? "!" : "•";
+    const tag = a.href ? "a" : "div";
+    const attrs = a.href ? ` href="${esc(a.href)}"` : "";
+    return `<${tag} class="fx-row ${a.tone}"${attrs}>
+      <span class="ic" aria-hidden="true">${glyph}</span>
+      <span class="bd">
+        <span class="st">${esc(a.state)}</span>
+        <span class="h">${esc(a.title)}</span>
+        <span class="r">${esc(a.reason.length > 150 ? a.reason.slice(0, 149) + "…" : a.reason)}</span>
+        <span class="c">${esc(a.context)}</span>
+      </span>
+      ${a.href ? `<span class="go" aria-hidden="true">›</span>` : ""}
+    </${tag}>`;
+  }
+
+  function advisoryRow(s: FieldAdvisorySignal): string {
+    const tone = s.severity === "REVIEW_REQUIRED" ? "warn" : "info";
+    return `<div class="fx-row ${tone}">
+      <span class="ic" aria-hidden="true">~</span>
+      <span class="bd">
+        <span class="st">${s.severity === "REVIEW_REQUIRED" ? "REVIEW REQUIRED" : "ADVISORY"}</span>
+        <span class="h">${esc(s.name)}</span>
+        <span class="r">${esc(s.detail)}</span>
+        <span class="c">${esc(s.context)}</span>
+      </span>
+    </div>`;
+  }
+
+  function viewHome(): void {
+    stopCamera();
+    setNav("home");
+    const canCapture = Boolean(state.project);
+    const ev = state.recentEvidence;
+    app.innerHTML =
+      projectCard() +
+      statesRow() +
+      `<button class="fx-capture" id="capture-cta" type="button" ${canCapture ? "" : "disabled"}>
+         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14.5 5h-5L8 7H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-1.5-2z"/><circle cx="12" cy="13" r="3.2"/></svg>
+         Capture Evidence
+       </button>` +
+      syncLine() +
+      `<div class="fx-sec-h"><h2>Recent evidence</h2>${
+        ev.length ? `<button class="more" id="see-all" type="button">See all</button>` : ""
+      }</div>` +
+      (ev.length
+        ? `<div class="fx-grid">${ev.slice(0, 4).map(evidenceCard).join("")}</div>`
+        : `<div class="fx-empty"><div class="t">No evidence captured yet</div>
+             <div class="s">Captured photos appear here with their governed review state once submitted.</div></div>`) +
+      (state.attention.length
+        ? `<div class="fx-sec-h"><h2>Needs you</h2><span class="count">${state.attention.length}</span></div>` +
+          state.attention.slice(0, 4).map(attentionRow).join("")
+        : "") +
+      (state.advisory.length
+        ? `<div class="fx-sec-h"><h2>Advisory signals</h2></div>
+           <p class="fx-adv-note">Automated checks on your latest submissions. Advisory only — a reviewer's governed decision above is what counts.</p>` +
+          state.advisory.map(advisoryRow).join("")
+        : "");
+    bindHome();
+  }
+
+  function viewEvidenceList(): void {
+    stopCamera();
+    setNav("evidence");
+    const ev = state.recentEvidence;
+    app.innerHTML =
+      `<div class="fx-sec-h"><h2>Recent project evidence</h2><span class="count">${ev.length}</span></div>` +
+      (ev.length
+        ? `<div class="fx-grid">${ev.map(evidenceCard).join("")}</div>`
+        : `<div class="fx-empty"><div class="t">No evidence captured yet</div>
+             <div class="s">Capture from the home screen — submissions appear here with their governed review state.</div></div>`) +
+      `<div class="field-actions"><button class="btn ghost" id="home">← Field home</button></div>`;
+    bindHome();
+    document.getElementById("home")?.addEventListener("click", viewHome);
+  }
+
+  function bindHome(): void {
+    document.getElementById("capture-cta")?.addEventListener("click", () => {
+      if (!state.project) { viewProjects(); return; }
+      // Milestone already chosen for this project → straight to capture.
+      if (state.milestone && state.project.milestones.some((m) => m.id === state.milestone!.id)) {
+        state.photo = null;
+        state.location = null;
+        viewCapture();
+      } else {
+        viewMilestones();
+      }
+    });
+    document.getElementById("swap-project")?.addEventListener("click", viewProjects);
+    document.getElementById("see-all")?.addEventListener("click", viewEvidenceList);
+    app.querySelectorAll<HTMLButtonElement>("[data-ev]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        window.location.href = `/milestone/${btn.dataset.ev}`;
+      })
+    );
+  }
+
+  /** Bottom-nav active state + in-app destinations. */
+  function setNav(active: "home" | "evidence"): void {
+    document.querySelectorAll<HTMLElement>(".fx-nav-i[data-nav]").forEach((el) => {
+      if (el.dataset.nav === active) el.setAttribute("aria-current", "page");
+      else el.removeAttribute("aria-current");
+    });
+  }
+
   async function viewProjects(): Promise<void> {
     stopCamera();
+    setNav("home");
     app.innerHTML =
       stepsBar(1) +
       card(
-        `<div class="field-step">Step 1 of 4 — Project</div>
+        `<div class="field-step">Step 1 of 4 · Project</div>
        <h3>Select project</h3>
+       <p class="sub">The site you are capturing evidence for.</p>
        <div class="field-list">
          ${state.projects
            .map(
@@ -311,14 +561,17 @@ interface QueuedSubmission {
                 </button>`
            )
            .join("")}
-       </div>`
+       </div>
+       ${state.project ? `<div class="field-actions"><button class="btn ghost" id="home">← Field home</button></div>` : ""}`
       );
     app.querySelectorAll<HTMLButtonElement>("[data-i]").forEach((btn) =>
       btn.addEventListener("click", () => {
         state.project = state.projects[Number(btn.dataset.i)];
-        viewMilestones();
+        state.milestone = null;
+        viewHome();
       })
     );
+    document.getElementById("home")?.addEventListener("click", viewHome);
   }
 
   function milestoneSelectable(m: FieldMilestone): boolean {
@@ -331,10 +584,11 @@ interface QueuedSubmission {
 
   function viewMilestones(): void {
     const p = state.project!;
+    setNav("home");
     app.innerHTML =
       stepsBar(2) +
       card(
-        `<div class="field-step">Step 2 of 4 — Milestone</div>
+        `<div class="field-step">Step 2 of 4 · Milestone</div>
        <h3>${esc(p.name)}</h3>
        <p class="sub">Select the milestone you are submitting evidence for.</p>
        <div class="field-list">
@@ -345,12 +599,12 @@ interface QueuedSubmission {
              return `<button class="field-item ${cls}" data-i="${i}" ${enabled ? "" : "disabled"}>
                 <span class="row1"><span class="t">M${m.seq} · ${esc(m.title)}</span>${milestoneChip(m.status)}</span>
                 <span class="d">${esc(m.requirement.length > 96 ? m.requirement.slice(0, 95) + "…" : m.requirement)}</span>
-                <span class="amt">Tranche ${money(m.trancheAmount)} · funds ${m.accountStatus === "RELEASED" ? "released" : "held"}</span>
+                <span class="amt">Funds ${m.accountStatus === "RELEASED" ? "released by governance" : "held pending governance"}</span>
               </button>`;
            })
            .join("")}
        </div>
-       <div class="field-actions"><button class="btn ghost" id="back">← Projects</button></div>`
+       <div class="field-actions"><button class="btn ghost" id="back">← Field home</button></div>`
       );
     app.querySelectorAll<HTMLButtonElement>("[data-i]").forEach((btn) =>
       btn.addEventListener("click", () => {
@@ -360,7 +614,7 @@ interface QueuedSubmission {
         viewCapture();
       })
     );
-    document.getElementById("back")!.addEventListener("click", viewProjects);
+    document.getElementById("back")!.addEventListener("click", viewHome);
   }
 
   async function viewCapture(): Promise<void> {
@@ -368,23 +622,28 @@ interface QueuedSubmission {
     app.innerHTML =
       stepsBar(3) +
       card(
-        `<div class="field-step">Step 3 of 4 — Evidence photo</div>
-       <h3>M${m.seq} · ${esc(m.title)}</h3>
-       <p class="sub" style="margin-top:8px"><b style="color:#cbd5e1">Requirement:</b> ${esc(m.requirement)}</p>
-       <div id="camera-zone" style="margin-top:12px">
-         <video class="viewfinder" id="viewfinder" playsinline muted></video>
+        `<div class="field-step">Step 3 of 4 · Evidence photo</div>
+       <div id="camera-zone">
+         <div class="fx-view">
+           <video class="viewfinder" id="viewfinder" playsinline muted aria-label="Camera viewfinder"></video>
+           <span class="ctx">M${m.seq} · ${esc(m.title)}<span class="p">${esc(state.project?.name ?? "")}</span></span>
+         </div>
          ${statusStrip({})}
-         <div class="field-actions">
-           <button class="btn big" id="snap" disabled>Starting camera…</button>
+         <div class="field-actions" style="align-items:center">
+           <button class="fx-shutter" id="snap" disabled aria-label="Capture evidence photo" title="Starting camera…">
+             <span class="core" aria-hidden="true"></span>
+           </button>
+           <span class="field-note" id="snap-label" style="margin-top:6px">Starting camera…</span>
          </div>
        </div>
        <div id="camera-fail" style="display:none">
          <div class="field-warn" id="fail-reason">Camera unavailable.</div>
        </div>
+       <p class="sub" style="margin-top:10px"><b style="color:var(--fx-ink)">Requirement:</b> ${esc(m.requirement)}</p>
        <div class="field-actions">
          <button class="btn secondary" id="upload">Upload a photo instead</button>
          ${state.demoAffordances ? `<button class="btn ghost" id="fallback">Use DEMO FALLBACK evidence</button>` : ""}
-         <button class="btn ghost" id="back">← Milestones</button>
+         <button class="btn ghost" id="back">← Milestone</button>
        </div>
        <input type="file" id="file" accept="image/*" capture="environment" style="display:none" />
        ${state.demoAffordances ? `<div id="fallback-zone" style="display:none">
@@ -491,7 +750,11 @@ interface QueuedSubmission {
       if (zone) zone.style.display = "block";
     } else {
       snapButton.disabled = false;
-      snapButton.textContent = "Capture evidence";
+      snapButton.title = "Capture evidence";
+      // Camera state is announced in TEXT as well as by the control's
+      // appearance — never colour or iconography alone.
+      const label = document.getElementById("snap-label");
+      if (label) label.textContent = "Camera ready — tap to capture";
     }
   }
 
@@ -705,8 +968,9 @@ interface QueuedSubmission {
           ? "NEEDS HUMAN REVIEW"
           : "REJECTED";
     app.innerHTML = card(
-      `<div class="field-step">Verification result</div>
+      `<div class="field-step">Governed evidence state</div>
        <div class="verdict-banner ${tone}">${verdictText}</div>
+       <p class="fx-conf">Automated assessment confidence ${v.confidence.toFixed(2)} — advisory only. The governed state above is what counts.</p>
        ${result.evidence.isDemoFallback ? `<div style="text-align:center;margin:-4px 0 10px"><span class="badge fallback">Demo fallback</span></div>` : ""}
        <ul class="checks" style="border-top:1px solid #334155">
          ${v.checks
@@ -720,7 +984,7 @@ interface QueuedSubmission {
            .join("")}
        </ul>
        <dl class="field-kv">
-         <dt>Confidence</dt><dd>${v.confidence.toFixed(2)}</dd>
+         <dt>Assessment</dt><dd>confidence ${v.confidence.toFixed(2)} (advisory)</dd>
          <dt>Reasoning</dt><dd>${esc(v.reasoning)}</dd>
          <dt>Evidence hash</dt><dd style="font-family:monospace;font-size:11px">${esc(result.evidence.hash)}</dd>
          ${
@@ -752,10 +1016,12 @@ interface QueuedSubmission {
 
   function viewMilestonesFresh(): void {
     // Re-select the current project from the refreshed context so
-    // milestone statuses are current.
+    // milestone statuses (and the home read model) are current.
     const projectId = state.project?.id;
     state.project = state.projects.find((p) => p.id === projectId) ?? state.projects[0] ?? null;
-    if (state.project) viewMilestones();
+    const milestoneId = state.milestone?.id;
+    state.milestone = state.project?.milestones.find((m) => m.id === milestoneId) ?? null;
+    if (state.project) viewHome();
     else viewProjects();
   }
 
@@ -769,6 +1035,21 @@ interface QueuedSubmission {
     const ctx = await res.json();
     state.projects = ctx.projects;
     state.demoAffordances = ctx.demoAffordances !== false;
+    // Server read model — rendered as given. Queued captures live only on
+    // this device and are NEVER shown with a governed state: they appear
+    // in the sync line until the server has actually accepted them.
+    state.recentEvidence = ctx.recentEvidence ?? [];
+    state.attention = ctx.attention ?? [];
+    state.advisory = ctx.advisory ?? [];
+    state.counts = ctx.counts ?? { verified: 0, needsReview: 0, rejected: 0, submitted: 0 };
+  }
+
+  async function refreshQueueState(): Promise<void> {
+    try {
+      state.queued = (await queueAll()).length;
+    } catch {
+      state.queued = 0;
+    }
   }
 
   async function boot(): Promise<void> {
@@ -779,14 +1060,44 @@ interface QueuedSubmission {
     }
     updateQueuePill();
     flushQueue();
+    // Bottom-nav in-app destinations (Map and Issues are plain links to
+    // existing authorized routes and need no wiring).
+    document.querySelectorAll<HTMLElement>(".fx-nav-i[data-nav]").forEach((el) =>
+      el.addEventListener("click", () => {
+        if (el.dataset.nav === "home") viewHome();
+        else viewEvidenceList();
+      })
+    );
+    // Connectivity changes are operational state, not errors — reflect
+    // them wherever the field user is standing.
+    const reflect = async (): Promise<void> => {
+      await refreshQueueState();
+      const line = document.querySelector(".fx-sync");
+      if (line) line.outerHTML = syncLine();
+    };
+    window.addEventListener("online", () => {
+      state.syncing = true;
+      void reflect();
+      // The queue flush is already armed by its own 'online' listener;
+      // once it drains, refresh the read model so newly accepted evidence
+      // appears with its GOVERNED state (never before the server said so).
+      window.setTimeout(async () => {
+        state.syncing = false;
+        await refreshQueueState();
+        try {
+          await loadContext();
+        } catch {
+          /* still unreachable — the queue keeps retrying */
+        }
+        if (!state.photo) viewHome();
+      }, 1500);
+    });
+    window.addEventListener("offline", () => { state.syncing = false; void reflect(); });
     try {
+      await refreshQueueState();
       await loadContext();
-      if (state.projects.length === 1) {
-        state.project = state.projects[0];
-        viewMilestones();
-      } else {
-        viewProjects();
-      }
+      if (state.projects.length === 1) state.project = state.projects[0];
+      viewHome();
     } catch {
       app.innerHTML = card(
         `<div class="field-warn"><b>Cannot reach the OBV server.</b> Check your connection
