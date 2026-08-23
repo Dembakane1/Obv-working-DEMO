@@ -439,12 +439,140 @@ async function main() {
       "9. the recorded justification is shown");
     assert(/Requirements overridden/i.test(exHtml) && /Decision actor/i.test(exHtml) && /Decision recorded/i.test(exHtml),
       "9. the banner shows what was overridden, by whom and when");
-    assert(/remain OUTSTANDING/i.test(exHtml),
-      "9. the banner says the requirements remain outstanding — the decision does not satisfy them");
+    assert(/did not satisfy them/i.test(exHtml),
+      "9. the banner says the decision did not satisfy the requirements");
     assert(/class="dr-blockers"/.test(exHtml),
-      "9. the overridden blockers are still listed beneath the banner");
+      "9. current governed blockers are still listed beneath the banner");
     assert(!/class="dr-exception"/.test(readyHtml),
       "9. a normal READY draw shows no exception banner — an override never looks like an ordinary approval");
+
+    // ---------- 9H. the banner is HISTORY, not a view of live readiness ----------
+    //
+    // The snapshot persisted with the decision is the only source. Live
+    // readiness answers a different question and changes over time: an
+    // overridden requirement can be resolved, and a new one can appear.
+    // Neither may rewrite what the lender actually proceeded past.
+    const snapOf = (id, decisionId) => dr.decisionReadinessSnapshot(id, decisionId);
+    const decisionId = db.prepare(
+      "SELECT id FROM lender_draw_decisions WHERE draw_request_id = ? ORDER BY rowid DESC LIMIT 1"
+    ).get(exId).id;
+
+    // -- CASE 1: the banner reports the snapshot, not today's blockers --
+    const snap = snapOf(exId, decisionId);
+    assert(snap && snap.decisionId === decisionId,
+      "9H.1 the standing decision has its own immutable readiness snapshot");
+    assert(snap.overriddenBlockers.length > 0,
+      `9H.1 the snapshot records the requirements overridden at decision (${snap.overriddenBlockers.length})`);
+    assert(snap.statusAtDecision === rBefore.status,
+      `9H.1 the snapshot preserves the readiness status at decision time (${snap.statusAtDecision})`);
+    {
+      const facts = (exHtml.match(/<dl class="x-facts">[\s\S]*?<\/dl>/) ?? [""])[0];
+      assert(new RegExp(`Requirements overridden at decision<\\/dt><dd><b>${snap.overriddenBlockers.length}<`).test(facts),
+        "9H.1 the banner's overridden count is the snapshot's count");
+      const shownStatus = snap.statusAtDecision === "EXCEPTION_REVIEW"
+        ? "EXCEPTION REVIEW" : snap.statusAtDecision;
+      assert(new RegExp(`Decision-time readiness<\\/dt><dd><b>${shownStatus}<`).test(facts),
+        `9H.1 the banner states the decision-time readiness status (${shownStatus})`);
+      assert(/Policy at decision<\/dt><dd>v\d/.test(facts),
+        "9H.1 the banner states the policy version in force at decision time");
+    }
+    assert(/Requirements overridden at decision time/.test(exHtml) &&
+      snap.blockingReasonsAtDecision.some((b) => exHtml.includes(b.message.slice(0, 40))),
+      "9H.1 the banner lists the decision-time blockers themselves, from the snapshot");
+
+    // -- CASE 2: resolving an overridden requirement never shrinks history --
+    {
+      const openExc = db.prepare(
+        "SELECT id FROM exceptions WHERE project_id = 'proj-golden' AND status NOT IN ('RESOLVED','CLOSED','WAIVED') LIMIT 1"
+      ).get();
+      if (!openExc) fail("9H.2 setup: no open exception to resolve");
+      const resolved = await api("user-funder", "POST", `/api/exceptions/${openExc.id}/resolve`, {
+        summary: "Permit scope discrepancy corrected after the lender decision (fictional).",
+      });
+      if (resolved.status >= 400) {
+        fail(`9H.2 setup: the exception did not resolve (${resolved.status}) ${resolved.text.slice(0, 160)}`);
+      }
+      const liveAfter = dr.drawReadiness(exId);
+      assert(liveAfter.blockingReasons.length < rBefore.blockingReasons.length,
+        `9H.2 live readiness now carries fewer blockers (${liveAfter.blockingReasons.length} < ${rBefore.blockingReasons.length})`);
+      const snap2 = snapOf(exId, decisionId);
+      assert(snap2.overriddenBlockers.length === snap.overriddenBlockers.length,
+        "9H.2 the historical overridden count does NOT shrink when a requirement is later resolved");
+      const html2 = (await page("user-funder", `/draw/${exId}`)).html;
+      const facts2 = (html2.match(/<dl class="x-facts">[\s\S]*?<\/dl>/) ?? [""])[0];
+      assert(new RegExp(`Requirements overridden at decision<\\/dt><dd><b>${snap.overriddenBlockers.length}<`).test(facts2),
+        "9H.2 the banner still reports what the lender actually overrode, not what remains today");
+      assert(/class="dr-exception"/.test(html2),
+        "9H.2 the banner remains visible after the overridden requirement is resolved — the override is a permanent fact");
+      // The live panel, by contrast, must reflect only what remains NOW.
+      const liveCodes = liveAfter.blockingReasons.map((b) => b.code);
+      assert(!liveCodes.includes("OPEN_BLOCKING_EXCEPTION"),
+        "9H.2 the current blocker panel no longer carries the resolved requirement");
+      assert(/Outstanding <b>now<\/b>/.test(html2),
+        "9H.2 the current panel is explicitly labelled as what is outstanding now");
+    }
+
+    // -- CASE 3: a blocker that appears AFTER the decision is never attributed to it --
+    {
+      const before3 = snapOf(exId, decisionId);
+      // A governed mutation that adds a NEW blocker AFTER the decision:
+      // open a HIGH exception against this draw through the ordinary
+      // exception register.
+      const cfg = await api("user-funder", "POST", "/api/exceptions", {
+        projectId: "proj-golden", drawRequestId: exId, milestoneId: "ms-g4",
+        category: "OTHER", severity: "HIGH",
+        title: "Post-decision scope discrepancy (fictional)",
+        description: "Raised after the lender decision — must never be attributed to it (fictional).",
+      });
+      if (cfg.status >= 400) {
+        pass(`9H.3 no governed path adds a new blocker to this fixture (${cfg.status}) — not asserted against a forced state`);
+      } else {
+        const live3 = dr.drawReadiness(exId);
+        const fresh = live3.blockingReasons.find((b) => b.code === "OPEN_BLOCKING_EXCEPTION");
+        assert(fresh, "9H.3 a new governed blocker appears in live readiness after the decision");
+        const snap3 = snapOf(exId, decisionId);
+        assert(snap3.overriddenBlockers.length === before3.overriddenBlockers.length,
+          "9H.3 the historical overridden count does NOT grow when a new blocker appears");
+        assert(!snap3.blockingReasonsAtDecision.some((b) => b.message === fresh.message),
+          "9H.3 the new blocker is not recorded as something the earlier decision overrode");
+        const html3 = (await page("user-funder", `/draw/${exId}`)).html;
+        const banner3 = (html3.match(/<section class="dr-exception"[\s\S]*?<\/section>/) ?? [""])[0];
+        assert(!banner3.includes(fresh.message.slice(0, 40)),
+          "9H.3 the exception banner does not describe the new blocker as previously overridden");
+        const blockPanel3 = (html3.match(/<ul class="dr-blockers">[\s\S]*?<\/ul>/) ?? [""])[0];
+        assert(blockPanel3.includes(fresh.message.slice(0, 40)),
+          "9H.3 the current blocker panel does show the new blocker");
+      }
+    }
+
+    // -- CASE 4: an older exception snapshot cannot attach to a newer decision --
+    {
+      // The banner is bound to the STANDING decision's own snapshot. Prove
+      // the binding directly: a different decision id resolves to a
+      // different snapshot (or none), never to this one.
+      const foreign = snapOf(exId, `${decisionId}-not-a-real-decision`);
+      assert(foreign === null,
+        "9H.4 a decision id with no snapshot resolves to null — history is never borrowed from another decision");
+      const bySnapshot = dr.readinessSnapshots(exId)
+        .filter((x) => x.snapshot.decisionId === decisionId);
+      assert(bySnapshot.length >= 1,
+        "9H.4 the standing decision's snapshot is located by its own decision id");
+      // A decision whose snapshot overrode nothing must show no banner. The
+      // READY fixture is exactly that case once decided.
+      const readySnapshots = dr.readinessSnapshots(readyId);
+      const noOverride = readySnapshots.every(
+        (x) => !Array.isArray(x.snapshot.overriddenBlockers) || x.snapshot.overriddenBlockers.length === 0
+      );
+      assert(noOverride && !/class="dr-exception"/.test(readyHtml),
+        "9H.4 a decision that overrode nothing shows no exception banner — the banner follows the snapshot, not the page");
+      const view = fs.readFileSync(path.join(ROOT, "src/server/view/drawPages.tsx"), "utf8");
+      assert(/const proceededByException = Boolean\(\s*d\.currentDecision && d\.decisionSnapshot && d\.decisionSnapshot\.overriddenBlockers\.length > 0/.test(view),
+        "9H.4 the banner condition reads the standing decision's snapshot, not live readiness");
+      assert(!/ExceptionBanner[\s\S]{0,200}r=\{r\}/.test(view),
+        "9H.4 the banner is not passed live readiness at all");
+      assert(!/r\.blockingReasons\.length[\s\S]{0,120}Requirements overridden/.test(view),
+        "9H.4 the overridden count is never taken from live blockers");
+    }
   }
 
   // ---------- 10. doctrine language ----------

@@ -40,7 +40,11 @@ import {
   roleLabel,
   shortHash,
 } from "./components";
-import type { DrawReadinessResult, ReadinessReason } from "../services/drawReadiness";
+import type {
+  DecisionReadinessSnapshot,
+  DrawReadinessResult,
+  ReadinessReason,
+} from "../services/drawReadiness";
 import { isUnknownInformation } from "../services/drawReadiness";
 import type { NextAction } from "../services/pilot/lenderPilot";
 import type {
@@ -586,6 +590,10 @@ export interface DrawDetailData {
   /** The standing lender decision, if one is recorded — read-only, used to
    *  attribute a proceed-by-exception override on every tab. */
   currentDecision?: LenderDrawDecision | null;
+  /** Decision-time readiness for the standing decision, read from the
+   *  immutable snapshot persisted with it. HISTORY — never reconciled
+   *  against current readiness. */
+  decisionSnapshot?: DecisionReadinessSnapshot | null;
   /** Lender Review workspace data (assembled only for tab === "lender"). */
   lender: LenderTabData | null;
 }
@@ -787,33 +795,51 @@ function AdvisorySignals(props: { warnings: ReadinessReason[] }): VNode {
   );
 }
 
-/** §13 — a lender proceeded past outstanding requirements. This must never
- *  look like a normal READY approval, so it is a full-width banner and the
- *  blockers it overrode stay listed below it, unchanged. */
+/**
+ * §13 — a lender proceeded past outstanding requirements.
+ *
+ * EVERY figure here is HISTORY, read from the immutable readiness snapshot
+ * persisted with this decision. It is deliberately NOT reconciled against
+ * current readiness: resolving an overridden requirement must not shrink
+ * the count of what the lender actually overrode, and a blocker that
+ * appeared afterwards must never be attributed to a decision made before
+ * it existed. What is outstanding NOW is a different question, answered by
+ * the Governed blockers panel.
+ */
 function ExceptionBanner(props: {
-  r: DrawReadinessResult;
+  snapshot: DecisionReadinessSnapshot;
+  decision: string;
+  justification: string | null;
   decidedBy: string | null;
   decidedAt: string | null;
 }): VNode {
-  const { r } = props;
+  const s = props.snapshot;
+  const overridden = new Set(s.overriddenBlockers);
+  // The blockers as they stood at decision time, limited to the ones the
+  // decision actually proceeded past.
+  const historical = s.blockingReasonsAtDecision.filter((b) => overridden.has(b.code));
   return (
     <section className="dr-exception" role="note">
       <div className="x-head">
         <span className="x-badge">PROCEEDED BY EXCEPTION</span>
         <span className="x-sub">
-          A {enumLabel(r.proceededByException!.decision)} decision was recorded while requirements
-          were outstanding. The requirements below remain OUTSTANDING — the decision does not
-          satisfy them.
+          The recorded {enumLabel(props.decision).toLowerCase()} decision was made while
+          requirements were outstanding. It did not satisfy them. Everything below describes the
+          draw <b>at decision time</b> — see Governed blockers for what is outstanding now.
         </span>
       </div>
       <dl className="x-facts">
         <div>
-          <dt>Justification</dt>
-          <dd>{r.proceededByException!.justification ?? "Not recorded"}</dd>
+          <dt>Decision-time readiness</dt>
+          <dd><b>{s.statusAtDecision === "EXCEPTION_REVIEW" ? "EXCEPTION REVIEW" : s.statusAtDecision}</b></dd>
         </div>
         <div>
-          <dt>Requirements overridden</dt>
-          <dd>{r.blockingReasons.length}</dd>
+          <dt>Requirements overridden at decision</dt>
+          <dd><b>{s.overriddenBlockers.length}</b></dd>
+        </div>
+        <div>
+          <dt>Justification</dt>
+          <dd>{props.justification ?? "Not recorded"}</dd>
         </div>
         <div>
           <dt>Decision actor</dt>
@@ -821,13 +847,26 @@ function ExceptionBanner(props: {
         </div>
         <div>
           <dt>Decision recorded</dt>
-          <dd>{props.decidedAt ? fmtDate(props.decidedAt).slice(0, 16) : "Not recorded"}</dd>
+          <dd>{props.decidedAt ? fmtDate(props.decidedAt).slice(0, 16) : fmtDate(s.recordedAt).slice(0, 16)}</dd>
         </div>
         <div>
-          <dt>Readiness at decision</dt>
-          <dd>Snapshot preserved in the draw's governed history</dd>
+          <dt>Policy at decision</dt>
+          <dd>{s.policyVersion !== null ? `v${s.policyVersion}` : "Not recorded"}</dd>
         </div>
       </dl>
+      {historical.length > 0 ? (
+        <div className="x-hist">
+          <span className="x-hist-k">Requirements overridden at decision time</span>
+          <ul>
+            {historical.map((b) => (
+              <li>
+                <span className="c">{enumLabel(b.category)}</span>
+                {b.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -942,6 +981,12 @@ export function renderDrawDetail(d: DrawDetailData): string {
     ? d.users.get(d.currentDecision.reviewerUserId)?.name ?? d.currentDecision.reviewerUserId
     : null;
   const decidedAt = d.currentDecision?.decisionAt ?? null;
+  // HISTORY, not current state: the standing decision proceeded by exception
+  // if ITS OWN snapshot recorded overridden requirements. Live readiness is
+  // not consulted — it answers a different question.
+  const proceededByException = Boolean(
+    d.currentDecision && d.decisionSnapshot && d.decisionSnapshot.overriddenBlockers.length > 0
+  );
 
   const decisionControls = (
     <>
@@ -997,9 +1042,22 @@ export function renderDrawDetail(d: DrawDetailData): string {
           <div className="dr-acts">{decisionControls}</div>
         </header>
 
-        {/* ---- §13 an override is never quiet ---- */}
-        {r?.proceededByException ? (
-          <ExceptionBanner r={r} decidedBy={decidedBy} decidedAt={decidedAt} />
+        {/* ---- §13 an override is never quiet ----
+            Shown when the STANDING decision's own snapshot overrode
+            something — not when live readiness still has blockers. The
+            override is a permanent fact about that decision; resolving the
+            requirements afterwards does not un-make it, and a decision
+            that overrode nothing never shows this banner. */}
+        {proceededByException ? (
+          <ExceptionBanner
+            snapshot={d.decisionSnapshot!}
+            decision={d.currentDecision!.decision}
+            justification={
+              d.currentDecision!.exceptionsAccepted ?? d.currentDecision!.decisionReason ?? null
+            }
+            decidedBy={decidedBy}
+            decidedAt={decidedAt}
+          />
         ) : null}
 
         {/* ---- §4 / §6 / §7 upper work area: readiness | governed
@@ -1089,6 +1147,14 @@ export function renderDrawDetail(d: DrawDetailData): string {
               right={<span className={blockerCount ? "dp-count bad" : "dp-count ok"}>{blockerCount}</span>}
               foot={<a href={url("exceptions")}>Exception register →</a>}
             >
+              {/* Stated explicitly whenever an override is on screen, so the
+                  two panels can never be read as the same list. */}
+              {proceededByException ? (
+                <p className="dr-adv-lead">
+                  Outstanding <b>now</b>. What the lender proceeded past at decision time is in the
+                  exception banner above — the two sets are not the same and are never merged.
+                </p>
+              ) : null}
               <GovernedBlockers reasons={r ? r.blockingReasons : []} unavailable={!r} />
             </DensePanel>
 

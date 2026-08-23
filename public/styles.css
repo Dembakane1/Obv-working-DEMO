@@ -5314,3 +5314,19 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
   border-left: 2px solid var(--line); position: relative;
 }
 .dr-chain li b { color: var(--ink-2); font-weight: 650; }
+
+/* ---- exception banner: decision-time history, never current state ---- */
+.dr-exception .x-hist { margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--warn-line); }
+.dr-exception .x-hist-k {
+  font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 650;
+}
+.dr-exception .x-hist ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.dr-exception .x-hist li {
+  font-size: 11.5px; color: var(--ink-2); line-height: 1.45; padding: 3px 0 3px 10px;
+  border-left: 2px solid var(--warn-line);
+}
+.dr-exception .x-hist li .c {
+  font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; font-weight: 700;
+  color: var(--ink-3); margin-right: 7px;
+}

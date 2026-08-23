@@ -978,6 +978,69 @@ export function readinessSnapshots(drawRequestId: string): Array<{
     });
 }
 
+/**
+ * What OBV recorded AT THE MOMENT a specific lender decision was made.
+ *
+ * This is history, not current state. Every field is read from the
+ * immutable READINESS_SNAPSHOT persisted with that decision — never
+ * recomputed, never reconciled against today's readiness.
+ */
+export interface DecisionReadinessSnapshot {
+  decisionId: string;
+  /** Readiness status at decision time. */
+  statusAtDecision: string;
+  /** The blockers that stood at decision time, in full. */
+  blockingReasonsAtDecision: Array<{ code: string; category: string; message: string; nextAction: string }>;
+  /** Codes the lender proceeded past. Empty for a decision that overrode
+   *  nothing — that is what distinguishes a normal decision from an
+   *  exception one. Duplicates are meaningful: three missing documents
+   *  are three overridden requirements. */
+  overriddenBlockers: string[];
+  policyVersion: number | null;
+  evaluatedAt: string | null;
+  recordedAt: string;
+}
+
+/**
+ * The readiness snapshot belonging to ONE lender decision.
+ *
+ * Presentation needs decision-time truth to describe a proceed-by-exception
+ * override: the live result cannot supply it, because live blockers change
+ * as requirements are resolved and as new ones appear. Returns null when no
+ * snapshot carries that decision id.
+ */
+export function decisionReadinessSnapshot(
+  drawRequestId: string,
+  decisionId: string
+): DecisionReadinessSnapshot | null {
+  const match = readinessSnapshots(drawRequestId)
+    .filter((s) => s.snapshot.decisionId === decisionId)
+    // A decision has exactly one snapshot; if a future path ever wrote more
+    // than one, the LATEST for that decision is the operative record.
+    .pop();
+  if (!match) return null;
+  const s = match.snapshot;
+  const reasons = Array.isArray(s.blockingReasons) ? s.blockingReasons : [];
+  const overridden = Array.isArray(s.overriddenBlockers) ? s.overriddenBlockers : [];
+  return {
+    decisionId,
+    statusAtDecision: typeof s.status === "string" ? s.status : "UNKNOWN",
+    blockingReasonsAtDecision: reasons.map((r) => {
+      const b = (r ?? {}) as Record<string, unknown>;
+      return {
+        code: String(b.code ?? ""),
+        category: String(b.category ?? ""),
+        message: String(b.message ?? ""),
+        nextAction: String(b.nextAction ?? ""),
+      };
+    }),
+    overriddenBlockers: overridden.map((c) => String(c)),
+    policyVersion: typeof s.policyVersion === "number" ? s.policyVersion : null,
+    evaluatedAt: typeof s.evaluatedAt === "string" ? s.evaluatedAt : null,
+    recordedAt: match.createdAt,
+  };
+}
+
 // ------------------------------------------- governed decision wrapper
 
 /**
