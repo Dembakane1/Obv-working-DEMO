@@ -1631,7 +1631,14 @@ export function DenseTable(props: {
         </thead>
         <tbody>
           {props.rows.map((r) => (
-            <tr>{props.columns.map((c) => <td className={c.num ? "num" : ""}>{r[c.key] ?? "—"}</td>)}</tr>
+            <tr>
+              {props.columns.map((c) => (
+                // data-l carries the column name onto the cell so a narrow
+                // viewport can restack the row as a labelled record instead
+                // of squashing the table. Ignored at desktop widths.
+                <td className={c.num ? "num" : ""} data-l={c.label}>{r[c.key] ?? "—"}</td>
+              ))}
+            </tr>
           ))}
         </tbody>
       </table>

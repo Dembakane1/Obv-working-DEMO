@@ -144,19 +144,20 @@ async function main() {
 
   // ============ 3. Draw Review workbench ============
   const draw = await page("/draw/draw-1?tab=lines");
-  assert(draw.includes("Draw Review — Draw #"), "draw review is titled as a review workstation");
+  assert(draw.includes('class="dr-head"'), "draw review opens on a compact draw-identity header");
+  assert(draw.includes("Draw #"), "the header states the draw number");
   assert(draw.includes('class="workbench"'), "draw review is a workbench (work surface + inspector rail)");
   assert(draw.includes('class="wb-rail"'), "the inspector rail is present");
   assert(
-    draw.includes("Evidence readiness") && draw.includes("Review progress") &&
-      draw.includes("Advisory signals") && draw.includes("Draw summary"),
-    "the four summary modules sit in the top region"
+    draw.includes("Draw readiness") && draw.includes("Governed blockers") &&
+      draw.includes("Advisory signals") && draw.includes("Line item review"),
+    "the upper work area leads with readiness, blockers, advisory signals and the line register"
   );
   assert(draw.includes('class="wstabs"'), "record domains are tabs, not sequential full-width sections");
   assert(draw.includes('class="dtable"'), "line items are a dense table");
   assert(
-    draw.includes("Current blockers") && draw.includes("Decision status"),
-    "the rail carries decision status and current blockers"
+    draw.includes("Lender decision") && draw.includes("Submission checks"),
+    "the rail carries the lender decision area and the submission checks"
   );
   assert(draw.includes('class="mobile-actionbar"'), "a sticky mobile decision region is rendered");
   // Governance content must survive the restructure.

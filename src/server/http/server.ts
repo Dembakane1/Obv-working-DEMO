@@ -780,6 +780,16 @@ function assembleDrawDetail(
   const approvalRecords = summary.approvalRecords;
   const alreadyDecided = Boolean(approval && approvalRecords.some((r) => r.role === user.role));
   const isSubmitter = draw.requestedByUserId === user.id;
+  // The STANDING lender decision — the one a reader is looking at now. Its
+  // own readiness snapshot is what the exception banner describes; an
+  // earlier superseded decision's snapshot must never attach to it.
+  const standingDecision = (() => {
+    try {
+      return lenderDecisions.currentDecision(draw.id);
+    } catch {
+      return null;
+    }
+  })();
   return {
     nav: navFor(user, "draws"),
     tab,
@@ -863,6 +873,24 @@ function assembleDrawDetail(
     ),
     alreadyDecided,
     isSubmitter,
+    // Read-only attribution for the proceed-by-exception banner, so the
+    // override shows WHO recorded it and WHEN on every tab — not only in
+    // the lender workspace. The authoritative record is unchanged.
+    currentDecision: standingDecision,
+    // Decision-time readiness for the STANDING decision, read from the
+    // immutable snapshot persisted with it. The banner describes what the
+    // lender actually proceeded past, which live readiness cannot supply:
+    // resolving an overridden requirement would shrink the count, and a
+    // new blocker would be attributed to a decision made before it existed.
+    decisionSnapshot: standingDecision
+      ? (() => {
+          try {
+            return drawReadinessSvc.decisionReadinessSnapshot(draw.id, standingDecision.id);
+          } catch {
+            return null;
+          }
+        })()
+      : null,
     lender: tab === "lender" ? assembleLenderTab(user, draw, isSubmitter, summary.approval, notice) : null,
   };
 }
