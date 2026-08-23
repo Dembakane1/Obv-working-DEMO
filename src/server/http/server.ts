@@ -863,6 +863,16 @@ function assembleDrawDetail(
     ),
     alreadyDecided,
     isSubmitter,
+    // Read-only attribution for the proceed-by-exception banner, so the
+    // override shows WHO recorded it and WHEN on every tab — not only in
+    // the lender workspace. The authoritative record is unchanged.
+    currentDecision: (() => {
+      try {
+        return lenderDecisions.currentDecision(draw.id);
+      } catch {
+        return null;
+      }
+    })(),
     lender: tab === "lender" ? assembleLenderTab(user, draw, isSubmitter, summary.approval, notice) : null,
   };
 }

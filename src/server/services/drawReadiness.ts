@@ -207,6 +207,17 @@ const UNKNOWN_INFO_CODES = new Set([
   "LINE_WITHOUT_MILESTONE",
 ]);
 
+/**
+ * Whether a reason describes MISSING INFORMATION rather than a failed
+ * requirement. Exported read-only so presentation can render an unknown
+ * as seriously as the engine treats it — missing information must never
+ * look healthier than a failed requirement — without re-deriving the set
+ * anywhere else. Classification only: this changes no evaluation.
+ */
+export function isUnknownInformation(code: string): boolean {
+  return UNKNOWN_INFO_CODES.has(code);
+}
+
 /** Reasons a lender exception can never bypass, regardless of category
  *  policy: incomplete reviewer work and integrity failures are not
  *  waivable business requirements. */

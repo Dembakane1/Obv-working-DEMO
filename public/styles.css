@@ -4905,7 +4905,10 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
   .ws-row-rail::-webkit-scrollbar { display: none; }
   .ws-row-rail > * { flex: 0 0 82%; max-width: 320px; scroll-snap-align: start; }
   /* secondary chrome actions live in the sticky bar on phones */
-  .ws-head .ws-actions .hide-mobile { display: none; }
+  .ws-head .ws-actions .hide-mobile,
+  .dr-head .dr-acts .hide-mobile { display: none; }
+  /* With every action hidden the row would still reserve its gap. */
+  .dr-head .dr-acts:empty { display: none; }
   .next-action { align-items: flex-start; }
 }
 
@@ -5085,3 +5088,229 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
 .rd-cats td { padding: 3px 6px; border-bottom: 1px solid var(--line); color: var(--ink-2); }
 .rd-cats tr:last-child td { border-bottom: 0; }
 .rd-doctrine { margin: 8px 0 2px; font-size: 10.5px; color: var(--ink-4); }
+
+/* ============================================================
+   Draw Review workstation — lender readiness console.
+
+   Every rule here is presentation. The page states the engine's
+   four readiness states in words, keeps requested / supportable /
+   unsupported visually distinct, and renders governed blockers
+   and advisory signals as two structurally different things.
+   Tone is always paired with a word, so no state depends on
+   colour alone.
+   ============================================================ */
+
+/* ---- §3 draw identity header ---- */
+.dr-head {
+  display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+  padding: 0 0 11px; margin: 0 0 var(--ws-gap); border-bottom: 1px solid var(--line);
+}
+.dr-head .dr-id { min-width: 0; flex: 1; }
+.dr-head .crumb { font-size: 11.5px; color: var(--ink-3); display: inline-block; margin-bottom: 3px; }
+.dr-head h1 {
+  margin: 0; font-size: 19px; font-weight: 680; letter-spacing: -0.015em; color: var(--ink);
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0;
+}
+.dr-head h1 .dr-proj {
+  font-size: 13px; font-weight: 500; color: var(--ink-3); letter-spacing: 0;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.dr-meta { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; margin-top: 7px; }
+.dr-fact { font-size: 11.5px; color: var(--ink-2); display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
+.dr-fact .k, .dr-chip .k {
+  font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-4); font-weight: 600;
+}
+.dr-chip {
+  display: inline-flex; align-items: baseline; gap: 6px; padding: 2px 8px; border-radius: 4px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .05em;
+  border: 1px solid var(--line); background: var(--inset); color: var(--ink-2);
+}
+.dr-chip.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-line); }
+.dr-chip.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }
+.dr-chip.bad { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
+.dr-chip.unknown { color: var(--ink); background: var(--inset); border-color: var(--ink-4); border-style: dashed; }
+.dr-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+
+/* ---- §4/§6/§7 upper work area ---- */
+.dr-top {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: var(--ws-gap); margin: 0 0 var(--ws-gap); align-items: start;
+}
+.dr-signals { display: flex; flex-direction: column; gap: var(--ws-gap); min-width: 0; }
+.dpanel-head .dp-count { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--ink-2); }
+.dpanel-head .dp-count.bad { color: var(--bad); }
+.dpanel-head .dp-count.ok { color: var(--ok); }
+
+/* ---- readiness state: the single unmistakable answer ---- */
+.dr-state {
+  display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap;
+  padding: 0 0 11px; margin: 0 0 12px; border-bottom: 1px solid var(--line);
+}
+.dr-state-badge {
+  font-size: 21px; font-weight: 750; letter-spacing: .04em; line-height: 1.1;
+  padding: 4px 12px; border-radius: 5px; border: 1px solid var(--line);
+  background: var(--inset); color: var(--ink);
+}
+.dr-state.ok .dr-state-badge { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-line); }
+.dr-state.warn .dr-state-badge { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }
+.dr-state.bad .dr-state-badge { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
+/* UNKNOWN is never the quiet state: dashed high-contrast, not a soft grey. */
+.dr-state.unknown .dr-state-badge {
+  color: var(--ink); background: var(--inset); border-color: var(--ink-3); border-style: dashed; border-width: 1.5px;
+}
+.dr-state-cap { font-size: 11.5px; color: var(--ink-3); flex: 1; min-width: 140px; line-height: 1.4; }
+
+/* ---- §10 the three capital facts, never collapsed ---- */
+.dr-cap { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.dr-cap .c { background: var(--surface); padding: 11px 12px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dr-cap .v { font-size: 21px; font-weight: 680; color: var(--ink); font-variant-numeric: tabular-nums; line-height: 1.15; letter-spacing: -0.015em; }
+.dr-cap .l { font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-2); font-weight: 650; }
+.dr-cap .n { font-size: 10.5px; color: var(--ink-4); line-height: 1.35; }
+.dr-cap .c.sup .v { color: var(--ok); }
+.dr-cap .c.uns .v { color: var(--bad); }
+.dr-cap .c.sup { box-shadow: inset 3px 0 0 var(--ok-line); }
+.dr-cap .c.uns { box-shadow: inset 3px 0 0 var(--bad-line); }
+.dr-basis { margin: 7px 0 0; font-size: 11px; color: var(--warn); }
+
+/* ---- §5 evidence coverage: counts, never a readiness percentage ---- */
+.dr-cover { margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); }
+.dr-cover-row { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; }
+.dr-cover-row .h { font-size: 11.5px; color: var(--ink-2); }
+.dr-cover-row .c { margin-left: auto; font-size: 14px; font-weight: 680; color: var(--ink); font-variant-numeric: tabular-nums; }
+.dr-cover-list { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; gap: 14px; flex-wrap: wrap; }
+.dr-cover-list li { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-3); }
+.dr-cover-list li b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 650; }
+.dr-cover-list .d { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; background: var(--ink-4); }
+.dr-cover-list .d.ok { background: var(--ok); }
+.dr-cover-list .d.warn { background: var(--warn); }
+.dr-cover-list .d.bad { background: var(--bad); }
+.dr-cover-note { margin: 6px 0 0; font-size: 10.5px; color: var(--ink-4); line-height: 1.4; }
+
+/* ---- §11 next action ---- */
+.dr-next {
+  margin-top: 12px; padding: 10px 12px; border-radius: var(--r);
+  background: var(--info-bg); border: 1px solid var(--action);
+}
+.dr-next .n-k { font-size: 9.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--action); font-weight: 700; }
+.dr-next .n-v { margin: 3px 0 0; font-size: 13px; font-weight: 650; color: var(--ink); line-height: 1.35; }
+.dr-next .n-d { margin: 4px 0 0; font-size: 11.5px; color: var(--ink-2); line-height: 1.45; }
+.dr-next .n-a { margin: 5px 0 0; font-size: 10.5px; color: var(--ink-3); }
+
+/* ---- §6 governed blockers ---- */
+.dr-blockers, .dr-advisories { list-style: none; margin: 0; padding: 0; }
+.dr-blockers li { padding: 9px 0; border-bottom: 1px solid var(--line); }
+.dr-blockers li:first-child { padding-top: 2px; }
+.dr-blockers li:last-child, .dr-advisories li:last-child { border-bottom: 0; padding-bottom: 2px; }
+.dr-blockers li { padding-left: 10px; border-left: 3px solid var(--bad); margin-bottom: 0; }
+.dr-blockers li.unknown { border-left-color: var(--ink-3); border-left-style: dashed; }
+.dr-advisories li { padding: 9px 0 9px 10px; border-bottom: 1px solid var(--line); border-left: 3px solid var(--warn-line); }
+.b-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.b-cat { font-size: 9.5px; letter-spacing: .09em; text-transform: uppercase; font-weight: 700; color: var(--ink-2); }
+.dr-blockers li.unknown .b-cat { color: var(--ink); }
+.b-tag {
+  font-size: 9.5px; letter-spacing: .05em; text-transform: uppercase; font-weight: 650;
+  padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--ink-3); background: var(--inset);
+}
+.b-tag.bad { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
+.b-tag.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }
+.b-tag.adv { color: var(--action); background: var(--info-bg); border-color: var(--action); }
+.b-tag.unknown { color: var(--ink); border-color: var(--ink-3); border-style: dashed; }
+.b-msg { margin: 4px 0 0; font-size: 12.5px; color: var(--ink); line-height: 1.4; }
+.b-next { margin: 4px 0 0; font-size: 11px; color: var(--ink-3); line-height: 1.4; }
+.b-next span {
+  font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; font-weight: 650;
+  color: var(--ink-4); margin-right: 5px;
+}
+.dr-blocker-empty { margin: 2px 0; font-size: 12px; color: var(--ink-3); }
+.dr-blocker-empty.warn { color: var(--warn); line-height: 1.5; }
+.dr-adv-lead { margin: 0 0 9px; font-size: 11px; color: var(--ink-3); line-height: 1.45; }
+
+/* ---- §13 proceeded by exception ---- */
+.dr-exception {
+  margin: 0 0 var(--ws-gap); border: 1px solid var(--warn-line); border-left: 4px solid var(--warn);
+  border-radius: var(--r); background: var(--warn-bg); padding: 12px 14px;
+}
+.dr-exception .x-head { display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap; }
+.dr-exception .x-badge {
+  font-size: 12px; font-weight: 750; letter-spacing: .08em; color: var(--warn);
+  border: 1px solid var(--warn); border-radius: 4px; padding: 3px 9px; background: var(--surface);
+}
+.dr-exception .x-sub { font-size: 11.5px; color: var(--ink-2); flex: 1; min-width: 200px; line-height: 1.45; }
+.dr-exception .x-facts {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 9px 18px; margin: 11px 0 0;
+}
+.dr-exception .x-facts div { min-width: 0; }
+.dr-exception dt { font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); font-weight: 650; }
+.dr-exception dd { margin: 2px 0 0; font-size: 12px; color: var(--ink); line-height: 1.4; }
+
+/* ---- §9 line register ---- */
+.dr-register .dtable td:first-child { min-width: 200px; }
+.dr-register .dtable .dr-sup { color: var(--ok); font-weight: 600; }
+.dr-register .dtable .dr-uns { color: var(--bad); font-weight: 600; }
+
+/* ---- §12 decision area ---- */
+.dr-gate { margin: 10px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--ink-2); padding: 8px 10px; border-radius: var(--r); border: 1px solid var(--line); background: var(--inset); }
+.dr-gate b { color: var(--ink); font-weight: 650; }
+.dr-gate.bad { border-color: var(--bad-line); background: var(--bad-bg); }
+.dr-gate.warn { border-color: var(--warn-line); background: var(--warn-bg); }
+.dr-gate.ok { border-color: var(--ok-line); background: var(--ok-bg); }
+.dr-gate-note { margin: 8px 0 0; font-size: 10.5px; color: var(--ink-4); line-height: 1.45; }
+.dr-decision-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 11px; }
+.dr-decision-acts .btn { flex: 1; justify-content: center; min-width: 150px; }
+
+/* ---- responsive: desktop-first, but the phone is deliberate ---- */
+@media (max-width: 1180px) {
+  .dr-top { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .dr-head { gap: 10px; }
+  .dr-head h1 { font-size: 17px; }
+  .dr-acts { margin-left: 0; width: 100%; }
+  .dr-cap { grid-template-columns: minmax(0, 1fr); }
+  .dr-cap .c { flex-direction: row; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .dr-cap .v { font-size: 19px; }
+  .dr-cap .l { margin-left: auto; }
+  .dr-cap .n { flex-basis: 100%; }
+  .dr-state-badge { font-size: 18px; }
+  .dr-decision-acts .btn { min-width: 0; }
+  /* The register becomes a stacked record list — never a squashed table. */
+  .dr-register .dtable thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .dr-register .dtable, .dr-register .dtable tbody, .dr-register .dtable tr, .dr-register .dtable td { display: block; width: auto; }
+  .dr-register .dtable tr { border-bottom: 1px solid var(--line); padding: 9px 12px; }
+  .dr-register .dtable tbody td { border: 0; padding: 2px 0; display: flex; align-items: baseline; gap: 10px; }
+  .dr-register .dtable tbody td::before {
+    content: attr(data-l); font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ink-4); font-weight: 650; flex: 0 0 96px;
+  }
+  .dr-register .dtable td:first-child { min-width: 0; padding-bottom: 5px; }
+  .dr-register .dtable td:first-child::before { content: none; }
+  .dr-register .dtable .t-name, .dr-register .dtable .t-name .sub { max-width: none; white-space: normal; }
+  .dr-register .dtable .num { text-align: left; }
+}
+
+/* ---- readiness category rollup (inside the readiness panel) ---- */
+.dr-cats { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); }
+.dr-cat {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 4px;
+  font-size: 10.5px; border: 1px solid var(--line); background: var(--inset); color: var(--ink-2);
+}
+.dr-cat .g { font-weight: 750; font-size: 10px; }
+.dr-cat .n { font-weight: 600; color: var(--ink-2); }
+.dr-cat .s { font-size: 9.5px; letter-spacing: .05em; color: var(--ink-4); font-weight: 650; }
+.dr-cat.ok { color: var(--ok); border-color: var(--ok-line); background: var(--ok-bg); }
+.dr-cat.ok .n, .dr-cat.ok .s { color: var(--ok); }
+.dr-cat.warn { color: var(--warn); border-color: var(--warn-line); background: var(--warn-bg); }
+.dr-cat.warn .n, .dr-cat.warn .s { color: var(--warn); }
+.dr-cat.bad { color: var(--bad); border-color: var(--bad-line); background: var(--bad-bg); }
+.dr-cat.bad .n, .dr-cat.bad .s { color: var(--bad); }
+.dr-cat.unknown { color: var(--ink); border-color: var(--ink-3); border-style: dashed; }
+.dr-cat.unknown .n, .dr-cat.unknown .s { color: var(--ink); }
+
+/* ---- the state chain, stated once per page in the rail ---- */
+.dr-chain { list-style: none; margin: 0; padding: 0; }
+.dr-chain li {
+  font-size: 11px; color: var(--ink-3); line-height: 1.45; padding: 4px 0 4px 12px;
+  border-left: 2px solid var(--line); position: relative;
+}
+.dr-chain li b { color: var(--ink-2); font-weight: 650; }

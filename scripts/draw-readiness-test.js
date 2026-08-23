@@ -691,23 +691,23 @@ async function main() {
   assert(excf.html.includes("/draw/draw-g5"), "filter EXCEPTION REVIEW finds the exception-review draw");
 
   const pageReady = await get("/draw/draw-g2");
-  assert(pageReady.html.includes("OBV Readiness"), "the Draw Review rail leads with the OBV Readiness module");
+  assert(pageReady.html.includes("Draw readiness"), "Draw Review leads with the readiness module");
   assert(pageReady.html.includes("Ready for lender review"), "READY is phrased as ready for lender REVIEW");
-  assert((pageReady.html.match(/rd-badge/g) || []).length === 1,
+  assert((pageReady.html.match(/dr-state-badge/g) || []).length === 1,
     "one readiness summary — not a wall of per-category cards");
   assert(pageReady.html.includes("not lender approval"),
     "the module states what readiness is NOT (approval, release, legal, payment)");
 
   const pageHold = await get("/draw/draw-g4");
-  assert(pageHold.html.includes("rd-badge") && pageHold.html.includes("HOLD"), "a held draw shows the HOLD badge");
-  assert(pageHold.html.includes("Primary reason") && pageHold.html.includes("Next action"),
-    "the held draw explains its primary reason and next action");
+  assert(pageHold.html.includes("dr-state-badge") && pageHold.html.includes("HOLD"), "a held draw shows the HOLD badge");
+  assert(pageHold.html.includes("Governed blockers") && pageHold.html.includes("Next action"),
+    "the held draw explains its governed blockers and next action");
 
   const pageExc = await get("/draw/draw-g5");
   assert(pageExc.html.includes("EXCEPTION REVIEW"), "the exception-review draw shows its distinct state");
 
   const pageOverride = await get(`/draw/${drawB.id}`);
-  assert(pageOverride.status === 200 && pageOverride.html.includes("OBV Readiness"),
+  assert(pageOverride.status === 200 && pageOverride.html.includes("Draw readiness"),
     "the decided draw still renders its readiness module");
   const act = await get(`/draw/${drawB.id}?tab=activity`);
   assert(act.html.includes("OBV readiness snapshot at lender decision"),
@@ -722,8 +722,8 @@ async function main() {
   for (const banned of ["Legally compliant", "legally compliant", "Funding approved", "Payment authorized", "payment authorized"]) {
     assert(screens.every((h) => !h.includes(banned)), `no readiness screen says "${banned}"`);
   }
-  assert(screens.some((h) => h.includes("OBV Readiness")) && screens.some((h) => h.includes("Ready for lender review")),
-    'screens use "OBV Readiness" and "Ready for lender review"');
+  assert(screens.some((h) => h.includes("OBV readiness")) && screens.some((h) => h.includes("Ready for lender review")),
+    'screens name OBV readiness and phrase READY as "Ready for lender review"');
 
   // Tenant boundary over HTTP: the foreign PM gets an undisclosing 404.
   const foreignCookie = await signIn("user-pm");
