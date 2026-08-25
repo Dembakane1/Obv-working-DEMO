@@ -5330,3 +5330,79 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
   font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; font-weight: 700;
   color: var(--ink-3); margin-right: 7px;
 }
+
+/* ============================================================
+   Draw Control Scorecard — four lender control domains.
+
+   Presentation of the engine's own category rollups: factual
+   state words (PASS / HOLD / WARNING / UNKNOWN / N/A), never a
+   composite number. UNKNOWN keeps the dashed missing-information
+   treatment everywhere so it can never read as healthy.
+   ============================================================ */
+
+/* ---- support coverage: supported DOLLARS, never readiness ---- */
+.dr-coverage {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: 9px 0 0; font-size: 12px; color: var(--ink-2);
+}
+.dr-coverage .pct { font-size: 16px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.dr-coverage .cov-note { flex-basis: 100%; font-size: 10.5px; color: var(--ink-4); }
+
+/* ---- the four domains ---- */
+.dr-domains {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line);
+}
+.dr-domain {
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--inset);
+  padding: 9px 11px; min-width: 0;
+}
+.dr-domain.bad { border-left: 3px solid var(--bad); }
+.dr-domain.warn { border-left: 3px solid var(--warn); }
+.dr-domain.unknown { border-left: 3px dashed var(--ink-3); }
+.dr-domain .d-head { display: flex; align-items: center; gap: 8px; }
+.dr-domain .d-name {
+  font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
+  font-weight: 750; color: var(--ink);
+}
+.dr-domain .d-q { margin: 3px 0 0; font-size: 10.5px; color: var(--ink-4); line-height: 1.35; }
+.dr-domain .d-cats { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+.dr-domain .d-facts { margin: 8px 0 0; }
+.dr-domain .d-facts div { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; min-width: 0; }
+.dr-domain .d-facts dt { font-size: 10.5px; color: var(--ink-3); flex: 0 0 auto; }
+.dr-domain .d-facts dd {
+  margin: 0 0 0 auto; font-size: 11.5px; color: var(--ink); text-align: right;
+  font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere;
+}
+.dr-domain .d-unknown { margin: 7px 0 0; font-size: 10.5px; color: var(--ink); border-top: 1px dashed var(--ink-4); padding-top: 5px; }
+
+/* domain state word */
+.dr-dstate {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; letter-spacing: .05em; font-weight: 750;
+  padding: 2px 8px; border-radius: 4px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink-2);
+}
+.dr-dstate .g { font-weight: 750; }
+.dr-dstate.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-line); }
+.dr-dstate.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }
+.dr-dstate.bad { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
+.dr-dstate.unknown { color: var(--ink); border-color: var(--ink-3); border-style: dashed; border-width: 1.5px; }
+.dr-dstate.na { color: var(--ink-4); }
+
+.dr-cat.na { color: var(--ink-4); border-style: dashed; }
+
+.dr-domains-note { margin: 8px 0 0; font-size: 10.5px; color: var(--ink-4); line-height: 1.45; }
+
+/* ---- exception path line ---- */
+.dr-excpath {
+  margin: 10px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--ink-2);
+  padding: 8px 10px; border-radius: var(--r); border: 1px solid var(--line); background: var(--inset);
+}
+.dr-excpath b { color: var(--ink); font-weight: 650; }
+.dr-excpath.warn { border-color: var(--warn-line); background: var(--warn-bg); }
+.dr-excpath.bad { border-color: var(--bad-line); background: var(--bad-bg); }
+
+@media (max-width: 760px) {
+  .dr-domains { grid-template-columns: minmax(0, 1fr); }
+}

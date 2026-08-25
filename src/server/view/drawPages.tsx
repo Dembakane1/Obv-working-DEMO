@@ -41,11 +41,17 @@ import {
   shortHash,
 } from "./components";
 import type {
+  CategoryState,
+  ControlDomainView,
   DecisionReadinessSnapshot,
   DrawReadinessResult,
   ReadinessReason,
 } from "../services/drawReadiness";
-import { isUnknownInformation } from "../services/drawReadiness";
+import {
+  controlDomains,
+  isUnknownInformation,
+  supportCoverage,
+} from "../services/drawReadiness";
 import type { NextAction } from "../services/pilot/lenderPilot";
 import type {
   ApprovalRecord,
@@ -699,37 +705,96 @@ function CapitalTriptych(props: { r: DrawReadinessResult }): VNode {
   );
 }
 
-/** §5 — evidence coverage as real counts. Deliberately NOT a percentage
- *  and never described as readiness: completeness is a different fact. */
-function EvidenceCoverage(props: {
-  linked: number;
-  verified: number;
-  needsReview: number;
-  rejected: number;
-  docsOnFile: number;
-  docsRequired: number;
-}): VNode {
-  const p = props;
+/** Support coverage — the scorecard's one deliberate ratio. Supported
+ *  DOLLARS over requested dollars, both the engine's own figures. It is
+ *  labelled as dollars and only dollars: it is not readiness, it feeds no
+ *  state, and 100% coverage can still be HOLD or INCOMPLETE. */
+function SupportCoverageLine(props: { coverage: number | null }): VNode | null {
+  if (props.coverage === null) return null;
+  const pct = Math.round(props.coverage * 100);
   return (
-    <div className="dr-cover">
-      <div className="dr-cover-row">
-        <span className="h">Evidence linked to this draw</span>
-        <span className="c">{p.linked}</span>
-      </div>
-      <ul className="dr-cover-list">
-        <li><span className="d ok" aria-hidden="true" />Verified<b>{p.verified}</b></li>
-        <li><span className="d warn" aria-hidden="true" />Needs review<b>{p.needsReview}</b></li>
-        <li><span className="d bad" aria-hidden="true" />Rejected<b>{p.rejected}</b></li>
-      </ul>
-      <div className="dr-cover-row">
-        <span className="h">Required documents on file</span>
-        <span className="c">{p.docsOnFile} / {p.docsRequired}</span>
-      </div>
-      <p className="dr-cover-note">
-        Evidence completeness is not draw readiness — a complete file can still be on HOLD.
-      </p>
-    </div>
+    <p className="dr-coverage">
+      <span className="pct">{pct}%</span> of requested dollars currently supported
+      <span className="cov-note">Supported dollars only — never a measure of readiness.</span>
+    </p>
   );
+}
+
+/** One control-domain state word with its tone. The word is always
+ *  present; colour never carries the state alone, and UNKNOWN keeps the
+ *  dashed missing-information treatment so it can never read as healthy. */
+function DomainStateChip(props: { state: CategoryState }): VNode {
+  const s = props.state;
+  const cls = s === "PASS" ? "ok" : s === "HOLD" ? "bad" : s === "WARNING" ? "warn" : s === "UNKNOWN" ? "unknown" : "na";
+  const mark = s === "PASS" ? "✓" : s === "HOLD" ? "✕" : s === "WARNING" ? "!" : s === "UNKNOWN" ? "?" : "–";
+  return (
+    <span className={`dr-dstate ${cls}`}>
+      <span className="g" aria-hidden="true">{mark}</span>
+      {s === "NOT_APPLICABLE" ? "N/A" : s}
+    </span>
+  );
+}
+
+/**
+ * §3/§10 — one control domain of the scorecard. The state is the worst of
+ * the engine's own member-category rollups (never a number), the member
+ * categories stay visible beneath it, and the facts are counts read from
+ * records the page already carries. No evaluation happens here.
+ */
+function DomainCard(props: {
+  view: ControlDomainView;
+  title: string;
+  question: string;
+  facts: Array<{ k: string; v: Child }>;
+}): VNode {
+  const { view } = props;
+  return (
+    <section className={`dr-domain ${view.state === "HOLD" ? "bad" : view.state === "UNKNOWN" ? "unknown" : view.state === "WARNING" ? "warn" : ""}`}>
+      <div className="d-head">
+        <span className="d-name">{props.title}</span>
+        <DomainStateChip state={view.state} />
+      </div>
+      <p className="d-q">{props.question}</p>
+      <div className="d-cats">
+        {view.categories
+          .filter((c) => c.state !== "NOT_APPLICABLE")
+          .map((c) => (
+            <span
+              className={`dr-cat ${c.state === "PASS" ? "ok" : c.state === "HOLD" ? "bad" : c.state === "WARNING" ? "warn" : "unknown"}`}
+              title={c.detail}
+            >
+              <span className="g" aria-hidden="true">
+                {c.state === "PASS" ? "✓" : c.state === "HOLD" ? "✕" : c.state === "WARNING" ? "!" : "?"}
+              </span>
+              <span className="n">{domainCategoryLabel(c.category)}</span>
+              <span className="s">{c.state}</span>
+            </span>
+          ))}
+        {view.categories.every((c) => c.state === "NOT_APPLICABLE") ? (
+          <span className="dr-cat na"><span className="n">No applicable requirement configured</span></span>
+        ) : null}
+      </div>
+      {props.facts.length > 0 ? (
+        <dl className="d-facts">
+          {props.facts.map((f) => (
+            <div><dt>{f.k}</dt><dd>{f.v}</dd></div>
+          ))}
+        </dl>
+      ) : null}
+      {view.hasUnknown ? (
+        <p className="d-unknown">Missing governed information in this domain — never averaged away.</p>
+      ) : null}
+    </section>
+  );
+}
+
+/** §8 — three verification records that coexist and never substitute for
+ *  one another. Named precisely so the scorecard cannot blur them. */
+function domainCategoryLabel(category: string): string {
+  if (category === "DRAW_INSPECTION") return "Independent draw inspection";
+  if (category === "GOVERNMENT_INSPECTION") return "Government inspection";
+  if (category === "EVIDENCE") return "Field evidence";
+  return enumLabel(category);
 }
 
 /** §6 — governed blockers. Sourced only from the engine's blockingReasons.
@@ -962,12 +1027,24 @@ export function renderDrawDetail(d: DrawDetailData): string {
   ).length;
   const requiredDocRows = d.checklist.filter((c) => c.requirement?.required);
   const docsOnFile = requiredDocRows.filter((c) => c.state === "RECEIVED" || c.state === "ACCEPTED").length;
+  const docsMissing = requiredDocRows.filter((c) => c.state === "MISSING").length;
+  const docsRejected = requiredDocRows.filter((c) => c.state === "REJECTED").length;
+  const docsExpired = requiredDocRows.filter((c) => c.state === "EXPIRED").length;
+  // Lien waivers are checklist rows, not a separate register — selected by
+  // the requirement's own document type. Recorded attestations only: draw
+  // documents carry no bytes and no hash in pilot 1.
+  const lienRows = requiredDocRows.filter((c) => /LIEN_WAIVER/.test(c.requirement?.docType ?? ""));
+  const lienOnFile = lienRows.filter((c) => c.state === "RECEIVED" || c.state === "ACCEPTED").length;
+  const reconcileCheck = checks.find((c) => c.key === "reconcile");
 
   // Blockers come ONLY from the readiness engine — the same governed
   // registers, synthesized once with deterministic ordering. The view
   // never re-derives its own blocker list: if the engine is unavailable
   // the panel says so honestly instead of running a parallel algorithm.
   const r = d.readiness ?? null;
+  // Scorecard classifications — pure reads over the engine's result.
+  const domains = r ? controlDomains(r) : null;
+  const coverage = r ? supportCoverage(r) : null;
   const rv = r ? readinessView(r.status) : null;
   const blockerCount = r ? r.blockingReasons.length : 0;
   const advisoryCount = r ? r.warnings.length : 0;
@@ -1065,42 +1142,96 @@ export function renderDrawDetail(d: DrawDetailData): string {
         <div className="dr-top">
           <section className="dpanel dr-readiness">
             <div className="dpanel-head">
-              <h2>Draw readiness</h2>
+              <h2>Draw control scorecard</h2>
               {r ? <span className="dp-right">policy v{r.policyVersion}</span> : null}
             </div>
             <div className="dpanel-body">
               {r && rv ? (
                 <>
+                  {/* The final governed answer stays the headline — the four
+                      domains below explain it, they never replace it. */}
                   <div className={`dr-state ${rv.tone}`}>
                     <span className="dr-state-badge">{rv.label}</span>
                     <span className="dr-state-cap">{rv.caption}</span>
                   </div>
                   <CapitalTriptych r={r} />
-                  <EvidenceCoverage
-                    linked={evidenceLinked}
-                    verified={evVerified}
-                    needsReview={evNeedsReview}
-                    rejected={evRejected}
-                    docsOnFile={docsOnFile}
-                    docsRequired={requiredDocRows.length}
-                  />
-                  {/* Category rollup — the engine's own per-category state,
-                      each labelled in words beside its mark. */}
-                  <div className="dr-cats">
-                    {r.categories
-                      .filter((c) => c.state !== "NOT_APPLICABLE")
-                      .map((c) => (
-                        <span
-                          className={`dr-cat ${c.state === "PASS" ? "ok" : c.state === "HOLD" ? "bad" : c.state === "WARNING" ? "warn" : "unknown"}`}
-                        >
-                          <span className="g" aria-hidden="true">
-                            {c.state === "PASS" ? "✓" : c.state === "HOLD" ? "✕" : c.state === "WARNING" ? "!" : "?"}
-                          </span>
-                          <span className="n">{enumLabel(c.category)}</span>
-                          <span className="s">{c.state}</span>
-                        </span>
-                      ))}
+                  <SupportCoverageLine coverage={coverage} />
+
+                  {/* §3 — four CONTROL DOMAINS, each a factual state over
+                      the engine's own category rollups. Domains are never
+                      averaged into a number and never decide readiness:
+                      the governed state above is computed exactly as
+                      before. */}
+                  <div className="dr-domains">
+                    {domains!.map((v) =>
+                      v.domain === "PHYSICAL" ? (
+                        <DomainCard
+                          view={v}
+                          title="Physical"
+                          question="Is the work supported by governed verification records?"
+                          facts={[
+                            {
+                              k: "Field evidence",
+                              v: `${evVerified} verified · ${evNeedsReview} needs review · ${evRejected} rejected`,
+                            },
+                            { k: "Linked to this draw", v: String(evidenceLinked) },
+                          ]}
+                        />
+                      ) : v.domain === "FINANCIAL" ? (
+                        <DomainCard
+                          view={v}
+                          title="Financial"
+                          question="Does the draw's own money record hold up?"
+                          facts={[
+                            { k: "Line reviews", v: `${reviewedLines} of ${d.lines.length} recorded` },
+                            {
+                              k: "Reconciliation",
+                              v: reconcileCheck ? (reconcileCheck.ok ? "Lines reconcile to the requested amount" : reconcileCheck.detail) : "Not recorded",
+                            },
+                          ]}
+                        />
+                      ) : v.domain === "COMPLIANCE" ? (
+                        <DomainCard
+                          view={v}
+                          title="Compliance"
+                          question="Does the jurisdictional surface permit this draw?"
+                          facts={[
+                            { k: "Satisfied requirements", v: String(v.satisfiedCount) },
+                            { k: "Open blockers", v: String(v.blockerCount) },
+                          ]}
+                        />
+                      ) : (
+                        <DomainCard
+                          view={v}
+                          title="Documents"
+                          question="Is the required lender document file complete?"
+                          facts={[
+                            { k: "Required on file", v: `${docsOnFile} of ${requiredDocRows.length}` },
+                            ...(docsMissing + docsRejected + docsExpired > 0
+                              ? [{
+                                  k: "Outstanding",
+                                  v: [
+                                    docsMissing ? `${docsMissing} missing` : null,
+                                    docsRejected ? `${docsRejected} rejected` : null,
+                                    docsExpired ? `${docsExpired} expired` : null,
+                                  ].filter(Boolean).join(" · "),
+                                }]
+                              : []),
+                            ...(lienRows.length > 0
+                              ? [{ k: "Lien waivers", v: `${lienOnFile} of ${lienRows.length} on file` }]
+                              : []),
+                          ]}
+                        />
+                      )
+                    )}
                   </div>
+                  <p className="dr-domains-note">
+                    Domain states are the engine's own category rollups — never averaged, never a
+                    score, never the decision. Field evidence, the independent draw inspection and
+                    the government inspection are distinct records; none substitutes for another.
+                    Evidence completeness is not draw readiness — a complete file can still be on
+                    HOLD.
+                  </p>
 
                   {/* §11 — the deterministic next action, prominent.
                       Both sources are authoritative but answer different
@@ -1129,6 +1260,31 @@ export function renderDrawDetail(d: DrawDetailData): string {
                         </p>
                       ) : null}
                     </div>
+                  ) : null}
+
+                  {/* §13 — the exception path, stated from the engine's own
+                      exceptionAllowed flags. Policy is unchanged; this only
+                      tells the lender what the governed gate will already
+                      do. */}
+                  {r.status === "INCOMPLETE" ? (
+                    <p className="dr-excpath bad">
+                      <b>Exception path unavailable.</b> Missing governed information can never be
+                      overridden — resolve it through the governed workflows and readiness
+                      recomputes.
+                    </p>
+                  ) : r.blockingReasons.length > 0 ? (
+                    r.blockingReasons.every((b) => b.exceptionAllowed) ? (
+                      <p className="dr-excpath warn">
+                        <b>Exception path available under current policy.</b> Every current blocker
+                        is exception-eligible; an authorized lender may proceed only with explicit
+                        written justification, and the requirements remain outstanding.
+                      </p>
+                    ) : (
+                      <p className="dr-excpath bad">
+                        <b>Exception path unavailable.</b> At least one current blocker is not
+                        exception-eligible under policy.
+                      </p>
+                    )
                   ) : null}
                 </>
               ) : (

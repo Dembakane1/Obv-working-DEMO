@@ -253,3 +253,25 @@ configured, versioned distinction.
 - Converting verified-physical % into payable dollars.
 - Erasing or downgrading a blocker because a human proceeded past it.
 - AI-score-driven state changes (`risk = 0.81 → HOLD` does not exist).
+
+## 11. Control-domain presentation mapping (read-only)
+
+The Draw Review page groups the engine's category rollups into four lender
+CONTROL DOMAINS — the Draw Control Scorecard:
+
+| Domain | Categories |
+|---|---|
+| PHYSICAL | EVIDENCE, DRAW_INSPECTION |
+| FINANCIAL | INTEGRITY, BUDGET, CHANGE_ORDER, RETAINAGE, PROJECT_CONTROL |
+| COMPLIANCE | GOVERNMENT_INSPECTION, PERMIT, EXCEPTION |
+| DOCUMENTS | DOCUMENT, LIEN |
+
+`controlDomains(result)` and `supportCoverage(result)` in
+`drawReadiness.ts` are pure reads over an already-computed result: every
+category belongs to exactly one domain (asserted by test), domain state is
+the worst member state (HOLD > UNKNOWN > WARNING > PASS > N/A — missing
+information never reads healthy), and support coverage is
+`supportableAmount / requestedAmount` — supported **dollars**, never a
+readiness percentage. Neither function feeds back into evaluation, the
+status contract, the decision gate, or snapshots. There is no composite
+0–100 score anywhere: the scorecard is a grouping, not a grade.

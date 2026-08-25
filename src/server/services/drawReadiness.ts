@@ -218,6 +218,108 @@ export function isUnknownInformation(code: string): boolean {
   return UNKNOWN_INFO_CODES.has(code);
 }
 
+// ------------------------------------------------ control domains (read-only)
+
+/**
+ * The four lender CONTROL DOMAINS of the Draw Control Scorecard.
+ *
+ * These are a PRESENTATION GROUPING of the engine's existing category
+ * rollups — never a second evaluation and never components of a composite
+ * score. Domain states are the same factual vocabulary the categories use
+ * (PASS / HOLD / WARNING / UNKNOWN / NOT_APPLICABLE); nothing is averaged,
+ * weighted or converted into a number. The final readiness state remains
+ * the engine's four-state contract, computed exactly as before.
+ */
+export type ControlDomain = "PHYSICAL" | "FINANCIAL" | "COMPLIANCE" | "DOCUMENTS";
+
+/**
+ * Every ReadinessCategory belongs to EXACTLY ONE domain, so no category's
+ * HOLD or UNKNOWN can fall between the cracks of the scorecard (asserted
+ * by test against the ReadinessCategory union).
+ *
+ * - PHYSICAL: is the work supported by governed verification records —
+ *   field evidence and the lender's independent draw inspection. (The
+ *   government inspection is deliberately NOT here: it answers a
+ *   compliance question, not a physical-verification one, and the two
+ *   never substitute for each other.)
+ * - FINANCIAL: the draw's own money record — reconciliation and structure,
+ *   reviewer line decisions, change orders, retainage, ledger integrity.
+ * - COMPLIANCE: the jurisdictional surface — required government
+ *   inspections, permits, and formally recorded open exceptions.
+ * - DOCUMENTS: the required lender document checklist — pay applications,
+ *   invoices, lien waivers.
+ */
+export const CONTROL_DOMAIN_CATEGORIES: Record<ControlDomain, ReadinessCategory[]> = {
+  PHYSICAL: ["EVIDENCE", "DRAW_INSPECTION"],
+  FINANCIAL: ["INTEGRITY", "BUDGET", "CHANGE_ORDER", "RETAINAGE", "PROJECT_CONTROL"],
+  COMPLIANCE: ["GOVERNMENT_INSPECTION", "PERMIT", "EXCEPTION"],
+  DOCUMENTS: ["DOCUMENT", "LIEN"],
+};
+
+export interface ControlDomainView {
+  domain: ControlDomain;
+  /** Worst member-category state. HOLD > UNKNOWN > WARNING > PASS >
+   *  NOT_APPLICABLE — missing information always outranks anything
+   *  healthy, and can never be presented as PASS. */
+  state: CategoryState;
+  /** The member categories, in engine order, with their own states —
+   *  kept visible so a domain rollup never hides which record answers. */
+  categories: ReadinessCategoryView[];
+  /** Blockers / warnings / satisfied requirements in this domain, counted
+   *  from the same result the page already renders. */
+  blockerCount: number;
+  warningCount: number;
+  satisfiedCount: number;
+  /** True when any member blocker is missing-information — the domain
+   *  carries an unknown even if a substantive HOLD outranks it. */
+  hasUnknown: boolean;
+}
+
+const DOMAIN_STATE_PRECEDENCE: CategoryState[] = [
+  "HOLD", "UNKNOWN", "WARNING", "PASS", "NOT_APPLICABLE",
+];
+
+/**
+ * Fold the engine's category rollups into the four control domains.
+ * Pure and read-only over an already-computed result: no I/O, no
+ * re-evaluation, no thresholds. A domain whose categories are all
+ * NOT_APPLICABLE stays NOT_APPLICABLE rather than pretending to pass.
+ */
+export function controlDomains(result: DrawReadinessResult): ControlDomainView[] {
+  return (Object.keys(CONTROL_DOMAIN_CATEGORIES) as ControlDomain[]).map((domain) => {
+    const members = CONTROL_DOMAIN_CATEGORIES[domain];
+    const categories = result.categories.filter((c) => members.includes(c.category));
+    const state =
+      DOMAIN_STATE_PRECEDENCE.find((s) => categories.some((c) => c.state === s)) ??
+      "NOT_APPLICABLE";
+    const inDomain = (category: ReadinessCategory) => members.includes(category);
+    return {
+      domain,
+      state,
+      categories,
+      blockerCount: result.blockingReasons.filter((b) => inDomain(b.category)).length,
+      warningCount: result.warnings.filter((w) => inDomain(w.category)).length,
+      satisfiedCount: result.satisfiedRequirements.filter((s) => inDomain(s.category)).length,
+      hasUnknown: result.blockingReasons.some(
+        (b) => inDomain(b.category) && UNKNOWN_INFO_CODES.has(b.code)
+      ),
+    };
+  });
+}
+
+/**
+ * SUPPORT COVERAGE — the one deliberate ratio on the scorecard:
+ * supportableAmount / requestedAmount, both the engine's own recorded
+ * figures. It measures SUPPORTED DOLLARS, nothing else. It is not a
+ * readiness percentage, it feeds no state, and a draw at 1.0 can still be
+ * HOLD or INCOMPLETE. Null when no amount is requested (a ratio over zero
+ * is not a fact).
+ */
+export function supportCoverage(result: DrawReadinessResult): number | null {
+  if (result.requestedAmount <= 0) return null;
+  return result.supportableAmount / result.requestedAmount;
+}
+
 /** Reasons a lender exception can never bypass, regardless of category
  *  policy: incomplete reviewer work and integrity failures are not
  *  waivable business requirements. */

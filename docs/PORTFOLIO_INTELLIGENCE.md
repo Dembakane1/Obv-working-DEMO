@@ -163,3 +163,40 @@ Approve draws · issue or alter lender decisions · create payment
 instructions or banking state · open exceptions · alter historical
 records, evidence, or packages · activate any government workflow ·
 replace human decisions.
+
+## Future portfolio metrics — data-readiness map (August 2026 pilot brief)
+
+Prepared for a later Executive Command Center refresh — **none of this is
+built yet**, and nothing here changes what the platform computes today.
+Classification of the metrics the pilot brief raised, against the governed
+records that exist on this SHA:
+
+**CURRENTLY DERIVABLE** (governed records already carry the inputs):
+
+- Supportable vs requested dollars, per draw and aggregated — reviewer
+  line decisions via `draws.lineSupported` / readiness results.
+- Outstanding construction reserve — virtual-account HELD/RELEASED ledger.
+- Unresolved exceptions by severity/age — exceptions register.
+- Permit / government-inspection / compliance blockers — readiness
+  blocking reasons by category, plus the gates' own records.
+- Lender overrides (proceed-by-exception) — immutable readiness snapshots
+  with overridden blocker codes, actor, justification, policy version.
+- Draw turnaround time — draw_events timestamps (submitted → decision).
+- Inspection failures — jurisdictional inspection result lifecycle.
+
+**REQUIRES ADDITIONAL DATA** (partial today; honest gaps):
+
+- Draw pace vs physical completion — per-line, the reviewer's
+  verified-physical % already powers the existing advisory
+  ("financial progress ahead of verified physical", exception-candidate
+  flag). A PORTFOLIO pace metric needs consistent verified-% coverage
+  across lines and draws, which reviewer practice does not yet guarantee.
+- Cost-to-complete deterioration — `project_cost_to_complete` records
+  exist on DMV projects only, and depend on operator entry cadence.
+
+**FUTURE PORTFOLIO METRIC** (needs new inputs or history not yet kept):
+
+- Disbursed vs supportable across lenders (real disbursement happens
+  outside OBV; would need recorded settlement confirmations).
+- Benchmarked draw-cycle percentiles across tenants (needs a privacy
+  model before any cross-tenant aggregation).
