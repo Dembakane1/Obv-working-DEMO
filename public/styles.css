@@ -5406,3 +5406,19 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
 @media (max-width: 760px) {
   .dr-domains { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---- cross-cutting governed controls (outside the four domains) ---- */
+.dr-crosscut {
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  margin-top: 8px; padding: 8px 11px; border-radius: var(--r);
+  border: 1px solid var(--line); background: var(--inset);
+}
+.dr-crosscut.bad { border-color: var(--bad-line); background: var(--bad-bg); }
+.dr-crosscut.warn { border-color: var(--warn-line); background: var(--warn-bg); }
+.dr-crosscut.unknown { border-color: var(--ink-3); border-style: dashed; border-width: 1.5px; }
+.dr-crosscut .x-k {
+  font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+  font-weight: 750; color: var(--ink);
+}
+.dr-crosscut .x-v { font-size: 11.5px; font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; }
+.dr-crosscut .x-d { flex-basis: 100%; font-size: 10.5px; color: var(--ink-3); line-height: 1.4; }

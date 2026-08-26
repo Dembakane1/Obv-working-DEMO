@@ -43,12 +43,15 @@ import {
 import type {
   CategoryState,
   ControlDomainView,
+  CrossCuttingView,
   DecisionReadinessSnapshot,
   DrawReadinessResult,
   ReadinessReason,
 } from "../services/drawReadiness";
 import {
   controlDomains,
+  crossCuttingControls,
+  formatSupportCoverage,
   isUnknownInformation,
   supportCoverage,
 } from "../services/drawReadiness";
@@ -710,11 +713,14 @@ function CapitalTriptych(props: { r: DrawReadinessResult }): VNode {
  *  labelled as dollars and only dollars: it is not readiness, it feeds no
  *  state, and 100% coverage can still be HOLD or INCOMPLETE. */
 function SupportCoverageLine(props: { coverage: number | null }): VNode | null {
-  if (props.coverage === null) return null;
-  const pct = Math.round(props.coverage * 100);
+  // The shared service formatter owns the display rule: "100%" only for
+  // EXACT full support, floored (never rounded up) below it, anomalies
+  // above 1 preserved. The view never rounds a shortfall away.
+  const shown = formatSupportCoverage(props.coverage);
+  if (shown === null) return null;
   return (
     <p className="dr-coverage">
-      <span className="pct">{pct}%</span> of requested dollars currently supported
+      <span className="pct">{shown}</span> of requested dollars currently supported
       <span className="cov-note">Supported dollars only — never a measure of readiness.</span>
     </p>
   );
@@ -1044,6 +1050,7 @@ export function renderDrawDetail(d: DrawDetailData): string {
   const r = d.readiness ?? null;
   // Scorecard classifications — pure reads over the engine's result.
   const domains = r ? controlDomains(r) : null;
+  const crossCutting = r ? crossCuttingControls(r) : null;
   const coverage = r ? supportCoverage(r) : null;
   const rv = r ? readinessView(r.status) : null;
   const blockerCount = r ? r.blockingReasons.length : 0;
@@ -1225,6 +1232,28 @@ export function renderDrawDetail(d: DrawDetailData): string {
                       )
                     )}
                   </div>
+                  {/* Cross-cutting governed controls sit OUTSIDE the four
+                      domains: a formal exception can concern any subject, a
+                      dispute/legal hold is not a financial control. Shown
+                      here so four healthy domains can never silently
+                      coexist with a blocked draw — the Governed Blockers
+                      panel remains their authoritative presentation. */}
+                  {crossCutting && (crossCutting.blockerCount > 0 || crossCutting.hasUnknown) ? (
+                    <div className={`dr-crosscut ${crossCutting.state === "HOLD" ? "bad" : crossCutting.state === "UNKNOWN" ? "unknown" : "warn"}`}>
+                      <span className="x-k">Cross-cutting governed controls</span>
+                      <span className="x-v">
+                        {crossCutting.blockerCount} open
+                        {crossCutting.hasUnknown ? " · includes missing information" : ""}
+                      </span>
+                      <span className="x-d">
+                        {crossCutting.categories
+                          .filter((c) => c.state !== "NOT_APPLICABLE" && c.state !== "PASS")
+                          .map((c) => enumLabel(c.category))
+                          .join(" · ")}
+                        {" — outside the four domains; see Governed blockers."}
+                      </span>
+                    </div>
+                  ) : null}
                   <p className="dr-domains-note">
                     Domain states are the engine's own category rollups — never averaged, never a
                     score, never the decision. Field evidence, the independent draw inspection and

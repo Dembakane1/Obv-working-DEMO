@@ -233,28 +233,51 @@ export function isUnknownInformation(code: string): boolean {
 export type ControlDomain = "PHYSICAL" | "FINANCIAL" | "COMPLIANCE" | "DOCUMENTS";
 
 /**
- * Every ReadinessCategory belongs to EXACTLY ONE domain, so no category's
- * HOLD or UNKNOWN can fall between the cracks of the scorecard (asserted
- * by test against the ReadinessCategory union).
+ * The domains are EXPLANATORY: each claims only categories whose semantics
+ * genuinely belong to it, and no category belongs to more than one domain.
+ * They are deliberately NOT total over ReadinessCategory — forcing a
+ * cross-cutting category into a domain would misattribute it (a formal
+ * budget exception is not a compliance failure; a legal hold is not a
+ * financial-control failure).
  *
  * - PHYSICAL: is the work supported by governed verification records —
  *   field evidence and the lender's independent draw inspection. (The
  *   government inspection is deliberately NOT here: it answers a
  *   compliance question, not a physical-verification one, and the two
  *   never substitute for each other.)
- * - FINANCIAL: the draw's own money record — reconciliation and structure,
- *   reviewer line decisions, change orders, retainage, ledger integrity.
+ * - FINANCIAL: the draw's own money record — budget reconciliation,
+ *   change orders, retainage.
  * - COMPLIANCE: the jurisdictional surface — required government
- *   inspections, permits, and formally recorded open exceptions.
+ *   inspections and permits.
  * - DOCUMENTS: the required lender document checklist — pay applications,
  *   invoices, lien waivers.
  */
 export const CONTROL_DOMAIN_CATEGORIES: Record<ControlDomain, ReadinessCategory[]> = {
   PHYSICAL: ["EVIDENCE", "DRAW_INSPECTION"],
-  FINANCIAL: ["INTEGRITY", "BUDGET", "CHANGE_ORDER", "RETAINAGE", "PROJECT_CONTROL"],
-  COMPLIANCE: ["GOVERNMENT_INSPECTION", "PERMIT", "EXCEPTION"],
+  FINANCIAL: ["BUDGET", "CHANGE_ORDER", "RETAINAGE"],
+  COMPLIANCE: ["GOVERNMENT_INSPECTION", "PERMIT"],
   DOCUMENTS: ["DOCUMENT", "LIEN"],
 };
+
+/**
+ * Categories that stay OUTSIDE the four domains because their subject is
+ * not fixed to one of them:
+ *
+ * - EXCEPTION: a formally recorded blocking exception can concern
+ *   evidence, budget, scope, documents or a permit — the engine records
+ *   them all under one category, so no single domain may claim it.
+ * - PROJECT_CONTROL: draw structure/lifecycle and dispute/legal holds —
+ *   cross-cutting governance, not a financial control.
+ * - INTEGRITY: ledger/authorization integrity of the whole record.
+ *
+ * These remain fully visible: final readiness and the Governed Blockers
+ * panel are their authoritative presentation, and crossCuttingControls()
+ * summarizes them so four healthy domains can never silently coexist
+ * with a blocked draw.
+ */
+export const CROSS_CUTTING_CATEGORIES: ReadinessCategory[] = [
+  "EXCEPTION", "PROJECT_CONTROL", "INTEGRITY",
+];
 
 export interface ControlDomainView {
   domain: ControlDomain;
@@ -307,6 +330,43 @@ export function controlDomains(result: DrawReadinessResult): ControlDomainView[]
   });
 }
 
+/** The cross-cutting summary: same factual vocabulary, same precedence,
+ *  never a number. */
+export interface CrossCuttingView {
+  categories: ReadinessCategoryView[];
+  state: CategoryState;
+  blockerCount: number;
+  warningCount: number;
+  hasUnknown: boolean;
+}
+
+/**
+ * Fold the cross-cutting categories the four domains deliberately do not
+ * claim. Pure and read-only over an already-computed result, exactly like
+ * controlDomains(). Rendered so that a draw whose four domains all pass
+ * still shows WHY final readiness is HOLD or INCOMPLETE when a
+ * cross-cutting governed condition (exception, dispute/legal hold,
+ * structure, integrity) is the cause.
+ */
+export function crossCuttingControls(result: DrawReadinessResult): CrossCuttingView {
+  const categories = result.categories.filter((c) =>
+    CROSS_CUTTING_CATEGORIES.includes(c.category)
+  );
+  const state =
+    DOMAIN_STATE_PRECEDENCE.find((s) => categories.some((c) => c.state === s)) ??
+    "NOT_APPLICABLE";
+  const member = (category: ReadinessCategory) => CROSS_CUTTING_CATEGORIES.includes(category);
+  return {
+    categories,
+    state,
+    blockerCount: result.blockingReasons.filter((b) => member(b.category)).length,
+    warningCount: result.warnings.filter((w) => member(w.category)).length,
+    hasUnknown: result.blockingReasons.some(
+      (b) => member(b.category) && UNKNOWN_INFO_CODES.has(b.code)
+    ),
+  };
+}
+
 /**
  * SUPPORT COVERAGE — the one deliberate ratio on the scorecard:
  * supportableAmount / requestedAmount, both the engine's own recorded
@@ -318,6 +378,32 @@ export function controlDomains(result: DrawReadinessResult): ControlDomainView[]
 export function supportCoverage(result: DrawReadinessResult): number | null {
   if (result.requestedAmount <= 0) return null;
   return result.supportableAmount / result.requestedAmount;
+}
+
+/**
+ * Display rule for support coverage. Deterministic and NEVER overstating:
+ *
+ * - "100%" is shown ONLY for exact full support (coverage === 1) — a
+ *   rounded 99.6% must never present an unsupported remainder as fully
+ *   covered.
+ * - Below 1, the percentage is FLOORED to one decimal (99.96% → "99.9%",
+ *   0.996 → "99.6%", 0.92 → "92%"), so display error only ever
+ *   understates support.
+ * - Above 1 the governed inputs are inconsistent; the anomaly is shown,
+ *   never clamped into a healthy "100%" (dust just above 1 renders
+ *   ">100%"). Existing reconciliation/integrity controls own the cause.
+ */
+export function formatSupportCoverage(coverage: number | null): string | null {
+  if (coverage === null) return null;
+  if (coverage === 1) return "100%";
+  // The epsilon absorbs float representation dust only (~1e-16 relative);
+  // the smallest REAL gap — one dollar on a nine-figure draw — is still
+  // orders of magnitude larger, so it can never turn a genuine shortfall
+  // into a higher display value.
+  const floored = Math.floor(coverage * 1000 + 1e-6) / 10;
+  if (coverage > 1) return floored > 100 ? `${floored}%` : ">100%";
+  const capped = Math.min(floored, 99.9);
+  return Number.isInteger(capped) ? `${capped}%` : `${capped.toFixed(1)}%`;
 }
 
 /** Reasons a lender exception can never bypass, regardless of category
