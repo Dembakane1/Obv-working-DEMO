@@ -305,3 +305,21 @@ clears).
   an integration could automate.
 - `line_inspection_requirements.external_identifier` carries the
   jurisdiction's record key for future reconciliation.
+
+## Smallest future extension — permit amendments (not built)
+
+The August 2026 Fairfax use case (physical work complete and verified while
+a permit **amendment** is pending, making the required jurisdictional
+inspection unavailable) is representable today only indirectly: the permit's
+`status` (e.g. not ACTIVE, where configuration gates it) or a REQUIRED
+inspection with no passed result — both already block draw review, and the
+readiness doctrine (physical strength never outruns the jurisdictional
+surface) is pinned by regression in `scripts/draw-review-ui-test.js` (SC.9).
+
+What is NOT representable is the amendment itself as a governed record. The
+smallest extension, when a pilot lender needs it: one `permit_amendments`
+table under the existing permit (status lifecycle APPLIED → ISSUED/DENIED,
+scope description, official-source reference, reviewed-by attribution) plus
+one gate reason ("permit amendment pending") wired through the existing
+`completionGates` reason model — no new engine, no per-jurisdiction code.
+Do not build it speculatively.

@@ -149,9 +149,9 @@ async function main() {
   assert(draw.includes('class="workbench"'), "draw review is a workbench (work surface + inspector rail)");
   assert(draw.includes('class="wb-rail"'), "the inspector rail is present");
   assert(
-    draw.includes("Draw readiness") && draw.includes("Governed blockers") &&
+    draw.includes("Draw control scorecard") && draw.includes("Governed blockers") &&
       draw.includes("Advisory signals") && draw.includes("Line item review"),
-    "the upper work area leads with readiness, blockers, advisory signals and the line register"
+    "the upper work area leads with the scorecard, blockers, advisory signals and the line register"
   );
   assert(draw.includes('class="wstabs"'), "record domains are tabs, not sequential full-width sections");
   assert(draw.includes('class="dtable"'), "line items are a dense table");

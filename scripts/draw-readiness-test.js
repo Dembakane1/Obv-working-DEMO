@@ -691,7 +691,7 @@ async function main() {
   assert(excf.html.includes("/draw/draw-g5"), "filter EXCEPTION REVIEW finds the exception-review draw");
 
   const pageReady = await get("/draw/draw-g2");
-  assert(pageReady.html.includes("Draw readiness"), "Draw Review leads with the readiness module");
+  assert(pageReady.html.includes("Draw control scorecard"), "Draw Review leads with the Draw Control Scorecard");
   assert(pageReady.html.includes("Ready for lender review"), "READY is phrased as ready for lender REVIEW");
   assert((pageReady.html.match(/dr-state-badge/g) || []).length === 1,
     "one readiness summary — not a wall of per-category cards");
@@ -707,7 +707,7 @@ async function main() {
   assert(pageExc.html.includes("EXCEPTION REVIEW"), "the exception-review draw shows its distinct state");
 
   const pageOverride = await get(`/draw/${drawB.id}`);
-  assert(pageOverride.status === 200 && pageOverride.html.includes("Draw readiness"),
+  assert(pageOverride.status === 200 && pageOverride.html.includes("Draw control scorecard"),
     "the decided draw still renders its readiness module");
   const act = await get(`/draw/${drawB.id}?tab=activity`);
   assert(act.html.includes("OBV readiness snapshot at lender decision"),

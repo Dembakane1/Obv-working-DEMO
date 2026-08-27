@@ -80,7 +80,7 @@ async function main() {
   pass("demo-posture server healthy");
   // The golden project belongs to the DMV borrower org, so its PM is needed
   // alongside the default seeded set.
-  await signInAll(BASE, ["user-funder", "user-compliance", "user-dmv-pm"]);
+  await signInAll(BASE, ["user-funder", "user-compliance", "user-dmv-pm", "user-pm"]);
 
   const db = new DatabaseSync(path.join(DATA, "obv.db"), { readOnly: true });
   const dr = require(path.join(ROOT, "dist/server/services/drawReadiness"));
@@ -572,6 +572,355 @@ async function main() {
         "9H.4 the banner is not passed live readiness at all");
       assert(!/r\.blockingReasons\.length[\s\S]{0,120}Requirements overridden/.test(view),
         "9H.4 the overridden count is never taken from live blockers");
+    }
+  }
+
+  // Shared across the scorecard sections below.
+  let covId = null;
+
+  // ---------- SC. the draw control scorecard ----------
+  //
+  // Four CONTROL DOMAINS — PHYSICAL / FINANCIAL / COMPLIANCE / DOCUMENTS —
+  // presented over the engine's own category rollups. Factual states only:
+  // nothing is averaged, weighted, graded or converted into a number, and
+  // the four-state readiness contract is untouched.
+  {
+    // -- SC.1 semantic domain invariants (the domains are explanatory, NOT
+    //    total: cross-cutting categories stay outside them, with final
+    //    readiness and Governed Blockers remaining authoritative) --
+    const allCats = ["INTEGRITY", "EVIDENCE", "GOVERNMENT_INSPECTION", "PERMIT",
+      "DRAW_INSPECTION", "DOCUMENT", "LIEN", "BUDGET", "CHANGE_ORDER",
+      "EXCEPTION", "PROJECT_CONTROL", "RETAINAGE"];
+    const claimed = Object.values(dr.CONTROL_DOMAIN_CATEGORIES).flat();
+    assert(claimed.every((c) => claimed.filter((x) => x === c).length === 1),
+      "SC.1 no category belongs to more than one domain");
+    assert(dr.CROSS_CUTTING_CATEGORIES.every((c) => !claimed.includes(c)),
+      "SC.1 cross-cutting categories are never forced into a domain");
+    assert(allCats.every((c) => claimed.includes(c) || dr.CROSS_CUTTING_CATEGORIES.includes(c)),
+      "SC.1 every category is either domain-owned or explicitly cross-cutting — nothing silently vanishes");
+    const own = (d) => dr.CONTROL_DOMAIN_CATEGORIES[d];
+    assert(["EXCEPTION", "PROJECT_CONTROL", "INTEGRITY"].every((c) => dr.CROSS_CUTTING_CATEGORIES.includes(c)),
+      "SC.1 EXCEPTION, PROJECT_CONTROL and INTEGRITY are cross-cutting — a generic exception or a legal hold has no single domain");
+    assert(own("COMPLIANCE").join() === "GOVERNMENT_INSPECTION,PERMIT"
+      && own("DOCUMENTS").join() === "DOCUMENT,LIEN"
+      && own("PHYSICAL").join() === "EVIDENCE,DRAW_INSPECTION"
+      && own("FINANCIAL").join() === "BUDGET,CHANGE_ORDER,RETAINAGE",
+      "SC.1 each domain owns only categories whose semantics genuinely belong to it");
+
+    // Fresh reads: earlier sections mutated the exception register.
+    const rHold2 = dr.drawReadiness(holdId);
+    const rInc2 = dr.drawReadiness(incId);
+    const holdHtml2 = (await page("user-funder", `/draw/${holdId}`)).html;
+    const incHtml2 = (await page("user-funder", `/draw/${incId}`)).html;
+
+    // -- SC.2 the scorecard exists and the contract is untouched --
+    assert(/Draw control scorecard/.test(holdHtml2), "SC.2 the panel is the explicit Draw Control Scorecard");
+    for (const w of ["Physical", "Financial", "Compliance", "Documents"]) {
+      assert(new RegExp(`class="d-name">${w}<`).test(holdHtml2), `SC.2 the ${w} control domain is present`);
+    }
+    assert(["READY", "HOLD", "EXCEPTION_REVIEW", "INCOMPLETE"].includes(rHold2.status)
+      && new RegExp(`class="dr-state-badge">(READY|HOLD|EXCEPTION REVIEW|INCOMPLETE)<`).test(holdHtml2),
+      "SC.2 the final readiness state remains the engine's four-state contract");
+    assert(!/READY WITH EXCEPTION|NOT ELIGIBLE/i.test(holdHtml2),
+      "SC.2 no renamed readiness states appear");
+
+    // -- SC.3 support coverage is factual dollars, never readiness --
+    const expectShown = dr.formatSupportCoverage(dr.supportCoverage(rHold2));
+    assert(new RegExp(`class="pct">${expectShown.replace(/[.%]/g, "\\$&")}<`).test(holdHtml2)
+      && /of requested dollars currently supported/.test(holdHtml2),
+      `SC.3 support coverage renders the shared non-overstating format (${expectShown})`);
+    assert(/never a measure of readiness/i.test(holdHtml2),
+      "SC.3 the coverage line states it is not a readiness measure");
+    assert(!/\d+%\s*(ready|readiness)|readiness[^<]{0,20}\d+%|Physical readiness/i.test(holdHtml2),
+      "SC.3 no percentage is ever attached to readiness");
+
+    // -- SC.4 100% support coverage can still be HOLD --
+    // All lines supported, no documents filed: the money is fully supported
+    // by recorded reviews while the DOCUMENT requirements hold the draw.
+    covId = await mkDraw("user-dmv-pm", "proj-golden", 25000, [
+      { description: "Interior finishes — coverage case", milestoneId: "ms-g5", scheduledValue: 25000, currentRequested: 25000 },
+    ]);
+    await api("user-dmv-pm", "POST", `/api/draws/${covId}/submit`, {});
+    for (const id of lineIds(covId)) {
+      const rv2 = await api("user-funder", "POST", `/api/draws/${covId}/lines/${id}/review`,
+        { decision: "SUPPORTED", percentCompleteVerified: 100 });
+      if (rv2.status !== 200) fail(`SC.4 setup: line review did not record (${rv2.status})`);
+    }
+    const rCov = dr.drawReadiness(covId);
+    assert(dr.supportCoverage(rCov) === 1 && rCov.status === "HOLD",
+      `SC.4 full support coverage coexists with HOLD (${rCov.status})`);
+    const covHtml = (await page("user-funder", `/draw/${covId}`)).html;
+    assert(/class="pct">100%</.test(covHtml) && /class="dr-state-badge">HOLD</.test(covHtml),
+      "SC.4 the page shows 100% supported dollars AND the HOLD state — coverage never becomes readiness");
+    const covDomains = dr.controlDomains(rCov);
+    assert(covDomains.find((v) => v.domain === "DOCUMENTS").state === "HOLD",
+      "SC.4 the Documents domain carries the hold");
+
+    // -- SC.5 strong physical/financial domains can still be INCOMPLETE --
+    const incDomains = dr.controlDomains(rInc2);
+    const compliance = incDomains.find((v) => v.domain === "COMPLIANCE");
+    assert(rInc2.status === "INCOMPLETE" && compliance.state === "UNKNOWN",
+      "SC.5 unknown jurisdictional information rolls the Compliance domain UNKNOWN and the draw INCOMPLETE");
+    assert(incDomains.find((v) => v.domain === "DOCUMENTS").state !== "HOLD"
+      && incDomains.find((v) => v.domain === "FINANCIAL").state !== "HOLD",
+      "SC.5 the other domains are healthy — and that averages into nothing");
+    assert(/class="pct">100%</.test(incHtml2) && /class="dr-state-badge">INCOMPLETE</.test(incHtml2),
+      "SC.5 the page shows full supported dollars beside INCOMPLETE");
+
+    // -- SC.6 UNKNOWN never renders as healthy --
+    for (const v of [...incDomains, ...covDomains, ...dr.controlDomains(rHold2)]) {
+      if (v.hasUnknown) assert(v.state !== "PASS" && v.state !== "NOT_APPLICABLE",
+        `SC.6 a domain carrying missing information never reads PASS (${v.domain})`);
+    }
+    assert(/class="dr-dstate unknown"/.test(incHtml2) && />UNKNOWN</.test(incHtml2),
+      "SC.6 the unknown domain state is rendered as the word UNKNOWN in its own serious style");
+    assert(!/class="dr-dstate ok">[^<]*<\/span>UNKNOWN/.test(incHtml2),
+      "SC.6 unknown is never dressed in the healthy tone");
+
+    // -- SC.7 the three verification records stay distinct --
+    assert(/Government inspection/.test(holdHtml2) && /Field evidence/.test(holdHtml2),
+      "SC.7 field evidence and the government inspection are named as distinct records");
+    assert(/independent draw inspection and the\s*government inspection are distinct records/s.test(holdHtml2.replace(/\s+/g, " "))
+      || /none substitutes for another/.test(holdHtml2),
+      "SC.7 the scorecard states that no verification record substitutes for another");
+
+    // -- SC.8 the Documents domain uses the real checklist --
+    {
+      const reqRows = db.prepare(
+        "SELECT state FROM (SELECT CASE WHEN d2.id IS NULL THEN 'MISSING' ELSE 'PRESENT' END state FROM draw_document_requirements r LEFT JOIN draw_documents d2 ON d2.requirement_id = r.id WHERE r.draw_request_id = ? AND r.required = 1)"
+      ).all(covId);
+      const onFile = reqRows.filter((x) => x.state === "PRESENT").length;
+      assert(new RegExp(`Required on file<\\/dt><dd>${onFile} of ${reqRows.length}<`).test(covHtml),
+        `SC.8 the Documents domain counts the actual checklist (${onFile} of ${reqRows.length})`);
+    }
+
+    // -- SC.9 Fairfax doctrine: strong physical verification never outruns
+    //    an outstanding required jurisdictional inspection --
+    const ffId = await mkDraw("user-dmv-pm", "proj-golden", 30000, [
+      { description: "Final completion — Fairfax doctrine case", milestoneId: "ms-g6", scheduledValue: 30000, currentRequested: 30000 },
+    ]);
+    await api("user-dmv-pm", "POST", `/api/draws/${ffId}/submit`, {});
+    for (const id of lineIds(ffId)) {
+      const rv3 = await api("user-funder", "POST", `/api/draws/${ffId}/lines/${id}/review`,
+        { decision: "SUPPORTED", percentCompleteVerified: 100 });
+      if (rv3.status !== 200) fail(`SC.9 setup: line review did not record (${rv3.status})`);
+    }
+    await fileDocs("user-dmv-pm", ffId, 30000);
+    const det = await api("user-compliance", "POST", "/api/milestones/ms-g6/inspection-requirement", {
+      requirement: "REQUIRED",
+      requirementBasis: "County electrical final inspection required before draw review; permit amendment pending with the authority (fictional).",
+      inspectionType: "Electrical final inspection",
+      jurisdiction: "Fairfax County, VA (fictional)",
+      issuingAuthority: "Fairfax County Land Development Services (fictional)",
+      mustPassBeforeDrawReview: true,
+    });
+    if (det.status >= 400) fail(`SC.9 setup: determination refused (${det.status}) ${det.text.slice(0, 160)}`);
+    const rFf = dr.drawReadiness(ffId);
+    const ffDomains = dr.controlDomains(rFf);
+    assert(dr.supportCoverage(rFf) === 1,
+      "SC.9 every requested dollar is supported by recorded review — physical verification is strong");
+    assert(rFf.status !== "READY",
+      `SC.9 the draw still does not become READY (${rFf.status}) — physical strength never outruns the jurisdictional surface`);
+    assert(ffDomains.find((v) => v.domain === "COMPLIANCE").state === "HOLD",
+      "SC.9 the Compliance domain carries the outstanding required inspection");
+    assert(rFf.blockingReasons.some((b) => b.category === "GOVERNMENT_INSPECTION"),
+      "SC.9 the blocker is the government inspection — from the existing gates, not a new engine");
+    const ffHtml = (await page("user-funder", `/draw/${ffId}`)).html;
+    assert(/class="pct">100%</.test(ffHtml) && !/class="dr-state-badge">READY</.test(ffHtml),
+      "SC.9 the page shows full supported dollars while the state stays blocked");
+
+    // -- SC.10 no composite score anywhere on the scorecard pages --
+    for (const [label, html] of [["hold", holdHtml2], ["incomplete", incHtml2], ["coverage", covHtml], ["fairfax", ffHtml]]) {
+      assert(!/readiness score|risk grade|\/100|\b8[0-9]% ready\b|AI recommend/i.test(html),
+        `SC.10 the ${label} page carries no composite score, grade or AI recommendation`);
+    }
+
+    // -- SC.11 page reads stay write-free --
+    {
+      const before = db.prepare("SELECT COUNT(*) c FROM draw_events").get().c;
+      for (let i = 0; i < 3; i += 1) await page("user-funder", `/draw/${ffId}`);
+      const after = db.prepare("SELECT COUNT(*) c FROM draw_events").get().c;
+      assert(after === before, "SC.11 rendering the scorecard three times writes no draw events");
+    }
+
+    // -- SC.12 tenancy unchanged --
+    {
+      const foreign = await page("user-pm", `/draw/${ffId}`);
+      assert(foreign.status === 404, "SC.12 a foreign-tenant PM still receives the undisclosing 404");
+    }
+
+    // -- SC.13 the exception path line follows the engine's own flags --
+    assert(/Exception path unavailable/.test(incHtml2) && /never be overridden/.test(incHtml2),
+      "SC.13 INCOMPLETE states the exception path is unavailable — missing information cannot be overridden");
+    if (rFf.blockingReasons.every((b) => b.exceptionAllowed)) {
+      assert(/Exception path available under current policy/.test(ffHtml),
+        "SC.13 an all-exception-eligible HOLD states the documented path and its conditions");
+    } else {
+      assert(/Exception path unavailable/.test(ffHtml),
+        "SC.13 a non-eligible blocker states the path is unavailable");
+    }
+  }
+
+  // ---------- SC-D. domain semantics: cross-cutting is never misattributed ----------
+  //
+  // The four domains claim only categories whose semantics belong to them.
+  // A generic formal exception, a dispute/legal hold or an integrity
+  // failure blocks the draw exactly as before — but through the
+  // cross-cutting summary and Governed Blockers, never by falsely turning
+  // a domain red. All fixtures below run through governed APIs.
+  {
+    // -- SC.14/A a formal EVIDENCE-subject exception never turns COMPLIANCE red --
+    const aId = await mkDraw("user-dmv-pm", "proj-golden", 25000, [
+      { description: "Interior finishes — generic-exception case", milestoneId: "ms-g5", scheduledValue: 25000, currentRequested: 25000 },
+    ]);
+    await api("user-dmv-pm", "POST", `/api/draws/${aId}/submit`, {});
+    for (const id of lineIds(aId)) {
+      const rv = await api("user-funder", "POST", `/api/draws/${aId}/lines/${id}/review`,
+        { decision: "SUPPORTED", percentCompleteVerified: 100 });
+      if (rv.status !== 200) fail(`SC.14 setup: line review did not record (${rv.status})`);
+    }
+    await fileDocs("user-dmv-pm", aId, 25000);
+    const exc = await api("user-funder", "POST", "/api/exceptions", {
+      projectId: "proj-golden", drawRequestId: aId,
+      category: "EVIDENCE", severity: "HIGH",
+      title: "Evidence-subject formal exception (fictional)",
+      description: "A formal exception about EVIDENCE — clearly not a regulatory/compliance matter (fictional).",
+    });
+    if (exc.status >= 400) fail(`SC.14 setup: exception did not record (${exc.status}) ${exc.text.slice(0, 160)}`);
+    const rA = dr.drawReadiness(aId);
+    assert(rA.status !== "READY" && rA.blockingReasons.some((b) => b.category === "EXCEPTION"),
+      `SC.14 the governed exception blocks the draw normally (${rA.status})`);
+    const aDomains = dr.controlDomains(rA);
+    assert(aDomains.find((v) => v.domain === "COMPLIANCE").state !== "HOLD",
+      "SC.14 the Compliance domain does NOT go HOLD for a generic evidence-subject exception");
+    assert(aDomains.every((v) => v.state !== "HOLD"),
+      "SC.14 all four domains stay healthy — the block is cross-cutting, not a domain failure");
+    const aCross = dr.crossCuttingControls(rA);
+    assert(aCross.blockerCount >= 1 && aCross.state === "HOLD",
+      "SC.14 the cross-cutting summary carries the exception");
+    const aHtml = (await page("user-funder", `/draw/${aId}`)).html;
+    assert(/class="dr-crosscut/.test(aHtml) && /Cross-cutting governed controls/.test(aHtml),
+      "SC.14 the page explains WHY a draw with four healthy domains is still blocked");
+    assert(/class="dr-blockers"/.test(aHtml) && /Evidence-subject formal exception/.test(aHtml),
+      "SC.14 the generic exception stays visible in Governed Blockers");
+    assert(!/(class="dr-domain bad">[\s\S]{0,200}Compliance)/.test(aHtml),
+      "SC.14 the Compliance card is not rendered in the blocking tone");
+
+    // -- SC.15/B a legal hold is not a financial-control failure --
+    // proj-dmv carries the seeded DMV control surface, where dispute holds
+    // reach readiness. The dispute + legal hold go through the ordinary
+    // dispute workflow.
+    const disp = await api("user-funder", "POST", "/api/projects/proj-dmv/disputes", {
+      subjectType: "DRAW_REQUEST", subjectId: "draw-dmv-1",
+      disputedAmount: 15000, undisputedAmount: 90000,
+      affectedScope: "Framing package — unit 2 (fictional)",
+      reason: "Disputed quantities on the framing package (fictional).",
+    });
+    if (disp.status >= 400 || !disp.json?.dispute?.id) {
+      fail(`SC.15 setup: dispute did not open (${disp.status}) ${disp.text.slice(0, 160)}`);
+    }
+    const lh = await api("user-compliance", "POST", `/api/disputes/${disp.json.dispute.id}/legal-hold`, {
+      active: "true", reason: "Counsel review of the disputed framing quantities (fictional).",
+    });
+    if (lh.status >= 400) fail(`SC.15 setup: legal hold did not activate (${lh.status}) ${lh.text.slice(0, 160)}`);
+    const rB = dr.drawReadiness("draw-dmv-1");
+    const bHold = rB.blockingReasons.find((b) => b.code === "LEGAL_HOLD");
+    assert(bHold && bHold.category === "PROJECT_CONTROL" && rB.status !== "READY",
+      `SC.15 the legal hold blocks the draw through PROJECT_CONTROL (${rB.status})`);
+    const bDomains = dr.controlDomains(rB);
+    assert(bDomains.every((v) => !v.categories.some((c) => c.category === "PROJECT_CONTROL")),
+      "SC.15 no domain claims PROJECT_CONTROL — a legal hold is not a financial control");
+    const bFin = bDomains.find((v) => v.domain === "FINANCIAL");
+    assert(bFin.categories.every((c) => ["BUDGET", "CHANGE_ORDER", "RETAINAGE"].includes(c.category)),
+      "SC.15 the Financial domain contains only genuinely financial categories");
+    assert(dr.crossCuttingControls(rB).blockerCount >= 1,
+      "SC.15 the hold surfaces through the cross-cutting summary instead");
+
+    // -- SC.16/D+F a real permit blocker and a real evidence failure land
+    //    in their own domains --
+    const dfId = await mkDraw("user-dmv-pm", "proj-golden", 20000, [
+      { description: "Structural repairs — domain-attribution case", milestoneId: "ms-g2", scheduledValue: 20000, currentRequested: 20000 },
+    ]);
+    await api("user-dmv-pm", "POST", `/api/draws/${dfId}/submit`, {});
+    for (const id of lineIds(dfId)) {
+      const rv = await api("user-funder", "POST", `/api/draws/${dfId}/lines/${id}/review`,
+        { decision: "SUPPORTED", percentCompleteVerified: 100 });
+      if (rv.status !== 200) fail(`SC.16 setup: line review did not record (${rv.status})`);
+    }
+    await fileDocs("user-dmv-pm", dfId, 20000);
+    // A REJECTED governed verdict through the real evidence pipeline:
+    // coordinates clearly outside the project boundary hard-fail the
+    // geofence check deterministically.
+    const photo = "data:image/jpeg;base64," + Buffer.alloc(256, 7).toString("base64");
+    const ev = await api("user-dmv-pm", "POST", "/api/evidence", {
+      milestoneId: "ms-g2", photoDataUrl: photo,
+      latitude: 39.5, longitude: -75.0,
+      capturedAt: new Date(Date.now() - 60_000).toISOString(),
+      deviceMetadata: { userAgent: "obv-suite", platform: "linux", screen: "390x844", pixelRatio: "2" },
+      isDemoFallback: false,
+    });
+    if (ev.status !== 201 || ev.json?.verification?.verdict !== "REJECTED") {
+      fail(`SC.16 setup: expected a REJECTED governed verdict (${ev.status} ${ev.json?.verification?.verdict})`);
+    }
+    const det = await api("user-compliance", "POST", "/api/milestones/ms-g2/inspection-requirement", {
+      requirement: "REQUIRED",
+      requirementBasis: "Structural repairs require a framing inspection under the adopted code; the framing permit must be active (fictional).",
+      inspectionType: "Framing inspection",
+      jurisdiction: "Washington, DC (fictional)",
+      issuingAuthority: "DOB (fictional)",
+      mustPassBeforeDrawReview: true,
+      permitRequired: true,
+      permitMustBeActiveBeforeDrawReview: true,
+    });
+    if (det.status >= 400) fail(`SC.16 setup: determination refused (${det.status}) ${det.text.slice(0, 160)}`);
+    const rDF = dr.drawReadiness(dfId);
+    const dfDomains = dr.controlDomains(rDF);
+    assert(rDF.blockingReasons.some((b) => b.category === "EVIDENCE")
+      && dfDomains.find((v) => v.domain === "PHYSICAL").state === "HOLD",
+      "SC.16/F a rejected governed verdict holds the PHYSICAL domain");
+    // (C — a required GOVERNMENT_INSPECTION holding COMPLIANCE — is pinned
+    // by the SC.9 Fairfax fixture above; here the gates surface the
+    // missing required permit first.)
+    assert(rDF.blockingReasons.some((b) => b.category === "PERMIT")
+      && dfDomains.find((v) => v.domain === "COMPLIANCE").state === "HOLD",
+      "SC.16/D a required permit that is not active holds the COMPLIANCE domain");
+    // E is pinned by SC.4 (documents outstanding → DOCUMENTS HOLD); make
+    // the lien attribution explicit against the same fixture.
+    const rCovE = dr.drawReadiness(covId);
+    assert(rCovE.blockingReasons.some((b) => b.category === "LIEN" || b.category === "DOCUMENT")
+      && dr.controlDomains(rCovE).find((v) => v.domain === "DOCUMENTS").state === "HOLD",
+      "SC.16/E missing required documents / lien waivers hold the DOCUMENTS domain");
+
+    // -- SC.17 support coverage is never rounded into full support --
+    const nearId = await mkDraw("user-dmv-pm", "proj-golden", 100000, [
+      { description: "Near-full support — rounding case", milestoneId: "ms-g5", scheduledValue: 100000, currentRequested: 100000 },
+    ]);
+    await api("user-dmv-pm", "POST", `/api/draws/${nearId}/submit`, {});
+    const nearLine = lineIds(nearId)[0];
+    const nr = await api("user-funder", "POST", `/api/draws/${nearId}/lines/${nearLine}/review`, {
+      decision: "PARTIALLY_SUPPORTED", supportedAmount: 99600,
+      reason: "Final $400 of stored materials not yet documented (fictional).",
+    });
+    if (nr.status !== 200) fail(`SC.17 setup: partial review did not record (${nr.status})`);
+    const rNear = dr.drawReadiness(nearId);
+    assert(rNear.supportableAmount === 99600 && rNear.unsupportedAmount === 400
+      && dr.supportCoverage(rNear) === 0.996,
+      "SC.17 the engine reports the exact facts: 99,600 supportable, 400 unsupported, coverage 0.996");
+    const nearHtml = (await page("user-funder", `/draw/${nearId}`)).html;
+    assert(/class="pct">99\.6%</.test(nearHtml),
+      "SC.17 the page shows 99.6% — the $400 shortfall is never rounded away");
+    assert(!/100% of requested dollars currently supported/.test(nearHtml),
+      "SC.17 an unsupported remainder never displays as 100%");
+    // Exact full support still reads 100% — the covId fixture is exact.
+    assert(dr.formatSupportCoverage(1) === "100%",
+      "SC.17 only exact full support renders 100%");
+    // The display rule itself, deterministic and never overstating:
+    for (const [input, want] of [
+      [0.92, "92%"], [0.996, "99.6%"], [0.9996, "99.9%"], [0.9999999, "99.9%"],
+      [0.29, "29%"], [0, "0%"], [1.02, "102%"], [1.0004, ">100%"], [null, null],
+    ]) {
+      const got = dr.formatSupportCoverage(input);
+      assert(got === want, `SC.17 formatSupportCoverage(${input}) → ${got} (want ${want})`);
     }
   }
 

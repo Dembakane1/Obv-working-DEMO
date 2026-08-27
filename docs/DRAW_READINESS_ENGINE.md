@@ -253,3 +253,38 @@ configured, versioned distinction.
 - Converting verified-physical % into payable dollars.
 - Erasing or downgrading a blocker because a human proceeded past it.
 - AI-score-driven state changes (`risk = 0.81 → HOLD` does not exist).
+
+## 11. Control-domain presentation mapping (read-only)
+
+The Draw Review page groups the engine's category rollups into four lender
+CONTROL DOMAINS — the Draw Control Scorecard:
+
+| Domain | Categories |
+|---|---|
+| PHYSICAL | EVIDENCE, DRAW_INSPECTION |
+| FINANCIAL | BUDGET, CHANGE_ORDER, RETAINAGE |
+| COMPLIANCE | GOVERNMENT_INSPECTION, PERMIT |
+| DOCUMENTS | DOCUMENT, LIEN |
+| *(cross-cutting, outside the domains)* | EXCEPTION, PROJECT_CONTROL, INTEGRITY |
+
+The domains are EXPLANATORY, not total: no category belongs to more than
+one domain, and cross-cutting categories are deliberately outside all
+four — a formal exception can concern any subject, a dispute/legal hold
+is not a financial control, integrity spans the whole record. They stay
+fully visible through `crossCuttingControls(result)` (a compact summary
+so four healthy domains can never silently coexist with a blocked draw)
+and through the Governed Blockers panel, which with final readiness
+remains their authoritative presentation.
+
+`controlDomains(result)`, `crossCuttingControls(result)`,
+`supportCoverage(result)` and `formatSupportCoverage(coverage)` in
+`drawReadiness.ts` are pure reads over an already-computed result. Domain
+state is the worst member state (HOLD > UNKNOWN > WARNING > PASS > N/A —
+missing information never reads healthy). Support coverage is
+`supportableAmount / requestedAmount` — supported **dollars**, never a
+readiness percentage — and its display rule never overstates: "100%" is
+shown only for exact full support, values below one are floored to one
+decimal (99.96% → "99.9%"), and an inconsistent >1 anomaly is preserved,
+never clamped healthy. None of these feed back into evaluation, the
+status contract, the decision gate, or snapshots. There is no composite
+0–100 score anywhere: the scorecard is a grouping, not a grade.
