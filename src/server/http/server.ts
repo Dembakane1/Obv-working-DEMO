@@ -5322,8 +5322,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       .filter((c) => ["OPEN", "RESPONDED", "REOPENED"].includes(c.status)).length;
     const openIssuesOv = fieldOps.listFieldIssuesForUser(user!).filter((i) => !["RESOLVED", "CLOSED"].includes(i.status));
     await exceptions.evaluateExceptions();
+    // Tenancy: the exception register is global, so it MUST be narrowed to
+    // the viewer's accessible projects before any count is derived from it.
+    // Without this the four exception figures below (open, high/critical,
+    // overdue, awaiting) disclose other tenants' exception volume.
     const openExceptionsOv = repo
       .listExceptions()
+      .filter((e) => visibleForOverview.has(e.projectId))
       .filter((e) => ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "AWAITING_RESPONSE"].includes(e.status));
     const openIssuesByProject = new Map<string, number>();
     for (const issue of openIssuesOv) {
@@ -6307,7 +6312,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       contractor: url.searchParams.get("contractor") ?? "",
     };
     const filtersActive = Object.values(filterState).some((v) => v.length > 0);
-    const overviewData = portfolioIntel.overview(user!, {
+    // One portfolio context for the whole console: the governed control
+    // model, the overview, the risk register, the fraud panel and the
+    // snapshot list used to build five separate contexts between them.
+    const console_ = portfolioIntel.executiveConsole(user!, {
       status: filterState.status || undefined,
       state: filterState.state || undefined,
       stage: filterState.stage || undefined,
@@ -6315,6 +6323,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       lenderOrgId: filterState.lender || undefined,
       contractorOrgId: filterState.contractor || undefined,
     });
+    const overviewData = console_.overview;
     // Filter options always come from the unfiltered scope so narrowing
     // one facet never hides the others' choices.
     const optionSource = filtersActive ? portfolioIntel.overview(user!) : overviewData;
@@ -6378,10 +6387,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         officialSources,
         projectHistory: historyView,
         overview: overviewData,
-        risk: portfolioIntel.risk(user!),
-        fraud: portfolioIntel.fraud(user!),
-        government: portfolioIntel.government(user!),
-        snapshots: portfolioIntel.listSnapshots(user!),
+        // The governed draw-control read model: capital, readiness
+        // distribution, control-domain pressure, the attention queue,
+        // decision-time override history and recorded freshness. Read-only
+        // and viewer-scoped through the same portfolio context.
+        control: console_.control,
+        risk: console_.risk,
+        fraud: console_.fraud,
+        government: console_.government,
+        snapshots: console_.snapshots,
         filters: filterState,
         filterOptions: {
           states: optionSource.distributions.byState.map((d) => d.key),

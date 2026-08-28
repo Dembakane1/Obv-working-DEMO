@@ -144,6 +144,7 @@ export interface PortfolioContext {
   permitBasesByProject: () => Map<string, prepo.PermitBasisRow[]>;
   sourceVerificationsByProject: () => Map<string, prepo.SourceVerificationRow[]>;
   instructionsByDraw: () => Map<string, prepo.PaymentInstructionRow[]>;
+  eventsByDraw: () => Map<string, prepo.DrawEventRow[]>;
 }
 
 /**
@@ -251,6 +252,7 @@ export function buildPortfolioContext(viewer: User): PortfolioContext {
       groupBy(inScope(prepo.sourceVerificationRows()), (v) => v.projectId)
     ),
     instructionsByDraw: lazy(() => byDraw(prepo.paymentInstructionRows())),
+    eventsByDraw: lazy(() => byDraw(prepo.drawEventRows())),
   };
 }
 
