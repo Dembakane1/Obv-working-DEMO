@@ -272,6 +272,49 @@ export function lenderDecisionRows(): LenderDecisionRow[] {
     });
 }
 
+export interface LenderDecisionHistoryRow {
+  id: string;
+  projectId: string;
+  drawRequestId: string;
+  decision: string;
+  decisionAt: string | null;
+  reviewerUserId: string;
+  createdAt: string;
+  supersededByDecisionId: string | null;
+}
+
+/**
+ * EVERY recorded lender decision, superseded ones included, oldest first.
+ *
+ * This exists for HISTORY: a superseded decision remains a historical fact
+ * with its own recorded timestamp. `lenderDecisionRows` above deliberately
+ * returns only the standing (non-superseded) decisions and must stay that
+ * way — current-decision surfaces read it; historical surfaces read this.
+ */
+export function lenderDecisionHistoryRows(): LenderDecisionHistoryRow[] {
+  return getDb()
+    .prepare(
+      `SELECT id, project_id, draw_request_id, decision, decision_at, reviewer_user_id,
+              created_at, superseded_by_decision_id
+         FROM lender_draw_decisions
+        ORDER BY created_at ASC, rowid ASC`
+    )
+    .all()
+    .map((r) => {
+      const x = r as Row;
+      return {
+        id: s(x.id),
+        projectId: s(x.project_id),
+        drawRequestId: s(x.draw_request_id),
+        decision: s(x.decision),
+        decisionAt: sn(x.decision_at),
+        reviewerUserId: s(x.reviewer_user_id),
+        createdAt: s(x.created_at),
+        supersededByDecisionId: sn(x.superseded_by_decision_id),
+      };
+    });
+}
+
 export interface ApprovalRow {
   id: string;
   subjectType: string;

@@ -184,8 +184,13 @@ tested against the over-supported case the seeded portfolio cannot produce.
 
 **Readiness aggregation.** Each open draw is evaluated once and lands in
 exactly one of READY / HOLD / EXCEPTION_REVIEW / INCOMPLETE. The four
-buckets partition the set (asserted), each carrying its own draw count
-and dollars. The only percentage shown is a bucket's share **of open
+buckets partition the evaluated set (asserted), each carrying its own
+draw count and dollars. A bucket's capital comes from the SAME
+`aggregateCapital` rule as the portfolio headline — per-draw shortfalls,
+never `bucket requested − bucket supportable` — so an over-supported
+member draw can never cancel another member's genuine shortfall inside a
+readiness bucket either; any overage is carried on the bucket as its own
+figure. The only percentage shown is a bucket's share **of open
 draws by count**, always rendered with that denominator named. There is
 no portfolio readiness score and no composite grade — a single severe
 UNKNOWN cannot be averaged away by twenty healthy records. A draw whose
@@ -229,9 +234,31 @@ readiness transition is a `draw_events` row of type
 `READINESS_TRANSITION` whose detail carries the status it moved FROM and
 TO at the time it was written; today's live blockers are never consulted
 to describe a past change. That record carries **no reason text**, so
-none is invented. PROCEEDED BY EXCEPTION is bound to the immutable
+none is invented. FORMAL GOVERNANCE and the LENDER BUSINESS DECISION are
+kept separate: a `GOVERNANCE_DECISION` event is approval-matrix activity
+and is labelled "Formal governance decision recorded"; a "Lender decision
+recorded" entry comes only from the lender-decision register itself
+(`lenderDecisionHistoryRows`, superseded decisions included — a superseded
+decision remains a historical fact at its own recorded timestamp, while
+every standing-decision surface keeps reading the non-superseded rows). PROCEEDED BY EXCEPTION is bound to the immutable
 decision-time `READINESS_SNAPSHOT` for the standing decision, so
 resolving a requirement later never rewrites what the lender overrode.
+
+**Evaluation availability — fail closed.** The open-draw scope is
+resolved from the governed draw records BEFORE readiness evaluation, so
+`scope.openDrawCount` is always the real accessible open set and a draw
+whose evaluation fails can never disappear from the console. Raw facts
+that need no readiness result (open-draw count, requested dollars over
+the full set) stay complete; every readiness-derived figure covers
+`scope.evaluatedOpenDrawCount` draws and, when that is smaller, the page
+fails closed — supportable / unsupported / coverage render "—", the
+distribution and domain panels carry an "Evaluated draws only —
+incomplete portfolio view" treatment, and an EVALUATION UNAVAILABLE
+condition leads the governed attention with each affected draw's number,
+project, requested amount and a failure-safe reason. This is an
+operational data-availability condition: it is NOT a fifth readiness
+state, and it is never converted into INCOMPLETE, which is a valid
+governed result.
 
 **Source freshness.** Timestamps come from `source_verifications` rows
 (`lookup_at`, `result_status`). OBV defines **no staleness threshold of
@@ -260,7 +287,10 @@ never an estimate. The aging threshold is
   (state, jurisdiction, lender, contractor, inspector, stage, risk,
   status), trends (exceptions, disputes, draws, permits, compliance,
   portfolio growth), full risk register, fraud panel, snapshot history,
-  interactive GET filtering.
+  interactive GET filtering (the filters narrow the advisory
+  overview-driven panels — draw summary, distribution and trends, marked
+  "filtered" while active — and the page says so; governed capital
+  control is always portfolio-wide).
 - `/executive/entities`, `/executive/forecast`, `/executive/summary`.
 - `/api/portfolio/*` — JSON per section (lazy, per-request, read-only).
 - Executive PDF — `POST /api/reports/executive` streams a portfolio

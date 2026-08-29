@@ -119,6 +119,9 @@ export interface PortfolioContext {
   linesByDraw: () => Map<string, prepo.DrawLineRow[]>;
   docsByDraw: () => Map<string, prepo.DrawDocumentRow[]>;
   decisionsByDraw: () => Map<string, prepo.LenderDecisionRow[]>;
+  /** Full decision HISTORY per draw, superseded decisions included —
+   *  historical surfaces only; standing-decision logic uses decisionsByDraw. */
+  decisionHistoryByDraw: () => Map<string, prepo.LenderDecisionHistoryRow[]>;
   approvals: () => prepo.ApprovalRow[];
   exceptionsByProject: () => Map<string, prepo.ExceptionRow[]>;
   disputesByProject: () => Map<string, prepo.DisputeRow[]>;
@@ -190,6 +193,7 @@ export function buildPortfolioContext(viewer: User): PortfolioContext {
     linesByDraw: lazy(() => byDraw(prepo.drawLineRows())),
     docsByDraw: lazy(() => byDraw(prepo.drawDocumentRows())),
     decisionsByDraw: lazy(() => byDraw(inScope(prepo.lenderDecisionRows()))),
+    decisionHistoryByDraw: lazy(() => byDraw(inScope(prepo.lenderDecisionHistoryRows()))),
     approvals: lazy(() =>
       // Project ownership is resolved in SQL through whichever subject
       // pointer is set (milestone, draw, change order, retainage), so

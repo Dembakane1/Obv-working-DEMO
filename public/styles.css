@@ -5569,6 +5569,40 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
   .ec-pipe .p-l { flex: 0 0 38%; }
 }
 
+/* ---- EVALUATION UNAVAILABLE — operational alert, not a readiness state.
+   Louder than any panel: while a readiness result is missing, no
+   readiness-derived total on the page is complete. ---- */
+.ec-evalgap {
+  margin: 0 0 var(--ws-gap, 10px); padding: 11px 14px; border-radius: var(--r);
+  border: 1.5px solid var(--bad); background: var(--bad-bg);
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+}
+.ec-evalgap .eg-k {
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  font-weight: 800; color: var(--bad);
+}
+.ec-evalgap .eg-v { font-size: 12.5px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ec-evalgap .eg-d { flex-basis: 100%; font-size: 11px; color: var(--ink-2); line-height: 1.5; }
+.ec-evalgap .eg-list { list-style: none; margin: 6px 0 0; padding: 0; flex-basis: 100%; display: flex; flex-direction: column; gap: 3px; }
+.ec-evalgap .eg-list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 11.5px; }
+.ec-evalgap .eg-list a { font-weight: 700; }
+.ec-evalgap .eg-p { color: var(--ink-2); }
+.ec-evalgap .eg-m { color: var(--ink); font-weight: 650; }
+.ec-evalgap .eg-r { flex-basis: 100%; font-size: 10.5px; color: var(--ink-3); }
+
+/* A readiness-derived panel rendered over an incomplete evaluated subset
+   says so first, in a treatment that cannot read as a footnote. */
+.ec-partial {
+  margin: 0 0 10px; padding: 7px 10px; border-radius: var(--r);
+  border: 1.5px dashed var(--bad); background: var(--bad-bg);
+  font-size: 10.5px; font-weight: 650; color: var(--ink); line-height: 1.45;
+}
+
+/* Filters narrow the advisory analytics only — never governed capital. */
+.ec-filter-note {
+  margin: 14px 0 6px; font-size: 10.5px; color: var(--ink-3); line-height: 1.45;
+}
+
 /* Mobile priority for the governed rows. The v25 rules reorder any
    .ws-row-3 by nth-child using an order written for the OLD executive
    modules; these scoped rules win on specificity and state the intended

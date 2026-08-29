@@ -100,13 +100,19 @@ export interface PortfolioCapital {
   coverageLabel: string | null;
 }
 
-export interface ReadinessBucket {
+/**
+ * One readiness state's slice of the portfolio. The capital fields are the
+ * SAME non-netted aggregate the portfolio headline uses — produced by
+ * `aggregateCapital` over the bucket's member results, never by a second
+ * arithmetic rule — so an over-supported member draw can never cancel
+ * another member's genuine shortfall inside a bucket either.
+ */
+export interface ReadinessBucket extends PortfolioCapital {
   status: readiness.ReadinessStatus;
   drawCount: number;
-  requested: number;
-  supportable: number;
-  /** Share of open draws by COUNT — a share of this distribution, never a
-   *  readiness percentage. Always rendered with its denominator named. */
+  /** Share of EVALUATED open draws by COUNT — a share of this
+   *  distribution, never a readiness percentage. Always rendered with its
+   *  denominator named. */
   shareOfDrawsPct: number;
 }
 
@@ -199,8 +205,10 @@ export interface ControlChange {
   drawNumber: number;
   projectId: string;
   projectName: string;
-  /** What kind of governed record changed. */
-  kind: "READINESS_TRANSITION" | "GOVERNED_EVENT";
+  /** What kind of governed record changed. A LENDER_DECISION entry comes
+   *  from the lender-decision register itself — never inferred from
+   *  governance/approval events, which are a different governed concept. */
+  kind: "READINESS_TRANSITION" | "GOVERNED_EVENT" | "LENDER_DECISION";
   /** For a readiness transition: the status recorded AT THAT TIME. */
   from: string | null;
   to: string;
@@ -248,6 +256,9 @@ export interface TurnaroundMetrics {
   /** How many recorded journeys the median rests on. */
   sampleSize: number;
   agingThresholdDays: number;
+  /** Aging count over EVALUATED open draws — age needs the same per-draw
+   *  read as readiness, so an unevaluated draw is not in this figure and
+   *  the view marks the subset whenever one exists. */
   agingDrawCount: number;
 }
 
@@ -256,10 +267,29 @@ export interface PortfolioControl {
   scope: {
     projectCount: number;
     activeProjectCount: number;
+    /** The REAL accessible open-draw count — resolved from the governed
+     *  draw records BEFORE readiness evaluation, so a draw whose
+     *  evaluation fails can never vanish from the console's scope. */
     openDrawCount: number;
+    /** How many of those draws have a readiness result. Readiness-derived
+     *  figures cover exactly this subset; when it is smaller than
+     *  openDrawCount the presentation fails closed. */
+    evaluatedOpenDrawCount: number;
     inclusionRule: string;
     includedStatuses: readonly string[];
   };
+  /**
+   * Σ requestedAmount over the FULL open set, taken directly from the
+   * governed draw records. Needs no readiness evaluation, so it stays a
+   * complete portfolio fact even when some draws could not be evaluated.
+   */
+  openRequested: number;
+  /** Σ requestedAmount over the unevaluated draws — the capital the
+   *  readiness-derived figures below do NOT cover. */
+  unevaluatedRequested: number;
+  /** Readiness-derived capital over the EVALUATED draws. When
+   *  evaluatedOpenDrawCount < openDrawCount this is a partial view and the
+   *  page must not present it as a complete portfolio total. */
   capital: PortfolioCapital;
   readinessDistribution: ReadinessBucket[];
   domains: DomainPressure[];
@@ -271,10 +301,21 @@ export interface PortfolioControl {
   proceededByException: ProceededByException[];
   freshness: SourceFreshness[];
   turnaround: TurnaroundMetrics;
-  /** Draws whose readiness could not be evaluated at all. Surfaced rather
-   *  than silently dropped: a draw missing from the totals would be the
-   *  worst possible failure of a capital-control view. */
-  unevaluated: Array<{ drawRequestId: string; projectId: string; reason: string }>;
+  /**
+   * Open draws whose readiness could not be evaluated at all — an
+   * operational EVALUATION UNAVAILABLE condition, NOT a readiness state
+   * and NOT the same thing as INCOMPLETE (which is a valid governed result
+   * saying required information is missing). Each entry keeps the draw
+   * visible with its raw governed facts and a failure-safe reason.
+   */
+  unevaluated: Array<{
+    drawRequestId: string;
+    drawNumber: number;
+    projectId: string;
+    projectName: string;
+    requested: number;
+    reason: string;
+  }>;
 }
 
 // --------------------------------------------------------------- internals
@@ -308,13 +349,21 @@ const PIPELINE_BUCKETS: Array<{ key: string; label: string; codes: string[] }> =
 ];
 
 /** Governed event types worth an executive's attention, with the words a
- *  lender uses. Anything not listed is operational noise and stays out. */
+ *  lender uses. Anything not listed is operational noise and stays out.
+ *
+ *  GOVERNANCE_DECISION is FORMAL GOVERNANCE / approval-matrix activity
+ *  (an approval-role decision, a governance rejection, completion of the
+ *  required approvals) — it is NOT the lender's business decision, which
+ *  is a separate governed record owned by lenderDecisions and recorded
+ *  AFTER formal governance. History entries for real lender decisions are
+ *  read from the lender-decision register itself, never inferred from
+ *  governance events. */
 const NOTABLE_EVENTS: Record<string, string> = {
-  GOVERNANCE_DECISION: "Lender decision recorded",
+  GOVERNANCE_DECISION: "Formal governance decision recorded",
   SENT_TO_GOVERNANCE: "Sent to governance",
-  RETURNED: "Draw returned to contractor",
+  RETURNED: "Draw returned to requester",
   RELEASE_TRANSITION: "Release transition recorded",
-  DOCUMENT_RECORDED: "Required document recorded",
+  DOCUMENT_RECORDED: "Draw document checklist activity",
   RECOMMENDATION_FINALIZED: "Recommendation finalized",
 };
 
@@ -331,40 +380,81 @@ interface EvaluatedDraw {
   nextAction: lenderPilot.NextAction;
 }
 
+/**
+ * TEST SEAM — failure injection only. OBV_TEST_FAIL_READINESS names draw
+ * ids whose readiness evaluation is treated as unavailable, so the
+ * fail-closed presentation is exercisable end to end without corrupting
+ * any record. The seam can only force the error path — it can never
+ * fabricate a readiness result — so even a stray value in a real
+ * deployment makes the console MORE conservative, never healthier.
+ */
+function readinessFailureSeam(): Set<string> {
+  return new Set(
+    (process.env.OBV_TEST_FAIL_READINESS ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean)
+  );
+}
+
+/** One line, no stack, bounded — suitable for an authorized operator. */
+function failureSafeReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  const firstLine = String(message).split("\n")[0].trim();
+  return firstLine.length > 0 ? firstLine.slice(0, 200) : "Readiness could not be evaluated";
+}
+
 function evaluateOpenDraws(ctx: PortfolioContext): {
+  /** The FULL accessible open set, resolved from governed draw records
+   *  before any readiness evaluation — the authoritative denominator. */
+  open: Array<{ row: prepo.DrawRow; projectName: string }>;
   evaluated: EvaluatedDraw[];
   unevaluated: PortfolioControl["unevaluated"];
 } {
-  const evaluated: EvaluatedDraw[] = [];
-  const unevaluated: PortfolioControl["unevaluated"] = [];
+  const open: Array<{ row: prepo.DrawRow; projectName: string }> = [];
   for (const project of ctx.projects) {
-    const rows = ctx.drawsByProject().get(project.id) ?? [];
-    for (const row of rows) {
-      if (!OPEN_DRAW_STATUSES.includes(row.status)) continue;
-      try {
-        const result = readiness.drawReadiness(row.id);
-        // drawHeaderSummary is computed ONCE and handed to drawNextAction,
-        // which would otherwise recompute the same summary internally.
-        const summary = draws.drawHeaderSummary(row.id);
-        evaluated.push({
-          row,
-          projectName: project.name,
-          result,
-          domains: readiness.controlDomains(result),
-          crossCutting: readiness.crossCuttingControls(result),
-          summary,
-          nextAction: lenderPilot.drawNextAction(row.id, summary),
-        });
-      } catch (error) {
-        unevaluated.push({
-          drawRequestId: row.id,
-          projectId: row.projectId,
-          reason: error instanceof Error ? error.message : "Readiness could not be evaluated",
-        });
-      }
+    for (const row of ctx.drawsByProject().get(project.id) ?? []) {
+      if (OPEN_DRAW_STATUSES.includes(row.status)) open.push({ row, projectName: project.name });
     }
   }
-  return { evaluated, unevaluated };
+
+  const forcedFailures = readinessFailureSeam();
+  const evaluated: EvaluatedDraw[] = [];
+  const unevaluated: PortfolioControl["unevaluated"] = [];
+  for (const { row, projectName } of open) {
+    try {
+      if (forcedFailures.has(row.id)) {
+        throw new Error("Readiness evaluation unavailable (injected by the test seam)");
+      }
+      const result = readiness.drawReadiness(row.id);
+      // drawHeaderSummary is computed ONCE and handed to drawNextAction,
+      // which would otherwise recompute the same summary internally.
+      const summary = draws.drawHeaderSummary(row.id);
+      evaluated.push({
+        row,
+        projectName,
+        result,
+        domains: readiness.controlDomains(result),
+        crossCutting: readiness.crossCuttingControls(result),
+        summary,
+        nextAction: lenderPilot.drawNextAction(row.id, summary),
+      });
+    } catch (error) {
+      // The draw does NOT disappear: it keeps its raw governed facts and
+      // is surfaced as an EVALUATION UNAVAILABLE condition. It is never
+      // relabelled INCOMPLETE — that is a valid readiness result, and this
+      // is the absence of one.
+      unevaluated.push({
+        drawRequestId: row.id,
+        drawNumber: row.drawNumber,
+        projectId: row.projectId,
+        projectName,
+        requested: row.requestedAmount,
+        reason: failureSafeReason(error),
+      });
+    }
+  }
+  return { open, evaluated, unevaluated };
 }
 
 /**
@@ -446,21 +536,31 @@ function share(count: number, total: number): number {
 // ------------------------------------------------------------------ engine
 
 export function portfolioControl(ctx: PortfolioContext): PortfolioControl {
-  const { evaluated, unevaluated } = evaluateOpenDraws(ctx);
-  const openCount = evaluated.length;
+  const { open, evaluated, unevaluated } = evaluateOpenDraws(ctx);
+  // The console's scope is the REAL open set; readiness-derived figures
+  // cover the evaluated subset and the presentation fails closed when the
+  // two differ. Shares are of evaluated draws — the only set a readiness
+  // distribution can honestly describe.
+  const evaluatedCount = evaluated.length;
+  const openRequested = open.reduce((sum, d) => sum + d.row.requestedAmount, 0);
+  const unevaluatedRequested = unevaluated.reduce((sum, u) => sum + u.requested, 0);
 
   // ---------------------------------------------------------- capital
   const capital = aggregateCapital(evaluated.map((d) => d.result));
 
   // ------------------------------------------- readiness distribution
+  //
+  // Each bucket's capital comes from the SAME aggregation rule as the
+  // portfolio headline — per-draw shortfalls, never a netted difference —
+  // so a bucket can never report "fully supported" while a member draw is
+  // under-covered just because another member records an overage.
   const readinessDistribution: ReadinessBucket[] = READINESS_ORDER.map((status) => {
     const members = evaluated.filter((d) => d.result.status === status);
     return {
       status,
       drawCount: members.length,
-      requested: members.reduce((s, d) => s + d.result.requestedAmount, 0),
-      supportable: members.reduce((s, d) => s + d.result.supportableAmount, 0),
-      shareOfDrawsPct: share(members.length, openCount),
+      ...aggregateCapital(members.map((d) => d.result)),
+      shareOfDrawsPct: share(members.length, evaluatedCount),
     };
   });
 
@@ -657,7 +757,7 @@ export function portfolioControl(ctx: PortfolioContext): PortfolioControl {
       label: bucket.label,
       drawCount: members.length,
       requested: members.reduce((s, d) => s + d.result.requestedAmount, 0),
-      shareOfDrawsPct: share(members.length, openCount),
+      shareOfDrawsPct: share(members.length, evaluatedCount),
     };
   }).filter((b) => b.drawCount > 0);
 
@@ -751,11 +851,44 @@ export function portfolioControl(ctx: PortfolioContext): PortfolioControl {
       }
     }
   }
-  // Readiness transitions matter more to a lender than generic workflow
-  // activity, so within the same instant they sort first; otherwise
-  // strictly newest first.
+  // The REAL lender business decisions, from the lender-decision register
+  // itself — recorded AFTER formal governance and never inferred from
+  // GOVERNANCE_DECISION events, which are approval-matrix activity.
+  // History includes superseded decisions: a superseded decision remains a
+  // historical fact at its own recorded timestamp, while every
+  // standing-decision surface keeps reading the non-superseded rows.
+  for (const [drawRequestId, decisionHistory] of ctx.decisionHistoryByDraw()) {
+    const meta = drawMeta.get(drawRequestId);
+    if (!meta) continue;
+    for (const decision of decisionHistory) {
+      // A PENDING placeholder has no decisionAt — nothing was decided yet.
+      if (!decision.decisionAt) continue;
+      changes.push({
+        drawRequestId,
+        drawNumber: meta.number,
+        projectId: meta.projectId,
+        projectName: meta.projectName,
+        kind: "LENDER_DECISION",
+        from: null,
+        to: decision.decision,
+        label: `Lender decision recorded — ${decision.decision.replace(/_/g, " ")}`,
+        at: decision.decisionAt,
+        actorUserId: decision.reviewerUserId,
+      });
+    }
+  }
+
+  // Strictly newest first; within the same instant, readiness transitions
+  // lead, then the lender decision, then generic governed events — a total
+  // order, so the comparator is consistent for every pair of the three
+  // kinds and same-instant ordering is deterministic.
+  const KIND_RANK: Record<ControlChange["kind"], number> = {
+    READINESS_TRANSITION: 0,
+    LENDER_DECISION: 1,
+    GOVERNED_EVENT: 2,
+  };
   const recentChanges = changes
-    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : (a.kind === b.kind ? 0 : a.kind === "READINESS_TRANSITION" ? -1 : 1)))
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : KIND_RANK[a.kind] - KIND_RANK[b.kind]))
     .slice(0, 12);
 
   // --------------------------------------------- proceeded by exception
@@ -850,10 +983,13 @@ export function portfolioControl(ctx: PortfolioContext): PortfolioControl {
     scope: {
       projectCount: ctx.projects.length,
       activeProjectCount: ctx.projects.filter((p) => p.status === "ACTIVE").length,
-      openDrawCount: openCount,
+      openDrawCount: open.length,
+      evaluatedOpenDrawCount: evaluatedCount,
       inclusionRule: CAPITAL_INCLUSION_RULE,
       includedStatuses: OPEN_DRAW_STATUSES,
     },
+    openRequested,
+    unevaluatedRequested,
     capital,
     readinessDistribution,
     domains,

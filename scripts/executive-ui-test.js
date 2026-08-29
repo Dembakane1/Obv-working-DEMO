@@ -24,6 +24,15 @@
  *   9. no composite portfolio score is introduced anywhere
  *  10. advisory analytics stay separate from governed control
  *  11. the page is write-free, role-gated, and has no mobile overflow
+ *  12. a readiness bucket carries the same non-netted capital rule as the
+ *      portfolio headline — an over-supported member never cancels
+ *      another member's shortfall
+ *  13. formal governance activity is never presented as the lender's
+ *      business decision; real decisions come from the decision register
+ *  14. an open draw whose readiness evaluation fails stays visible, keeps
+ *      its raw governed facts, and the page fails closed instead of
+ *      presenting subset totals as complete
+ *  15. filters name their actual (advisory-only) scope
  */
 "use strict";
 
@@ -285,8 +294,12 @@ async function main() {
         `1. ${status} counts ${expected[status]} — exactly the draws the engine puts in that state`);
     }
     const summed = control.readinessDistribution.reduce((s, b) => s + b.drawCount, 0);
-    assert(summed === control.scope.openDrawCount,
-      "1. the four buckets partition the open set — every draw lands in exactly one state");
+    assert(summed === control.scope.evaluatedOpenDrawCount,
+      "1. the four buckets partition the evaluated set — every draw lands in exactly one state");
+    assert(control.scope.evaluatedOpenDrawCount === control.scope.openDrawCount,
+      "1. with every evaluation succeeding, the evaluated set IS the open set");
+    assert(control.openRequested === control.capital.requested,
+      "1. with every evaluation succeeding, raw requested equals the readiness-derived requested");
     assert(control.unevaluated.length === 0,
       "1. no open draw was silently dropped from the aggregate");
   }
@@ -710,9 +723,35 @@ async function main() {
         .map((r) => JSON.parse(r.detail));
       assert(stored.some((d) => d.from === movedOn.from && d.status === movedOn.to),
         `11. "${movedOn.label}" reproduces a stored FROM/TO pair exactly`);
-      const superseded = stored.filter((d) => d.status !== dr.drawReadiness(movedOn.drawRequestId).status);
-      assert(superseded.length === 0 || transitions.some((t) => t.to === superseded[0].status),
-        "11. transitions superseded by later ones are still shown as history");
+      // Non-erasure, stated window-independently: the list is capped by
+      // RECENCY ONLY. Inside the shown window, no stored transition — a
+      // superseded one included — may be skipped. (The old form of this
+      // check asked for one specific superseded status inside the top
+      // window, which broke as soon as other governed history competed
+      // for the same slots.)
+      const boundary =
+        after.recentChanges.length >= 12
+          ? after.recentChanges[after.recentChanges.length - 1].at
+          : null;
+      const allStoredTransitions = [];
+      for (const project of authz.accessibleProjects(funder)) {
+        for (const d of repo.listDrawRequestsForProject(project.id)) {
+          for (const ev of db
+            .prepare("SELECT detail, created_at FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_TRANSITION' ORDER BY created_at")
+            .all(d.id)) {
+            const detail = JSON.parse(ev.detail);
+            if (detail.status) allStoredTransitions.push({ drawId: d.id, at: ev.created_at, to: detail.status });
+          }
+        }
+      }
+      const inWindow = allStoredTransitions.filter((e) => boundary === null || e.at > boundary);
+      const skipped = inWindow.filter(
+        (e) => !after.recentChanges.some(
+          (c) => c.kind === "READINESS_TRANSITION" && c.drawRequestId === e.drawId && c.at === e.at && c.to === e.to
+        )
+      );
+      assert(skipped.length === 0,
+        `11. inside the shown window no stored transition is skipped — superseded-ness never filters history (${inWindow.length} checked)`);
     }
     assert(after.recentChanges.every((c, i, arr) => i === 0 || arr[i - 1].at >= c.at),
       "11. changes are ordered newest first");
@@ -946,6 +985,264 @@ async function main() {
     assert(light.body !== "rgba(0, 0, 0, 0)", "18. the light theme paints its own canvas");
     await ctx.close();
     await browser.close();
+  }
+
+  // ============ 19. bucket capital is the non-netted rule =============
+  {
+    // PURE regression: two members of the SAME readiness state, one
+    // over-supported, one genuinely short. The over-supported member must
+    // not cancel the other's shortfall inside the bucket.
+    const control2 = require(path.join(ROOT, "dist/server/services/portfolio/control"));
+    const memberA = { requestedAmount: 100000, supportableAmount: 150000, unsupportedAmount: 0 };
+    const memberB = { requestedAmount: 100000, supportableAmount: 50000, unsupportedAmount: 50000 };
+    const bucketAgg = control2.aggregateCapital([memberA, memberB]);
+    assert(bucketAgg.requested === 200000, "19. mixed bucket: requested is 200,000");
+    assert(bucketAgg.supportable === 200000, "19. mixed bucket: supportable sums to 200,000");
+    assert(bucketAgg.unsupported === 50000,
+      "19. mixed bucket: unsupported is 50,000 — the overage never cancels the shortfall");
+    assert(bucketAgg.covered === 150000, "19. mixed bucket: covered is 150,000");
+    assert(bucketAgg.overSupported === 50000, "19. mixed bucket: the overage is surfaced on its own");
+    assert(bucketAgg.coverage === 0.75 && bucketAgg.coverageLabel === "75%",
+      `19. mixed bucket: coverage is 75%, never 100% (${bucketAgg.coverageLabel})`);
+    assert(bucketAgg.coverageLabel !== "100%" && bucketAgg.unsupported !== 0,
+      "19. the bucket can never claim $0 unsupported or fully supported");
+    const clean = control2.aggregateCapital([
+      { requestedAmount: 60000, supportableAmount: 60000, unsupportedAmount: 0 },
+      { requestedAmount: 40000, supportableAmount: 40000, unsupportedAmount: 0 },
+    ]);
+    assert(clean.unsupported === 0 && clean.overSupported === 0 && clean.coverageLabel === "100%",
+      "19. an exactly-fully-supported bucket still reads 100% with no anomaly");
+
+    // Live wiring: every rendered bucket must equal aggregateCapital over
+    // its own members — the same rule, not a second arithmetic.
+    const live = portfolio.control(funder);
+    for (const b of live.readinessDistribution) {
+      const members = [];
+      for (const project of authz.accessibleProjects(funder)) {
+        for (const d of repo.listDrawRequestsForProject(project.id)) {
+          if (!portfolio.OPEN_DRAW_STATUSES.includes(d.status)) continue;
+          const r = dr.drawReadiness(d.id);
+          if (r.status === b.status) members.push(r);
+        }
+      }
+      const expected = control2.aggregateCapital(members);
+      assert(
+        b.requested === expected.requested &&
+          b.supportable === expected.supportable &&
+          b.unsupported === expected.unsupported &&
+          b.covered === expected.covered &&
+          b.overSupported === expected.overSupported,
+        `19. the ${b.status} bucket carries exactly the aggregateCapital of its members`
+      );
+      assert(b.unsupported === members.reduce((sum, r) => sum + r.unsupportedAmount, 0),
+        `19. the ${b.status} bucket's unsupported is the sum of the engine's own per-draw shortfalls`);
+    }
+    const view = fs.readFileSync(path.join(ROOT, "src/server/view/portfolioPages.tsx"), "utf8");
+    assert(!/b\.requested\s*-\s*b\.supportable|requested\s*-\s*b\.supportable/.test(view),
+      "19. the view computes no bucket difference of its own — it reads the bucket's authoritative aggregate");
+    assert(/b\.unsupported/.test(view),
+      "19. the view reads the bucket's own unsupported figure");
+  }
+
+  // ======= 20. formal governance is never a lender decision =======
+  {
+    // A fresh draw driven through the full governed ladder, watching the
+    // history at each stage.
+    const govId = await mkDraw("user-dmv-pm", "proj-golden", 24000, [
+      { description: "Governance-history fixture line (fictional)", milestoneId: "ms-g5", scheduledValue: 24000, currentRequested: 24000 },
+    ]);
+    await api("user-dmv-pm", "POST", `/api/draws/${govId}/submit`, {});
+    for (const id of lineIds(govId)) {
+      await api("user-funder", "POST", `/api/draws/${govId}/lines/${id}/review`,
+        { decision: "SUPPORTED", percentCompleteVerified: 100 });
+    }
+    await fileDocs("user-dmv-pm", govId, 24000);
+    const gov = await api("user-funder", "POST", `/api/draws/${govId}/governance`, {});
+    if (gov.status >= 400) fail(`setup: governance failed (${gov.status}) ${gov.text.slice(0, 160)}`);
+    const apRow = db.prepare("SELECT id FROM approval_requests WHERE draw_request_id = ?").get(govId);
+    if (!apRow) fail("setup: no approval request opened");
+    for (const user of ["user-funder", "user-compliance"]) {
+      await api(user, "POST", `/api/approvals/${apRow.id}/decision`, { decision: "APPROVED", note: "Fictional pilot approval." });
+    }
+    // Formal governance is COMPLETE; no lender decision exists yet.
+    const afterGov = portfolio.control(funder);
+    const govChanges = afterGov.recentChanges.filter((c) => c.drawRequestId === govId);
+    assert(govChanges.some((c) => c.label === "Formal governance decision recorded"),
+      "20. completed formal governance appears under its own accurate name");
+    assert(!govChanges.some((c) => /Lender decision recorded/.test(c.label)),
+      "20. governance completion is NOT presented as a lender decision");
+    assert(afterGov.recentChanges.every((c) => !/^Lender decision recorded/.test(c.label) || c.kind === "LENDER_DECISION"),
+      "20. every entry labelled as a lender decision is sourced from the decision register kind");
+
+    // Now the actual lender business decision.
+    const decision = await api("user-funder", "POST", `/api/draws/${govId}/lender-decision`, {
+      decision: "APPROVED", approvedAmount: 24000, decisionReason: "Fictional pilot decision.",
+    });
+    if (decision.status >= 400) fail(`setup: lender decision failed (${decision.status}) ${decision.text.slice(0, 160)}`);
+    const decisionRow = db
+      .prepare("SELECT id, decision, decision_at FROM lender_draw_decisions WHERE draw_request_id = ? AND superseded_by_decision_id IS NULL ORDER BY created_at DESC")
+      .get(govId);
+    const afterDecision = portfolio.control(funder);
+    const lenderEntries = afterDecision.recentChanges.filter(
+      (c) => c.drawRequestId === govId && c.kind === "LENDER_DECISION"
+    );
+    assert(lenderEntries.length === 1, "20. the recorded lender decision now appears as its own history item");
+    assert(lenderEntries[0].label === "Lender decision recorded — APPROVED",
+      `20. it says what was decided (${lenderEntries[0].label})`);
+    assert(lenderEntries[0].at === decisionRow.decision_at,
+      "20. at the lender decision's OWN recorded timestamp — never a governance event's");
+
+    // Supersede: an amendment through the same governed endpoint. History
+    // keeps BOTH decisions; standing-decision surfaces use the amendment.
+    const amend = await api("user-funder", "POST", `/api/draws/${govId}/lender-decision`, {
+      decision: "APPROVED", approvedAmount: 24000,
+      supersedesDecisionId: decisionRow.id,
+      decisionReason: "Fictional pilot amendment — corrected decision language.",
+    });
+    if (amend.status >= 400) fail(`setup: superseding decision failed (${amend.status}) ${amend.text.slice(0, 200)}`);
+    const afterAmend = portfolio.control(funder);
+    const historyEntries = afterAmend.recentChanges.filter(
+      (c) => c.drawRequestId === govId && c.kind === "LENDER_DECISION"
+    );
+    assert(historyEntries.length === 2,
+      "20. a superseded decision remains a historical fact — both decisions stay in history");
+    const standing = db
+      .prepare("SELECT id FROM lender_draw_decisions WHERE draw_request_id = ? AND superseded_by_decision_id IS NULL")
+      .all(govId);
+    assert(standing.length === 1 && standing[0].id !== decisionRow.id,
+      "20. while the standing decision is the amendment, exactly one non-superseded row");
+    const engineSees = dr.drawReadiness(govId);
+    assert(engineSees.inputRefs.decisionId === standing[0].id,
+      "20. current-decision surfaces keep reading the standing decision, not history");
+  }
+
+  // ========== 21. an unevaluable open draw fails CLOSED ==========
+  {
+    // The seam forces ONE accessible open draw's evaluation to fail. It
+    // can only force the error path — never fabricate a result.
+    const openRows = [];
+    for (const project of authz.accessibleProjects(funder)) {
+      for (const d of repo.listDrawRequestsForProject(project.id)) {
+        if (portfolio.OPEN_DRAW_STATUSES.includes(d.status)) openRows.push(d);
+      }
+    }
+    const target = openRows.find((d) => d.id === "draw-1") ?? openRows[0];
+    process.env.OBV_TEST_FAIL_READINESS = target.id;
+    const gapped = portfolio.control(funder);
+    delete process.env.OBV_TEST_FAIL_READINESS;
+
+    assert(gapped.scope.openDrawCount === openRows.length,
+      `21. the open-draw scope is the REAL set (${openRows.length}), not the evaluated subset`);
+    assert(gapped.scope.evaluatedOpenDrawCount === openRows.length - 1,
+      "21. exactly one draw is unevaluated");
+    assert(gapped.unevaluated.length === 1 && gapped.unevaluated[0].drawRequestId === target.id,
+      "21. the affected draw stays visible, by id");
+    const entry = gapped.unevaluated[0];
+    assert(entry.drawNumber === target.drawNumber && entry.requested === target.requestedAmount,
+      "21. with its draw number and its raw requested amount from the governed record");
+    assert(entry.projectName.length > 0, "21. and its project");
+    assert(entry.reason.length > 0 && !/\n|    at /.test(entry.reason),
+      "21. with a one-line failure-safe reason — no stack trace");
+    assert(gapped.openRequested === openRows.reduce((s, d) => s + d.requestedAmount, 0),
+      "21. raw requested capital still covers ALL open draws, from the draw records themselves");
+    assert(gapped.unevaluatedRequested === target.requestedAmount,
+      "21. and the uncovered slice is stated");
+    const summed = gapped.readinessDistribution.reduce((s, b) => s + b.drawCount, 0);
+    assert(summed === gapped.scope.evaluatedOpenDrawCount,
+      "21. the readiness buckets cover the evaluated subset only");
+    // The unevaluated draw is NOT relabelled INCOMPLETE: the INCOMPLETE
+    // bucket must match the engine over the draws that DID evaluate.
+    let engineIncomplete = 0;
+    for (const d of openRows) {
+      if (d.id === target.id) continue;
+      if (dr.drawReadiness(d.id).status === "INCOMPLETE") engineIncomplete += 1;
+    }
+    assert(gapped.readinessDistribution.find((b) => b.status === "INCOMPLETE").drawCount === engineIncomplete,
+      "21. the unevaluated draw is never converted into INCOMPLETE — that is a valid result, this is its absence");
+    assert(!gapped.register.some((r) => r.drawRequestId === target.id),
+      "21. no readiness row is invented for the draw");
+
+    // The PAGE fails closed. A second server carries the seam.
+    const PORT2 = PORT + 1;
+    const BASE2 = `http://127.0.0.1:${PORT2}`;
+    const server2 = spawn(process.execPath, [path.join(ROOT, "dist/server/http/server.js")], {
+      env: {
+        ...seedEnv, PORT: String(PORT2), OBV_BANKING_PROVIDER: "mock", OBV_BANKING_MODE: "demo",
+        OBV_TEST_FAIL_READINESS: target.id,
+      },
+      stdio: "ignore",
+    });
+    try {
+      let healthy = false;
+      for (let i = 0; i < 60 && !healthy; i += 1) {
+        try { healthy = (await fetch(`${BASE2}/api/health`)).ok; } catch { /* booting */ }
+        if (!healthy) await new Promise((r) => setTimeout(r, 250));
+      }
+      if (!healthy) fail("21. setup: seam server did not become healthy");
+      await signInAll(BASE2, ["user-funder"]);
+      const res = await fetch(`${BASE2}/executive`, {
+        headers: { cookie: sessionCookie(BASE2, "user-funder"), accept: "text/html" },
+      });
+      const gapHtml = await res.text();
+      assert(/Evaluation unavailable/i.test(gapHtml),
+        "21. the page carries a serious EVALUATION UNAVAILABLE condition");
+      assert(new RegExp(`Draw #${target.drawNumber}`).test(gapHtml),
+        "21. naming the affected draw");
+      assert(/Evaluated draws only — incomplete portfolio view/.test(gapHtml),
+        "21. readiness-derived panels declare the incomplete view");
+      assert(/not a readiness state/.test(gapHtml) && /not INCOMPLETE/.test(gapHtml),
+        "21. and state that this is an operational condition, not INCOMPLETE");
+      assert(/coverage is not computable for the full portfolio/.test(gapHtml),
+        "21. coverage refuses to print over a subset denominator");
+      assert(/Open evaluated draws aging beyond/.test(gapHtml),
+        "21. the aging figure names its evaluated-only subset");
+      const kpiHalf = gapHtml.split('class="ec-advisory"')[0];
+      assert(!/class="cv">\s*\d+(\.\d+)?%/.test(kpiHalf),
+        "21. no governed coverage percentage renders while a draw is unevaluated");
+      assert(!/100% of requested dollars/.test(kpiHalf),
+        "21. and certainly not a healthy 100%");
+    } finally {
+      try { server2.kill("SIGKILL"); } catch { /* gone */ }
+    }
+
+    // With no gap, the normal presentation is untouched.
+    const normalHtml = (await page("user-funder", "/executive")).html;
+    assert(!/Evaluation unavailable/i.test(normalHtml),
+      "21. with every draw evaluated, no evaluation alert renders");
+    assert(!/Evaluated draws only — incomplete portfolio view/.test(normalHtml),
+      "21. and no incomplete-view treatment");
+    assert(/class="cv">\d+(\.\d+)?%/.test(normalHtml),
+      "21. coverage renders normally again");
+    const normal = portfolio.control(funder);
+    assert(normal.scope.openDrawCount === normal.scope.evaluatedOpenDrawCount,
+      "21. and the scope counts agree again");
+  }
+
+  // ============== 22. filters say what they narrow ==============
+  {
+    const html22 = (await page("user-funder", "/executive")).html;
+    assert(/Advisory analytics filters — they narrow the advisory draw summary, distribution and trend panels/.test(html22),
+      "22. the filter caption names what the filters actually narrow — including the advisory draw summary");
+    assert(/governed capital control at the top of this page always remains portfolio-wide/.test(html22.replace(/\s+/g, " ")),
+      "22. and that governed capital control is never narrowed by it");
+    assert(!/panels below only/.test(html22),
+      "22. the caption no longer claims filters act 'below only' — a filtered advisory panel renders above the bar");
+    // The claim is true: a filtered request must not change governed totals.
+    const unfiltered = (await page("user-funder", "/executive")).html;
+    const filtered = (await page("user-funder", "/executive?stage=EARLY_CONSTRUCTION")).html;
+    const capitalBlock = (h) => {
+      const m = /Portfolio capital position[\s\S]{0,4200}?<\/section>/.exec(h);
+      return m ? m[0] : "";
+    };
+    assert(capitalBlock(filtered).length > 0 && capitalBlock(filtered) === capitalBlock(unfiltered),
+      "22. governed capital position is byte-identical under an advisory filter");
+    const kpiValue = (h) => /Requested — open draws<\/span><span class="k-v">([^<]+)</.exec(h)?.[1] ?? "";
+    assert(kpiValue(filtered).length > 0 && kpiValue(filtered) === kpiValue(unfiltered),
+      `22. the requested-capital KPI value is unchanged by an advisory filter (${kpiValue(filtered)})`);
+    const marks = (filtered.match(/filtered · /g) ?? []).length;
+    assert(marks >= 3, `22. the overview-driven advisory panels carry a "filtered" mark while a filter is active (${marks})`);
+    assert(!/filtered · /.test(unfiltered),
+      "22. and no filtered mark appears without a filter");
   }
 
   db.close();
