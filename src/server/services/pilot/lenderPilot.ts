@@ -193,9 +193,24 @@ export interface PilotCommandCenter {
 }
 
 export const AGING_THRESHOLD_DAYS = 10;
-const OPEN_STATUSES: DrawRequest["status"][] = [
+/** Draws whose requested capital is still moving through review. The
+ *  portfolio control model imports this rather than restating it. */
+export const OPEN_STATUSES: DrawRequest["status"][] = [
   "SUBMITTED", "UNDER_REVIEW", "CLARIFICATION_REQUIRED", "READY_FOR_GOVERNANCE", "RETURNED",
 ];
+
+/**
+ * True median of an ASCENDING list, to one decimal. An even-length sample
+ * takes the midpoint of the two central values — the previous lower-median
+ * form always biased the reported turnaround toward the faster half.
+ */
+export function median(sortedAscending: number[]): number | null {
+  const n = sortedAscending.length;
+  if (n === 0) return null;
+  const mid = Math.floor(n / 2);
+  const value = n % 2 === 1 ? sortedAscending[mid] : (sortedAscending[mid - 1] + sortedAscending[mid]) / 2;
+  return Math.round(value * 10) / 10;
+}
 
 /** The lender landing view: what needs attention today, from real state. */
 export function pilotCommandCenter(user: User): PilotCommandCenter {
@@ -246,10 +261,7 @@ export function pilotCommandCenter(user: User): PilotCommandCenter {
     })
     .filter((x): x is number => x !== null)
     .sort((a, b) => a - b);
-  const medianReviewDays =
-    reviewDurations.length === 0
-      ? null
-      : Math.round(reviewDurations[Math.floor((reviewDurations.length - 1) / 2)] * 10) / 10;
+  const medianReviewDays = median(reviewDurations);
 
   const unresolvedExceptions = projects
     .flatMap((p) => repo.listExceptionsForProject(p.id))

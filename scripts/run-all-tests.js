@@ -121,6 +121,7 @@ const STANDALONE = [
   "field-mobile-test.js",
   "draw-readiness-test.js",
   "draw-review-ui-test.js",
+  "executive-ui-test.js",
   "navigation-test.js",
   "cloud-portability-test.js",
   "lender-pilot-test.js",

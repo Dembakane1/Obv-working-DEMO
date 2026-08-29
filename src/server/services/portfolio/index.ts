@@ -33,6 +33,7 @@ import { FraudIntelligence, fraudIntelligence } from "./fraud";
 import { ExecutiveSummary, SummaryPeriod, executiveSummary } from "./summary";
 import { GovernmentFoundationStatus, governmentFoundationStatus } from "./government";
 import { SnapshotView, listSnapshots, recordSnapshot } from "./snapshots";
+import { PortfolioControl, portfolioControl } from "./control";
 
 export { PortfolioError } from "./context";
 export type { PortfolioFilters } from "./context";
@@ -44,6 +45,22 @@ export type { FraudIntelligence } from "./fraud";
 export type { ExecutiveSummary, SummaryPeriod } from "./summary";
 export type { GovernmentFoundationStatus } from "./government";
 export type { SnapshotView } from "./snapshots";
+export type {
+  PortfolioControl,
+  PortfolioCapital,
+  ReadinessBucket,
+  DomainPressure,
+  CrossCuttingPressure,
+  AttentionGroup,
+  AttentionItem,
+  PipelineBucket,
+  RegisterRow,
+  ControlChange,
+  ProceededByException,
+  SourceFreshness,
+  TurnaroundMetrics,
+} from "./control";
+export { OPEN_DRAW_STATUSES, CAPITAL_INCLUSION_RULE, aggregateCapital } from "./control";
 export { governmentFoundationStatus, governmentModuleEnabled, assertGovernmentEnabled } from "./government";
 export { recordSnapshot, listSnapshots } from "./snapshots";
 
@@ -54,6 +71,16 @@ function requireScopedProject(ctx: PortfolioContext, projectId: string): void {
 
 export function overview(user: User, filters: PortfolioFilters = {}): PortfolioOverview {
   return portfolioOverview(buildPortfolioContext(user), filters);
+}
+
+/**
+ * The governed draw-control read model for the Executive Command Center.
+ * Aggregation only — every readiness figure comes from the Draw Readiness
+ * Engine itself, and tenancy is applied by buildPortfolioContext before a
+ * single row is grouped.
+ */
+export function control(user: User): PortfolioControl {
+  return portfolioControl(buildPortfolioContext(user));
 }
 
 export function risk(user: User): PortfolioRiskSummary {
@@ -110,7 +137,12 @@ export function forecastForProject(user: User, projectId: string): ProjectForeca
 }
 
 export function fraud(user: User): FraudIntelligence {
-  const ctx = buildPortfolioContext(user);
+  return fraudView(buildPortfolioContext(user));
+}
+
+/** The fraud panel over an ALREADY-BUILT context, so a page assembling
+ *  several engines pays for its scope resolution once. */
+function fraudView(ctx: PortfolioContext): FraudIntelligence {
   const base = fraudIntelligence(ctx);
   // Risk clustering: projects where three or more dimensions sit at
   // ELEVATED or worse are themselves an anomaly pattern.
@@ -133,6 +165,42 @@ export function summary(user: User, period: SummaryPeriod): ExecutiveSummary {
 
 export function government(user: User): GovernmentFoundationStatus {
   return governmentFoundationStatus(user);
+}
+
+// -------------------------------------------------------------- console
+
+export interface ExecutiveConsoleData {
+  overview: PortfolioOverview;
+  control: PortfolioControl;
+  risk: PortfolioRiskSummary;
+  fraud: FraudIntelligence;
+  government: GovernmentFoundationStatus;
+  snapshots: SnapshotView[];
+}
+
+/**
+ * ONE assembly for the Executive Command Center.
+ *
+ * Every panel on that page used to call its own `overview(user)` /
+ * `risk(user)` / `fraud(user)` entry point, and each of those built its
+ * own PortfolioContext — meaning the authz scope resolution and every
+ * lazily-grouped table were rebuilt once per panel. This shares a single
+ * context across all of them, the same way `executiveReportData` already
+ * does, so the page pays for its rows once.
+ *
+ * Filters narrow the overview only, exactly as before: the risk register,
+ * fraud panel and governed control model are portfolio-wide by design.
+ */
+export function executiveConsole(user: User, filters: PortfolioFilters = {}): ExecutiveConsoleData {
+  const ctx = buildPortfolioContext(user);
+  return {
+    overview: portfolioOverview(ctx, filters),
+    control: portfolioControl(ctx),
+    risk: portfolioRisk(ctx),
+    fraud: fraudView(ctx),
+    government: governmentFoundationStatus(user),
+    snapshots: listSnapshots(user),
+  };
 }
 
 // ---------------------------------------------------------------- report

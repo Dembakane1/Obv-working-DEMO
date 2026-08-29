@@ -37,6 +37,7 @@ import type {
   PortfolioOverview,
   PortfolioRiskSummary,
   ProjectRiskProfile,
+  PortfolioControl,
   SnapshotView,
   VendorScorecard,
 } from "../services/portfolio";
@@ -72,70 +73,89 @@ function ExecTabs(props: { active: string }): VNode {
   );
 }
 
-interface Dist {
-  key: string;
-  label: string;
-  count: number;
-  totalBudget: number;
-}
+// ------------------------------------------- governed control vocabulary
 
-function DistPanel(props: { title: string; hint?: string; entries: Dist[]; limit?: number }): VNode {
-  const entries = props.entries.slice(0, props.limit ?? 6);
-  const max = Math.max(1, ...entries.map((e) => e.count));
+/** The four readiness states, in words, with a grayscale-safe glyph. The
+ *  state word is never abbreviated to a colour and never to a number. */
+function readinessChip(status: string): VNode {
+  const cls =
+    status === "READY" ? "ok" : status === "HOLD" ? "bad" : status === "EXCEPTION_REVIEW" ? "warn" : "unknown";
+  const glyph =
+    status === "READY" ? "✓" : status === "HOLD" ? "!" : status === "EXCEPTION_REVIEW" ? "▲" : "?";
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <h3>{props.title}</h3>
-        {props.hint ? <span className="hint">{props.hint}</span> : null}
-      </div>
-      <div className="panel-pad">
-        {entries.length === 0 ? (
-          <p className="t-quiet">No records in scope.</p>
-        ) : (
-          entries.map((e) => (
-            <div className="tr-row">
-              <span className="m" title={e.label}>{e.label}</span>
-              <span className="bar"><span className="fl" style={`width:${Math.round((e.count / max) * 100)}%`}></span></span>
-              <span className="c num">{e.count} · {money(e.totalBudget)}</span>
-            </div>
-          ))
-        )}
-      </div>
-    </section>
+    <span className={`ec-state ${cls}`}>
+      <span className="g">{glyph}</span>
+      {status.replace(/_/g, " ")}
+    </span>
   );
 }
 
-function TrendPanel(props: {
-  title: string;
-  entries: { month: string; opened: number; resolved: number }[];
-  openedLabel?: string;
-  resolvedLabel?: string;
-}): VNode {
-  const entries = props.entries.slice(-6);
-  const max = Math.max(1, ...entries.map((e) => Math.max(e.opened, e.resolved)));
+/** A control-domain state word. UNKNOWN is deliberately as loud as HOLD:
+ *  missing information must never read healthier than a failed
+ *  requirement. */
+function domainStateChip(state: string): VNode {
+  const cls =
+    state === "HOLD" ? "bad" : state === "UNKNOWN" ? "unknown" : state === "WARNING" ? "warn" : state === "PASS" ? "ok" : "na";
+  return <span className={`ec-dstate ${cls}`}>{state.replace(/_/g, " ")}</span>;
+}
+
+/**
+ * The worst state a control domain is in, over the portfolio's open draws.
+ *
+ * This is the ENGINE's precedence — HOLD > UNKNOWN > WARNING > PASS > N/A —
+ * applied to per-domain draw counts. NOT_APPLICABLE is the floor, never
+ * PASS: a domain with no configured requirement has not passed anything,
+ * and a portfolio with no open draws must not render four green domains.
+ * Exported so the rule is testable on its own.
+ */
+export function domainWorstState(d: {
+  holdDraws: number;
+  unknownDraws: number;
+  warningDraws: number;
+  passDraws: number;
+}): "HOLD" | "UNKNOWN" | "WARNING" | "PASS" | "NOT_APPLICABLE" {
+  if (d.holdDraws > 0) return "HOLD";
+  if (d.unknownDraws > 0) return "UNKNOWN";
+  if (d.warningDraws > 0) return "WARNING";
+  if (d.passDraws > 0) return "PASS";
+  return "NOT_APPLICABLE";
+}
+
+const DOMAIN_LABEL: Record<string, string> = {
+  PHYSICAL: "Physical",
+  FINANCIAL: "Financial",
+  COMPLIANCE: "Compliance",
+  DOCUMENTS: "Documents",
+};
+
+const CATEGORY_LABEL: Record<string, string> = {
+  EVIDENCE: "Field evidence",
+  DRAW_INSPECTION: "Independent draw inspection",
+  GOVERNMENT_INSPECTION: "Government inspection",
+  PERMIT: "Permit",
+  BUDGET: "Budget",
+  CHANGE_ORDER: "Change order",
+  RETAINAGE: "Retainage",
+  DOCUMENT: "Required documents",
+  LIEN: "Lien waivers",
+  EXCEPTION: "Formal exceptions",
+  PROJECT_CONTROL: "Project control",
+  INTEGRITY: "Integrity",
+};
+
+/** A horizontal proportion bar built from counts. It carries no score:
+ *  each segment is a labelled bucket of the SAME denominator, stated. */
+function ProportionBar(props: { segments: Array<{ key: string; count: number; cls: string; title: string }> }): VNode {
+  const total = props.segments.reduce((s, x) => s + x.count, 0);
+  if (total <= 0) return <div className="ec-bar empty" aria-hidden="true"></div>;
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <h3>{props.title}</h3>
-        <span className="hint">
-          {(props.openedLabel ?? "opened") + " vs " + (props.resolvedLabel ?? "resolved")} · last {entries.length} mo
-        </span>
-      </div>
-      <div className="panel-pad">
-        {entries.length === 0 ? (
-          <p className="t-quiet">No dated records in scope.</p>
-        ) : (
-          entries.map((e) => (
-            <div className="tr-row">
-              <span className="m">{e.month}</span>
-              <span className="bar"><span className="fl" style={`width:${Math.round((e.opened / max) * 100)}%`}></span></span>
-              <span className="bar"><span className="fl exec-fl-2" style={`width:${Math.round((e.resolved / max) * 100)}%`}></span></span>
-              <span className="c num">{e.opened} / {e.resolved}</span>
-            </div>
-          ))
-        )}
-      </div>
-    </section>
+    <div className="ec-bar" role="img" aria-label={props.segments.map((s) => s.title).join(", ")}>
+      {props.segments
+        .filter((s) => s.count > 0)
+        .map((s) => (
+          <span className={`seg ${s.cls}`} style={`width:${(s.count / total) * 100}%`} title={s.title}></span>
+        ))}
+    </div>
   );
 }
 
@@ -193,11 +213,41 @@ export function renderExecutive(input: {
     busiestProject: { projectId: string; projectName: string; totalEvents: number } | null;
     lastActivityAt: string | null;
   } | null;
+  /** The governed draw-control read model — capital, readiness, domain
+   *  pressure, attention and history. Aggregated from the Draw Readiness
+   *  Engine; never re-derived here. */
+  control: PortfolioControl;
 }): string {
-  const { overview, risk } = input;
+  const { overview, risk, control } = input;
   const t = overview.totals;
+  const cap = control.capital;
+  const bucket = (status: string) =>
+    control.readinessDistribution.find((b) => b.status === status) ?? {
+      status,
+      drawCount: 0,
+      requested: 0,
+      supportable: 0,
+      shareOfDrawsPct: 0,
+    };
+  const ready = bucket("READY");
+  const governedAttention = control.attention.filter((g) => g.count > 0);
+  // EVALUATION UNAVAILABLE is an operational condition, not a readiness
+  // state: while any open draw has no readiness result, every
+  // readiness-derived figure on this page is a partial view and fails
+  // closed rather than posing as a complete portfolio total.
+  const evalGap = control.unevaluated.length;
+  const evalGapNote = `${evalGap} open draw${evalGap === 1 ? "" : "s"} could not be evaluated`;
+  // The chip takes the worst tone actually present: a portfolio whose only
+  // open condition is a draw awaiting a lender decision is not an alert.
+  const attentionTone = evalGap > 0 || governedAttention.some((g) => g.tone === "critical" || g.tone === "blocked")
+    ? "bad"
+    : governedAttention.some((g) => g.tone === "attention")
+      ? "warn"
+      : governedAttention.length > 0
+        ? "ok"
+        : "";
+  const attentionConditionCount = governedAttention.length + (evalGap > 0 ? 1 : 0);
   const filtersActive = Object.values(input.filters).some((v) => v.length > 0);
-  const healthValue = risk.averageHealth === null ? "—" : `${Math.round(risk.averageHealth)}/100`;
   const select = (name: string, current: string, label: string, options: { value: string; label: string }[]): VNode => (
     <select name={name} aria-label={label}>
       <option value="">{label}</option>
@@ -216,7 +266,7 @@ export function renderExecutive(input: {
       <div className="page-wrap ws">
         <WorkHeader
           title="Executive Command Center"
-          sub={`Real-time overview of portfolio health, risk, and intelligence · computed ${fmtDate(overview.generatedAt).slice(0, 16)} UTC`}
+          sub={`Portfolio capital control · construction lending · computed ${fmtDate(overview.generatedAt).slice(0, 16)} UTC`}
         >
           <form method="POST" action="/api/portfolio/snapshots" className="hide-mobile">
             <button className="btn ghost sm" type="submit" data-busy-label="Recording…">Record snapshot</button>
@@ -236,38 +286,516 @@ export function renderExecutive(input: {
 
         <ExecTabs active="overview" />
 
-        {/* ---------- ROW 1: headline KPI rail ---------- */}
+        {/* ---------- ROW 1: capital-control KPI rail ----------
+             Six governed figures over ONE stated draw set. Nothing here is
+             a score, and "supportable" is never called approved or funded. */}
         <KpiRail
           items={[
-            { label: "Total portfolio value", value: money(t.totalBudget), detail: `${t.activeProjects} active of ${t.totalProjects}` },
             {
-              label: "Projects at risk",
-              value: String(risk.attention.length),
-              detail: `${bandCount("CRITICAL")} critical · ${bandCount("ELEVATED")} elevated`,
-              tone: risk.attention.length > 0 ? "bad" : "ok",
-              href: "/executive/risk",
-            },
-            { label: "Active draws", value: String(t.drawsInReview), detail: "in review", href: "/draws" },
-            {
-              label: "Pending approvals",
-              value: String(t.pendingApprovals),
-              detail: t.pendingApprovals > 0 ? "awaiting decision" : "queue clear",
-              tone: t.pendingApprovals > 0 ? "warn" : undefined,
-              href: "/approvals",
+              label: "Active projects",
+              value: String(control.scope.activeProjectCount),
+              detail: `of ${control.scope.projectCount} in your portfolio`,
+              href: "/projects",
             },
             {
-              label: "Open exceptions",
-              value: String(t.openExceptions),
-              detail: `${t.openDisputes} open dispute${t.openDisputes === 1 ? "" : "s"}`,
-              tone: t.openExceptions > 0 ? "warn" : undefined,
-              href: "/exceptions",
+              label: "Open draws",
+              value: String(control.scope.openDrawCount),
+              detail: evalGap
+                ? `${control.scope.evaluatedOpenDrawCount} evaluated · ${evalGap} unavailable`
+                : "submitted through governance",
+              tone: evalGap ? "bad" : undefined,
+              href: "/draws",
             },
             {
-              label: "Released to date",
-              value: money(t.releasedAmount),
-              detail: `${t.fundingUtilizationPct}% of governed capital`,
+              // Raw governed record over the FULL open set — needs no
+              // readiness evaluation, so it stays a complete total even
+              // while a draw's evaluation is unavailable.
+              label: "Requested — open draws",
+              value: money(control.openRequested),
+              detail: "total requested",
+            },
+            evalGap
+              ? {
+                  label: "Currently supportable",
+                  value: "—",
+                  detail: evalGapNote,
+                  tone: "bad" as const,
+                }
+              : {
+                  label: "Currently supportable",
+                  value: money(cap.supportable),
+                  detail: cap.coverageLabel
+                    ? `${cap.coverageLabel} of requested dollars`
+                    : "no requested dollars in scope",
+                  tone: "ok" as const,
+                },
+            evalGap
+              ? {
+                  label: "Currently unsupported",
+                  value: "—",
+                  detail: evalGapNote,
+                  tone: "bad" as const,
+                }
+              : {
+                  label: "Currently unsupported",
+                  value: money(cap.unsupported),
+                  detail: "not yet supported by recorded review",
+                  tone: cap.unsupported > 0 ? ("bad" as const) : undefined,
+                },
+            {
+              label: "Ready for lender review",
+              value: String(ready.drawCount),
+              detail: evalGap
+                ? `${money(ready.requested)} requested · evaluated draws only`
+                : `${money(ready.requested)} requested`,
+              tone: ready.drawCount > 0 && !evalGap ? "ok" : undefined,
             },
           ]}
+        />
+
+        {evalGap > 0 ? (
+          <div className="ec-evalgap" role="alert">
+            <span className="eg-k">Evaluation unavailable</span>
+            <span className="eg-v">
+              {evalGap} open draw{evalGap === 1 ? "" : "s"} · {money(control.unevaluatedRequested)} requested
+            </span>
+            <span className="eg-d">
+              OBV could not compute a Draw Readiness result for {evalGap === 1 ? "this draw" : "these draws"}.
+              Every readiness-derived figure on this page covers evaluated draws only and must not be read as a
+              complete portfolio total until this is resolved. This is an operational data-availability condition —
+              it is not a readiness state, and it is not INCOMPLETE (which is a valid governed result).
+            </span>
+            <ul className="eg-list">
+              {control.unevaluated.map((u) => (
+                <li>
+                  <a href={`/draw/${u.drawRequestId}`}>Draw #{u.drawNumber}</a>
+                  <span className="eg-p">{u.projectName.split("(")[0].trim()}</span>
+                  <span className="eg-m num">{money(u.requested)} requested</span>
+                  <span className="eg-r">{u.reason}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {/* ---------- ROW 2: readiness · domain pressure · attention ---------- */}
+        <div className="ws-row ws-row-3 ec-row-state">
+          <DensePanel
+            title="Readiness distribution"
+            right={
+              evalGap ? (
+                <span>
+                  {control.scope.evaluatedOpenDrawCount} of {control.scope.openDrawCount} open draws evaluated
+                </span>
+              ) : (
+                <span>{control.scope.openDrawCount} open draws</span>
+              )
+            }
+            foot={<a href="/draws">View all draws →</a>}
+          >
+            {evalGap ? (
+              <p className="ec-partial">
+                Evaluated draws only — incomplete portfolio view. {evalGapNote}; see the evaluation alert above.
+              </p>
+            ) : null}
+            <ProportionBar
+              segments={control.readinessDistribution.map((b) => ({
+                key: b.status,
+                count: b.drawCount,
+                cls:
+                  b.status === "READY" ? "ok" : b.status === "HOLD" ? "bad" : b.status === "EXCEPTION_REVIEW" ? "warn" : "unknown",
+                title: `${b.status.replace(/_/g, " ")}: ${b.drawCount}`,
+              }))}
+            />
+            <ul className="ec-dist">
+              {control.readinessDistribution.map((b) => (
+                <li className={b.drawCount === 0 ? "zero" : ""}>
+                  {readinessChip(b.status)}
+                  <span className="d-n num">{b.drawCount}</span>
+                  <span className="d-s">
+                    {b.drawCount === 1 ? "draw" : "draws"} · {b.shareOfDrawsPct}% of {evalGap ? "evaluated " : ""}open draws
+                  </span>
+                  <span className="d-m num">{money(b.requested)}</span>
+                  <span className="d-sup">
+                    {money(b.supportable)} currently supportable
+                    {b.unsupported > 0 ? ` · ${money(b.unsupported)} not yet supported` : ""}
+                    {b.overSupported > 0 ? ` · ${money(b.overSupported)} recorded above the request` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="ec-note">
+              Four governed states, counted — never averaged into a single readiness figure.
+              INCOMPLETE means OBV cannot reach a readiness conclusion at all.
+            </p>
+          </DensePanel>
+
+          <DensePanel
+            title="Control-domain pressure"
+            right={<span>where draws are stuck</span>}
+            foot={<span className="t-quiet">A draw blocked in two domains appears in both.</span>}
+          >
+            {evalGap ? (
+              <p className="ec-partial">
+                Evaluated draws only — incomplete portfolio view. {evalGapNote}.
+              </p>
+            ) : null}
+            <ul className="ec-domains">
+              {control.domains.map((d) => {
+                const worst = domainWorstState(d);
+                return (
+                  <li>
+                    <span className="dm-n">{DOMAIN_LABEL[d.domain] ?? d.domain}</span>
+                    {domainStateChip(worst)}
+                    <span className="dm-c">
+                      {d.holdDraws > 0 ? <b className="bad">{d.holdDraws} HOLD</b> : null}
+                      {d.unknownDraws > 0 ? <b className="unknown">{d.unknownDraws} unknown</b> : null}
+                      {d.warningDraws > 0 ? <b className="warn">{d.warningDraws} warning</b> : null}
+                      {worst === "PASS" ? <b className="ok">{d.passDraws} clear</b> : null}
+                      {worst === "NOT_APPLICABLE" ? (
+                        <b className="na">no requirement configured</b>
+                      ) : null}
+                    </span>
+                    <span className="dm-cats">{d.categories.map((c) => CATEGORY_LABEL[c] ?? c).join(" · ")}</span>
+                  </li>
+                );
+              })}
+            </ul>
+            {control.crossCutting.blockedDraws > 0 || control.crossCutting.unknownDraws > 0 ? (
+              <div className="ec-cross bad">
+                <span className="x-k">Cross-cutting governed controls</span>
+                <span className="x-v">
+                  {control.crossCutting.blockerInstances} open on {control.crossCutting.blockedDraws}{" "}
+                  {control.crossCutting.blockedDraws === 1 ? "draw" : "draws"}
+                </span>
+                <span className="x-d">
+                  {control.crossCutting.categories.map((c) => CATEGORY_LABEL[c] ?? c).join(" · ")} — outside the four
+                  domains. All four domains can read clear while a draw is still blocked here.
+                </span>
+              </div>
+            ) : (
+              <div className="ec-cross">
+                <span className="x-k">Cross-cutting governed controls</span>
+                <span className="x-v">none open</span>
+                <span className="x-d">
+                  {control.crossCutting.categories.map((c) => CATEGORY_LABEL[c] ?? c).join(" · ")} — outside the four
+                  domains.
+                </span>
+              </div>
+            )}
+          </DensePanel>
+
+          <DensePanel
+            title="Governed attention"
+            right={
+              <span className={`chip ${attentionTone}`}>
+                {String(attentionConditionCount)} condition{attentionConditionCount === 1 ? "" : "s"}
+              </span>
+            }
+            flush
+            foot={<a href="/draws">Open the draw queue →</a>}
+          >
+            <SignalList
+              empty="No governed condition needs attention in your portfolio."
+              items={[
+                // Ahead of every normal condition: while a readiness result
+                // is missing, no readiness aggregation below can be trusted
+                // as complete. Operational condition, not a readiness state.
+                ...(evalGap > 0
+                  ? [
+                      {
+                        title: "Evaluation unavailable",
+                        sub: `open draws with no readiness result · ${money(control.unevaluatedRequested)} requested`,
+                        severity: "high" as const,
+                        meta: <b className="bad">{String(evalGap)}</b>,
+                      },
+                    ]
+                  : []),
+                ...governedAttention.map((g) => ({
+                  title: g.label,
+                  sub: g.unit,
+                  severity:
+                    g.tone === "critical" ? ("high" as const) : g.tone === "blocked" ? ("high" as const) : g.tone === "attention" ? ("med" as const) : ("low" as const),
+                  meta: <b className={g.tone === "ready" ? "ok" : g.tone === "attention" ? "warn" : "bad"}>{String(g.count)}</b>,
+                })),
+              ]}
+            />
+          </DensePanel>
+        </div>
+
+        {/* ---------- ROW 3: pipeline · capital position · history ---------- */}
+        <div className="ws-row ws-row-3 ec-row-capital">
+          <DensePanel title="Draw pipeline" right={<span>by workflow state</span>}>
+            {control.pipeline.length === 0 ? (
+              <p className="empty-mini">No open draws in scope.</p>
+            ) : (
+              <ul className="ec-pipe">
+                {control.pipeline.map((p) => (
+                  <li>
+                    <span className="p-l">{p.label}</span>
+                    <span className="p-bar">
+                      <span className="fl" style={`width:${p.shareOfDrawsPct}%`}></span>
+                    </span>
+                    <span className="p-n num">
+                      {p.drawCount} · {p.shareOfDrawsPct}%
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="ec-note">
+              Recorded workflow position, from the deterministic next action. Percentages are shares of{" "}
+              {control.scope.evaluatedOpenDrawCount} {evalGap ? "evaluated " : ""}open draws{evalGap ? ` (${evalGapNote})` : ""}.
+            </p>
+          </DensePanel>
+
+          <DensePanel title="Portfolio capital position" right={<span>open draws only</span>}>
+            {evalGap ? (
+              <p className="ec-partial">
+                Evaluated draws only — incomplete portfolio view. {evalGapNote}, so supportable, unsupported and
+                coverage are withheld rather than presented as complete totals.
+              </p>
+            ) : null}
+            {evalGap ? <div className="ec-bar empty" aria-hidden="true"></div> : (
+              <ProportionBar
+                segments={[
+                  { key: "cov", count: cap.covered, cls: "ok", title: `Covered: ${money(cap.covered)}` },
+                  { key: "uns", count: cap.unsupported, cls: "bad", title: `Unsupported: ${money(cap.unsupported)}` },
+                ]}
+              />
+            )}
+            <ul className="ec-cap">
+              <li>
+                <span className="c-l">Requested</span>
+                <span className="c-v num">{money(control.openRequested)}</span>
+              </li>
+              <li className={evalGap ? "" : "ok"}>
+                <span className="c-l">Currently supportable</span>
+                <span className="c-v num">{evalGap ? "—" : money(cap.supportable)}</span>
+              </li>
+              <li className={evalGap ? "" : "bad"}>
+                <span className="c-l">Currently unsupported</span>
+                <span className="c-v num">{evalGap ? "—" : money(cap.unsupported)}</span>
+              </li>
+              {!evalGap && cap.overSupported > 0 ? (
+                <li className="warn">
+                  <span className="c-l">Recorded support above the request</span>
+                  <span className="c-v num">{money(cap.overSupported)}</span>
+                </li>
+              ) : null}
+            </ul>
+            <div className="ec-cov">
+              <span className="cv">{evalGap ? "—" : (cap.coverageLabel ?? "—")}</span>
+              <span className="ck">
+                {evalGap
+                  ? `coverage is not computable for the full portfolio — ${evalGapNote}`
+                  : cap.coverageLabel
+                    ? "of requested dollars currently supported"
+                    : "no requested dollars in scope"}
+              </span>
+            </div>
+            <p className="ec-note">
+              Support coverage measures supported <b>dollars</b> only — never readiness, and never approval,
+              authorization or settlement. Shortfalls are summed per draw, so a draw recording more support
+              than it requested can never offset another draw's gap. {control.scope.inclusionRule}
+            </p>
+            {cap.overSupported > 0 ? (
+              <p className="ec-note bad">
+                At least one draw records more support than it requested. That is an inconsistency in the
+                underlying records, shown here rather than netted away — open the affected draw to reconcile it.
+              </p>
+            ) : null}
+          </DensePanel>
+
+          <DensePanel
+            title="Recent control changes"
+            right={<span>governed records</span>}
+            flush
+            foot={<a href="/timeline">Open timeline →</a>}
+          >
+            <SignalList
+              empty="No governed changes recorded in scope."
+              items={control.recentChanges.map((c) => ({
+                title:
+                  c.kind === "READINESS_TRANSITION"
+                    ? `Draw #${c.drawNumber} — ${c.label}`
+                    : `Draw #${c.drawNumber} — ${c.label}`,
+                sub: `${c.projectName.split("(")[0].trim().slice(0, 32)} · ${fmtDate(c.at).slice(0, 16)}`,
+                severity:
+                  c.kind === "READINESS_TRANSITION"
+                    ? c.to === "READY"
+                      ? "low"
+                      : c.to === "INCOMPLETE"
+                        ? "high"
+                        : "med"
+                    : "low",
+                href: `/draw/${c.drawRequestId}`,
+                meta:
+                  c.kind === "LENDER_DECISION" ? (
+                    <span className={`chip ${c.to === "APPROVED" ? "ok" : c.to === "REJECTED" ? "bad" : "warn"}`}>
+                      {c.to.replace(/_/g, " ")}
+                    </span>
+                  ) : c.kind === "READINESS_TRANSITION" ? (
+                    <span className={`chip ${c.to === "READY" ? "ok" : c.to === "INCOMPLETE" ? "unknown" : "warn"}`}>
+                      {c.to.replace(/_/g, " ")}
+                    </span>
+                  ) : null,
+              }))}
+            />
+          </DensePanel>
+        </div>
+
+        {/* ---------- ROW 4: project attention register ---------- */}
+        <DensePanel
+          title="Project attention register"
+          className="ec-register"
+          right={
+            <span>
+              {control.register.length} {evalGap ? "evaluated " : ""}open draws · worst readiness first
+            </span>
+          }
+          flush
+          foot={
+            <span className="t-quiet">
+              Readiness, blocker and next action come from the governed engine for each draw.
+              {evalGap ? ` ${evalGapNote} and ${evalGap === 1 ? "is" : "are"} listed in the evaluation alert above.` : ""}
+            </span>
+          }
+        >
+          <DenseTable
+            empty="No open draws in your portfolio."
+            columns={[
+              { key: "proj", label: "Project" },
+              { key: "draw", label: "Draw" },
+              { key: "req", label: "Requested", num: true },
+              { key: "sup", label: "Supportable", num: true },
+              { key: "state", label: "Readiness" },
+              { key: "blk", label: "Primary blocker" },
+              { key: "exc", label: "Exceptions", num: true },
+              { key: "age", label: "Age", num: true },
+              { key: "next", label: "Next action" },
+            ]}
+            rows={control.register.map((r) => ({
+              proj: (
+                <span className="t-name">
+                  <a href={`/project/${r.projectId}`}>{r.projectName.split("(")[0].trim()}</a>
+                  {r.jurisdiction ? <span className="sub">{r.jurisdiction}</span> : null}
+                </span>
+              ),
+              draw: <a href={`/draw/${r.drawRequestId}`}>Draw #{r.drawNumber}</a>,
+              req: money(r.requested),
+              sup: money(r.supportable),
+              state: readinessChip(r.status),
+              blk: r.primaryBlocker ? (
+                <span className="t-name">
+                  <span>{r.primaryBlocker}</span>
+                  {r.primaryBlockerCategory ? (
+                    <span className="sub">{CATEGORY_LABEL[r.primaryBlockerCategory] ?? r.primaryBlockerCategory}</span>
+                  ) : null}
+                </span>
+              ) : (
+                <span className="t-quiet">—</span>
+              ),
+              exc: String(r.openExceptions),
+              age: `${Math.round(r.ageDays)}d`,
+              next: <span className="t-quiet">{r.nextAction}</span>,
+            }))}
+          />
+        </DensePanel>
+
+        {/* ---------- ROW 5: overrides · source freshness · turnaround ---------- */}
+        <div className="ws-row ws-row-3 ec-row-record">
+          <DensePanel
+            title="Proceeded by exception"
+            right={<span>{String(control.proceededByException.length)}</span>}
+            flush
+            foot={<span className="t-quiet">Decision-time snapshots — never recomputed from today's state.</span>}
+          >
+            <SignalList
+              empty="No lender decision in scope overrode an outstanding requirement."
+              items={control.proceededByException.map((p) => ({
+                title: `Draw #${p.drawNumber} — ${p.decision.replace(/_/g, " ")}`,
+                sub: `Readiness was ${p.statusAtDecision.replace(/_/g, " ")} · ${p.overriddenBlockerCount} requirement${p.overriddenBlockerCount === 1 ? "" : "s"} outstanding · ${p.decidedAt ? fmtDate(p.decidedAt).slice(0, 16) : "date not recorded"}`,
+                severity: "high",
+                href: `/draw/${p.drawRequestId}`,
+                meta: <span className="chip warn">override</span>,
+              }))}
+            />
+          </DensePanel>
+
+          <DensePanel
+            title="Official source freshness"
+            right={<span>recorded lookups</span>}
+            flush
+            foot={<a href="/official-sources">Source workspace →</a>}
+          >
+            <SignalList
+              empty="No projects in scope."
+              items={control.freshness.map((f) => ({
+                title: f.projectName.split("(")[0].trim(),
+                sub: f.lastVerifiedAt
+                  ? `${enumLabel(f.lastResultStatus ?? "")} · ${fmtDate(f.lastVerifiedAt).slice(0, 10)}${f.nextReviewDate ? ` · review due ${f.nextReviewDate}` : ""}`
+                  : "No official-source lookup recorded",
+                severity: f.reviewOverdue ? "med" : "low",
+                meta: f.lastVerifiedAt ? (
+                  f.reviewOverdue ? (
+                    <span className="chip warn">review due</span>
+                  ) : (
+                    <span className="chip">recorded</span>
+                  )
+                ) : (
+                  <span className="chip">not recorded</span>
+                ),
+              }))}
+            />
+            <p className="ec-note">
+              Timestamps come from recorded official-source lookups. OBV sets no staleness threshold of its own —
+              &ldquo;review due&rdquo; appears only where the record itself carries a review date that has passed, and it
+              never changes readiness.
+            </p>
+          </DensePanel>
+
+          <DensePanel title="Draw turnaround" right={<span>recorded timestamps</span>}>
+            {evalGap ? (
+              <p className="ec-partial">
+                Evaluated draws only — incomplete portfolio view. {evalGapNote}, so the aging count below covers
+                evaluated draws only.
+              </p>
+            ) : null}
+            <Readout
+              value={
+                control.turnaround.medianSubmissionToDecisionDays === null
+                  ? "—"
+                  : `${control.turnaround.medianSubmissionToDecisionDays}d`
+              }
+              caption={
+                control.turnaround.medianSubmissionToDecisionDays === null
+                  ? "Insufficient recorded decisions"
+                  : `median submission → decision (${control.turnaround.sampleSize} recorded)`
+              }
+              scores={[
+                { label: "Recorded decision journeys", value: String(control.turnaround.sampleSize) },
+                {
+                  label: `Open ${evalGap ? "evaluated " : ""}draws aging beyond ${control.turnaround.agingThresholdDays} days`,
+                  value: String(control.turnaround.agingDrawCount),
+                  // Never green over a subset: zero aging EVALUATED draws
+                  // says nothing about the unevaluated one.
+                  tone: control.turnaround.agingDrawCount > 0 ? "warn" : evalGap ? undefined : "ok",
+                },
+                { label: "Ready, awaiting lender decision", value: String(ready.drawCount) },
+              ]}
+            />
+            <p className="ec-note">
+              Measured from recorded submitted and decision timestamps only. Missing durations are never estimated.
+            </p>
+          </DensePanel>
+        </div>
+
+        {/* ===== ADVISORY BAND — subordinate to governed control ===== */}
+        <div className="ec-advisory">
+        <SectionHead
+          title="Advisory portfolio intelligence"
+          hint="Analytics and pattern detection — never a governed control, never a lender approval signal"
         />
 
         {/* ---------- ROW 2: intelligence modules, side by side ---------- */}
@@ -276,7 +804,7 @@ export function renderExecutive(input: {
             title="Advisory signals"
             right={<span className="chip warn">{String(input.fraud.signalCount)} open</span>}
             flush
-            foot={<a href="/executive/risk">View all signals →</a>}
+            foot={<a href="#advisory-register">Advisory risk register →</a>}
           >
             <SignalList
               empty="No advisory anomaly signals in scope."
@@ -320,7 +848,7 @@ export function renderExecutive(input: {
             title="Portfolio risk distribution"
             right={<span>{risk.averageHealth === null ? "—" : `${Math.round(risk.averageHealth)}/100 health`}</span>}
             flush
-            foot={<a href="/executive/risk">Risk register →</a>}
+            foot={<a href="#advisory-register">Advisory risk register →</a>}
           >
             <SignalList
               empty="No projects in scope."
@@ -363,7 +891,7 @@ export function renderExecutive(input: {
 
           <DensePanel
             title="Draws needing review"
-            right={<span>{String(t.drawsInReview)}</span>}
+            right={<span>{filtersActive ? "filtered · " : ""}{String(t.drawsInReview)}</span>}
             foot={<a href="/draws">Draw queue →</a>}
           >
             <Readout
@@ -436,7 +964,7 @@ export function renderExecutive(input: {
             title="High-risk projects"
             right={<span>{String(highRisk.length)}</span>}
             flush
-            foot={<a href="/executive/risk">Risk register →</a>}
+            foot={<a href="#advisory-register">Advisory risk register →</a>}
           >
             <SignalList
               empty="No elevated or critical projects."
@@ -452,6 +980,11 @@ export function renderExecutive(input: {
         </div>
 
         {/* ---------- filters + register (dense work surface) ---------- */}
+        <p className="ec-filter-note">
+          Advisory analytics filters — they narrow the advisory draw summary, distribution and trend panels
+          (marked &ldquo;filtered&rdquo; while active). The governed capital control at the top of this page
+          always remains portfolio-wide.
+        </p>
         <FilterBar action="/executive" count={filtersActive ? "filtered" : undefined}>
           {select("state", input.filters.state, "All states", input.filterOptions.states.map((st) => ({ value: st, label: st })))}
           {select("stage", input.filters.stage, "All stages", input.filterOptions.stages.map((st) => ({ value: st, label: enumLabel(st) })))}
@@ -462,9 +995,9 @@ export function renderExecutive(input: {
         <div className="ws-row ws-row-2">
           <DensePanel
             title="Project risk register"
-            right={<span>{String(risk.projects.length)} projects · deterministic weights</span>}
+            right={<span id="advisory-register">{String(risk.projects.length)} projects · advisory · deterministic weights</span>}
             flush
-            foot={<a href="/executive/risk">Full register with dimension detail →</a>}
+            foot={<a href="/executive/entities">Contractor &amp; inspector detail →</a>}
           >
             <DenseTable
               empty="No projects in scope."
@@ -499,7 +1032,7 @@ export function renderExecutive(input: {
           <div style="display:flex;flex-direction:column;gap:var(--ws-gap);min-width:0">
             <DensePanel
               title="Portfolio distribution"
-              right={<span>by state · by lender</span>}
+              right={<span>{filtersActive ? "filtered · " : ""}by state · by lender</span>}
               flush
               foot={<a href="/executive/entities">Contractors, inspectors &amp; vendors →</a>}
             >
@@ -524,7 +1057,7 @@ export function renderExecutive(input: {
 
             <DensePanel
               title="Operational trends"
-              right={<span>opened vs resolved</span>}
+              right={<span>{filtersActive ? "filtered · " : ""}opened vs resolved</span>}
               flush
             >
               <SignalList
@@ -572,6 +1105,7 @@ export function renderExecutive(input: {
           </div>
         </div>
 
+        </div>
         <AboutView label="About this view — provenance, advisory limits and methodology">
           <p>
             Every figure is computed on demand from verified project records within your accessible

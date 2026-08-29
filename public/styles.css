@@ -5422,3 +5422,216 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
 }
 .dr-crosscut .x-v { font-size: 11.5px; font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; }
 .dr-crosscut .x-d { flex-basis: 100%; font-size: 10.5px; color: var(--ink-3); line-height: 1.4; }
+
+/* ==========================================================================
+   EXECUTIVE COMMAND CENTER — portfolio capital control (ec-*)
+   --------------------------------------------------------------------------
+   The portfolio-scale counterpart to the dr-* draw workstation, and
+   deliberately the same visual language: state words never abbreviated to a
+   colour, UNKNOWN never quieter than a failure, and no composite score
+   anywhere. Every colour is a token, so both themes and the print sheet
+   follow automatically.
+   ========================================================================== */
+
+/* ---- readiness state word (portfolio-scale twin of .dr-state-badge) ---- */
+.ec-state {
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  font-size: 10.5px; font-weight: 750; letter-spacing: .05em;
+  padding: 2px 8px; border-radius: 4px;
+  border: 1px solid var(--line); background: var(--inset); color: var(--ink-2);
+}
+.ec-state .g { font-weight: 800; }
+.ec-state.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-line); }
+.ec-state.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }
+.ec-state.bad { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
+/* INCOMPLETE is not a soft grey "almost ready": OBV cannot reach a
+   conclusion, so it carries the same dashed high-contrast treatment the
+   draw workstation gives an unknown. */
+.ec-state.unknown {
+  color: var(--ink); background: var(--inset);
+  border-color: var(--ink-3); border-style: dashed; border-width: 1.5px;
+}
+
+.ec-dstate {
+  display: inline-flex; align-items: center; white-space: nowrap;
+  font-size: 10px; font-weight: 750; letter-spacing: .05em;
+  padding: 2px 7px; border-radius: 4px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-2);
+}
+.ec-dstate.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-line); }
+.ec-dstate.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }
+.ec-dstate.bad { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
+.ec-dstate.unknown { color: var(--ink); border-color: var(--ink-3); border-style: dashed; border-width: 1.5px; }
+.ec-dstate.na { color: var(--ink-4); }
+
+/* ---- proportion bar: labelled buckets of one stated denominator ---- */
+.ec-bar {
+  display: flex; height: 8px; border-radius: 4px; overflow: hidden;
+  background: var(--inset); border: 1px solid var(--line); margin: 0 0 11px;
+}
+.ec-bar.empty { background: var(--inset); }
+.ec-bar .seg { display: block; height: 100%; }
+.ec-bar .seg.ok { background: var(--ok); }
+.ec-bar .seg.warn { background: var(--warn); }
+.ec-bar .seg.bad { background: var(--bad); }
+.ec-bar .seg.unknown {
+  background: repeating-linear-gradient(135deg, var(--ink-3) 0 3px, var(--inset) 3px 6px);
+}
+
+/* ---- readiness distribution list ---- */
+.ec-dist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.ec-dist li {
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  padding: 7px 0; border-bottom: 1px solid var(--line);
+}
+.ec-dist li:last-child { border-bottom: 0; }
+.ec-dist li.zero { opacity: .62; }
+.ec-dist .d-n { font-size: 17px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.ec-dist .d-s { font-size: 10.5px; color: var(--ink-3); flex: 1; min-width: 120px; }
+.ec-dist .d-m { font-size: 11.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; font-weight: 650; }
+/* Requested is the headline dollar figure; the supportable split sits
+   under it so a bucket never implies its whole request is supported. */
+.ec-dist .d-sup { flex-basis: 100%; font-size: 10px; color: var(--ink-4); font-variant-numeric: tabular-nums; padding-left: 2px; }
+.ec-dist li.zero .d-sup { display: none; }
+
+.ec-note { margin: 9px 0 0; font-size: 10.5px; color: var(--ink-4); line-height: 1.45; }
+.ec-note b { color: var(--ink-2); font-weight: 650; }
+
+/* ---- control-domain pressure ---- */
+.ec-domains { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.ec-domains li {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 0; border-bottom: 1px solid var(--line);
+}
+.ec-domains li:last-child { border-bottom: 0; }
+.ec-domains .dm-n { font-size: 12px; font-weight: 680; color: var(--ink); min-width: 78px; }
+.ec-domains .dm-c { display: inline-flex; gap: 8px; margin-left: auto; font-variant-numeric: tabular-nums; }
+.ec-domains .dm-c b { font-size: 10.5px; font-weight: 700; }
+.ec-domains .dm-c b.ok { color: var(--ok); }
+.ec-domains .dm-c b.warn { color: var(--warn); }
+.ec-domains .dm-c b.bad { color: var(--bad); }
+.ec-domains .dm-c b.unknown { color: var(--ink); border-bottom: 1.5px dashed var(--ink-3); }
+.ec-domains .dm-cats { flex-basis: 100%; font-size: 10px; color: var(--ink-4); line-height: 1.4; }
+
+/* Cross-cutting controls sit OUTSIDE the four domains and say so. */
+.ec-cross {
+  margin: 10px 0 0; padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 4px 10px;
+  align-items: baseline; border-radius: var(--r);
+  border: 1px solid var(--line); background: var(--inset);
+}
+.ec-cross.bad { border-color: var(--bad-line); background: var(--bad-bg); }
+.ec-cross .x-k { font-size: 10px; letter-spacing: .07em; text-transform: uppercase; font-weight: 750; color: var(--ink); }
+.ec-cross .x-v { font-size: 11.5px; font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ec-cross .x-d { flex-basis: 100%; font-size: 10.5px; color: var(--ink-3); line-height: 1.4; }
+
+/* ---- draw pipeline ---- */
+.ec-pipe { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ec-pipe li { display: flex; align-items: center; gap: 9px; }
+.ec-pipe .p-l { font-size: 11px; color: var(--ink-2); flex: 0 0 44%; min-width: 0; }
+.ec-pipe .p-bar { flex: 1; height: 7px; border-radius: 4px; background: var(--inset); border: 1px solid var(--line); overflow: hidden; }
+.ec-pipe .p-bar .fl { display: block; height: 100%; background: var(--action); }
+.ec-pipe .p-n { font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+
+/* ---- capital position ---- */
+.ec-cap { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.ec-cap li { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.ec-cap li:last-child { border-bottom: 0; }
+.ec-cap .c-l { font-size: 11px; color: var(--ink-2); flex: 1; }
+.ec-cap .c-v { font-size: 14px; font-weight: 680; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ec-cap li.ok .c-v { color: var(--ok); }
+.ec-cap li.bad .c-v { color: var(--bad); }
+.ec-cap li.warn .c-v { color: var(--warn); }
+.ec-note.bad { color: var(--bad); }
+.ec-domains .dm-c b.na { color: var(--ink-4); font-weight: 650; }
+
+.ec-cov { display: flex; align-items: baseline; gap: 9px; margin: 10px 0 0; padding-top: 9px; border-top: 1px solid var(--line); }
+.ec-cov .cv { font-size: 22px; font-weight: 720; color: var(--ink); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.ec-cov .ck { font-size: 10.5px; color: var(--ink-3); line-height: 1.4; }
+
+/* ---- the advisory band is visually subordinate to governed control ----
+   Analytics, forecasts and risk scores keep every capability they had, but
+   they must never be mistakable for a governed control: the whole band is
+   dimmed, dashed and labelled, and each panel says ADVISORY in its own
+   heading so a screenshot of one panel still carries the caveat. */
+.ec-advisory { opacity: .93; }
+.ec-advisory .dpanel { border-style: dashed; background: var(--canvas); }
+.ec-advisory .dpanel-head { background: transparent; }
+.ec-advisory .dpanel-head h2::after {
+  content: "ADVISORY"; margin-left: 8px; font-size: 8.5px; letter-spacing: .09em;
+  font-weight: 750; color: var(--ink-4); vertical-align: 1.5px;
+}
+.ec-advisory .dpanel-head h2 { color: var(--ink-2); }
+/* The band's own heading carries the doctrine sentence. */
+.sec-head + .ec-advisory { margin-top: 2px; }
+
+@media (max-width: 900px) {
+  .ec-domains .dm-c { margin-left: 0; flex-basis: 100%; }
+  .ec-pipe .p-l { flex: 0 0 38%; }
+}
+
+/* ---- EVALUATION UNAVAILABLE — operational alert, not a readiness state.
+   Louder than any panel: while a readiness result is missing, no
+   readiness-derived total on the page is complete. ---- */
+.ec-evalgap {
+  margin: 0 0 var(--ws-gap, 10px); padding: 11px 14px; border-radius: var(--r);
+  border: 1.5px solid var(--bad); background: var(--bad-bg);
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+}
+.ec-evalgap .eg-k {
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  font-weight: 800; color: var(--bad);
+}
+.ec-evalgap .eg-v { font-size: 12.5px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ec-evalgap .eg-d { flex-basis: 100%; font-size: 11px; color: var(--ink-2); line-height: 1.5; }
+.ec-evalgap .eg-list { list-style: none; margin: 6px 0 0; padding: 0; flex-basis: 100%; display: flex; flex-direction: column; gap: 3px; }
+.ec-evalgap .eg-list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 11.5px; }
+.ec-evalgap .eg-list a { font-weight: 700; }
+.ec-evalgap .eg-p { color: var(--ink-2); }
+.ec-evalgap .eg-m { color: var(--ink); font-weight: 650; }
+.ec-evalgap .eg-r { flex-basis: 100%; font-size: 10.5px; color: var(--ink-3); }
+
+/* A readiness-derived panel rendered over an incomplete evaluated subset
+   says so first, in a treatment that cannot read as a footnote. */
+.ec-partial {
+  margin: 0 0 10px; padding: 7px 10px; border-radius: var(--r);
+  border: 1.5px dashed var(--bad); background: var(--bad-bg);
+  font-size: 10.5px; font-weight: 650; color: var(--ink); line-height: 1.45;
+}
+
+/* Filters narrow the advisory analytics only — never governed capital. */
+.ec-filter-note {
+  margin: 14px 0 6px; font-size: 10.5px; color: var(--ink-3); line-height: 1.45;
+}
+
+/* Mobile priority for the governed rows. The v25 rules reorder any
+   .ws-row-3 by nth-child using an order written for the OLD executive
+   modules; these scoped rules win on specificity and state the intended
+   phone reading order outright: capital, readiness, attention, then the
+   record modules. */
+@media (max-width: 720px) {
+  .ws-row-3.ec-row-state > *:nth-child(1) { order: 1; }  /* readiness distribution */
+  .ws-row-3.ec-row-state > *:nth-child(3) { order: 2; }  /* governed attention */
+  .ws-row-3.ec-row-state > *:nth-child(2) { order: 3; }  /* domain pressure */
+  .ws-row-3.ec-row-capital > *:nth-child(2) { order: 1; }  /* capital position */
+  .ws-row-3.ec-row-capital > *:nth-child(1) { order: 2; }  /* draw pipeline */
+  .ws-row-3.ec-row-capital > *:nth-child(3) { order: 3; }  /* recent changes */
+  .ws-row-3.ec-row-record > *:nth-child(1) { order: 1; }
+  .ws-row-3.ec-row-record > *:nth-child(2) { order: 2; }
+  .ws-row-3.ec-row-record > *:nth-child(3) { order: 3; }
+}
+
+@media (max-width: 720px) {
+  .ec-dist .d-m { margin-left: auto; }
+  .ec-cov .cv { font-size: 19px; }
+  /* The register restacks as labelled records rather than a squashed table. */
+  .ec-register .dtable thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .ec-register .dtable, .ec-register .dtable tbody, .ec-register .dtable tr, .ec-register .dtable td { display: block; width: auto; }
+  .ec-register .dtable tr { border-bottom: 1px solid var(--line); padding: 9px 12px; }
+  .ec-register .dtable tbody td { border: 0; padding: 2px 0; display: flex; align-items: baseline; gap: 10px; }
+  .ec-register .dtable tbody td::before {
+    content: attr(data-l); font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ink-4); font-weight: 650; flex: 0 0 96px;
+  }
+  .ec-register .dtable td:first-child { min-width: 0; padding-bottom: 5px; }
+  .ec-register .dtable td:first-child::before { content: none; }
+}

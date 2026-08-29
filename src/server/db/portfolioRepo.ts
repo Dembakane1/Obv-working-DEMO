@@ -238,6 +238,9 @@ export interface LenderDecisionRow {
   decisionAt: string | null;
   reviewerUserId: string;
   createdAt: string;
+  /** The lender's recorded justification, when one was required. */
+  exceptionsAccepted: string | null;
+  decisionReason: string | null;
 }
 
 /** Current (non-superseded) lender decisions only. */
@@ -245,9 +248,10 @@ export function lenderDecisionRows(): LenderDecisionRow[] {
   return getDb()
     .prepare(
       `SELECT id, project_id, draw_request_id, decision, requested_amount, approved_amount,
-              decision_at, reviewer_user_id, created_at
+              decision_at, reviewer_user_id, created_at, exceptions_accepted, decision_reason
          FROM lender_draw_decisions
-        WHERE superseded_by_decision_id IS NULL`
+        WHERE superseded_by_decision_id IS NULL
+        ORDER BY created_at ASC`
     )
     .all()
     .map((r) => {
@@ -262,6 +266,51 @@ export function lenderDecisionRows(): LenderDecisionRow[] {
         decisionAt: sn(x.decision_at),
         reviewerUserId: s(x.reviewer_user_id),
         createdAt: s(x.created_at),
+        exceptionsAccepted: sn(x.exceptions_accepted),
+        decisionReason: sn(x.decision_reason),
+      };
+    });
+}
+
+export interface LenderDecisionHistoryRow {
+  id: string;
+  projectId: string;
+  drawRequestId: string;
+  decision: string;
+  decisionAt: string | null;
+  reviewerUserId: string;
+  createdAt: string;
+  supersededByDecisionId: string | null;
+}
+
+/**
+ * EVERY recorded lender decision, superseded ones included, oldest first.
+ *
+ * This exists for HISTORY: a superseded decision remains a historical fact
+ * with its own recorded timestamp. `lenderDecisionRows` above deliberately
+ * returns only the standing (non-superseded) decisions and must stay that
+ * way — current-decision surfaces read it; historical surfaces read this.
+ */
+export function lenderDecisionHistoryRows(): LenderDecisionHistoryRow[] {
+  return getDb()
+    .prepare(
+      `SELECT id, project_id, draw_request_id, decision, decision_at, reviewer_user_id,
+              created_at, superseded_by_decision_id
+         FROM lender_draw_decisions
+        ORDER BY created_at ASC, rowid ASC`
+    )
+    .all()
+    .map((r) => {
+      const x = r as Row;
+      return {
+        id: s(x.id),
+        projectId: s(x.project_id),
+        drawRequestId: s(x.draw_request_id),
+        decision: s(x.decision),
+        decisionAt: sn(x.decision_at),
+        reviewerUserId: s(x.reviewer_user_id),
+        createdAt: s(x.created_at),
+        supersededByDecisionId: sn(x.superseded_by_decision_id),
       };
     });
 }
@@ -1158,6 +1207,42 @@ export function listPortfolioSnapshots(scopeOrganizationId: string): PortfolioSn
         averageHealth: n(x.average_health),
         attentionCount: n(x.attention_count),
         detail: JSON.parse(s(x.detail)) as Record<string, unknown>,
+      };
+    });
+}
+
+export interface DrawEventRow {
+  id: string;
+  drawRequestId: string;
+  type: string;
+  detail: string;
+  actorUserId: string | null;
+  createdAt: string;
+}
+
+/**
+ * Every draw event, ordered oldest first. Loaded once per request and
+ * grouped in the context, so a portfolio-wide history never degrades into
+ * one listDrawEvents call per draw. Tenancy is applied in the context by
+ * draw id, exactly like lines and documents.
+ */
+export function drawEventRows(): DrawEventRow[] {
+  return getDb()
+    .prepare(
+      `SELECT id, draw_request_id, type, detail, actor_user_id, created_at
+         FROM draw_events
+        ORDER BY created_at ASC, rowid ASC`
+    )
+    .all()
+    .map((r) => {
+      const x = r as Row;
+      return {
+        id: s(x.id),
+        drawRequestId: s(x.draw_request_id),
+        type: s(x.type),
+        detail: s(x.detail),
+        actorUserId: sn(x.actor_user_id),
+        createdAt: s(x.created_at),
       };
     });
 }
