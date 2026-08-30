@@ -51,7 +51,8 @@ import {
 
 /** Stamped onto every twin surface, alongside the timeline notice. */
 export const TWIN_NOTICE =
-  "The Digital Twin is a visualization of records OBV already holds. It owns no data, performs no writes, " +
+  "Timeline & Site Evidence is a spatial project record built from records OBV already holds — the current " +
+  "stage of the Digital Twin maturity path, not a 3D model. It owns no data, performs no writes, " +
   "and never becomes the system of record — the Timeline remains the authoritative interface. Positions are " +
   "drawn only from recorded coordinates; records without coordinates are listed, never placed. Stage fills " +
   "show the recorded governance lifecycle, not a physical measurement.";

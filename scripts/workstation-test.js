@@ -173,12 +173,12 @@ async function main() {
     twin.includes('class="ws-stream"') && twin.includes('class="ws-canvas"') && twin.includes("ws-inspector"),
     "the workspace has an event stream, a canvas and a context inspector"
   );
-  assert(twin.includes("Event stream"), "the event stream pane lists governed timeline events");
+  assert(twin.includes("Governed timeline"), "the event stream pane lists governed timeline events");
   assert(twin.includes("Context inspector") || twin.includes("Evidence detail"), "the inspector pane is present");
   assert(twin.includes('class="segmented"'), "mobile gets a Timeline | Twin segmented control");
   assert(
-    /href="\/timeline\/twin\/proj-r47\?focus=/.test(twin),
-    "selecting a timeline event focuses the scene and the inspector (?focus sync)"
+    /href="\/timeline\/twin\/proj-r47\?event=/.test(twin),
+    "selecting a timeline event focuses the scene and the inspector (?event sync)"
   );
   assert(
     !twin.includes("twin-snapshot-card") && (twin.match(/class="dpanel /g) ?? []).length <= 6,

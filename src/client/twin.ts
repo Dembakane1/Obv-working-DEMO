@@ -26,10 +26,17 @@
   interface TwinClientData {
     projectId: string;
     focus: string | null;
+    /** True when the server already rendered the focused event's record
+     *  into the inspector — selection sync must not overwrite it. */
+    eventRendered?: boolean;
     pin: string | null;
     elements: Record<string, TwinElementMeta>;
     sync: Record<string, string>;
     layers: Array<{ key: string; available: boolean; defaultOn: boolean }>;
+    /** Each element's OWN recorded moment (earliest event derived from
+     *  its source record) — drives Project Replay. */
+    elementAt?: Record<string, string>;
+    replay?: { min: string; max: string; anchor: string } | null;
   }
   interface PlaybackStep {
     eventId: string;
@@ -230,7 +237,7 @@
     });
   });
 
-  // Timeline synchronization: ?focus=<eventId> highlights the element
+  // Timeline synchronization: ?event=/?focus= highlights the element
   // that represents the event's record. Own-property lookup only — a
   // crafted focus value must not resolve Object.prototype keys, and an
   // event with no scene representation is said so, not faked.
@@ -239,17 +246,136 @@
       ? data.sync[data.focus]
       : null;
   if (typeof focusTarget === "string" && Object.prototype.hasOwnProperty.call(data.elements, focusTarget)) {
-    select(focusTarget, true);
+    if (data.eventRendered) {
+      // The server already rendered the event's stored record into the
+      // inspector; highlight its scene representation without replacing
+      // that record with element metadata.
+      document.querySelectorAll(`[data-el="${CSS.escape(focusTarget)}"]`).forEach((n) => n.classList.add("twin-selected"));
+      const target = document.querySelector(`[data-el="${CSS.escape(focusTarget)}"]`);
+      if (target && "scrollIntoView" in target) {
+        (target as HTMLElement).scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    } else {
+      select(focusTarget, true);
+    }
   } else if (data.pin) {
     // An unknown focus never suppresses an explicit pin request.
     const pinId = `EVIDENCE_PIN:${data.pin}`;
     document.querySelectorAll(`[data-el="${CSS.escape(pinId)}"]`).forEach((n) => n.classList.add("twin-selected"));
-  } else if (data.focus && detailBody) {
+  } else if (data.focus && !data.eventRendered && detailBody) {
     detailBody.textContent = "";
     detailBody.appendChild(
       el("p", "sub",
-        "This timeline event's record has no drawn or listed representation in the twin — open it on the Timeline for full detail.")
+        "This timeline event's record has no drawn or listed representation here — open it on the Timeline for full detail.")
     );
+  }
+
+  // ------------------------------------------------- filters & replay
+  // Everything below is CLIENT-SIDE VISIBILITY over data the server
+  // already authorized and rendered: no fetch, no recomputation, and in
+  // particular NO re-evaluation of historical readiness. Hiding is by
+  // each record's OWN recorded timestamp.
+  const streamList = document.getElementById("tse-stream");
+  const streamCount = document.getElementById("tse-stream-count");
+  const replayScrub = document.getElementById("tse-replay-scrub") as HTMLInputElement | null;
+  const replayThrough = document.getElementById("tse-replay-through");
+  let truthFilter = "ALL";
+  let locatedOnly = false;
+  let cutoffMs = Number.POSITIVE_INFINITY;
+  const replayMinMs = data.replay ? Date.parse(data.replay.min) : NaN;
+  const replayMaxMs = data.replay ? Date.parse(data.replay.max) : NaN;
+  // Quick ranges rewind from the latest event that actually HAPPENED —
+  // never from a future-dated schedule row (a recorded permit expiry).
+  const replayAnchorMs = data.replay ? Date.parse(data.replay.anchor) : NaN;
+
+  const MARKER_KINDS = new Set([
+    "EVIDENCE_PIN", "INSPECTION_MARKER", "ADVISORY_MARKER",
+    "PERMIT", "OFFICIAL_SOURCE", "INSPECTION",
+  ]);
+
+  function applyStreamVisibility(): void {
+    if (!streamList) return;
+    let visible = 0;
+    streamList.querySelectorAll<HTMLElement>("li[data-at]").forEach((li) => {
+      const atMs = Date.parse(li.getAttribute("data-at") ?? "");
+      const truth = li.getAttribute("data-truth") ?? "";
+      const located = li.getAttribute("data-located") === "1";
+      const show =
+        (truthFilter === "ALL" || truth === truthFilter) &&
+        (!locatedOnly || located) &&
+        (!Number.isFinite(cutoffMs) || !Number.isFinite(atMs) || atMs <= cutoffMs);
+      li.style.display = show ? "" : "none";
+      if (show) visible += 1;
+    });
+    if (streamCount) streamCount.textContent = String(visible);
+  }
+
+  function applyReplayToScene(): void {
+    const at = data.elementAt ?? {};
+    for (const id of Object.keys(at)) {
+      const meta = Object.prototype.hasOwnProperty.call(data.elements, id) ? data.elements[id] : null;
+      if (!meta || !MARKER_KINDS.has(meta.kind)) continue;
+      const hide = Number.isFinite(cutoffMs) && Date.parse(at[id]) > cutoffMs;
+      document.querySelectorAll<HTMLElement | SVGElement>(`[data-el="${CSS.escape(id)}"]`).forEach((n) => {
+        n.style.display = hide ? "none" : "";
+      });
+    }
+  }
+
+  function setCutoff(ms: number, describeFull: boolean): void {
+    cutoffMs = ms;
+    // A replay window is a different question than the current selection
+    // — the selection clears so a hidden record is never left "selected".
+    clearSelection();
+    if (replayThrough) {
+      const iso = Number.isFinite(ms) ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) : "";
+      replayThrough.textContent = describeFull
+        ? `Recorded events through: ${new Date(replayMaxMs).toISOString().replace("T", " ").slice(0, 16)} UTC (full record)`
+        : `Recorded events through: ${iso} UTC · layer counts describe the full record`;
+    }
+    applyStreamVisibility();
+    applyReplayToScene();
+  }
+
+  document.querySelectorAll<HTMLButtonElement>("[data-tse-truth]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      truthFilter = btn.getAttribute("data-tse-truth") ?? "ALL";
+      document.querySelectorAll("[data-tse-truth]").forEach((b) => b.classList.toggle("active", b === btn));
+      applyStreamVisibility();
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-tse-located]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      locatedOnly = !locatedOnly;
+      btn.classList.toggle("active", locatedOnly);
+      applyStreamVisibility();
+    });
+  });
+  if (replayScrub && Number.isFinite(replayMinMs) && Number.isFinite(replayMaxMs)) {
+    const span = Math.max(replayMaxMs - replayMinMs, 1);
+    replayScrub.addEventListener("input", () => {
+      const frac = Number(replayScrub.value) / 1000;
+      const ms = replayMinMs + span * frac;
+      document.querySelectorAll("[data-tse-range]").forEach((b) => b.classList.remove("active"));
+      setCutoff(frac >= 1 ? Number.POSITIVE_INFINITY : ms, frac >= 1);
+    });
+    document.querySelectorAll<HTMLButtonElement>("[data-tse-range]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("[data-tse-range]").forEach((b) => b.classList.toggle("active", b === btn));
+        const range = btn.getAttribute("data-tse-range");
+        if (range === "all") {
+          replayScrub.value = "1000";
+          setCutoff(Number.POSITIVE_INFINITY, true);
+        } else {
+          const days = Number(range);
+          const anchor = Number.isFinite(replayAnchorMs) ? replayAnchorMs : replayMaxMs;
+          const ms = anchor - days * 86_400_000;
+          const frac = Math.min(Math.max((ms - replayMinMs) / span, 0), 1);
+          replayScrub.value = String(Math.round(frac * 1000));
+          setCutoff(ms, false);
+        }
+      });
+    });
   }
 
   // ------------------------------------------------------------ playback

@@ -408,6 +408,13 @@ export function collectEvidence(ctx: CollectorContext): void {
         sourceRecordId: e.id,
         href: `/evidence/${e.id}`,
         recordStatus: "AUTHORITATIVE",
+        // Location comes ONLY from the record's own stored fix. The
+        // capture is the moment the fix belongs to; the upload happened
+        // wherever the device later found connectivity, so it carries none.
+        spatial:
+          e.latitude !== null && e.longitude !== null
+            ? { latitude: e.latitude, longitude: e.longitude }
+            : null,
       });
       push({
         at: e.uploadedAt,
@@ -723,6 +730,48 @@ export function collectDraws(ctx: CollectorContext): void {
         change: { field: "status", previous: "DRAFT", current: "SUBMITTED" },
       });
     }
+
+    // Readiness transitions — the governed readiness machine's own
+    // immutable draw_events rows. Each is HISTORY: what OBV's recorded
+    // readiness state became at that moment, under the policy version
+    // then in force. The stored row carries {status, from, policyVersion}
+    // and nothing else — in particular it records NO blocking reasons, so
+    // no cause is ever attached here. Never recomputed, never reconciled
+    // against today's readiness.
+    for (const ev of safe(() => repo.listDrawEvents(d.id), [])) {
+      if (ev.type !== "READINESS_TRANSITION") continue;
+      let detail: { status?: string; from?: string | null; policyVersion?: number } = {};
+      try {
+        detail = JSON.parse(ev.detail) as typeof detail;
+      } catch {
+        detail = {};
+      }
+      const to = typeof detail.status === "string" ? detail.status : "UNRECORDED";
+      const from = typeof detail.from === "string" ? detail.from : null;
+      push({
+        at: ev.createdAt,
+        category: "DRAW",
+        type: "READINESS_TRANSITION",
+        title: `Draw ${d.drawNumber} readiness moved to ${to.replace(/_/g, " ")}`,
+        explanation:
+          (from
+            ? `OBV's recorded readiness state for draw ${d.drawNumber} moved from ${from} to ${to}`
+            : `OBV recorded its first readiness state for draw ${d.drawNumber}: ${to}`) +
+          `${typeof detail.policyVersion === "number" ? ` under readiness policy version ${detail.policyVersion}` : ""}. ` +
+          "Readiness is OBV's evaluation of governed requirements — it is not a lender approval and never releases funds.",
+        actorUserId: ev.actorUserId,
+        projectId: project.id,
+        drawRequestId: d.id,
+        organizationId: project.organizationId,
+        sourceTable: "draw_events",
+        sourceRecordId: ev.id,
+        href: `/draws/${d.id}`,
+        recordStatus: "AUTHORITATIVE",
+        severity:
+          to === "HOLD" || to === "EXCEPTION_REVIEW" || to === "INCOMPLETE" ? "MEDIUM" : "INFO",
+        change: { field: "readiness", previous: from, current: to },
+      });
+    }
   }
 
   // Approval requests / records (the governed multi-party approval path).
@@ -760,8 +809,12 @@ export function collectDraws(ctx: CollectorContext): void {
     }
   }
 
-  // Lender draw decisions.
+  // Lender draw decisions — ALL recorded decisions, superseded included:
+  // a superseded decision is retained history, never erased. It is
+  // marked as superseded so a reader can tell the standing decision from
+  // an amended-past one.
   for (const dec of safe(() => lenderRepo.listLenderDecisionsForProject(project.id), [])) {
+    const superseded = Boolean(dec.supersededByDecisionId);
     push({
       at: dec.decisionAt,
       category: "DECISION",
@@ -769,7 +822,10 @@ export function collectDraws(ctx: CollectorContext): void {
       title: `Lender decision — ${String(dec.decision).replace(/_/g, " ").toLowerCase()}`,
       explanation:
         `The lender recorded a ${String(dec.decision).toLowerCase()} decision on this draw` +
-        `${dec.decisionReason ? `: ${dec.decisionReason}` : ""}.`,
+        `${dec.decisionReason ? `: ${dec.decisionReason}` : ""}.` +
+        (superseded
+          ? " This decision was later superseded by an amended decision and is retained here as history."
+          : ""),
       actorUserId: dec.reviewerUserId,
       projectId: project.id,
       drawRequestId: dec.drawRequestId,

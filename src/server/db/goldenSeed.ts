@@ -281,7 +281,12 @@ export function seedGoldenProject(): void {
     varianceAmount: null, variancePercent: null,
   });
   mkEvent("draw-g1", 1, "SUBMITTED", "Draw #1 submitted — $95,000 requested (fictional demo).", "user-dmv-pm", "2026-03-05T09:00:00.000Z");
+  // Readiness transition history (immutable rows the readiness machine
+  // writes at governed mutation points; final state matches the live
+  // evaluation of this seeded draw).
+  mkEvent("draw-g1", 6, "READINESS_TRANSITION", JSON.stringify({ status: "INCOMPLETE", from: null, policyVersion: 1 }), "user-dmv-pm", "2026-03-05T09:00:05.000Z");
   mkEvent("draw-g1", 2, "LINE_REVIEWED", "Demolition line marked SUPPORTED after evidence review.", "user-compliance", "2026-03-08T10:00:00.000Z");
+  mkEvent("draw-g1", 7, "READINESS_TRANSITION", JSON.stringify({ status: "READY", from: "INCOMPLETE", policyVersion: 1 }), "user-compliance", "2026-03-08T10:00:05.000Z");
   mkEvent("draw-g1", 3, "RECOMMENDATION_FINALIZED", "Recommendation finalized at $95,000.", "user-compliance", "2026-03-09T09:30:00.000Z");
   mkEvent("draw-g1", 4, "GOVERNANCE_DECISION", "Dual approval recorded; draw approved at $95,000.", "user-funder", "2026-03-12T14:00:00.000Z");
   mkEvent("draw-g1", 5, "RELEASE_TRANSITION", "Release eligibility recorded after governance (fictional demo — no real funds move).", "user-funder", "2026-03-14T16:00:00.000Z");
@@ -346,9 +351,11 @@ export function seedGoldenProject(): void {
     varianceAmount: null, variancePercent: null,
   });
   mkEvent("draw-g2", 1, "SUBMITTED", "Draw #2 submitted — $182,000 requested (fictional demo).", "user-dmv-pm", "2026-07-18T09:00:00.000Z");
+  mkEvent("draw-g2", 6, "READINESS_TRANSITION", JSON.stringify({ status: "INCOMPLETE", from: null, policyVersion: 1 }), "user-dmv-pm", "2026-07-18T09:00:05.000Z");
   mkEvent("draw-g2", 2, "LINE_REVIEWED", "Framing line marked SUPPORTED; reinspection history attached.", "user-compliance", "2026-07-22T11:00:00.000Z");
   mkEvent("draw-g2", 3, "LINE_REVIEWED", "CO-1 steel line PARTIALLY SUPPORTED pending invoice reconciliation.", "user-funder", "2026-07-23T09:00:00.000Z");
   mkEvent("draw-g2", 4, "RECOMMENDATION_FINALIZED", "Recommendation finalized at $160,000 of $182,000 requested.", "user-compliance", "2026-07-24T10:00:00.000Z");
+  mkEvent("draw-g2", 7, "READINESS_TRANSITION", JSON.stringify({ status: "READY", from: "INCOMPLETE", policyVersion: 1 }), "user-compliance", "2026-07-24T10:00:30.000Z");
   mkEvent("draw-g2", 5, "SENT_TO_GOVERNANCE", "Sent to formal governance — dual approval required.", "user-compliance", "2026-07-24T10:01:00.000Z");
   repo.insertApprovalRequest({
     id: "appr-g2", milestoneId: null, drawRequestId: "draw-g2",
@@ -391,7 +398,9 @@ export function seedGoldenProject(): void {
     varianceAmount: null, variancePercent: null,
   });
   mkEvent("draw-g3", 1, "SUBMITTED", "Draw #3 submitted — $96,000 requested (fictional demo).", "user-dmv-pm", "2026-07-06T09:00:00.000Z");
+  mkEvent("draw-g3", 3, "READINESS_TRANSITION", JSON.stringify({ status: "INCOMPLETE", from: null, policyVersion: 1 }), "user-dmv-pm", "2026-07-06T09:00:05.000Z");
   mkEvent("draw-g3", 2, "RETURNED", "Returned for additional evidence: rear parapet flashing not visible in submitted photos (fictional).", "user-compliance", "2026-07-10T10:00:00.000Z");
+  mkEvent("draw-g3", 4, "READINESS_TRANSITION", JSON.stringify({ status: "HOLD", from: "INCOMPLETE", policyVersion: 1 }), "user-compliance", "2026-07-10T10:00:05.000Z");
 
   // Draw 4 — UNDER_REVIEW with a MISSING required lien waiver.
   repo.insertDrawRequest({

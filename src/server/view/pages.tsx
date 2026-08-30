@@ -526,7 +526,7 @@ export function renderOverview(input: {
             title: "Delivery overview",
             sub: "Timelines, evidence, and the draws your projects are carrying.",
             links: [
-              { href: "/timeline", label: "Timeline & Digital Twin" },
+              { href: "/timeline", label: "Timeline & Site Evidence" },
               { href: "/compliance", label: "Evidence review" },
               { href: "/draws", label: "Draws" },
               { href: "/issues", label: `Field issues${q.highIssues > 0 ? ` (${q.highIssues} high)` : ""}` },
@@ -1390,7 +1390,7 @@ export function renderMilestoneDetail(input: {
             <button className="btn ghost sm" type="submit">{icons.chat(13)} Open thread</button>
           </form>
           <a className="btn ghost sm" href={`/project/${project.id}?tab=map`}>{icons.map(13)} View on map</a>
-          <a className="btn ghost sm" href={`/timeline/twin/${project.id}`}>{icons.map(13)} Digital Twin</a>
+          <a className="btn ghost sm" href={`/timeline/twin/${project.id}`}>{icons.map(13)} Site Evidence</a>
         </div>
       </div>
 
@@ -3430,7 +3430,7 @@ const MORE_DESCRIPTIONS: Record<string, string> = {
   // Workspace-level descriptions (what the consolidated sidebar shows).
   command: "Portfolio overview, executive command and analytics",
   evidence: "Review, intelligence, official records and the ledger",
-  site: "Timeline, Digital Twin and spatial coverage",
+  site: "Timeline, Site Evidence and spatial coverage",
   governance: "Approvals and exceptions — separate governed registers",
   controls: "Budget, verified progress and change orders",
   admin: "Organization, access and integration configuration",

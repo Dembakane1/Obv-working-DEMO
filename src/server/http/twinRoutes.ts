@@ -37,7 +37,7 @@ export async function handleTwinRoutes(ctx: TwinRouteContext): Promise<boolean> 
 
   if (method !== "GET") {
     if (isApi) {
-      ctx.sendJson({ error: "The Digital Twin is read-only" }, 405);
+      ctx.sendJson({ error: "The site evidence workspace is read-only" }, 405);
       return true;
     }
     return false;
@@ -56,16 +56,31 @@ export async function handleTwinRoutes(ctx: TwinRouteContext): Promise<boolean> 
     const projectId = pageMatch[1];
     const scene = twin.twinScene(user, projectId);
     const pinId = ctx.searchParams.get("pin");
+    // The workspace's left pane: the SAME governed events the Timeline
+    // page reads, through the same viewer-scoped service. Read-only.
+    const tl = timeline.projectTimeline(user, projectId);
+    // ?event= is the shareable deep link; ?focus= is the older synonym
+    // the timeline pages already emit. Same deterministic event ids.
+    const focusEventId = ctx.searchParams.get("event") ?? ctx.searchParams.get("focus");
+    // Server-rendered inspector: the focused event's stored record, plus
+    // the CURRENT state of its linked draw (labeled CURRENT in the view;
+    // never merged into the historical record).
+    const focusedEvent = focusEventId ? tl.events.find((e) => e.id === focusEventId) ?? null : null;
+    const focusedDrawNow = focusedEvent?.drawRequestId
+      ? twin.currentDrawState(user, projectId, focusedEvent.drawRequestId)
+      : null;
     ctx.sendHtml(
       renderDigitalTwin({
         nav: ctx.navFor(user, "twin"),
         scene,
-        focusEventId: ctx.searchParams.get("focus"),
+        focusEventId,
+        focusedEvent,
+        focusedDrawNow,
+        currentDraws: twin.currentOpenDrawStates(user, projectId),
+        projectLocation: tl.project.location,
         pinDetail: pinId ? safePin(() => twin.twinPinDetail(user, projectId, pinId)) : null,
         providers: twin.twinProviderReadiness(),
-        // The workspace's left pane: the SAME governed events the Timeline
-        // page reads, through the same viewer-scoped service. Read-only.
-        events: timeline.projectTimeline(user, projectId).events,
+        events: tl.events,
         mode: ctx.searchParams.get("mode"),
       })
     );

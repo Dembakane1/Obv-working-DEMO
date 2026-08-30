@@ -5635,3 +5635,94 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
   .ec-register .dtable td:first-child { min-width: 0; padding-bottom: 5px; }
   .ec-register .dtable td:first-child::before { content: none; }
 }
+
+/* =====================================================================
+   v27 — Timeline & Site Evidence workspace
+   The three-pane spatial project record: current-state context strip,
+   truth-class filter bar, Project Replay control, the governed stream
+   with truth/location chips, and the event-record inspector with its
+   strictly separated "At the time (recorded)" and "Current linked
+   state" blocks. Presentation only — every value is server-rendered
+   from stored records or labeled CURRENT; nothing here styles a
+   control that could change governed state.
+   ===================================================================== */
+
+/* Current-state context strip (all values LIVE, labeled). */
+.tse-context {
+  display: flex; flex-wrap: wrap; gap: 10px 22px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card, var(--panel, transparent));
+  padding: 10px 14px; margin: 10px 0 2px;
+}
+.tse-ctx-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tse-k {
+  font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-4); font-weight: 650;
+}
+.tse-v { font-size: 12.5px; color: var(--ink-1, inherit); }
+.tse-ctx-draw .sub { font-size: 11px; }
+
+/* Truth-class filter bar + replay control (stream pane). */
+.tse-filterbar {
+  display: flex; flex-wrap: wrap; gap: 5px;
+  padding: 8px 10px 6px; border-bottom: 1px solid var(--line);
+}
+.tse-chipbtn {
+  font: inherit; font-size: 11px; line-height: 1;
+  padding: 4px 8px; border-radius: 999px;
+  border: 1px solid var(--line); background: transparent;
+  color: var(--ink-3); cursor: pointer;
+}
+.tse-chipbtn:hover { border-color: var(--action, #2f6fed); color: var(--ink-1); }
+.tse-chipbtn.active {
+  border-color: var(--action, #2f6fed);
+  color: var(--action, #2f6fed); font-weight: 650;
+}
+.tse-replay { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.tse-replay-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; font-size: 12px;
+}
+.tse-replay-quick { display: inline-flex; gap: 4px; }
+.tse-replay input[type="range"] { width: 100%; margin: 6px 0 2px; }
+.tse-replay .sub { font-size: 10.5px; display: block; }
+
+/* Stream rows. */
+.tse-stream li[data-at] a { align-items: flex-start; }
+.tse-stream .tse-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px;
+  margin-top: 5px; background: var(--ink-4);
+}
+.tse-stream .tse-dot.high { background: var(--bad, #c53030); }
+.tse-stream .tse-dot.med { background: var(--warn, #b7791f); }
+.tse-stream .tse-dot.tse-tc-GOVERNED_FACT.low { background: var(--ok, #2f855a); }
+.tse-stream .tse-dot.tse-tc-ADVISORY_SIGNAL.low { background: var(--warn, #b7791f); }
+.tse-chip-xs { font-size: 9.5px; padding: 1px 6px; }
+.tse-stream .s-r { display: flex; flex-direction: column; gap: 3px; align-items: flex-end; }
+.tse-stream li.tse-active > a {
+  outline: 2px solid var(--action, #2f6fed); outline-offset: -2px;
+  border-radius: 8px;
+}
+
+/* Event-record inspector. */
+.tse-event { display: flex; flex-direction: column; gap: 7px; }
+.tse-event-title { margin: 0; font-size: 14px; line-height: 1.3; }
+.tse-block { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.tse-block h4 {
+  margin: 0 0 4px; font-size: 10.5px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-4);
+}
+.tse-block p { margin: 0 0 4px; font-size: 12.5px; }
+.tse-block p:last-child { margin-bottom: 0; }
+.tse-then { border-left: 3px solid var(--ink-4); }
+.tse-now { border-left: 3px solid var(--action, #2f6fed); }
+.tse-current-label {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--action, #2f6fed); font-weight: 700;
+}
+.tse-event-links a { margin-right: 10px; }
+
+@media (max-width: 640px) {
+  .tse-context { gap: 8px 16px; padding: 9px 11px; }
+  .tse-ctx-item { flex-basis: 100%; }
+}

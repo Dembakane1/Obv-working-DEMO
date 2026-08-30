@@ -1,9 +1,16 @@
-# Digital Twin
+# Timeline & Site Evidence (the Digital Twin maturity path)
 
 A strictly additive **visualization layer** inside the Project Timeline. The
-twin renders an interactive isometric site scene, stage progress, evidence
-pins, playback, and coverage metrics — all derived on read from records the
-governed subsystems already hold.
+product surface is named **Timeline & Site Evidence**: a spatial project
+record — chronology on the left, site evidence in the center, the selected
+record's explanation on the right. It renders an interactive isometric site
+scene, stage progress, evidence pins, playback, replay, and coverage metrics —
+all derived on read from records the governed subsystems already hold.
+
+OBV does not claim a "Digital Twin" as a current product: GPS-pinned evidence
+over recorded geometry is a spatial project record, not a twin. The twin is
+the **maturity path** this workspace is the first stage of (see
+[Digital Twin maturity path](#digital-twin-maturity-path) below).
 
 **Doctrine.** The twin owns no tables and performs no writes of any kind. It
 never changes evidence, inspections, approvals, payments, project progress, or
@@ -81,6 +88,78 @@ one.
 The client script (`/js/twin.js`) is a self-contained progressive
 enhancement: layer toggles, selection, pan/zoom, and playback. It issues GET
 requests only.
+
+## Timeline & Site Evidence workspace
+
+The `/timeline/twin/:projectId` page is the three-pane workspace over the
+machinery above:
+
+- **Left — governed timeline.** Newest-first stream of the project's derived
+  events, each carrying a **truth class** derived centrally in the event
+  constructor: `GOVERNED_FACT` (asserts a governed state or decision),
+  `HISTORICAL_EVENT` (something happened, no state assertion), or
+  `ADVISORY_SIGNAL` (advisory, never a decision). Compact truth-class
+  filters and a "Located only" toggle are client-side visibility over
+  already-authorized rows. Events derived from a record with stored
+  coordinates carry `spatial` (copied verbatim, never derived — a record
+  without coordinates carries null; the project's location is never used as
+  a stand-in).
+- **Center — site evidence.** The recorded-geometry scene, unchanged in its
+  honesty rules. The header states the count of GPS-located evidence records,
+  or "No spatial evidence recorded" when there are none.
+- **Right — the selected record.** `?event=<eventId>` (or the older
+  `?focus=`) server-renders the event's stored record. For a
+  `READINESS_TRANSITION` event (derived from the readiness machine's
+  immutable `draw_events` rows) the inspector strictly separates **"At the
+  time (recorded)"** — only what the stored row carries: from → to; the row
+  stores no cause, and the inspector says "Cause not recorded in this
+  historical event" rather than inventing one — from **"Current linked
+  state"** — live draw status, live readiness, and the deterministic
+  CURRENT NEXT ACTION, labeled as of this page render. Historical
+  transitions are never described with today's blockers.
+- **Project Replay.** A client-side window over the rendered, authorized
+  record: "Recorded events through: T" hides stream rows and record markers
+  whose OWN recorded timestamps are after T (structural geometry stays),
+  clears the selection, and updates the visible count. Quick ranges All /
+  30d / 7d rewind relative to the latest recorded event. Replay never
+  recomputes historical readiness — there is no readiness claim in a replay
+  window beyond the transitions actually recorded in it.
+- **Current context strip.** Recorded location (the stored project field),
+  latest recorded activity, spatial-evidence count, and per open draw the
+  **CURRENT DRAW STATE** (status, live readiness or "evaluation
+  unavailable", requested amount) and **CURRENT NEXT ACTION** from the
+  existing deterministic engine.
+
+## Digital Twin maturity path
+
+The deep value of a construction twin is not 3D graphics — it is a **spatial +
+temporal + provenance + governed-state architecture**: every record placed
+where it was recorded, ordered when it was recorded, traceable to who recorded
+it, and bound to the governed state it affected. 3D is a visualization option
+on top of that architecture, not the architecture. OBV's staged path:
+
+1. **Stage 1 — Spatial project record (CURRENT).** Recorded geometry, GPS
+   evidence pins, governed timeline synchronization, replay of recorded
+   history, honest empty states. Everything derived on read; nothing
+   invented. This is what ships today.
+2. **Stage 2 — Site-plan & document georeferencing (FUTURE).** Recorded
+   site-plan overlays and georeferenced drawings, only where a plan document
+   with a stored reference frame exists.
+3. **Stage 3 — Reality capture ingestion (FUTURE).** Drone imagery / LiDAR /
+   photogrammetry through the disabled provider boundaries below, stored as
+   evidence with capture provenance — never as a substitute for governed
+   verification.
+4. **Stage 4 — 3D model correlation (FUTURE).** BIM/IFC model linkage where a
+   model exists, correlated to milestones and evidence — visualization of
+   governed state, never a second source of truth.
+5. **Stage 5 — Continuous twin (FUTURE).** Ongoing capture streams reconciled
+   against the governed record, with the same doctrine: the twin owns no
+   data, performs no writes, and the Timeline remains the authoritative
+   interface.
+
+Only Stage 1 exists in the product today; every later stage is a disabled,
+labeled boundary. No IoT/sensor telemetry is part of this path's current
+scope.
 
 ## Future provider boundaries
 
