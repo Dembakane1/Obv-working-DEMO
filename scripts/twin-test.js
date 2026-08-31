@@ -910,10 +910,158 @@ async function main() {
   // (n) Honest zero-spatial label is wired to the pin count, and the
   //     mobile segmented control offers Timeline | Site.
   const twinViewSrc = fs.readFileSync(path.join(ROOT, "src/server/view/twinPages.tsx"), "utf8");
-  assert(/No spatial evidence recorded/.test(twinViewSrc) && /pinCount > 0/.test(twinViewSrc),
+  assert(/No spatial evidence recorded/.test(twinViewSrc) && /locatedCount > 0/.test(twinViewSrc),
     "a project with zero GPS-located records states 'No spatial evidence recorded'");
   assert(/mode=timeline/.test(tsePage.html) && /mode=twin/.test(tsePage.html),
     "the mobile segmented control offers both workspace modes");
+
+  // ---------------------------------------------------------- section 14
+  // Corrective pass: inspection records are NON-SPATIAL, the replay
+  // window equals the rendered window, timeline source caps reach the
+  // page, and the spatial count is a record count — never a pin count.
+  console.log("\n== 14. Truth-preservation corrections ==");
+
+  // (a) A jurisdictional inspection is NEVER placed — not even when its
+  //     milestone has real recorded SEGMENT geometry. One record's
+  //     coordinates are never substituted for another's. This assertion
+  //     fails if inspection-on-segment placement is ever reintroduced.
+  const segMilestone = repo.listSpatialFeatures("proj-r47")
+    .find((f) => f.kind === "SEGMENT" && f.milestoneId && f.geometry.length > 0).milestoneId;
+  db.prepare(
+    `INSERT INTO jurisdictional_inspections
+       (id, organization_id, project_id, milestone_id, inspection_type, required, status, scheduled_at, created_at, updated_at)
+     VALUES (?,?,?,?,?,1,'SCHEDULED',?,?,?)`
+  ).run("insp-tse-nospatial", project.organizationId, "proj-r47", segMilestone, "GRADING",
+    "2026-06-20T09:00:00.000Z", "2026-06-19T09:00:00.000Z", "2026-06-19T09:00:00.000Z");
+  const inspScene = twin.twinScene(funder, "proj-r47");
+  // The plain-fact "no recorded result" advisory is an element with NO
+  // points (listed, never drawn) — the invariant is that no
+  // inspection-derived element ever carries coordinates, and the
+  // INSPECTION_MARKER kind is never placed at all.
+  assert(
+    inspScene.elements.every(
+      (el) => el.kind !== "INSPECTION_MARKER" &&
+        (el.sourceTable !== "jurisdictional_inspections" || el.points.length === 0)
+    ),
+    "NO inspection is ever a placed scene element — milestone geometry is not the inspection's location"
+  );
+  const inspDockRow = inspScene.anchored.find((a) => a.sourceRecordId === "insp-tse-nospatial");
+  assert(Boolean(inspDockRow) && inspDockRow.group === "INSPECTION",
+    "the inspection appears in the anchored dock instead");
+  assert(/Spatial location: not recorded/.test(inspDockRow.detail),
+    "the dock row states 'Spatial location: not recorded'");
+  assert(/Linked to /.test(inspDockRow.detail),
+    "the dock row states the milestone linkage by name, not by borrowed geometry");
+  assert(
+    inspScene.elements.some((el) => el.kind === "SEGMENT" && el.milestoneId === segMilestone),
+    "the milestone's own SEGMENT geometry remains drawn normally"
+  );
+  const inspTl = tl.projectTimeline(funder, "proj-r47");
+  const inspEvents = inspTl.events.filter((e) => e.sourceRecordId === "insp-tse-nospatial");
+  assert(inspEvents.length > 0, "the inspection remains on the governed timeline");
+  assert(inspEvents.every((e) => e.spatial === null),
+    "no inspection event carries a spatial location (the record stores none)");
+  assert(
+    inspScene.elements.some((el) => el.kind === "EVIDENCE_PIN"),
+    "evidence with its OWN stored GPS fix still receives its normal pin"
+  );
+  const inspLayer = inspScene.layers.find((l) => l.key === "inspections");
+  assert(/Inspection records/.test(inspLayer.label) && /never placed/.test(inspLayer.note ?? ""),
+    "the layer is named 'Inspection records' and states that inspections are listed, never placed");
+  db.prepare("DELETE FROM jurisdictional_inspections WHERE id = 'insp-tse-nospatial'").run();
+
+  // (b) Replay window = the rendered window. DATA_A's r47 carries the
+  //     1200-event bulk history from section 10, so a second server over
+  //     DATA_A exercises the capped case with a REAL >STREAM_CAP record.
+  const PORT_A = PORT + 1;
+  const BASE_A = `http://127.0.0.1:${PORT_A}`;
+  const serverA = spawn(process.execPath, [path.join(ROOT, "dist/server/http/server.js")], {
+    env: { ...process.env, OBV_DATA_DIR: DATA_A, PORT: String(PORT_A), OBV_BANKING_PROVIDER: "mock", OBV_BANKING_MODE: "demo" },
+    stdio: "ignore",
+  });
+  try {
+    let healthyA = false;
+    for (let i = 0; i < 60; i += 1) {
+      try { const r = await fetch(`${BASE_A}/api/health`); if (r.ok) { healthyA = true; break; } } catch {}
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!healthyA) fail("DATA_A server did not become healthy");
+    const sessA = await fetch(`${BASE_A}/api/session`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId: "user-funder" }), redirect: "manual",
+    });
+    const cookieA = sessA.headers.getSetCookie()[0].split(";")[0];
+    const pageA = async (p) => {
+      const r = await fetch(`${BASE_A}${p}`, { headers: { cookie: cookieA, accept: "text/html" }, redirect: "manual" });
+      return { status: r.status, html: await r.text() };
+    };
+    const bigPage = await pageA("/timeline/twin/proj-r47");
+    const bigApi = await (await fetch(`${BASE_A}/api/timeline/project/proj-r47`, { headers: { cookie: cookieA } })).json();
+    assert(bigApi.events.length > 80, `fixture project has ${bigApi.events.length} events (> STREAM_CAP)`);
+    const bigData = JSON.parse(bigPage.html.split('id="twin-data">')[1].split("</script>")[0]);
+    const rowAtsA = [...bigPage.html.matchAll(/<li data-at="([^"]+)"/g)].map((m) => m[1]);
+    assert(rowAtsA.length === 80, "the pane renders exactly the most recent STREAM_CAP events");
+    const sortedRows = rowAtsA.slice().sort();
+    assert(bigData.replay.min === sortedRows[0] && bigData.replay.max === sortedRows[sortedRows.length - 1],
+      "the replay scrubber's bounds are EXACTLY the rendered window's own first and last events");
+    const expectedMin = bigApi.events[bigApi.events.length - 80].at;
+    assert(bigData.replay.min === expectedMin,
+      "the replay minimum is the oldest event IN the window, not the oldest event in history");
+    assert(bigData.replay.min > bigApi.events[0].at,
+      "history older than the window is NOT spanned by the scrubber (no false empty periods)");
+    const capNote = new RegExp(`most recent 80 of ${bigApi.events.length} recorded events`);
+    assert(capNote.test(bigPage.html), "the page discloses 'most recent 80 of N recorded events'");
+    assert(/Earlier history on the full Timeline/.test(bigPage.html),
+      "the full Timeline remains the stated destination for earlier history");
+    assert(!/\(full record\)/.test(bigPage.html) && /entire replay window/.test(bigPage.html),
+      "'All' means the disclosed replay window — the page never claims a full record over a bounded window");
+    assert(/30d ago/.test(bigPage.html) && /7d ago/.test(bigPage.html),
+      "quick ranges are honestly labeled as rewinds: '30d ago' / '7d ago'");
+
+    // (c) Timeline source caps reach the page. 500 advisory signals fire
+    //     the real SIGNAL_READ_CAP — no invented lower cap.
+    const insSig = db.prepare(
+      `INSERT INTO evidence_signals
+         (id, occurred_at, category, severity, confidence, subject_type, subject_id,
+          organization_id, project_id, title, explanation, recommendation, signal_key)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    );
+    for (let i = 0; i < 500; i += 1) {
+      insSig.run(`sig-tse-${i}`, "2026-05-01T00:00:00.000Z", "METADATA", "LOW", 0.5,
+        "EVIDENCE_ITEM", "ev-ms-1", project.organizationId, "proj-r47",
+        `bulk advisory ${i}`, "synthetic cap fixture", "review", `sig-tse-key-${i}`);
+    }
+    const cappedPage = await pageA("/timeline/twin/proj-r47");
+    assert(/Partial timeline record/.test(cappedPage.html),
+      "a fired source cap surfaces the PARTIAL TIMELINE RECORD disclosure on the workspace");
+    assert(/evidence_signals: showing the most recent 500 advisory findings/.test(cappedPage.html),
+      "the cap's own message reaches the page verbatim");
+    assert(/returned, authorized timeline window/.test(cappedPage.html),
+      "Project Replay is marked as replaying the returned window, not complete history");
+    db.prepare("DELETE FROM evidence_signals WHERE id LIKE 'sig-tse-%'").run();
+
+    // (d) The spatial-evidence context count is a RECORD count derived
+    //     from events with stored fixes, not the rendered pin count.
+    const cleanPage = await pageA("/timeline/twin/proj-r47");
+    const spatialM = /Spatial evidence<\/span><span class="tse-v">(\d+) GPS-located record/.exec(cleanPage.html);
+    const cleanApi = await (await fetch(`${BASE_A}/api/timeline/project/proj-r47`, { headers: { cookie: cookieA } })).json();
+    const apiLocated = cleanApi.events.filter((e) => e.spatial).length;
+    assert(spatialM && Number(spatialM[1]) === apiLocated,
+      `the spatial-evidence count equals the located RECORD count (${apiLocated})`);
+    const viewSrc = fs.readFileSync(path.join(ROOT, "src/server/view/twinPages.tsx"), "utf8");
+    assert(/locatedCount = events\.filter\(\(e\) => e\.spatial\)\.length/.test(viewSrc),
+      "the context metric derives from records with stored fixes — a pin cap can never masquerade as it");
+  } finally {
+    try { serverA.kill(); } catch {}
+  }
+
+  // (e) Clean case: no fired cap → no false partial-history warning, and
+  //     an uncapped (< STREAM_CAP) project shows no window-cap note.
+  const cleanB = await page("/timeline/twin/proj-r47", cookie);
+  assert(!/Partial timeline record/.test(cleanB.html),
+    "sourceCaps = [] shows NO partial-record warning");
+  assert(!/Replay window: most recent/.test(cleanB.html) && /entire replay window/.test(cleanB.html),
+    "an uncapped project truthfully describes all returned events as the replay window");
 
   console.log(`\nDIGITAL TWIN TESTS PASSED — ${passed} checkpoints.`);
   console.log("THE TWIN SHOWS THE RECORD. THE TIMELINE REMAINS AUTHORITATIVE.");

@@ -78,6 +78,9 @@ export async function handleTwinRoutes(ctx: TwinRouteContext): Promise<boolean> 
         focusedDrawNow,
         currentDraws: twin.currentOpenDrawStates(user, projectId),
         projectLocation: tl.project.location,
+        // The timeline's own source-level read caps, surfaced verbatim —
+        // a capped history must never present as the complete record.
+        sourceCaps: tl.sourceCaps,
         pinDetail: pinId ? safePin(() => twin.twinPinDetail(user, projectId, pinId)) : null,
         providers: twin.twinProviderReadiness(),
         events: tl.events,

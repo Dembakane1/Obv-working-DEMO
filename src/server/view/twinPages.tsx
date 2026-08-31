@@ -122,8 +122,12 @@ function SceneSvg(props: { scene: TwinScene }): VNode {
   const boundaryEl = drawables.find((e) => e.kind === "BOUNDARY");
   const routeEls = drawables.filter((e) => e.kind === "ROUTE");
   const segments = drawables.filter((e) => e.kind === "SEGMENT");
+  // Placed markers: evidence pins at their OWN recorded fixes, and
+  // advisory markers whose subject evidence stores a real fix. Records
+  // without their own coordinates (inspections included) live in the
+  // dock — never at another record's position.
   const markers = drawables
-    .filter((e) => e.kind === "EVIDENCE_PIN" || e.kind === "INSPECTION_MARKER" || (e.kind === "ADVISORY_MARKER" && e.points.length > 0))
+    .filter((e) => e.kind === "EVIDENCE_PIN" || (e.kind === "ADVISORY_MARKER" && e.points.length > 0))
     .slice()
     .sort((a, b) => fit.toY(midpointOf(a.points)) - fit.toY(midpointOf(b.points)));
 
@@ -245,25 +249,9 @@ function SceneSvg(props: { scene: TwinScene }): VNode {
         })}
       </g>
 
-      <g data-layer-group="inspections">
-        {markers.filter((m) => m.kind === "INSPECTION_MARKER").map((m) => {
-          const p = m.points[0];
-          return (
-            <g
-              className={`twin-el twin-inspection twin-insp-${m.status ?? "NONE"}`}
-              data-el={m.id}
-              data-milestone={m.milestoneId ?? ""}
-              transform={`translate(${fit.toX(p).toFixed(1)},${(fit.toY(p) - 8).toFixed(1)})`}
-              tabindex="0"
-              role="button"
-              aria-label={m.label}
-            >
-              <rect x="-6.5" y="-6.5" width="13" height="13" rx="2.5" transform="rotate(45)" className="twin-insp-body" />
-              <text y="3.6" text-anchor="middle" className="twin-insp-glyph">i</text>
-            </g>
-          );
-        })}
-      </g>
+      {/* No inspection group: inspection records store no coordinates,
+          so they are never drawn — they live in the dock, linked to
+          their milestone by name, not by borrowed geometry. */}
 
       <g data-layer-group="advisory">
         {markers.filter((m) => m.kind === "ADVISORY_MARKER").map((m) => {
@@ -609,6 +597,9 @@ export function renderDigitalTwin(input: {
   /** The project's recorded location field (a stored string, not a
    *  coordinate claim). */
   projectLocation?: string;
+  /** The timeline's own source-level read caps (ProjectTimeline.sourceCaps)
+   *  — distinct from the scene's caps, surfaced verbatim when any fired. */
+  sourceCaps?: string[];
   pinDetail: TwinPinDetail | null;
   providers: { providers: TwinProviderSpec[]; implemented: number; notice: string };
   /** The project's governed timeline events — the workspace's left pane.
@@ -638,13 +629,23 @@ export function renderDigitalTwin(input: {
 
   const advisories = s.elements.filter((e) => e.kind === "ADVISORY_MARKER");
   const events = input.events ?? [];
+  const sourceCaps = input.sourceCaps ?? [];
   const syncedEventIds = new Set(s.sync.map((x) => x.eventId));
   const evTime = (iso: string) => iso.replace("T", " ").slice(5, 16);
 
-  // Project Replay: each element's OWN moment is the earliest recorded
-  // event derived from its source record — never an invented time. Only
-  // record markers replay; structural geometry (boundary, route, stage
-  // segments) is configuration, not an event, and stays visible.
+  // Newest first: an operator reads the latest recorded activity at the
+  // top. The cap is stated on the page, never silent.
+  const STREAM_CAP = 80;
+  const shown = events.slice().reverse().slice(0, STREAM_CAP);
+
+  // Project Replay operates over EXACTLY the shown window: the scrubber
+  // can only hide rows the pane actually rendered, so its bounds are the
+  // shown window's own first and last events — a scrub must never present
+  // a false "empty" period the pane simply did not render. Each element's
+  // OWN moment is the earliest recorded event derived from its source
+  // record — never an invented time. Only record markers replay;
+  // structural geometry (boundary, route, stage segments) is
+  // configuration, not an event, and stays visible.
   const eventAtById = new Map(events.map((e) => [e.id, e.at]));
   const elementAt: Record<string, string> = {};
   for (const x of s.sync) {
@@ -652,14 +653,16 @@ export function renderDigitalTwin(input: {
     if (!at) continue;
     if (!elementAt[x.elementId] || at < elementAt[x.elementId]) elementAt[x.elementId] = at;
   }
-  const replayMin = events.length > 0 ? events[0].at : null;
-  const replayMax = events.length > 0 ? events[events.length - 1].at : null;
+  // `shown` is newest-first, so the disclosed window runs [last, first].
+  const windowMin = shown.length > 0 ? shown[shown.length - 1].at : null;
+  const windowMax = shown.length > 0 ? shown[0].at : null;
   // Some records carry dates that have not arrived yet (a recorded permit
   // expiry). They are schedule, not history: the "latest recorded
   // activity" and the replay quick-range anchor use the latest event
   // that has actually happened, never a future-dated row.
   const pastEvents = events.filter((e) => e.at <= s.asOf);
   const lastPastAt = pastEvents.length > 0 ? pastEvents[pastEvents.length - 1].at : null;
+  const windowAnchor = shown.find((e) => e.at <= s.asOf)?.at ?? windowMax;
 
   const clientData = {
     projectId: s.projectId,
@@ -673,17 +676,16 @@ export function renderDigitalTwin(input: {
     layers: s.layers.map((l) => ({ key: l.key, available: l.available, defaultOn: l.defaultOn })),
     elementAt,
     replay:
-      replayMin && replayMax
-        ? { min: replayMin, max: replayMax, anchor: lastPastAt ?? replayMax }
+      windowMin && windowMax
+        ? { min: windowMin, max: windowMax, anchor: windowAnchor ?? windowMax }
         : null,
   };
 
-  const pinCount = s.elements.filter((e) => e.kind === "EVIDENCE_PIN").length;
+  // The context metric counts RECORDS (events whose source record stores
+  // its own fix), never rendered pins — the scene's pin cap must never
+  // masquerade as the total record count.
+  const locatedCount = events.filter((e) => e.spatial).length;
   const currentDraws = input.currentDraws ?? [];
-  // Newest first: an operator reads the latest recorded activity at the
-  // top. The cap is stated in the panel foot, never silent.
-  const STREAM_CAP = 80;
-  const shown = events.slice().reverse().slice(0, STREAM_CAP);
 
   return renderDocument(
     <AppShell title="Timeline & Site Evidence" nav={input.nav} context={`${s.projectName} · Timeline & Site Evidence`}>
@@ -717,8 +719,8 @@ export function renderDigitalTwin(input: {
           <div className="tse-ctx-item">
             <span className="tse-k">Spatial evidence</span>
             <span className="tse-v">
-              {pinCount > 0
-                ? `${pinCount} GPS-located record${pinCount === 1 ? "" : "s"}`
+              {locatedCount > 0
+                ? `${locatedCount} GPS-located record${locatedCount === 1 ? "" : "s"}`
                 : "No spatial evidence recorded"}
             </span>
           </div>
@@ -774,16 +776,38 @@ export function renderDigitalTwin(input: {
                 <button type="button" className="tse-chipbtn" data-tse-truth="ADVISORY_SIGNAL">Advisory</button>
                 <button type="button" className="tse-chipbtn" data-tse-located>Located only</button>
               </div>
+              {sourceCaps.length > 0 ? (
+                <div className="tse-partial" role="note">
+                  <b>Partial timeline record</b>
+                  <span className="sub">
+                    Some source registers reached their read limit. Project Replay replays the
+                    returned, authorized timeline window — not guaranteed complete project history.
+                  </span>
+                  <ul className="tse-partial-caps">
+                    {sourceCaps.map((c) => (
+                      <li className="sub">{c}</li>
+                    ))}
+                  </ul>
+                  <a className="sub" href={`/timeline/project/${s.projectId}`}>Open the full Timeline →</a>
+                </div>
+              ) : null}
               {clientData.replay ? (
                 <div className="tse-replay" id="tse-replay">
                   <div className="tse-replay-head">
                     <b>Project Replay</b>
                     <span className="tse-replay-quick">
                       <button type="button" className="tse-chipbtn active" data-tse-range="all">All</button>
-                      <button type="button" className="tse-chipbtn" data-tse-range="30">30d</button>
-                      <button type="button" className="tse-chipbtn" data-tse-range="7">7d</button>
+                      <button type="button" className="tse-chipbtn" data-tse-range="30">30d ago</button>
+                      <button type="button" className="tse-chipbtn" data-tse-range="7">7d ago</button>
                     </span>
                   </div>
+                  {events.length > STREAM_CAP ? (
+                    <span className="sub tse-replay-capnote">
+                      Replay window: most recent {STREAM_CAP} of {events.length} recorded events
+                      ({clientData.replay.min.slice(0, 10)} → {clientData.replay.max.slice(0, 10)}).{" "}
+                      <a href={`/timeline/project/${s.projectId}`}>Earlier history on the full Timeline →</a>
+                    </span>
+                  ) : null}
                   <input
                     type="range"
                     id="tse-replay-scrub"
@@ -793,7 +817,7 @@ export function renderDigitalTwin(input: {
                     aria-label="Recorded events through"
                   />
                   <span className="sub" id="tse-replay-through">
-                    Recorded events through: {clientData.replay.max.replace("T", " ").slice(0, 16)} UTC (full record)
+                    Recorded events through: {clientData.replay.max.replace("T", " ").slice(0, 16)} UTC (entire replay window)
                   </span>
                 </div>
               ) : null}

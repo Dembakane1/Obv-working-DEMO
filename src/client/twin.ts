@@ -328,10 +328,13 @@
     // — the selection clears so a hidden record is never left "selected".
     clearSelection();
     if (replayThrough) {
+      // "Entire replay window" — never "full record": the window is the
+      // disclosed shown set, and any earlier history lives on the full
+      // Timeline. Layer counts are not windowed and say so.
       const iso = Number.isFinite(ms) ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) : "";
       replayThrough.textContent = describeFull
-        ? `Recorded events through: ${new Date(replayMaxMs).toISOString().replace("T", " ").slice(0, 16)} UTC (full record)`
-        : `Recorded events through: ${iso} UTC · layer counts describe the full record`;
+        ? `Recorded events through: ${new Date(replayMaxMs).toISOString().replace("T", " ").slice(0, 16)} UTC (entire replay window)`
+        : `Recorded events through: ${iso} UTC · layer counts are not windowed`;
     }
     applyStreamVisibility();
     applyReplayToScene();
@@ -369,7 +372,10 @@
         } else {
           const days = Number(range);
           const anchor = Number.isFinite(replayAnchorMs) ? replayAnchorMs : replayMaxMs;
-          const ms = anchor - days * 86_400_000;
+          // "Nd ago" rewinds the window; a rewind past the window's own
+          // start clamps to the start — the scrubber minimum always shows
+          // the window's first event, never a false empty period.
+          const ms = Math.max(anchor - days * 86_400_000, replayMinMs);
           const frac = Math.min(Math.max((ms - replayMinMs) / span, 0), 1);
           replayScrub.value = String(Math.round(frac * 1000));
           setCutoff(ms, false);

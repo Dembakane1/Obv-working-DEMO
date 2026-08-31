@@ -25,7 +25,7 @@ handler; every non-GET is refused with 405.
 | Site boundary | `projects.site_boundary` (recorded geofence) | Drawn only when recorded |
 | Route / stage geometry | `spatial_features` ROUTE / SEGMENT rows | Drawn only when recorded |
 | Evidence pins | `evidence_items` with a **real GPS fix** | Items without GPS are listed per stage, never placed |
-| Inspection markers | `jurisdictional_inspections` | Placed at the midpoint of the milestone's recorded geometry; dock otherwise |
+| Inspection records | `jurisdictional_inspections` | **Never placed** — the record stores no coordinates, and milestone geometry is the milestone's location, not the inspection's. Listed in the dock with the milestone linkage stated |
 | Permits, official records | `permits`, `official_source_records` | **Anchored dock** — no coordinates exist, so none are invented |
 | Advisory markers | Evidence Intelligence signals + plain record facts | Drawn at the subject's recorded GPS when it exists; listed otherwise |
 
@@ -120,10 +120,16 @@ machinery above:
 - **Project Replay.** A client-side window over the rendered, authorized
   record: "Recorded events through: T" hides stream rows and record markers
   whose OWN recorded timestamps are after T (structural geometry stays),
-  clears the selection, and updates the visible count. Quick ranges All /
-  30d / 7d rewind relative to the latest recorded event. Replay never
-  recomputes historical readiness — there is no readiness claim in a replay
-  window beyond the transitions actually recorded in it.
+  clears the selection, and updates the visible count. The replay window is
+  exactly the shown stream window (the most recent `STREAM_CAP` events);
+  when the project has more, the page discloses "most recent N of M" with
+  the window's dates and points at the full Timeline for earlier history —
+  the scrubber never spans events the pane did not render, and nothing is
+  labeled a "full record". Quick ranges All / "30d ago" / "7d ago" rewind
+  relative to the latest event in the window that actually happened,
+  clamped to the window's start. Replay never recomputes historical
+  readiness — there is no readiness claim in a replay window beyond the
+  transitions actually recorded in it.
 - **Current context strip.** Recorded location (the stored project field),
   latest recorded activity, spatial-evidence count, and per open draw the
   **CURRENT DRAW STATE** (status, live readiness or "evaluation

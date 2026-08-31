@@ -5726,3 +5726,17 @@ a.kpi { text-decoration: none; } a.kpi:hover { border-color: var(--line-2); back
   .tse-context { gap: 8px 16px; padding: 9px 11px; }
   .tse-ctx-item { flex-basis: 100%; }
 }
+
+/* v27.1 — corrective pass: partial-record disclosure + replay window note */
+.tse-partial {
+  margin: 8px 10px 0; padding: 8px 10px;
+  border: 1px solid var(--warn, #b7791f); border-left-width: 3px;
+  border-radius: 8px; font-size: 12px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.tse-partial > b {
+  font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--warn, #b7791f);
+}
+.tse-partial-caps { list-style: disc; margin: 2px 0 0; padding-left: 18px; }
+.tse-replay-capnote { display: block; margin: 4px 0 2px; font-size: 10.5px; }
