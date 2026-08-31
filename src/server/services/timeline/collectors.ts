@@ -263,6 +263,66 @@ export function collectPermits(ctx: CollectorContext): void {
         recordStatus: "AUTHORITATIVE",
       });
     }
+    // Permit amendments — NON-SPATIAL governed records: the amendment's
+    // recording and, separately, the reviewed determination of its
+    // inspection-scheduling effect. Never a site marker; never inferred.
+    for (const a of safe(() => repo.listPermitAmendmentsForPermit(p.id), [])) {
+      push({
+        at: a.createdAt,
+        category: "PERMIT",
+        type: "PERMIT_AMENDMENT_RECORDED",
+        title: `Permit amendment recorded — ${a.amendmentReference}`,
+        explanation:
+          `Amendment ${a.amendmentReference} on permit ${p.permitNumber} was recorded as ${a.status}. ` +
+          "Whether it affects required-inspection scheduling is a separate reviewed determination.",
+        actorUserId: a.recordedByUserId,
+        projectId: project.id,
+        organizationId: project.organizationId,
+        sourceTable: "permit_amendments",
+        sourceRecordId: a.id,
+        href: `/permits`,
+        recordStatus: "AUTHORITATIVE",
+      });
+      if (a.effectDeterminedAt) {
+        push({
+          at: a.effectDeterminedAt,
+          category: "PERMIT",
+          type: "AMENDMENT_EFFECT_DETERMINED",
+          title: `Amendment inspection effect determined — ${a.amendmentReference}`,
+          explanation:
+            `An authorized reviewer recorded the jurisdictional determination for amendment ${a.amendmentReference}: ` +
+            `required-inspection scheduling ${a.inspectionSchedulingEffect}${a.effectBasis ? ` (${a.effectBasis})` : ""}. ` +
+            "OBV records the determination — it never interprets law.",
+          actorUserId: a.effectDeterminedBy,
+          projectId: project.id,
+          organizationId: project.organizationId,
+          sourceTable: "permit_amendments",
+          sourceRecordId: a.id,
+          href: `/permits`,
+          recordStatus: "AUTHORITATIVE",
+          severity: a.inspectionSchedulingEffect === "BLOCKED" ? "MEDIUM" : "INFO",
+          change: { field: "inspection scheduling", previous: null, current: a.inspectionSchedulingEffect },
+        });
+      }
+      if (a.resolvedAt) {
+        push({
+          at: a.resolvedAt,
+          category: "PERMIT",
+          type: "PERMIT_AMENDMENT_RESOLVED",
+          title: `Permit amendment ${a.status.toLowerCase()} — ${a.amendmentReference}`,
+          explanation:
+            `Amendment ${a.amendmentReference} reached ${a.status}. Resolution never passes an inspection — ` +
+            "the required inspection remains its own governed record.",
+          projectId: project.id,
+          organizationId: project.organizationId,
+          sourceTable: "permit_amendments",
+          sourceRecordId: a.id,
+          href: `/permits`,
+          recordStatus: "AUTHORITATIVE",
+          change: { field: "status", previous: "PENDING", current: a.status },
+        });
+      }
+    }
   }
 
   // Permit basis versions + corrections (DMV Draw Control).

@@ -54,7 +54,29 @@ requirement than project configuration.
 | `READY` | Every configured required condition is satisfied. Means **ready for lender review** — not approval. |
 | `HOLD` | ≥1 blocking requirement is unmet and at least one is not exception-eligible under policy. |
 | `EXCEPTION_REVIEW` | Every configured requirement is satisfied **except** formally recorded exceptions awaiting the lender's disposition, and policy permits proceeding past them. Any other outstanding requirement is a HOLD — status describes what is outstanding; whether a documented override may proceed at decision time is a separate, policy-governed axis. |
-| `INCOMPLETE` | OBV lacks enough **governed information** to support a readiness conclusion — about the draw itself (draft, cancelled, no lines, structure incomplete) or about the jurisdictional surface. An undetermined inspection requirement (`INSPECTION_REQUIREMENT_UNKNOWN`) and a line with no milestone mapping (`LINE_WITHOUT_MILESTONE`; not raised on DMV projects, whose control record evaluates lines by its own line-scoped requirements) are unknown-information **blocking** reasons: alone they resolve INCOMPLETE — never READY, never a satisfied claim, and the category rolls up `UNKNOWN` — and beside a substantive blocker the draw HOLDs with the unknown still visible. They are never exception-eligible: missing information is resolved through the governed workflows, never waived into existence. (An unknown-status permit is different — the gates record it as `PERMIT_NOT_ACTIVE`, a substantive PERMIT-category blocker where configuration gates it: UNKNOWN never behaves as ACTIVE.) |
+| `INCOMPLETE` | OBV lacks enough **governed information** to support a readiness conclusion — about the draw itself (draft, cancelled, no lines, structure incomplete) or about the jurisdictional surface. The unknown-information **blocking** reasons are classified centrally (`UNKNOWN_INFO_CODES` / `isUnknownInformation()`): an undetermined inspection requirement (`INSPECTION_REQUIREMENT_UNKNOWN`), a line with no milestone mapping (`LINE_WITHOUT_MILESTONE`; not raised on DMV projects, whose control record evaluates lines by its own line-scoped requirements), a required permit whose authoritative current status cannot be established (`PERMIT_STATUS_UNKNOWN`), and an open permit amendment whose required-inspection scheduling effect has no recorded determination (`AMENDMENT_INSPECTION_EFFECT_UNKNOWN`). Alone they resolve INCOMPLETE — never READY, never a satisfied claim, and the category rolls up `UNKNOWN` — and beside a substantive blocker the draw HOLDs with the unknown still visible. They are never exception-eligible: missing information is resolved through the governed workflows, never waived into existence. |
+
+### Known condition vs unknown information — the jurisdictional doctrine
+
+```
+KNOWN FAILURE                       → HOLD   (exception eligibility per policy)
+MISSING / UNKNOWN GOVERNED INFO     → INCOMPLETE (never approvable by exception)
+```
+
+| Fact | Code | Class | Result alone | exceptionAllowed |
+|---|---|---|---|---|
+| Required permit missing entirely | `REQUIRED_PERMIT_MISSING` | KNOWN missing control | HOLD | per PERMIT policy |
+| Permit DRAFT / APPLIED / CLOSED | `PERMIT_NOT_ACTIVE` | KNOWN recorded status | HOLD | per PERMIT policy |
+| Permit SUSPENDED / EXPIRED / REVOKED | `PERMIT_SUSPENDED` / `PERMIT_EXPIRED` / `PERMIT_REVOKED` | KNOWN recorded status | HOLD | per PERMIT policy |
+| Permit status **UNKNOWN** | `PERMIT_STATUS_UNKNOWN` | **UNKNOWN INFORMATION** | INCOMPLETE | **false, always** |
+| Amendment effect recorded BLOCKED | `PERMIT_AMENDMENT_BLOCKS_INSPECTION` | KNOWN recorded determination | HOLD | per GOVERNMENT_INSPECTION policy |
+| Amendment effect **not determined** | `AMENDMENT_INSPECTION_EFFECT_UNKNOWN` | **UNKNOWN INFORMATION** | INCOMPLETE | **false, always** |
+
+"No permit" and "unknown permit status" are different facts and never
+collapse: the first is a known missing required control, the second means
+OBV cannot establish whether the requirement is satisfied. Where permit
+configuration does not gate activity, an unknown status still surfaces as
+a warning — never a silent pass.
 
 ## 3. Blocker model
 
@@ -119,6 +141,20 @@ Reuses the existing normalized model — no per-jurisdiction engines:
 ```
 JurisdictionProfile (DC / MD / VA template keys, authority, portal)
   → Permit (effectiveStatus; UNKNOWN never ACTIVE)
+    → PermitAmendment (jurisdiction-neutral: the amendment's own recorded
+      lifecycle PENDING/APPROVED/REJECTED/WITHDRAWN/UNKNOWN is SEPARATE
+      from its inspectionSchedulingEffect BLOCKED/ALLOWED/UNKNOWN — the
+      effect is a reviewed jurisdictional determination with basis and
+      attribution, never inferred from the word "pending". While an OPEN
+      amendment's recorded effect is BLOCKED, a not-yet-passed gated
+      required inspection raises PERMIT_AMENDMENT_BLOCKS_INSPECTION
+      (HOLD, the deterministic primary — "resolve the amendment, then
+      complete the required inspection"); an undetermined effect raises
+      AMENDMENT_INSPECTION_EFFECT_UNKNOWN (INCOMPLETE-side, never
+      waivable). Resolving an amendment clears ONLY these reasons: the
+      required inspection remains its own governed record — resolution
+      never passes an inspection, and no historical transition, snapshot
+      or audit row is rewritten.)
     → InspectionRequirement per milestone (REQUIRED / NOT_REQUIRED / UNKNOWN,
       reviewed determination with basis + attribution,
       gates: mustPassBeforeDrawReview / mustPassBeforeGovernance,
@@ -126,6 +162,19 @@ JurisdictionProfile (DC / MD / VA template keys, authority, portal)
       → JurisdictionalInspection (result lifecycle, reinspection chain)
       → DMV LineInspectionRequirement (sequence + prerequisite) where adopted
 ```
+
+**Governing basis ≠ latest rule.** Each permit carries its own reviewed
+governing basis (`applicableCodeEdition`, `codeEffectiveDate`, `codeBasis`,
+`codeDeterminedBy/At`, `configurationVersion`) — the project's recorded
+applicable basis, which readiness consumes. A transition/grandfather
+determination ("plan accepted before the newer edition's effective date —
+project remains under the prior rule") is expressed in the existing
+`codeBasis` text with full provenance; recording a newer basis on one
+project never rewrites another project's recorded basis, and every change
+is a separate attributable audit entry (pinned by regression). OBV never
+concludes that the latest published rule governs a project, and this
+engine never calculates grandfather eligibility — an authorized reviewer
+records the determination and its basis.
 
 Requirements are configured/confirmed by authorized humans from reviewed
 sources. Official-source retrieval remains

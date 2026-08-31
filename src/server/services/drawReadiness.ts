@@ -200,11 +200,20 @@ const UNKNOWN_INFO_CODES = new Set([
   // draw HOLDs and the unknown stays visible in blockingReasons. Both
   // are non-exceptionable — missing information cannot be waived into
   // existence — and the category rolls up UNKNOWN, never PASS.
-  // (An unknown-status PERMIT is different: the gates record it as
-  // PERMIT_NOT_ACTIVE — "UNKNOWN never behaves as ACTIVE" — a
-  // substantive PERMIT-category HOLD where configuration gates it.)
   "INSPECTION_REQUIREMENT_UNKNOWN",
   "LINE_WITHOUT_MILESTONE",
+  // A required permit whose authoritative current status cannot be
+  // established. KNOWN non-active statuses (DRAFT / APPLIED / SUSPENDED /
+  // EXPIRED / CLOSED / REVOKED) remain substantive PERMIT blockers under
+  // the existing known-permit exception policy; an UNKNOWN status is
+  // missing information about the jurisdictional surface — INCOMPLETE
+  // alone, never waivable, and the PERMIT category rolls up UNKNOWN.
+  "PERMIT_STATUS_UNKNOWN",
+  // An open permit amendment whose required-inspection scheduling effect
+  // has no recorded jurisdictional determination. OBV never infers the
+  // effect from the amendment's status word — undetermined is missing
+  // information, not a hold-by-assumption.
+  "AMENDMENT_INSPECTION_EFFECT_UNKNOWN",
 ]);
 
 /**
@@ -823,6 +832,42 @@ export function evaluateDrawReadiness(
       if (reason.code === "INSPECTION_REQUIREMENT_UNKNOWN") {
         block("INSPECTION_REQUIREMENT_UNKNOWN", "GOVERNMENT_INSPECTION", `${ref.label}: ${reason.detail}`, ref.milestoneId, null,
           "An authorized reviewer must record the inspection-requirement determination for this milestone.");
+        continue;
+      }
+      // A required permit whose status cannot be established is missing
+      // INFORMATION, exactly like an undetermined inspection requirement
+      // — the same unknown-information doctrine, the PERMIT category.
+      // Where configuration does not gate permit activity the unknown is
+      // still surfaced (a warning), never a silent pass.
+      if (reason.code === "PERMIT_STATUS_UNKNOWN") {
+        if (completionGates.reasonBlocksDrawReview(elig, reason)) {
+          block("PERMIT_STATUS_UNKNOWN", "PERMIT", `${ref.label}: ${reason.detail}`, ref.milestoneId, null,
+            "An authorized reviewer must establish and record the permit's current status from an official source.");
+        } else {
+          warn("PERMIT_STATUS_UNKNOWN", "PERMIT", `${ref.label}: ${reason.detail}`, ref.milestoneId);
+        }
+        continue;
+      }
+      // Whether an open permit amendment prevents the required inspection
+      // has no recorded determination — missing information about the
+      // jurisdictional surface, never assumed either way. Category
+      // GOVERNMENT_INSPECTION: the undetermined question is whether the
+      // REQUIRED INSPECTION can proceed; the permit itself stands.
+      if (reason.code === "AMENDMENT_INSPECTION_EFFECT_UNKNOWN") {
+        block("AMENDMENT_INSPECTION_EFFECT_UNKNOWN", "GOVERNMENT_INSPECTION", `${ref.label}: ${reason.detail}`, ref.milestoneId, null,
+          "An authorized reviewer must record the jurisdictional determination of the amendment's inspection-scheduling effect.");
+        continue;
+      }
+      // The recorded jurisdictional determination says the required
+      // inspection cannot be scheduled while the amendment stands — a
+      // KNOWN condition (HOLD). Category GOVERNMENT_INSPECTION (the
+      // blocked control is the required inspection; the permit remains
+      // valid), which with the gate's emission order makes this the
+      // deterministic primary blocker — the next action tells the true
+      // story instead of "schedule the inspection" it cannot schedule.
+      if (reason.code === "PERMIT_AMENDMENT_BLOCKS_INSPECTION") {
+        block("PERMIT_AMENDMENT_BLOCKS_INSPECTION", "GOVERNMENT_INSPECTION", `${ref.label}: ${reason.detail}`, ref.milestoneId, null,
+          "Resolve the permit amendment, then complete the required inspection.");
         continue;
       }
       // Stage-aware reading owned by completionGates: the reasons'

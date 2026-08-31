@@ -17,9 +17,12 @@ import { UPLOADS_DIR } from "../db/index";
 import { audit, snapshotProject } from "./pilot/onboarding";
 import { canAccessProjectFinance } from "./budgetProgress";
 import type {
+  AmendmentInspectionEffect,
   OfficialSourceRecord,
   OfficialSourceType,
   Permit,
+  PermitAmendment,
+  PermitAmendmentStatus,
   PermitMilestoneLink,
   PermitStatus,
   Project,
@@ -788,4 +791,234 @@ export function validatePermitIntegrity(projectId: string): PermitIntegrityFindi
     }
   }
   return findings;
+}
+
+// ================================================== permit amendments
+//
+// A permit can remain generally active while an amendment/revision is
+// open, and the jurisdiction may prevent required inspections from being
+// scheduled until it closes. OBV records TWO SEPARATE facts:
+//
+//   1. the amendment's own lifecycle status (the jurisdiction's state),
+//   2. whether it blocks required-inspection SCHEDULING — a reviewed
+//      jurisdictional determination with basis and attribution.
+//
+// OBV never infers (2) from (1): "pending" is a word, not a law. The
+// model is jurisdiction-neutral — no authority-specific branch exists
+// anywhere; validation examples (Fairfax, Montgomery, Prince George's)
+// are fixtures, never engine rules.
+
+const AMENDMENT_STATUSES: PermitAmendmentStatus[] = [
+  "PENDING", "APPROVED", "REJECTED", "WITHDRAWN", "UNKNOWN",
+];
+const AMENDMENT_EFFECTS: AmendmentInspectionEffect[] = ["BLOCKED", "ALLOWED", "UNKNOWN"];
+
+/** An amendment is OPEN while its recorded lifecycle has not resolved:
+ *  PENDING, or UNKNOWN (an unresolved state that cannot be established).
+ *  APPROVED / REJECTED / WITHDRAWN are resolved — closed history. THE
+ *  shared predicate: gates and views import it, never restate it. */
+export function isOpenAmendment(a: PermitAmendment): boolean {
+  return a.status === "PENDING" || a.status === "UNKNOWN";
+}
+
+export function getAmendmentFor(
+  user: User,
+  amendmentId: string
+): { amendment: PermitAmendment; permit: Permit; project: Project } {
+  const amendment = repo.getPermitAmendment(amendmentId);
+  const permit = amendment ? repo.getPermit(amendment.permitId) : null;
+  const project = permit ? repo.getProject(permit.projectId) : null;
+  // Tenant boundary: same 404 as a nonexistent record.
+  if (!amendment || !permit || !project || !canAccessProjectFinance(user, project)) {
+    throw new PermitError("Permit amendment not found", 404);
+  }
+  return { amendment, permit, project };
+}
+
+/**
+ * Record that an amendment/revision exists on a permit. Recording the
+ * amendment's EXISTENCE follows the permit-recording convention: a
+ * project manager may record the operational fact (PENDING only, like
+ * DRAFT/APPLIED permits); formal lifecycle states — APPROVED / REJECTED /
+ * WITHDRAWN, and UNKNOWN as a reviewed determination — are lender-side.
+ * The inspection-scheduling effect always starts UNKNOWN here: it is a
+ * separate reviewed determination (determineAmendmentInspectionEffect).
+ */
+export function recordPermitAmendment(
+  user: User,
+  permitId: string,
+  input: {
+    amendmentReference: string;
+    description?: string | null;
+    status?: string | null;
+    submittedAt?: string | null;
+    notes?: string | null;
+  }
+): PermitAmendment {
+  const { permit, project } = getPermitFor(user, permitId);
+  if (!RECORDING_ROLES.has(user.role)) {
+    throw new PermitError("Recording permit amendments requires a lender-side reviewer or project manager", 403);
+  }
+  const reference = (input.amendmentReference ?? "").trim();
+  if (!reference) throw new PermitError("amendmentReference is required");
+  const status = (input.status?.trim() || "PENDING") as PermitAmendmentStatus;
+  if (!AMENDMENT_STATUSES.includes(status)) {
+    throw new PermitError(`Unknown amendment status ${status}`);
+  }
+  if (user.role === "PROJECT_MANAGER" && status !== "PENDING") {
+    throw new PermitError(
+      "Project managers may record a PENDING amendment — formal amendment status determination requires a funder representative or compliance reviewer",
+      403
+    );
+  }
+  const now = new Date().toISOString();
+  const amendment: PermitAmendment = {
+    id: repo.newId(),
+    organizationId: project.organizationId,
+    projectId: project.id,
+    permitId,
+    amendmentReference: reference,
+    description: input.description?.trim() || null,
+    status,
+    submittedAt: parseIsoDate(input.submittedAt, "submittedAt"),
+    resolvedAt: null,
+    // NEVER inferred: the effect is its own reviewed determination.
+    inspectionSchedulingEffect: "UNKNOWN",
+    effectBasis: null,
+    effectDeterminedBy: null,
+    effectDeterminedAt: null,
+    recordedByUserId: user.id,
+    notes: input.notes?.trim() || null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  try {
+    repo.insertPermitAmendment(amendment);
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) {
+      throw new PermitError(`Amendment ${reference} already exists for this permit`, 409);
+    }
+    throw e;
+  }
+  audit({
+    projectId: project.id, actorUserId: user.id, action: "PERMIT_AMENDMENT_RECORDED",
+    entityType: "PERMIT", entityId: permitId, reason: null,
+    beforeSummary: null,
+    afterSummary: `Amendment ${reference} on ${permit.permitNumber} — ${status}; inspection-scheduling effect UNKNOWN (not yet determined)`,
+  });
+  return amendment;
+}
+
+/**
+ * Record the reviewed jurisdictional determination of whether this
+ * amendment blocks required-inspection scheduling. Lender-side only,
+ * basis required — the determination states what the AUTHORITY
+ * established, with its source; OBV records it and never interprets law.
+ */
+export function determineAmendmentInspectionEffect(
+  user: User,
+  amendmentId: string,
+  input: { effect: string; effectBasis: string; reason?: string | null }
+): PermitAmendment {
+  const { amendment, permit, project } = getAmendmentFor(user, amendmentId);
+  if (!DETERMINATION_ROLES.has(user.role)) {
+    throw new PermitError(
+      "Determining an amendment's inspection-scheduling effect requires a funder representative or compliance reviewer",
+      403
+    );
+  }
+  const effect = (input.effect ?? "").trim() as AmendmentInspectionEffect;
+  if (!AMENDMENT_EFFECTS.includes(effect)) {
+    throw new PermitError(`inspectionSchedulingEffect must be one of ${AMENDMENT_EFFECTS.join(", ")}`);
+  }
+  const basis = (input.effectBasis ?? "").trim();
+  if (!basis) {
+    throw new PermitError("effectBasis is required — the determination must state its jurisdictional source");
+  }
+  const isChange = amendment.effectDeterminedAt !== null;
+  const reason = (input.reason ?? "").trim();
+  if (isChange && project.status !== "DRAFT" && !reason) {
+    throw new PermitError("A reason is required to change a recorded effect determination after launch");
+  }
+  const now = new Date().toISOString();
+  const before = amendment.effectDeterminedAt
+    ? `${amendment.inspectionSchedulingEffect} (${amendment.effectBasis ?? "—"})`
+    : "NOT DETERMINED";
+  repo.updatePermitAmendment(amendmentId, {
+    inspectionSchedulingEffect: effect,
+    effectBasis: basis,
+    effectDeterminedBy: user.id,
+    effectDeterminedAt: now,
+  });
+  audit({
+    projectId: project.id, actorUserId: user.id, action: "AMENDMENT_EFFECT_DETERMINED",
+    entityType: "PERMIT", entityId: permit.id, reason: reason || null,
+    beforeSummary: before,
+    afterSummary: `Amendment ${amendment.amendmentReference}: inspection scheduling ${effect} — ${basis}`,
+  });
+  if (project.status !== "DRAFT") {
+    snapshotProject(project.id, `Amendment ${amendment.amendmentReference} inspection effect determined: ${effect}`, user);
+  }
+  return repo.getPermitAmendment(amendmentId)!;
+}
+
+/**
+ * Update an amendment's lifecycle (resolution included). Lender-side
+ * only for formal states; post-launch changes require a reason. Resolving
+ * an amendment NEVER touches inspection records: the required inspection
+ * remains its own governed fact and readiness recomputes from it.
+ */
+export function updatePermitAmendment(
+  user: User,
+  amendmentId: string,
+  input: { status?: string; resolvedAt?: string | null; notes?: string | null; reason?: string | null }
+): PermitAmendment {
+  const { amendment, permit, project } = getAmendmentFor(user, amendmentId);
+  if (!RECORDING_ROLES.has(user.role)) {
+    throw new PermitError("Updating permit amendments requires a lender-side reviewer or project manager", 403);
+  }
+  const status = input.status !== undefined ? (String(input.status).trim() as PermitAmendmentStatus) : undefined;
+  if (status !== undefined && !AMENDMENT_STATUSES.includes(status)) {
+    throw new PermitError(`Unknown amendment status ${status}`);
+  }
+  if (
+    user.role === "PROJECT_MANAGER" &&
+    status !== undefined &&
+    (status !== "PENDING" || amendment.status !== "PENDING")
+  ) {
+    throw new PermitError(
+      "Formal amendment status determination requires a funder representative or compliance reviewer",
+      403
+    );
+  }
+  const material = status !== undefined && status !== amendment.status;
+  const reason = (input.reason ?? "").trim();
+  if (material && project.status !== "DRAFT" && !reason) {
+    throw new PermitError("A reason is required for material amendment changes after launch");
+  }
+  const resolvedAt =
+    input.resolvedAt !== undefined
+      ? parseIsoDate(input.resolvedAt, "resolvedAt")
+      : status !== undefined && ["APPROVED", "REJECTED", "WITHDRAWN"].includes(status) && !amendment.resolvedAt
+        ? new Date().toISOString()
+        : amendment.resolvedAt;
+  const before = `${amendment.amendmentReference} — ${amendment.status}`;
+  repo.updatePermitAmendment(amendmentId, {
+    status: status ?? amendment.status,
+    resolvedAt,
+    notes: input.notes !== undefined ? input.notes?.trim() || null : amendment.notes,
+  });
+  const after = repo.getPermitAmendment(amendmentId)!;
+  if (material) {
+    audit({
+      projectId: project.id, actorUserId: user.id, action: "PERMIT_AMENDMENT_UPDATED",
+      entityType: "PERMIT", entityId: permit.id, reason: reason || null,
+      beforeSummary: before,
+      afterSummary: `${after.amendmentReference} — ${after.status}${after.resolvedAt ? ` (resolved ${after.resolvedAt.slice(0, 10)})` : ""}`,
+    });
+    if (project.status !== "DRAFT") {
+      snapshotProject(project.id, `Permit amendment ${after.amendmentReference} updated: ${reason}`, user);
+    }
+  }
+  return after;
 }

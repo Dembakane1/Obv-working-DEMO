@@ -22,7 +22,7 @@ import * as repo from "../db/repo";
 import { audit, snapshotProject } from "./pilot/onboarding";
 import { canAccessProjectFinance } from "./budgetProgress";
 import { requireAuthority, hasActiveMembership, LenderError } from "./lenderAccess";
-import { effectiveStatus as permitEffectiveStatus, completeSourcesForInspection } from "./permits";
+import { effectiveStatus as permitEffectiveStatus, completeSourcesForInspection, isOpenAmendment } from "./permits";
 import { isBlockingException } from "./exceptions";
 import type {
   ContractorCompletionStatus, EvidenceReviewStatus, GateReason,
@@ -798,8 +798,21 @@ function assembleEligibilitySurface(milestone: Milestone, computedAt: string): M
           permitIssues.push({ code: "PERMIT_REVOKED", detail: `Linked permit ${permit.permitNumber} has been revoked.` });
         } else if (effective === "SUSPENDED") {
           permitIssues.push({ code: "PERMIT_SUSPENDED", detail: `Linked permit ${permit.permitNumber} is suspended.` });
+        } else if (effective === "UNKNOWN") {
+          // KNOWN FAILURE vs UNKNOWN INFORMATION: an UNKNOWN status is not
+          // a recorded non-active condition — it means OBV cannot establish
+          // whether the jurisdictional permit requirement is satisfied.
+          // Its own code lets the readiness engine classify it as missing
+          // information (INCOMPLETE, never exceptionable) instead of a
+          // waivable known-permit HOLD. Still never behaves as ACTIVE.
+          permitIssues.push({
+            code: "PERMIT_STATUS_UNKNOWN",
+            detail:
+              `Linked permit ${permit.permitNumber} has no established current status — ` +
+              "whether the jurisdictional permit requirement is satisfied cannot be determined.",
+          });
         } else if (effective !== "ISSUED" && effective !== "ACTIVE") {
-          // UNKNOWN / DRAFT / APPLIED / CLOSED never behave as ACTIVE.
+          // DRAFT / APPLIED / CLOSED — KNOWN recorded non-active statuses.
           permitIssues.push({
             code: "PERMIT_NOT_ACTIVE",
             detail: `Linked permit ${permit.permitNumber} is ${effective} — not an active permit.`,
@@ -859,6 +872,44 @@ function assembleEligibilitySurface(milestone: Milestone, computedAt: string): M
       false
     );
   } else if (req?.requirement === "REQUIRED" && (governanceGated || drawReviewGated)) {
+    // ---- open permit amendments vs required-inspection SCHEDULING ----
+    // Evaluated only while the required, stage-gated inspection has not
+    // PASSED — once a passing reviewed result exists, a scheduling
+    // constraint is moot. Emitted BEFORE the inspection-progress reasons
+    // so the deterministic primary blocker tells the true story: the
+    // amendment explains WHY the inspection cannot proceed. Two SEPARATE
+    // recorded facts drive this (never inferred from each other): the
+    // amendment's lifecycle, and the REVIEWED jurisdictional
+    // determination of its scheduling effect. Resolving an amendment
+    // clears only these reasons — the inspection's own requirements
+    // remain their own governed facts.
+    if (gate !== "PASSED") {
+      for (const permit of linkedPermits) {
+        for (const amendment of repo.listPermitAmendmentsForPermit(permit.id)) {
+          if (!isOpenAmendment(amendment)) continue;
+          if (amendment.inspectionSchedulingEffect === "BLOCKED") {
+            add(
+              "PERMIT_AMENDMENT_BLOCKS_INSPECTION",
+              `Permit ${permit.permitNumber} amendment ${amendment.amendmentReference} is ${amendment.status.toLowerCase()}. ` +
+                "The recorded jurisdictional determination says the required inspection cannot be scheduled while it remains open.",
+              governanceGated
+            );
+          } else if (amendment.inspectionSchedulingEffect === "UNKNOWN") {
+            // Whether the amendment prevents the required inspection has
+            // NOT been determined — missing information, never assumed
+            // either way ("pending" is a word, not a law).
+            add(
+              "AMENDMENT_INSPECTION_EFFECT_UNKNOWN",
+              `Permit ${permit.permitNumber} amendment ${amendment.amendmentReference} is open and whether it ` +
+                "prevents the required inspection from being scheduled has not been determined.",
+              false
+            );
+          }
+          // ALLOWED: the recorded determination says scheduling may
+          // proceed — the inspection gates below carry the rest.
+        }
+      }
+    }
     if (gate === "REQUIRED_UNSCHEDULED") {
       add("INSPECTION_NOT_SCHEDULED", `Required ${req.inspectionType ?? "jurisdictional"} inspection has not been scheduled.`, governanceGated);
       add("JURISDICTIONAL_INSPECTION_NOT_PASSED", "Required jurisdictional inspection has not passed.", governanceGated);
@@ -890,6 +941,7 @@ function assembleEligibilitySurface(milestone: Milestone, computedAt: string): M
         add("REQUIRED_DOCUMENT_MISSING", "The configured inspection result document reference is missing.", true);
       }
     }
+
   }
 
   // Blocking exceptions linked to this milestone — THE shared predicate
@@ -984,6 +1036,7 @@ function assembleEligibilitySurface(milestone: Milestone, computedAt: string): M
  *  flag encodes the GOVERNANCE stage (permitBlocksGovernance). */
 const PERMIT_ISSUE_CODES = new Set([
   "REQUIRED_PERMIT_MISSING", "PERMIT_EXPIRED", "PERMIT_REVOKED", "PERMIT_SUSPENDED", "PERMIT_NOT_ACTIVE",
+  "PERMIT_STATUS_UNKNOWN",
 ]);
 /** Inspection-progress codes emitted ONLY inside the REQUIRED &&
  *  (governanceGated || drawReviewGated) branch with blocking =
@@ -993,6 +1046,11 @@ const PERMIT_ISSUE_CODES = new Set([
 const DRAW_REVIEW_IMPLIED_CODES = new Set([
   "INSPECTION_NOT_SCHEDULED", "JURISDICTIONAL_INSPECTION_NOT_PASSED",
   "INSPECTION_PENDING", "REINSPECTION_PENDING", "REINSPECTION_NOT_SCHEDULED",
+  // Amendment reasons are emitted only inside the REQUIRED &&
+  // (governanceGated || drawReviewGated) surface with blocking encoding
+  // the governance stage — their presence records a draw-review gate by
+  // the same construction as the inspection-progress codes above.
+  "PERMIT_AMENDMENT_BLOCKS_INSPECTION", "AMENDMENT_INSPECTION_EFFECT_UNKNOWN",
 ]);
 
 /**
