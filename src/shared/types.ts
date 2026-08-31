@@ -3558,6 +3558,30 @@ export type TimelineCategory =
  *  an advisory observation. The UI must never present the two alike. */
 export type TimelineRecordStatus = "AUTHORITATIVE" | "ADVISORY";
 
+/**
+ * How a reader should weigh one event — derived centrally, never set
+ * ad hoc per collector:
+ *
+ *  - GOVERNED_FACT: an authoritative record that asserts a governed
+ *    state or decision (a lender decision, a readiness transition, a
+ *    verification verdict, a configuration change).
+ *  - HISTORICAL_EVENT: an authoritative record that something happened
+ *    (a capture, an upload, a submission, a generated report) without
+ *    asserting a governed state value.
+ *  - ADVISORY_SIGNAL: an advisory observation. Never a decision, never
+ *    governed state.
+ */
+export type TimelineTruthClass = "GOVERNED_FACT" | "HISTORICAL_EVENT" | "ADVISORY_SIGNAL";
+
+/** A recorded location copied verbatim from the source record's stored
+ *  coordinates. NEVER derived, defaulted, or inferred: an event whose
+ *  record stores no coordinates carries null here — the project's own
+ *  location is not the evidence's location. */
+export interface TimelineSpatial {
+  latitude: number;
+  longitude: number;
+}
+
 /** One derived event on the unified timeline. */
 export interface TimelineEvent {
   /** Stable synthetic id: `${category}:${type}:${sourceRecordId}`. */
@@ -3583,6 +3607,11 @@ export interface TimelineEvent {
   /** Where a reader can go to see the record itself (may be null). */
   href: string | null;
   recordStatus: TimelineRecordStatus;
+  /** Derived truth class — see TimelineTruthClass. Set centrally by the
+   *  event constructor from recordStatus and the event's own shape. */
+  truthClass: TimelineTruthClass;
+  /** Recorded coordinates copied from the source record, else null. */
+  spatial: TimelineSpatial | null;
   /** Optional severity for advisory/attention events. */
   severity: "INFO" | "LOW" | "MEDIUM" | "HIGH" | null;
   /** What changed, when the source record expresses a transition. */

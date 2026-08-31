@@ -68,7 +68,7 @@ const MAP = [
   { old: "Official Sources", href: "/official-sources", workspace: "Evidence", tab: "Official Sources" },
   { old: "Evidence Ledger", href: "/ledger", workspace: "Evidence", tab: "Ledger" },
   { old: "Timeline", href: "/timeline", workspace: "Site Intelligence", tab: "Timeline" },
-  { old: "Digital Twin", href: "/timeline#twin-snapshots", workspace: "Site Intelligence", tab: "Digital Twin" },
+  { old: "Digital Twin", href: "/timeline#twin-snapshots", workspace: "Site Intelligence", tab: "Site Evidence" },
   { old: "Map / Satellite", href: "/map", workspace: "Site Intelligence", tab: "Map / Satellite" },
   { old: "Approvals", href: "/approvals", workspace: "Governance", tab: "Approvals" },
   { old: "Exceptions", href: "/exceptions", workspace: "Governance", tab: "Exceptions" },

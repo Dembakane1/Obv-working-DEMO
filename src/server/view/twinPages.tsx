@@ -35,6 +35,7 @@ import type {
   TwinSnapshot,
   TwinProviderSpec,
 } from "../../shared/types";
+import type { CurrentDrawState } from "../services/twin/workspace";
 
 const C30 = 0.8660254;
 const S30 = 0.5;
@@ -121,8 +122,12 @@ function SceneSvg(props: { scene: TwinScene }): VNode {
   const boundaryEl = drawables.find((e) => e.kind === "BOUNDARY");
   const routeEls = drawables.filter((e) => e.kind === "ROUTE");
   const segments = drawables.filter((e) => e.kind === "SEGMENT");
+  // Placed markers: evidence pins at their OWN recorded fixes, and
+  // advisory markers whose subject evidence stores a real fix. Records
+  // without their own coordinates (inspections included) live in the
+  // dock — never at another record's position.
   const markers = drawables
-    .filter((e) => e.kind === "EVIDENCE_PIN" || e.kind === "INSPECTION_MARKER" || (e.kind === "ADVISORY_MARKER" && e.points.length > 0))
+    .filter((e) => e.kind === "EVIDENCE_PIN" || (e.kind === "ADVISORY_MARKER" && e.points.length > 0))
     .slice()
     .sort((a, b) => fit.toY(midpointOf(a.points)) - fit.toY(midpointOf(b.points)));
 
@@ -143,7 +148,7 @@ function SceneSvg(props: { scene: TwinScene }): VNode {
       id="twin-scene"
       viewBox={`0 0 ${W} ${H}`}
       role="img"
-      aria-label={`Digital twin scene for ${scene.projectName}`}
+      aria-label={`Site evidence scene for ${scene.projectName}`}
       data-project={scene.projectId}
     >
       <defs>
@@ -244,25 +249,9 @@ function SceneSvg(props: { scene: TwinScene }): VNode {
         })}
       </g>
 
-      <g data-layer-group="inspections">
-        {markers.filter((m) => m.kind === "INSPECTION_MARKER").map((m) => {
-          const p = m.points[0];
-          return (
-            <g
-              className={`twin-el twin-inspection twin-insp-${m.status ?? "NONE"}`}
-              data-el={m.id}
-              data-milestone={m.milestoneId ?? ""}
-              transform={`translate(${fit.toX(p).toFixed(1)},${(fit.toY(p) - 8).toFixed(1)})`}
-              tabindex="0"
-              role="button"
-              aria-label={m.label}
-            >
-              <rect x="-6.5" y="-6.5" width="13" height="13" rx="2.5" transform="rotate(45)" className="twin-insp-body" />
-              <text y="3.6" text-anchor="middle" className="twin-insp-glyph">i</text>
-            </g>
-          );
-        })}
-      </g>
+      {/* No inspection group: inspection records store no coordinates,
+          so they are never drawn — they live in the dock, linked to
+          their milestone by name, not by borrowed geometry. */}
 
       <g data-layer-group="advisory">
         {markers.filter((m) => m.kind === "ADVISORY_MARKER").map((m) => {
@@ -478,7 +467,7 @@ function PinDrawer(props: { detail: TwinPinDetail; projectId: string }): VNode {
   );
 }
 
-/** Mode tabs shown on both pages: Timeline | Digital Twin. */
+/** Mode tabs shown on both pages: Timeline | Site evidence. */
 export function TwinModeTabs(props: { projectId: string; active: "timeline" | "twin" }): VNode {
   return (
     <div className="exec-tabs twin-mode-tabs" role="navigation" aria-label="Timeline mode">
@@ -486,8 +475,110 @@ export function TwinModeTabs(props: { projectId: string; active: "timeline" | "t
         Timeline
       </a>
       <a className={`btn ghost sm ${props.active === "twin" ? "exec-tab-active" : ""}`} href={`/timeline/twin/${props.projectId}`}>
-        Digital Twin
+        Site evidence
       </a>
+    </div>
+  );
+}
+
+/** Truth-class presentation: label + chip tone, one mapping for every
+ *  surface on this page. */
+function truthChipOf(e: TimelineEvent): { label: string; tone: string } {
+  if (e.truthClass === "ADVISORY_SIGNAL") return { label: "Advisory", tone: "warn" };
+  if (e.truthClass === "GOVERNED_FACT") return { label: "Governed fact", tone: "ok" };
+  return { label: "Historical event", tone: "neutral" };
+}
+
+const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+
+/**
+ * Server-rendered inspector for one selected timeline event.
+ *
+ * HISTORICAL TRUTH IS ABSOLUTE here: the "At the time" block renders only
+ * what the stored record itself carries, and the "Current linked state"
+ * block renders only live values labeled CURRENT — the two are never
+ * merged, and a historical transition is never explained with today's
+ * blockers. A readiness transition row stores no cause, so the inspector
+ * says exactly that instead of inventing one.
+ */
+function EventInspector(props: {
+  event: TimelineEvent;
+  now: CurrentDrawState | null;
+  projectId: string;
+}): VNode {
+  const e = props.event;
+  const truth = truthChipOf(e);
+  const isTransition = e.type === "READINESS_TRANSITION";
+  return (
+    <div className="tse-event">
+      <p className="twin-chip-row">
+        <span className={`chip ${truth.tone}`}>{truth.label}</span>
+        {e.recordStatus === "ADVISORY" ? <span className="chip warn">Advisory — never a decision</span> : null}
+        {e.severity && e.severity !== "INFO" ? (
+          <span className={`chip ${e.severity === "HIGH" ? "bad" : "warn"}`}>{e.severity}</span>
+        ) : null}
+      </p>
+      <h3 className="tse-event-title">{e.title}</h3>
+      <p className="sub">
+        Recorded {e.at.replace("T", " ").slice(0, 16)} UTC
+        {/* Actor only when the record names one — never inferred. */}
+        {e.actorName ? ` · recorded actor ${e.actorName}` : ""}
+      </p>
+      <p className="sub">{e.explanation}</p>
+      {e.spatial ? (
+        <p className="sub">
+          Recorded location: {e.spatial.latitude.toFixed(5)}, {e.spatial.longitude.toFixed(5)} · location
+          accuracy not recorded
+        </p>
+      ) : null}
+      {isTransition ? (
+        <div className="tse-block tse-then">
+          <h4>At the time (recorded)</h4>
+          <p>
+            Readiness {e.change?.previous ?? "(no prior recorded state)"} → <b>{e.change?.current ?? "—"}</b>
+          </p>
+          <p className="sub">
+            Cause not recorded in this historical event — the stored transition carries only the state
+            change, never today's blockers.
+          </p>
+        </div>
+      ) : e.change ? (
+        <div className="tse-block tse-then">
+          <h4>At the time (recorded)</h4>
+          <p>
+            {enumLabel(e.change.field)}: {e.change.previous ?? "—"} → <b>{e.change.current ?? "—"}</b>
+          </p>
+        </div>
+      ) : null}
+      {props.now ? (
+        <div className="tse-block tse-now">
+          <h4>Current linked state</h4>
+          <p>
+            Draw {String(props.now.drawNumber)} · status {enumLabel(props.now.status)} · readiness{" "}
+            <b>{props.now.readiness ?? "evaluation unavailable"}</b> · {money(props.now.requestedAmount)} requested
+          </p>
+          <p>
+            <span className="tse-current-label">Current next action</span>{" "}
+            {props.now.nextActionLabel ?? "not computable"}
+            {props.now.nextActionActor && props.now.nextActionActor !== "NONE"
+              ? ` (${props.now.nextActionActor.toLowerCase()})`
+              : ""}
+          </p>
+          <p className="sub">
+            Live governed state as of this page render — separate from the historical record above.
+            Readiness is not approval and never releases funds.
+          </p>
+        </div>
+      ) : e.drawRequestId ? (
+        <p className="sub">The current state of the linked draw is unavailable to this view.</p>
+      ) : null}
+      <p className="sub">Source: {enumLabel(e.sourceTable)} record {e.sourceRecordId}</p>
+      <p className="sub tse-event-links">
+        {e.href ? <a href={e.href}>Open the governed record →</a> : null}{" "}
+        <a href={`/timeline/event/${props.projectId}/${encodeURIComponent(e.id)}`}>
+          Open this event on the Timeline →
+        </a>
+      </p>
     </div>
   );
 }
@@ -496,6 +587,19 @@ export function renderDigitalTwin(input: {
   nav: NavContext;
   scene: TwinScene;
   focusEventId: string | null;
+  /** The selected event's stored record, server-resolved — the inspector
+   *  renders it without any client fetch. */
+  focusedEvent?: TimelineEvent | null;
+  /** CURRENT state of the selected event's linked draw (live, labeled). */
+  focusedDrawNow?: CurrentDrawState | null;
+  /** CURRENT state of every open draw, for the context header. */
+  currentDraws?: CurrentDrawState[];
+  /** The project's recorded location field (a stored string, not a
+   *  coordinate claim). */
+  projectLocation?: string;
+  /** The timeline's own source-level read caps (ProjectTimeline.sourceCaps)
+   *  — distinct from the scene's caps, surfaced verbatim when any fired. */
+  sourceCaps?: string[];
   pinDetail: TwinPinDetail | null;
   providers: { providers: TwinProviderSpec[]; implemented: number; notice: string };
   /** The project's governed timeline events — the workspace's left pane.
@@ -522,25 +626,72 @@ export function renderDigitalTwin(input: {
       };
     }
   }
+
+  const advisories = s.elements.filter((e) => e.kind === "ADVISORY_MARKER");
+  const events = input.events ?? [];
+  const sourceCaps = input.sourceCaps ?? [];
+  const syncedEventIds = new Set(s.sync.map((x) => x.eventId));
+  const evTime = (iso: string) => iso.replace("T", " ").slice(5, 16);
+
+  // Newest first: an operator reads the latest recorded activity at the
+  // top. The cap is stated on the page, never silent.
+  const STREAM_CAP = 80;
+  const shown = events.slice().reverse().slice(0, STREAM_CAP);
+
+  // Project Replay operates over EXACTLY the shown window: the scrubber
+  // can only hide rows the pane actually rendered, so its bounds are the
+  // shown window's own first and last events — a scrub must never present
+  // a false "empty" period the pane simply did not render. Each element's
+  // OWN moment is the earliest recorded event derived from its source
+  // record — never an invented time. Only record markers replay;
+  // structural geometry (boundary, route, stage segments) is
+  // configuration, not an event, and stays visible.
+  const eventAtById = new Map(events.map((e) => [e.id, e.at]));
+  const elementAt: Record<string, string> = {};
+  for (const x of s.sync) {
+    const at = eventAtById.get(x.eventId);
+    if (!at) continue;
+    if (!elementAt[x.elementId] || at < elementAt[x.elementId]) elementAt[x.elementId] = at;
+  }
+  // `shown` is newest-first, so the disclosed window runs [last, first].
+  const windowMin = shown.length > 0 ? shown[shown.length - 1].at : null;
+  const windowMax = shown.length > 0 ? shown[0].at : null;
+  // Some records carry dates that have not arrived yet (a recorded permit
+  // expiry). They are schedule, not history: the "latest recorded
+  // activity" and the replay quick-range anchor use the latest event
+  // that has actually happened, never a future-dated row.
+  const pastEvents = events.filter((e) => e.at <= s.asOf);
+  const lastPastAt = pastEvents.length > 0 ? pastEvents[pastEvents.length - 1].at : null;
+  const windowAnchor = shown.find((e) => e.at <= s.asOf)?.at ?? windowMax;
+
   const clientData = {
     projectId: s.projectId,
     focus: input.focusEventId,
+    // True when the inspector already carries a server-rendered record
+    // (event or pin) that client-side selection must not overwrite.
+    eventRendered: Boolean(input.focusedEvent),
     pin: input.pinDetail?.evidence.id ?? null,
     elements: elementIndex,
     sync: Object.fromEntries(s.sync.map((x) => [x.eventId, x.elementId])),
     layers: s.layers.map((l) => ({ key: l.key, available: l.available, defaultOn: l.defaultOn })),
+    elementAt,
+    replay:
+      windowMin && windowMax
+        ? { min: windowMin, max: windowMax, anchor: windowAnchor ?? windowMax }
+        : null,
   };
 
-  const advisories = s.elements.filter((e) => e.kind === "ADVISORY_MARKER");
-  const events = input.events ?? [];
-  const syncedEventIds = new Set(s.sync.map((x) => x.eventId));
-  const evTime = (iso: string) => iso.replace("T", " ").slice(5, 16);
+  // The context metric counts RECORDS (events whose source record stores
+  // its own fix), never rendered pins — the scene's pin cap must never
+  // masquerade as the total record count.
+  const locatedCount = events.filter((e) => e.spatial).length;
+  const currentDraws = input.currentDraws ?? [];
 
   return renderDocument(
-    <AppShell title="Digital Twin" nav={input.nav} context={`${s.projectName} · Timeline & Digital Twin`}>
+    <AppShell title="Timeline & Site Evidence" nav={input.nav} context={`${s.projectName} · Timeline & Site Evidence`}>
       <div className="page-wrap ws">
         <WorkHeader
-          title="Timeline & Digital Twin"
+          title="Timeline & Site Evidence"
           sub={`${s.projectName} · ${String(events.length)} recorded events · ${
             s.frame.widthM > 0 && s.frame.heightM > 0 ? `extent ${s.frame.widthM}×${s.frame.heightM} m · ` : ""
           }computed ${s.asOf.replace("T", " ").slice(0, 16)} UTC`}
@@ -552,10 +703,53 @@ export function renderDigitalTwin(input: {
           <a className="btn ghost sm hide-mobile" href={`/timeline/map/${s.projectId}`}>Map data</a>
         </WorkHeader>
 
+        {/* Current governed context — every value here is LIVE and says
+            so; the historical record lives in the stream and inspector. */}
+        <section className="tse-context" aria-label="Current project state">
+          <div className="tse-ctx-item">
+            <span className="tse-k">Recorded location</span>
+            <span className="tse-v">{input.projectLocation ?? "Not recorded"}</span>
+          </div>
+          <div className="tse-ctx-item">
+            <span className="tse-k">Latest recorded activity</span>
+            <span className="tse-v">
+              {lastPastAt ? `${lastPastAt.replace("T", " ").slice(0, 16)} UTC` : "No recorded events"}
+            </span>
+          </div>
+          <div className="tse-ctx-item">
+            <span className="tse-k">Spatial evidence</span>
+            <span className="tse-v">
+              {locatedCount > 0
+                ? `${locatedCount} GPS-located record${locatedCount === 1 ? "" : "s"}`
+                : "No spatial evidence recorded"}
+            </span>
+          </div>
+          {currentDraws.slice(0, 2).map((d) => (
+            <div className="tse-ctx-item tse-ctx-draw">
+              <span className="tse-k">Current draw state</span>
+              <span className="tse-v">
+                Draw {String(d.drawNumber)} · {enumLabel(d.status)} · readiness{" "}
+                <b>{d.readiness ?? "evaluation unavailable"}</b> · {money(d.requestedAmount)}
+              </span>
+              <span className="sub">Current next action: {d.nextActionLabel ?? "not computable"}</span>
+            </div>
+          ))}
+          {currentDraws.length > 2 ? (
+            <div className="tse-ctx-item">
+              <span className="tse-k">More open draws</span>
+              <span className="tse-v">
+                <a href={`/draws?project=${encodeURIComponent(s.projectId)}`}>
+                  {String(currentDraws.length - 2)} more open →
+                </a>
+              </span>
+            </div>
+          ) : null}
+        </section>
+
         {/* Mobile: one mode owns the viewport — never a stacked twin card. */}
         <nav className="segmented" aria-label="Workspace mode">
           <a href={`/timeline/twin/${s.projectId}?mode=timeline`} className={input.mode === "twin" ? "" : "active"}>Timeline</a>
-          <a href={`/timeline/twin/${s.projectId}?mode=twin`} className={input.mode === "twin" ? "active" : ""}>Twin</a>
+          <a href={`/timeline/twin/${s.projectId}?mode=twin`} className={input.mode === "twin" ? "active" : ""}>Site</a>
         </nav>
 
         <SplitWorkspace
@@ -563,34 +757,117 @@ export function renderDigitalTwin(input: {
           inspectorAsSheet={Boolean(input.pinDetail || input.focusEventId)}
           stream={
             <DensePanel
-              title="Event stream"
-              right={<span>{String(events.length)}</span>}
+              title="Governed timeline"
+              right={<span id="tse-stream-count">{String(shown.length)}</span>}
               flush
-              foot={<a href={`/timeline/project/${s.projectId}`}>Filter the full timeline →</a>}
+              foot={
+                <span>
+                  {events.length > STREAM_CAP
+                    ? `Showing the most recent ${STREAM_CAP} of ${events.length} recorded events. `
+                    : ""}
+                  <a href={`/timeline/project/${s.projectId}`}>Filter the full timeline →</a>
+                </span>
+              }
             >
-              <SignalList
-                empty="No governed events recorded for this project yet."
-                items={events.slice(0, 60).map((e) => ({
-                  title: e.title,
-                  sub: `${evTime(e.at)} · ${enumLabel(e.type)}${e.actorName ? ` · ${e.actorName}` : ""}`,
-                  severity:
-                    e.severity === "HIGH" ? "high" : e.severity === "MEDIUM" ? "med" : "low",
-                  // Selecting an event focuses the scene AND the inspector:
-                  // the same ?focus the twin client already synchronizes.
-                  href: `/timeline/twin/${s.projectId}?focus=${encodeURIComponent(e.id)}${input.mode === "twin" ? "&mode=twin" : ""}`,
-                  meta: (
-                    <>
-                      {e.recordStatus === "ADVISORY" ? <span className="chip warn">Advisory</span> : null}
-                      {syncedEventIds.has(e.id) ? <span className="chip dim">on scene</span> : null}
-                    </>
-                  ),
-                }))}
-              />
+              <div className="tse-filterbar" role="group" aria-label="Timeline truth-class filter">
+                <button type="button" className="tse-chipbtn active" data-tse-truth="ALL">All</button>
+                <button type="button" className="tse-chipbtn" data-tse-truth="GOVERNED_FACT">Governed</button>
+                <button type="button" className="tse-chipbtn" data-tse-truth="HISTORICAL_EVENT">Historical</button>
+                <button type="button" className="tse-chipbtn" data-tse-truth="ADVISORY_SIGNAL">Advisory</button>
+                <button type="button" className="tse-chipbtn" data-tse-located>Located only</button>
+              </div>
+              {sourceCaps.length > 0 ? (
+                <div className="tse-partial" role="note">
+                  <b>Partial timeline record</b>
+                  <span className="sub">
+                    Some source registers reached their read limit. Project Replay replays the
+                    returned, authorized timeline window — not guaranteed complete project history.
+                  </span>
+                  <ul className="tse-partial-caps">
+                    {sourceCaps.map((c) => (
+                      <li className="sub">{c}</li>
+                    ))}
+                  </ul>
+                  <a className="sub" href={`/timeline/project/${s.projectId}`}>Open the full Timeline →</a>
+                </div>
+              ) : null}
+              {clientData.replay ? (
+                <div className="tse-replay" id="tse-replay">
+                  <div className="tse-replay-head">
+                    <b>Project Replay</b>
+                    <span className="tse-replay-quick">
+                      <button type="button" className="tse-chipbtn active" data-tse-range="all">All</button>
+                      <button type="button" className="tse-chipbtn" data-tse-range="30">30d ago</button>
+                      <button type="button" className="tse-chipbtn" data-tse-range="7">7d ago</button>
+                    </span>
+                  </div>
+                  {events.length > STREAM_CAP ? (
+                    <span className="sub tse-replay-capnote">
+                      Replay window: most recent {STREAM_CAP} of {events.length} recorded events
+                      ({clientData.replay.min.slice(0, 10)} → {clientData.replay.max.slice(0, 10)}).{" "}
+                      <a href={`/timeline/project/${s.projectId}`}>Earlier history on the full Timeline →</a>
+                    </span>
+                  ) : null}
+                  <input
+                    type="range"
+                    id="tse-replay-scrub"
+                    min="0"
+                    max="1000"
+                    value="1000"
+                    aria-label="Recorded events through"
+                  />
+                  <span className="sub" id="tse-replay-through">
+                    Recorded events through: {clientData.replay.max.replace("T", " ").slice(0, 16)} UTC (entire replay window)
+                  </span>
+                </div>
+              ) : null}
+              {shown.length === 0 ? (
+                <p className="empty-mini">No governed events recorded for this project yet.</p>
+              ) : (
+                <ul className="slist tse-stream" id="tse-stream">
+                  {shown.map((e) => {
+                    const truth = truthChipOf(e);
+                    const sev = e.severity === "HIGH" ? "high" : e.severity === "MEDIUM" ? "med" : "low";
+                    return (
+                      <li
+                        data-at={e.at}
+                        data-truth={e.truthClass}
+                        data-eid={e.id}
+                        data-located={e.spatial ? "1" : undefined}
+                        className={e.id === input.focusEventId ? "tse-active" : undefined}
+                      >
+                        <a
+                          href={`/timeline/twin/${s.projectId}?event=${encodeURIComponent(e.id)}${input.mode === "twin" ? "&mode=twin" : ""}`}
+                          aria-current={e.id === input.focusEventId ? "true" : undefined}
+                        >
+                          <span className={`tse-dot ${sev} tse-tc-${e.truthClass}`} aria-hidden="true"></span>
+                          <span className="s-body">
+                            <span className="s-t">{e.title}</span>
+                            <span className="s-s">
+                              {evTime(e.at)} · {enumLabel(e.type)}
+                              {e.actorName ? ` · ${e.actorName}` : ""}
+                            </span>
+                          </span>
+                          <span className="s-r">
+                            {e.at > s.asOf ? (
+                              <span className="chip neutral tse-chip-xs">Upcoming — not yet happened</span>
+                            ) : (
+                              <span className={`chip ${truth.tone} tse-chip-xs`}>{truth.label}</span>
+                            )}
+                            {e.spatial ? <span className="chip dim tse-chip-xs">Located</span> : null}
+                            {syncedEventIds.has(e.id) ? <span className="chip dim tse-chip-xs">on scene</span> : null}
+                          </span>
+                        </a>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </DensePanel>
           }
           canvas={
             <DensePanel
-              title="Digital Twin"
+              title="Site evidence"
               right={
                 <>
                   <span>{String(s.completion.pct)}% released</span>
@@ -634,14 +911,24 @@ export function renderDigitalTwin(input: {
           }
           inspector={
             <DensePanel
-              title={input.pinDetail ? "Evidence detail" : "Context inspector"}
-              right={<span id="twin-detail-title">{input.pinDetail ? "evidence" : "selection"}</span>}
+              title={input.pinDetail ? "Evidence detail" : input.focusedEvent ? "Event record" : "Context inspector"}
+              right={
+                <span id="twin-detail-title">
+                  {input.pinDetail ? "evidence" : input.focusedEvent ? "event" : "selection"}
+                </span>
+              }
               className="twin-detail"
               foot={<a href={`/timeline/project/${s.projectId}`}>Open the authoritative timeline →</a>}
             >
               <div id="twin-detail-body">
                 {input.pinDetail ? (
                   <PinDrawer detail={input.pinDetail} projectId={s.projectId} />
+                ) : input.focusedEvent ? (
+                  <EventInspector
+                    event={input.focusedEvent}
+                    now={input.focusedDrawNow ?? null}
+                    projectId={s.projectId}
+                  />
                 ) : (
                   <p className="sub" style="margin:0 0 10px">
                     Select an event, stage, pin or marker — its record appears here. Read-only, always.
@@ -689,7 +976,7 @@ export function renderDigitalTwin(input: {
           }
         />
 
-        <AboutView label="About this workspace — the Twin never changes governed state">
+        <AboutView label="About this workspace — site evidence never changes governed state">
           <p>{s.notice}</p>
           <p>
             Construction progress is the recorded governance lifecycle per stage — <b>not a physical

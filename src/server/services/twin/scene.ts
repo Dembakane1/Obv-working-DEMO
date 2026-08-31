@@ -8,7 +8,9 @@
  * the caller's own (already role-gated) project timeline. The twin
  * never writes, never approves, never changes progress, and never
  * places a record at a coordinate the records do not contain — a record
- * with no coordinates goes to the anchored dock, labeled as such.
+ * with no coordinates goes to the anchored dock, labeled as such. One
+ * record's coordinates are never substituted for another's: milestone
+ * geometry is the milestone's location, not its inspections'.
  *
  * Authorization is inherited, never widened: everything derived from
  * the timeline carries the timeline's subsystem gates, and the three
@@ -51,7 +53,8 @@ import {
 
 /** Stamped onto every twin surface, alongside the timeline notice. */
 export const TWIN_NOTICE =
-  "The Digital Twin is a visualization of records OBV already holds. It owns no data, performs no writes, " +
+  "Timeline & Site Evidence is a spatial project record built from records OBV already holds — the current " +
+  "stage of the Digital Twin maturity path, not a 3D model. It owns no data, performs no writes, " +
   "and never becomes the system of record — the Timeline remains the authoritative interface. Positions are " +
   "drawn only from recorded coordinates; records without coordinates are listed, never placed. Stage fills " +
   "show the recorded governance lifecycle, not a physical measurement.";
@@ -288,44 +291,29 @@ export function twinScene(user: User, projectId: string): TwinScene {
     );
   }
 
-  // Inspection markers — anchored to the milestone's recorded segment
-  // geometry (its midpoint), never to an invented site position; an
-  // inspection whose milestone has no geometry goes to the dock.
+  // Jurisdictional inspections are NON-SPATIAL: the inspection record
+  // stores no coordinates, and a milestone's geometry is the MILESTONE's
+  // location, not the inspection's — one record's coordinates are never
+  // substituted for another's. Every inspection is listed in the dock
+  // with its milestone linkage stated; spatial placement can be enabled
+  // only if inspection records ever gain their own stored coordinates.
   const anchored: TwinAnchoredRecord[] = [];
   for (const i of inspections) {
-    const seg = frame
-      ? elements.find((el) => el.kind === "SEGMENT" && el.milestoneId === i.milestoneId)
-      : undefined;
+    const stage = stages.find((s) => s.milestoneId === i.milestoneId);
     const label = `${i.inspectionType ?? "Inspection"}${i.inspectionReference ? ` ${i.inspectionReference}` : ""}`;
-    if (seg && seg.points.length > 0) {
-      const mid = seg.points[Math.floor(seg.points.length / 2)];
-      elements.push({
-        id: `INSPECTION_MARKER:${i.id}`,
-        kind: "INSPECTION_MARKER",
-        label,
-        sourceTable: "jurisdictional_inspections",
-        sourceRecordId: i.id,
-        milestoneId: i.milestoneId,
-        points: [mid],
-        status: i.status,
-        severity: null,
-        recordStatus: "AUTHORITATIVE",
-        href: `/permits`,
-        detail: "Placed on its milestone's recorded geometry",
-      });
-    } else {
-      anchored.push({
-        id: `INSPECTION_MARKER:${i.id}`,
-        group: "INSPECTION",
-        label,
-        status: i.status,
-        detail: "No recorded coordinates — listed, not placed",
-        sourceTable: "jurisdictional_inspections",
-        sourceRecordId: i.id,
-        href: `/permits`,
-        recordStatus: "AUTHORITATIVE",
-      });
-    }
+    anchored.push({
+      id: `INSPECTION_MARKER:${i.id}`,
+      group: "INSPECTION",
+      label,
+      status: i.status,
+      detail:
+        `${stage ? `Linked to ${stage.title} · ` : ""}` +
+        "Spatial location: not recorded — listed, never placed at another record's position",
+      sourceTable: "jurisdictional_inspections",
+      sourceRecordId: i.id,
+      href: `/permits`,
+      recordStatus: "AUTHORITATIVE",
+    });
   }
 
   // Permits and official-source records carry no coordinates in the data
@@ -467,7 +455,7 @@ export function twinScene(user: User, projectId: string): TwinScene {
     { key: "progress", label: "Construction progress", available: stages.length > 0, defaultOn: stages.length > 0, count: stages.length, note: "Recorded governance lifecycle, not a physical measurement" },
     { key: "evidence", label: "Evidence", available: true, defaultOn: true, count: pinCount, note: skippedNoGps > 0 ? `${skippedNoGps} without GPS listed per stage` : null },
     { key: "gps", label: "GPS pins", available: true, defaultOn: true, count: pinCount, note: "Only real recorded fixes are placed" },
-    { key: "inspections", label: "Inspections", available: true, defaultOn: true, count: inspections.length, note: null },
+    { key: "inspections", label: "Inspection records", available: true, defaultOn: true, count: inspections.length, note: "Inspection records store no coordinates — listed in the dock, never placed" },
     // Permits are readable by any project viewer; only the Official
     // Sources subsystem's own records are role-gated (and were already
     // excluded from `anchored` above for denied roles) — so the layer

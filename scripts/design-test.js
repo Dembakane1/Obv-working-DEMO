@@ -211,7 +211,7 @@ async function main() {
       `nav still reaches ${href}`
     );
   }
-  assert(/Digital Twin/.test(shellPage.html), "navigation carries the Digital Twin entry");
+  assert(/Site Evidence/.test(shellPage.html), "navigation carries the Site Evidence entry");
   assert(/aria-current="page"/.test(shellPage.html), "the active nav item is announced to screen readers");
 
   // Mobile parity: the phone navigation is bottom bar + /more, and /more
@@ -231,8 +231,8 @@ async function main() {
     if (!onMobile) fail(`mobile cannot reach ${href} (missing from /more and the bottom bar)`);
   }
   pass("every sidebar destination is reachable on mobile (bottom bar or /more)");
-  assert(/Timeline/.test(morePage.html) && /Digital Twin/.test(morePage.html),
-    "/more explicitly lists Timeline and Digital Twin");
+  assert(/Timeline/.test(morePage.html) && /Site Evidence/.test(morePage.html),
+    "/more explicitly lists Timeline and Site Evidence");
 
   console.log("\n== 4. Role-based landings ==");
   const pm = await signIn("user-pm");

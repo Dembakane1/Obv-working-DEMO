@@ -77,7 +77,7 @@ function EventRow(props: { event: TimelineEvent; projectId: string; asOf: string
           {e.change ? ` · ${e.change.field}: ${e.change.previous ?? "—"} → ${e.change.current ?? "—"}` : ""}
           {e.href ? <> · <a href={e.href}>open record</a></> : null}
           {" · "}
-          <a href={`/timeline/twin/${props.projectId}?focus=${encodeURIComponent(e.id)}`}>show in twin</a>
+          <a href={`/timeline/twin/${props.projectId}?event=${encodeURIComponent(e.id)}`}>show in site evidence</a>
         </span>
       </span>
     </li>
@@ -242,7 +242,7 @@ export function renderEventDetail(input: {
       <PageHeader title={event.title} sub={enumLabel(event.type)}>
         <a className="btn ghost sm" href={`/timeline/project/${input.projectId}`}>← Timeline</a>
         <a className="btn ghost sm" href={`/timeline/twin/${input.projectId}?focus=${encodeURIComponent(event.id)}`}>
-          Show in Digital Twin →
+          Show in Site Evidence →
         </a>
       </PageHeader>
       <Notice />
@@ -395,10 +395,10 @@ export function renderSiteIntelligence(input: {
 
       {cov ? (
         <section className="evi-card">
-          <h2>Coverage (Digital Twin)</h2>
+          <h2>Coverage (Site evidence)</h2>
           <p className="sub">
             Counted facts with their numerator and denominator — nothing here is projected or
-            estimated. <a href={`/timeline/twin/${s.project.id}`}>Open the Digital Twin →</a>
+            estimated. <a href={`/timeline/twin/${s.project.id}`}>Open Site Evidence →</a>
           </p>
           <div className="si-grid">
             <div className="si-panel si-neutral">
@@ -694,7 +694,7 @@ export function renderPortfolioTimeline(input: {
 
       {twins && twins.snapshots.length > 0 ? (
         <section className="evi-card" id="twin-snapshots">
-          <h2>Digital Twin snapshot</h2>
+          <h2>Site evidence snapshot</h2>
           <p className="sub">
             Recorded site geometry and governance-lifecycle state per project — miniature views of
             the same records, never estimates.{twins.note ? ` ${twins.note}` : ""}

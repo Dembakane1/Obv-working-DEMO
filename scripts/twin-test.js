@@ -74,7 +74,7 @@ function staticGuards() {
   );
   const routes = read("src/server/http/twinRoutes.ts");
   assert(!/method === "POST"/.test(routes), "twin routes define no POST handler");
-  assert(/The Digital Twin is read-only/.test(routes), "non-GET requests are explicitly refused");
+  assert(/The site evidence workspace is read-only/.test(routes), "non-GET requests are explicitly refused");
   const client = read("src/client/twin.ts");
   assert(!/method\s*:\s*["'](POST|PUT|DELETE|PATCH)/i.test(client), "the client script issues GET requests only");
   const scene = read("src/server/services/twin/scene.ts");
@@ -485,18 +485,18 @@ async function main() {
   assert(/Distance to planned stage geometry/.test(drawer.html), "the drawer shows the real planned-geometry distance");
 
   const tlPage = await page("/timeline/project/proj-r47", cookie);
-  assert(/twin-mode-tabs/.test(tlPage.html), "the Timeline page carries the Timeline | Digital Twin tabs");
-  assert(/show in twin/.test(tlPage.html), "every timeline event row links into the twin (?focus=)");
-  const focusId = /href="\/timeline\/twin\/proj-r47\?focus=([^"]+)"/.exec(tlPage.html);
-  assert(Boolean(focusId), "a focus deep-link is present");
-  const focused = await page(`/timeline/twin/proj-r47?focus=${focusId[1]}`, cookie);
-  assert(focused.status === 200, "a focus deep-link renders the twin page");
+  assert(/twin-mode-tabs/.test(tlPage.html), "the Timeline page carries the Timeline | Site evidence tabs");
+  assert(/show in site evidence/.test(tlPage.html), "every timeline event row links into the workspace (?event=)");
+  const focusId = /href="\/timeline\/twin\/proj-r47\?event=([^"&]+)"/.exec(tlPage.html);
+  assert(Boolean(focusId), "an event deep-link is present");
+  const focused = await page(`/timeline/twin/proj-r47?event=${focusId[1]}`, cookie);
+  assert(focused.status === 200, "an event deep-link renders the workspace page");
 
   const portfolio = await page("/timeline", cookie);
-  assert(/Digital Twin snapshot/.test(portfolio.html) && /twin-snap-card/.test(portfolio.html),
+  assert(/Site evidence snapshot/.test(portfolio.html) && /twin-snap-card/.test(portfolio.html),
     "the portfolio page shows miniature twins");
   const site = await page("/timeline/site/proj-r47", cookie);
-  assert(/Coverage \(Digital Twin\)/.test(site.html) && /twin-heat-cell/.test(site.html),
+  assert(/Coverage \(Site evidence\)/.test(site.html) && /twin-heat-cell/.test(site.html),
     "site intelligence shows the coverage band and activity heatmap");
 
   assert((await status("/api/twin/scene/proj-r47", dmvCookie)) === 404, "cross-tenant scene API is 404");
@@ -635,6 +635,433 @@ async function main() {
   assert(/hasOwnProperty\.call\(data\.sync/.test(clientSrc), "focus lookup rejects Object.prototype keys");
   assert(/markAppearedUpTo/.test(clientSrc) && /clearReplayState\(\)/.test(clientSrc),
     "scrubbing recomputes appearance from zero (backward scrub is honest)");
+
+  // ---------------------------------------------------------- section 13
+  // Timeline & Site Evidence: truth classes, spatial provenance,
+  // readiness-transition history, current-state separation, replay.
+  console.log("\n== 13. Timeline & Site Evidence ==");
+
+  // (a) Truth classes are derived centrally and consistently.
+  const tseTl = tl.projectTimeline(funder, "proj-r47");
+  assert(
+    tseTl.events.every((e) => ["GOVERNED_FACT", "HISTORICAL_EVENT", "ADVISORY_SIGNAL"].includes(e.truthClass)),
+    "every event carries one of the three truth classes"
+  );
+  assert(
+    tseTl.events.filter((e) => e.recordStatus === "ADVISORY").every((e) => e.truthClass === "ADVISORY_SIGNAL"),
+    "every advisory record is ADVISORY_SIGNAL — never presented as governed"
+  );
+  const capEv = tseTl.events.find((e) => e.type === "EVIDENCE_CAPTURED");
+  assert(capEv && capEv.truthClass === "HISTORICAL_EVENT", "an evidence capture is a HISTORICAL_EVENT");
+  const verEv = tseTl.events.find((e) => e.type === "EVIDENCE_VERIFIED");
+  assert(verEv && verEv.truthClass === "GOVERNED_FACT", "a verification verdict is a GOVERNED_FACT");
+  assert(
+    tseTl.events.filter((e) => e.category === "DECISION").every((e) => e.truthClass === "GOVERNED_FACT"),
+    "every decision event is a GOVERNED_FACT"
+  );
+
+  // (b) Spatial provenance: coordinates are copied from the record's own
+  //     stored fix and from nowhere else — never the project's location.
+  const gpsRows = db.prepare("SELECT id, latitude, longitude FROM evidence_items WHERE latitude IS NOT NULL").all();
+  const gpsById = new Map(gpsRows.map((r) => [r.id, r]));
+  const located = tseTl.events.filter((e) => e.spatial);
+  assert(located.length > 0, "GPS-located evidence produces spatial events");
+  for (const e of located) {
+    const row = gpsById.get(e.sourceRecordId);
+    if (!row || row.latitude !== e.spatial.latitude || row.longitude !== e.spatial.longitude) {
+      fail(`event ${e.id} carries coordinates its source record does not store`);
+    }
+    if (e.type !== "EVIDENCE_CAPTURED") fail(`spatial appears on ${e.type} — only the capture holds the fix`);
+  }
+  pass("every spatial value matches its record's OWN stored coordinates (capture only, never invented)");
+  assert(
+    tseTl.events.filter((e) => e.type === "EVIDENCE_UPLOADED").every((e) => e.spatial === null),
+    "the upload moment carries no location — the fix belongs to the capture"
+  );
+  // Positive control: an evidence item with NO stored fix must yield NO
+  // spatial value — the project's own location is never smeared onto it.
+  repo.insertEvidence({
+    id: "ev-tse-nofix", milestoneId: milestones[0].id, userId: "user-field",
+    photoPath: "/demo-evidence/site.jpg", capturedAt: "2026-06-14T10:00:00.000Z",
+    uploadedAt: "2026-06-14T10:05:00.000Z", latitude: null, longitude: null,
+    deviceMetadata: { userAgent: "t", platform: "t", screen: "1x1", language: "en" },
+    hash: "tse-nofix-hash", previousHash: null, isDemoFallback: false,
+  });
+  const noFixEvents = tl.projectTimeline(funder, "proj-r47").events
+    .filter((e) => e.sourceRecordId === "ev-tse-nofix");
+  assert(noFixEvents.length > 0 && noFixEvents.every((e) => e.spatial === null),
+    "an evidence item without a stored fix yields NO spatial value — location is never invented");
+  db.prepare("DELETE FROM evidence_items WHERE id = 'ev-tse-nofix'").run();
+
+  // (c) Readiness transitions come from the machine's own immutable
+  //     draw_events rows: stored states verbatim, stable record-derived
+  //     ids, no cause attached.
+  const transitions = tseTl.events.filter((e) => e.type === "READINESS_TRANSITION");
+  assert(transitions.length >= 2, "seeded readiness transitions appear on the timeline");
+  const t6 = transitions.find((e) => e.id === "DRAW:READINESS_TRANSITION:dev-6");
+  const t7 = transitions.find((e) => e.id === "DRAW:READINESS_TRANSITION:dev-7");
+  assert(Boolean(t6 && t7), "transition ids are deterministic: category:type:<draw_events row id>");
+  assert(
+    t6.change.previous === null && t6.change.current === "INCOMPLETE",
+    "the first transition records its stored states verbatim (null → INCOMPLETE)"
+  );
+  assert(
+    t7.change.previous === "INCOMPLETE" && t7.change.current === "HOLD",
+    "the second transition records its stored states verbatim (INCOMPLETE → HOLD)"
+  );
+  assert(t7.sourceTable === "draw_events" && t7.truthClass === "GOVERNED_FACT",
+    "a transition is a GOVERNED_FACT sourced from draw_events");
+  assert(!/blocker|missing document|next action/i.test(t7.explanation),
+    "a historical transition's explanation never carries today's blockers");
+
+  // (d) HISTORICAL TRUTH IS ABSOLUTE: a stored transition that contradicts
+  //     the live evaluation is still shown exactly as stored.
+  db.prepare(
+    "INSERT INTO draw_events (id, draw_request_id, type, detail, actor_user_id, created_at) VALUES (?,?,?,?,?,?)"
+  ).run("drt-tse-hist", "draw-1", "READINESS_TRANSITION",
+    JSON.stringify({ status: "READY", from: "HOLD", policyVersion: 1 }), null, "2026-06-12T09:00:00.000Z");
+  const histTl = tl.projectTimeline(funder, "proj-r47");
+  const histEv = histTl.events.find((e) => e.id === "DRAW:READINESS_TRANSITION:drt-tse-hist");
+  assert(
+    histEv && histEv.change.previous === "HOLD" && histEv.change.current === "READY",
+    "a stored transition contradicting today's readiness is shown AS STORED — never reconciled"
+  );
+  assert(histEv.actorName === null && histEv.actorUserId === null,
+    "a transition with no recorded actor names none — never inferred");
+  // June replay scenario: a window ending June 13 contains the June 12
+  // transition and NOT the July ones — pure own-timestamp comparison.
+  const juneWindow = tl.pastEvents(histTl.events, "2026-06-13T00:00:00.000Z");
+  assert(
+    juneWindow.some((e) => e.id === "DRAW:READINESS_TRANSITION:drt-tse-hist") &&
+      !juneWindow.some((e) => e.id === "DRAW:READINESS_TRANSITION:dev-6"),
+    "a replay window admits events by their OWN timestamps only"
+  );
+  assert(
+    !JSON.stringify(juneWindow.filter((e) => e.type === "READINESS_TRANSITION")).includes("HOLD\",\"current\":\"INCOMPLETE"),
+    "no readiness state is recomputed for the window — only stored transitions exist in it"
+  );
+  db.prepare("DELETE FROM draw_events WHERE id = ?").run("drt-tse-hist");
+
+  // (e) An unparseable stored detail degrades honestly, never throws.
+  db.prepare(
+    "INSERT INTO draw_events (id, draw_request_id, type, detail, actor_user_id, created_at) VALUES (?,?,?,?,?,?)"
+  ).run("drt-tse-bad", "draw-1", "READINESS_TRANSITION", "{not json", null, "2026-06-01T09:00:00.000Z");
+  const badEv = tl.projectTimeline(funder, "proj-r47").events
+    .find((e) => e.id === "DRAW:READINESS_TRANSITION:drt-tse-bad");
+  assert(badEv && badEv.change.current === "UNRECORDED",
+    "an unparseable transition row is stated as UNRECORDED, never guessed");
+  db.prepare("DELETE FROM draw_events WHERE id = ?").run("drt-tse-bad");
+
+  // (f) Superseded lender decisions are retained AND marked; standing
+  //     decisions are not.
+  const nowIso = "2026-07-20T10:00:00.000Z";
+  const decCols = "id, organization_id, project_id, draw_request_id, requested_amount, decision, reviewer_user_id, decision_at, superseded_by_decision_id, supersedes_decision_id, created_at, updated_at";
+  // The partial unique index allows exactly one CURRENT decision per
+  // draw, and the supersede link is a cycle at insert time — deferred
+  // foreign keys inside one transaction, exactly how the real supersede
+  // path leaves the table.
+  db.exec("BEGIN");
+  db.exec("PRAGMA defer_foreign_keys = ON");
+  db.prepare(`INSERT INTO lender_draw_decisions (${decCols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run("ldec-tse-1", project.organizationId, "proj-r47", "draw-1", 600000, "APPROVED", "user-funder", nowIso, "ldec-tse-2", null, nowIso, nowIso);
+  db.prepare(`INSERT INTO lender_draw_decisions (${decCols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run("ldec-tse-2", project.organizationId, "proj-r47", "draw-1", 600000, "APPROVED", "user-funder", "2026-07-21T10:00:00.000Z", null, "ldec-tse-1", "2026-07-21T10:00:00.000Z", "2026-07-21T10:00:00.000Z");
+  db.exec("COMMIT");
+  const decTl = tl.projectTimeline(funder, "proj-r47");
+  const dec1 = decTl.events.find((e) => e.sourceRecordId === "ldec-tse-1");
+  const dec2 = decTl.events.find((e) => e.sourceRecordId === "ldec-tse-2");
+  assert(dec1 && /superseded by an amended decision/.test(dec1.explanation),
+    "a superseded lender decision is retained as history AND marked superseded");
+  assert(dec2 && !/superseded by an amended decision/.test(dec2.explanation),
+    "the standing decision carries no superseded marking");
+  db.prepare("DELETE FROM lender_draw_decisions WHERE id IN ('ldec-tse-1','ldec-tse-2')").run();
+
+  // (g) Deterministic ids: two reads yield the identical event id set.
+  const idsA = tl.projectTimeline(funder, "proj-r47").events.map((e) => e.id).join("|");
+  const idsB = tl.projectTimeline(funder, "proj-r47").events.map((e) => e.id).join("|");
+  assert(idsA === idsB, "event ids are stable across reads (record-derived, never index-derived)");
+
+  // (h) Current-state service: live values, tenancy-scoped, unavailable-safe.
+  const openStates = twin.currentOpenDrawStates(funder, "proj-r47");
+  const d1 = openStates.find((s) => s.drawRequestId === "draw-1");
+  assert(Boolean(d1), "the open-draw current-state service returns the open draw");
+  assert(d1.readiness === "HOLD", "the current readiness is the LIVE evaluation");
+  assert(typeof d1.nextActionLabel === "string" && d1.nextActionLabel.length > 0,
+    "the current next action comes from the existing deterministic engine");
+  assert(twin.currentDrawState(funder, "proj-dmv", "draw-1") === null,
+    "a draw outside the addressed project resolves to null (same-404 shape, nothing leaked)");
+  let tseDenied = false;
+  try { twin.currentOpenDrawStates(dmvpm, "proj-r47"); } catch (e) { tseDenied = e.statusCode === 404; }
+  assert(tseDenied, "current-state reads are same-404 for an inaccessible project");
+
+  // (i) READ-ONLY: the full new surface leaves every row byte-identical —
+  //     including the draw/decision tables the new reads touch.
+  const TSE_TABLES = [
+    "draw_events", "lender_draw_decisions", "draw_line_items", "draw_documents", "draw_requests",
+    "evidence_items", "verifications", "exceptions", "jurisdictional_inspections",
+  ];
+  const tseBefore = {};
+  for (const t of TSE_TABLES) tseBefore[t] = tableHash(t);
+  tl.projectTimeline(funder, "proj-r47");
+  twin.currentOpenDrawStates(funder, "proj-r47");
+  twin.currentDrawState(funder, "proj-r47", "draw-1");
+  twin.twinScene(funder, "proj-r47");
+  for (const t of TSE_TABLES) {
+    assert(tseBefore[t] === tableHash(t), `${t} byte-identical after the Timeline & Site Evidence reads`);
+  }
+
+  // (j) The workspace page: renamed product claim, context strip,
+  //     filters, replay, and the strictly separated inspector blocks.
+  const tsePage = await page("/timeline/twin/proj-r47", cookie);
+  assert(/Timeline &amp; Site Evidence|Timeline & Site Evidence/.test(tsePage.html),
+    "the page's primary title is Timeline & Site Evidence");
+  assert(!/<title>[^<]*Digital Twin/.test(tsePage.html),
+    "the page no longer claims Digital Twin as the current product title");
+  assert(/Recorded location/.test(tsePage.html) && /Latest recorded activity/.test(tsePage.html),
+    "the context strip states recorded location and latest recorded activity");
+  assert(/Current draw state/.test(tsePage.html) && /Current next action:/.test(tsePage.html),
+    "live draw values are labeled CURRENT DRAW STATE / CURRENT NEXT ACTION");
+  const lastActM = /Latest recorded activity<\/span><span class="tse-v">([0-9-]+ [0-9:]+) UTC/.exec(tsePage.html);
+  assert(lastActM && Date.parse(lastActM[1].replace(" ", "T") + ":00Z") <= Date.now() + 60_000,
+    "latest recorded activity is never a future-dated schedule row");
+  assert(/data-tse-truth="GOVERNED_FACT"/.test(tsePage.html) && /data-tse-located/.test(tsePage.html),
+    "truth-class and located-only filters are rendered");
+  assert(/Project Replay/.test(tsePage.html) && /Recorded events through:/.test(tsePage.html),
+    "Project Replay is labeled 'Recorded events through'");
+  assert(/Governed fact/.test(tsePage.html) && /Historical event/.test(tsePage.html),
+    "stream rows carry their truth-class chips");
+  // Replay client contract: element times are the record's own earliest
+  // event, and the replay object carries times only — no readiness.
+  const tseData = JSON.parse(tsePage.html.split('id="twin-data">')[1].split("</script>")[0]);
+  assert(tseData.replay && Object.keys(tseData.replay).sort().join(",") === "anchor,max,min",
+    "the replay contract is min/max/anchor timestamps ONLY — no recomputed state ships to the client");
+  assert(Date.parse(tseData.replay.anchor) <= Date.now() + 60_000,
+    "the replay quick-range anchor is the latest event that actually happened");
+  const tseEvents = JSON.parse(
+    JSON.stringify((await (await fetch(`${BASE}/api/timeline/project/proj-r47`, { headers: { cookie } })).json()).events ?? [])
+  );
+  const capForPin = tseEvents.find((e) => e.type === "EVIDENCE_CAPTURED" && e.spatial);
+  if (capForPin) {
+    assert(tseData.elementAt[`EVIDENCE_PIN:${capForPin.sourceRecordId}`] === capForPin.at,
+      "a marker's replay moment is its record's OWN earliest event timestamp");
+  } else {
+    assert(Object.keys(tseData.elementAt).length > 0, "the replay element-time map is populated");
+  }
+
+  // (k) The transition inspector: AT THE TIME strictly separated from
+  //     CURRENT, cause honesty, and the ?event=/?focus= alias.
+  const trPage = await page("/timeline/twin/proj-r47?event=DRAW%3AREADINESS_TRANSITION%3Adev-7", cookie);
+  assert(/Event record/.test(trPage.html), "selecting a transition renders the event-record inspector");
+  assert(/At the time \(recorded\)/.test(trPage.html) && /Current linked state/.test(trPage.html),
+    "the inspector separates AT THE TIME from CURRENT LINKED STATE");
+  assert(/Cause not recorded in this historical event/.test(trPage.html),
+    "a transition with no stored cause says exactly that");
+  const thenBlock = trPage.html.split('class="tse-block tse-then"')[1].split("</div>")[0];
+  const nowBlock = trPage.html.split('class="tse-block tse-now"')[1].split('class="sub"')[0];
+  const nextActionM = /Current next action<\/span>\s*([^<(]+)/.exec(nowBlock);
+  assert(/INCOMPLETE/.test(thenBlock) && /HOLD/.test(thenBlock),
+    "the historical block shows the stored from → to states");
+  if (nextActionM && nextActionM[1].trim().length > 8) {
+    assert(!thenBlock.includes(nextActionM[1].trim()),
+      "the historical block NEVER contains today's next action");
+  } else {
+    assert(!/Current next action/.test(thenBlock), "the historical block carries no CURRENT labels");
+  }
+  const focusAlias = await page("/timeline/twin/proj-r47?focus=DRAW%3AREADINESS_TRANSITION%3Adev-7", cookie);
+  assert(/Event record/.test(focusAlias.html) && /At the time \(recorded\)/.test(focusAlias.html),
+    "?focus= remains an alias of the ?event= deep link");
+
+  // (l) Unknown and cross-tenant event ids leak nothing.
+  const unknownEv = await page("/timeline/twin/proj-r47?event=NO%3ASUCH%3Aevent", cookie);
+  assert(unknownEv.status === 200 && /Context inspector/.test(unknownEv.html),
+    "an unknown event id renders the plain inspector — no error, no invention");
+  const dmvTl = await (await fetch(`${BASE}/api/timeline/project/proj-dmv`, { headers: { cookie: dmvCookie } })).json();
+  const foreignEv = dmvTl.events.find((e) => e.sourceRecordId.includes("dmv")) ?? dmvTl.events[0];
+  const crossEv = await page(`/timeline/twin/proj-r47?event=${encodeURIComponent(foreignEv.id)}`, cookie);
+  // The client-data blob echoes the caller's own query value as `focus`
+  // (needed for sync lookup; JSON-escaped) — that is input reflection,
+  // not record content. Nothing FROM the foreign record may appear.
+  const crossSansEcho = crossEv.html.replace(/"focus":"[^"]*"/, '"focus":null');
+  assert(
+    /Context inspector/.test(crossEv.html) && !crossSansEcho.includes(foreignEv.sourceRecordId),
+    "another project's event id resolves to nothing on this project — no cross-project leak"
+  );
+
+  // (m) Upcoming honesty on the page: any future-dated stream row is
+  //     chipped as not-yet-happened, and only those rows are.
+  const rowAts = [...tsePage.html.matchAll(/<li data-at="([^"]+)"/g)].map((m) => m[1]);
+  const futureRows = rowAts.filter((a) => Date.parse(a) > Date.now());
+  const upcomingChips = (tsePage.html.match(/Upcoming — not yet happened/g) ?? []).length;
+  assert(upcomingChips === futureRows.length,
+    `future-dated rows are chipped 'Upcoming — not yet happened' (${futureRows.length} of them), past rows never are`);
+  // Positive control on the DMV project, whose permits carry 2027 expiry
+  // dates: those rows MUST be chipped as not-yet-happened, never as
+  // history, and the latest-activity figure must ignore them.
+  const dmvPage = await page("/timeline/twin/proj-dmv", dmvCookie);
+  const dmvAts = [...dmvPage.html.matchAll(/<li data-at="([^"]+)"/g)].map((m) => m[1]);
+  const dmvFuture = dmvAts.filter((a) => Date.parse(a) > Date.now());
+  const dmvChips = (dmvPage.html.match(/Upcoming — not yet happened/g) ?? []).length;
+  assert(dmvFuture.length > 0 && dmvChips === dmvFuture.length,
+    `a schedule row (recorded permit expiry) is never presented as history (${dmvFuture.length} chipped)`);
+  const dmvLastM = /Latest recorded activity<\/span><span class="tse-v">([0-9-]+ [0-9:]+) UTC/.exec(dmvPage.html);
+  assert(dmvLastM && Date.parse(dmvLastM[1].replace(" ", "T") + ":00Z") <= Date.now() + 60_000,
+    "the DMV latest-activity figure ignores future-dated schedule rows");
+
+  // (n) Honest zero-spatial label is wired to the pin count, and the
+  //     mobile segmented control offers Timeline | Site.
+  const twinViewSrc = fs.readFileSync(path.join(ROOT, "src/server/view/twinPages.tsx"), "utf8");
+  assert(/No spatial evidence recorded/.test(twinViewSrc) && /locatedCount > 0/.test(twinViewSrc),
+    "a project with zero GPS-located records states 'No spatial evidence recorded'");
+  assert(/mode=timeline/.test(tsePage.html) && /mode=twin/.test(tsePage.html),
+    "the mobile segmented control offers both workspace modes");
+
+  // ---------------------------------------------------------- section 14
+  // Corrective pass: inspection records are NON-SPATIAL, the replay
+  // window equals the rendered window, timeline source caps reach the
+  // page, and the spatial count is a record count — never a pin count.
+  console.log("\n== 14. Truth-preservation corrections ==");
+
+  // (a) A jurisdictional inspection is NEVER placed — not even when its
+  //     milestone has real recorded SEGMENT geometry. One record's
+  //     coordinates are never substituted for another's. This assertion
+  //     fails if inspection-on-segment placement is ever reintroduced.
+  const segMilestone = repo.listSpatialFeatures("proj-r47")
+    .find((f) => f.kind === "SEGMENT" && f.milestoneId && f.geometry.length > 0).milestoneId;
+  db.prepare(
+    `INSERT INTO jurisdictional_inspections
+       (id, organization_id, project_id, milestone_id, inspection_type, required, status, scheduled_at, created_at, updated_at)
+     VALUES (?,?,?,?,?,1,'SCHEDULED',?,?,?)`
+  ).run("insp-tse-nospatial", project.organizationId, "proj-r47", segMilestone, "GRADING",
+    "2026-06-20T09:00:00.000Z", "2026-06-19T09:00:00.000Z", "2026-06-19T09:00:00.000Z");
+  const inspScene = twin.twinScene(funder, "proj-r47");
+  // The plain-fact "no recorded result" advisory is an element with NO
+  // points (listed, never drawn) — the invariant is that no
+  // inspection-derived element ever carries coordinates, and the
+  // INSPECTION_MARKER kind is never placed at all.
+  assert(
+    inspScene.elements.every(
+      (el) => el.kind !== "INSPECTION_MARKER" &&
+        (el.sourceTable !== "jurisdictional_inspections" || el.points.length === 0)
+    ),
+    "NO inspection is ever a placed scene element — milestone geometry is not the inspection's location"
+  );
+  const inspDockRow = inspScene.anchored.find((a) => a.sourceRecordId === "insp-tse-nospatial");
+  assert(Boolean(inspDockRow) && inspDockRow.group === "INSPECTION",
+    "the inspection appears in the anchored dock instead");
+  assert(/Spatial location: not recorded/.test(inspDockRow.detail),
+    "the dock row states 'Spatial location: not recorded'");
+  assert(/Linked to /.test(inspDockRow.detail),
+    "the dock row states the milestone linkage by name, not by borrowed geometry");
+  assert(
+    inspScene.elements.some((el) => el.kind === "SEGMENT" && el.milestoneId === segMilestone),
+    "the milestone's own SEGMENT geometry remains drawn normally"
+  );
+  const inspTl = tl.projectTimeline(funder, "proj-r47");
+  const inspEvents = inspTl.events.filter((e) => e.sourceRecordId === "insp-tse-nospatial");
+  assert(inspEvents.length > 0, "the inspection remains on the governed timeline");
+  assert(inspEvents.every((e) => e.spatial === null),
+    "no inspection event carries a spatial location (the record stores none)");
+  assert(
+    inspScene.elements.some((el) => el.kind === "EVIDENCE_PIN"),
+    "evidence with its OWN stored GPS fix still receives its normal pin"
+  );
+  const inspLayer = inspScene.layers.find((l) => l.key === "inspections");
+  assert(/Inspection records/.test(inspLayer.label) && /never placed/.test(inspLayer.note ?? ""),
+    "the layer is named 'Inspection records' and states that inspections are listed, never placed");
+  db.prepare("DELETE FROM jurisdictional_inspections WHERE id = 'insp-tse-nospatial'").run();
+
+  // (b) Replay window = the rendered window. DATA_A's r47 carries the
+  //     1200-event bulk history from section 10, so a second server over
+  //     DATA_A exercises the capped case with a REAL >STREAM_CAP record.
+  const PORT_A = PORT + 1;
+  const BASE_A = `http://127.0.0.1:${PORT_A}`;
+  const serverA = spawn(process.execPath, [path.join(ROOT, "dist/server/http/server.js")], {
+    env: { ...process.env, OBV_DATA_DIR: DATA_A, PORT: String(PORT_A), OBV_BANKING_PROVIDER: "mock", OBV_BANKING_MODE: "demo" },
+    stdio: "ignore",
+  });
+  try {
+    let healthyA = false;
+    for (let i = 0; i < 60; i += 1) {
+      try { const r = await fetch(`${BASE_A}/api/health`); if (r.ok) { healthyA = true; break; } } catch {}
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!healthyA) fail("DATA_A server did not become healthy");
+    const sessA = await fetch(`${BASE_A}/api/session`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId: "user-funder" }), redirect: "manual",
+    });
+    const cookieA = sessA.headers.getSetCookie()[0].split(";")[0];
+    const pageA = async (p) => {
+      const r = await fetch(`${BASE_A}${p}`, { headers: { cookie: cookieA, accept: "text/html" }, redirect: "manual" });
+      return { status: r.status, html: await r.text() };
+    };
+    const bigPage = await pageA("/timeline/twin/proj-r47");
+    const bigApi = await (await fetch(`${BASE_A}/api/timeline/project/proj-r47`, { headers: { cookie: cookieA } })).json();
+    assert(bigApi.events.length > 80, `fixture project has ${bigApi.events.length} events (> STREAM_CAP)`);
+    const bigData = JSON.parse(bigPage.html.split('id="twin-data">')[1].split("</script>")[0]);
+    const rowAtsA = [...bigPage.html.matchAll(/<li data-at="([^"]+)"/g)].map((m) => m[1]);
+    assert(rowAtsA.length === 80, "the pane renders exactly the most recent STREAM_CAP events");
+    const sortedRows = rowAtsA.slice().sort();
+    assert(bigData.replay.min === sortedRows[0] && bigData.replay.max === sortedRows[sortedRows.length - 1],
+      "the replay scrubber's bounds are EXACTLY the rendered window's own first and last events");
+    const expectedMin = bigApi.events[bigApi.events.length - 80].at;
+    assert(bigData.replay.min === expectedMin,
+      "the replay minimum is the oldest event IN the window, not the oldest event in history");
+    assert(bigData.replay.min > bigApi.events[0].at,
+      "history older than the window is NOT spanned by the scrubber (no false empty periods)");
+    const capNote = new RegExp(`most recent 80 of ${bigApi.events.length} recorded events`);
+    assert(capNote.test(bigPage.html), "the page discloses 'most recent 80 of N recorded events'");
+    assert(/Earlier history on the full Timeline/.test(bigPage.html),
+      "the full Timeline remains the stated destination for earlier history");
+    assert(!/\(full record\)/.test(bigPage.html) && /entire replay window/.test(bigPage.html),
+      "'All' means the disclosed replay window — the page never claims a full record over a bounded window");
+    assert(/30d ago/.test(bigPage.html) && /7d ago/.test(bigPage.html),
+      "quick ranges are honestly labeled as rewinds: '30d ago' / '7d ago'");
+
+    // (c) Timeline source caps reach the page. 500 advisory signals fire
+    //     the real SIGNAL_READ_CAP — no invented lower cap.
+    const insSig = db.prepare(
+      `INSERT INTO evidence_signals
+         (id, occurred_at, category, severity, confidence, subject_type, subject_id,
+          organization_id, project_id, title, explanation, recommendation, signal_key)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    );
+    for (let i = 0; i < 500; i += 1) {
+      insSig.run(`sig-tse-${i}`, "2026-05-01T00:00:00.000Z", "METADATA", "LOW", 0.5,
+        "EVIDENCE_ITEM", "ev-ms-1", project.organizationId, "proj-r47",
+        `bulk advisory ${i}`, "synthetic cap fixture", "review", `sig-tse-key-${i}`);
+    }
+    const cappedPage = await pageA("/timeline/twin/proj-r47");
+    assert(/Partial timeline record/.test(cappedPage.html),
+      "a fired source cap surfaces the PARTIAL TIMELINE RECORD disclosure on the workspace");
+    assert(/evidence_signals: showing the most recent 500 advisory findings/.test(cappedPage.html),
+      "the cap's own message reaches the page verbatim");
+    assert(/returned, authorized timeline window/.test(cappedPage.html),
+      "Project Replay is marked as replaying the returned window, not complete history");
+    db.prepare("DELETE FROM evidence_signals WHERE id LIKE 'sig-tse-%'").run();
+
+    // (d) The spatial-evidence context count is a RECORD count derived
+    //     from events with stored fixes, not the rendered pin count.
+    const cleanPage = await pageA("/timeline/twin/proj-r47");
+    const spatialM = /Spatial evidence<\/span><span class="tse-v">(\d+) GPS-located record/.exec(cleanPage.html);
+    const cleanApi = await (await fetch(`${BASE_A}/api/timeline/project/proj-r47`, { headers: { cookie: cookieA } })).json();
+    const apiLocated = cleanApi.events.filter((e) => e.spatial).length;
+    assert(spatialM && Number(spatialM[1]) === apiLocated,
+      `the spatial-evidence count equals the located RECORD count (${apiLocated})`);
+    const viewSrc = fs.readFileSync(path.join(ROOT, "src/server/view/twinPages.tsx"), "utf8");
+    assert(/locatedCount = events\.filter\(\(e\) => e\.spatial\)\.length/.test(viewSrc),
+      "the context metric derives from records with stored fixes — a pin cap can never masquerade as it");
+  } finally {
+    try { serverA.kill(); } catch {}
+  }
+
+  // (e) Clean case: no fired cap → no false partial-history warning, and
+  //     an uncapped (< STREAM_CAP) project shows no window-cap note.
+  const cleanB = await page("/timeline/twin/proj-r47", cookie);
+  assert(!/Partial timeline record/.test(cleanB.html),
+    "sourceCaps = [] shows NO partial-record warning");
+  assert(!/Replay window: most recent/.test(cleanB.html) && /entire replay window/.test(cleanB.html),
+    "an uncapped project truthfully describes all returned events as the replay window");
 
   console.log(`\nDIGITAL TWIN TESTS PASSED — ${passed} checkpoints.`);
   console.log("THE TWIN SHOWS THE RECORD. THE TIMELINE REMAINS AUTHORITATIVE.");

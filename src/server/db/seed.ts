@@ -882,6 +882,11 @@ function seedDemoDraw(): void {
     ["dev-3", "LINE_REVIEWED", "Line \"Drainage structures — completion balance\" marked SUPPORTED by Amina Ndlovu. Line review is advisory: it cannot release funds.", "user-compliance", t("8T10:20:00.000Z")],
     ["dev-4", "LINE_REVIEWED", "Line \"Gravel base course placement, km 7–11\" marked EXCEPTION by Amina Ndlovu — claimed progress exceeds verified physical progress.", "user-compliance", t("8T10:35:00.000Z")],
     ["dev-5", "LINE_REVIEWED", "Line \"Stored materials — gravel stockpile km 12\" marked PARTIALLY SUPPORTED by Margaret Osei ($40,000 of $70,000 supported).", "user-funder", t("8T10:50:00.000Z")],
+    // Readiness transitions — the immutable state history the readiness
+    // machine writes at governed mutation points. The final recorded
+    // state matches what the evaluator computes for this seeded draw.
+    ["dev-6", "READINESS_TRANSITION", JSON.stringify({ status: "INCOMPLETE", from: null, policyVersion: 1 }), "user-pm", t("7T09:00:05.000Z")],
+    ["dev-7", "READINESS_TRANSITION", JSON.stringify({ status: "HOLD", from: "INCOMPLETE", policyVersion: 1 }), "user-compliance", t("8T10:55:00.000Z")],
   ];
   for (const [id, type, detail, actor, createdAt] of drawEvents) {
     repo.insertDrawEvent({ id, drawRequestId: "draw-1", type: type as never, detail, actorUserId: actor, createdAt });

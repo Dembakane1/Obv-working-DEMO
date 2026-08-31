@@ -11,3 +11,4 @@ export { twinPinDetail } from "./detail";
 export { twinCoverage } from "./coverage";
 export { twinSnapshots, SNAPSHOT_CAP } from "./snapshot";
 export { TWIN_PROVIDER_SPECS, twinProviderReadiness } from "./providers";
+export { currentOpenDrawStates, currentDrawState, type CurrentDrawState } from "./workspace";

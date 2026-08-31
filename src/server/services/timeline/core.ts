@@ -18,6 +18,8 @@ import type {
   TimelineEvent,
   TimelineFilters,
   TimelineRecordStatus,
+  TimelineSpatial,
+  TimelineTruthClass,
   User,
 } from "../../../shared/types";
 
@@ -119,6 +121,40 @@ export interface EventDraft {
   recordStatus: TimelineRecordStatus;
   severity?: TimelineEvent["severity"];
   change?: TimelineEvent["change"];
+  /** Recorded coordinates COPIED from the source record's own stored
+   *  fields. A collector may only set this from values the record
+   *  actually holds — never from the project's location or any default. */
+  spatial?: TimelineSpatial | null;
+}
+
+/** Categories whose authoritative events always assert governed state
+ *  or a governed decision, whatever their shape. */
+const GOVERNED_CATEGORIES = new Set<TimelineCategory>([
+  "DECISION", "GOVERNANCE", "EXCEPTION", "PAYMENT",
+]);
+
+/**
+ * Derive the truth class in ONE place so collectors cannot drift:
+ * advisory records are ADVISORY_SIGNAL; an authoritative event that
+ * asserts a governed state value (it belongs to a governed category, or
+ * its source record expresses a state transition via `change`) is a
+ * GOVERNED_FACT; the remaining authoritative events record that
+ * something happened — HISTORICAL_EVENT.
+ */
+export function truthClassOf(draft: EventDraft): TimelineTruthClass {
+  if (draft.recordStatus === "ADVISORY") return "ADVISORY_SIGNAL";
+  if (GOVERNED_CATEGORIES.has(draft.category) || (draft.change ?? null) !== null) {
+    return "GOVERNED_FACT";
+  }
+  return "HISTORICAL_EVENT";
+}
+
+/** True when a value is a real recorded coordinate pair. Anything else
+ *  (missing, partial, non-finite) is treated as "no location recorded". */
+function realSpatial(value: TimelineSpatial | null | undefined): TimelineSpatial | null {
+  if (!value) return null;
+  if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) return null;
+  return { latitude: value.latitude, longitude: value.longitude };
 }
 
 /** Build one event, or null when the source record carries no usable
@@ -143,6 +179,8 @@ export function makeEvent(draft: EventDraft, actors: ActorResolver): TimelineEve
     sourceRecordId: draft.sourceRecordId,
     href: draft.href ?? null,
     recordStatus: draft.recordStatus,
+    truthClass: truthClassOf(draft),
+    spatial: realSpatial(draft.spatial),
     severity: draft.severity ?? null,
     change: draft.change ?? null,
   };

@@ -296,7 +296,7 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: icons.map,
         tabs: [
           { key: "timeline", href: "/timeline", label: "Timeline" },
-          { key: "twin", href: "/timeline#twin-snapshots", label: "Digital Twin" },
+          { key: "twin", href: "/timeline#twin-snapshots", label: "Site Evidence" },
           { key: "map", href: "/map", label: "Map / Satellite" },
         ],
       },
