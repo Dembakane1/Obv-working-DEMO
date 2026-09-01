@@ -1484,18 +1484,79 @@ async function main() {
   assert(JSON.stringify(db.prepare("SELECT * FROM permit_amendments ORDER BY id").all()) === rowsBeforeS8,
     "S8/H: readiness, gate and timeline READS leave every amendment row byte-identical");
 
-  // ---- S9 · §19 timeline integration: non-spatial governed events -----
+  // ---- S9 · §19 timeline integration: non-spatial governed events,
+  // every one derived from the amendment's IMMUTABLE audit records ------
   const tlS9 = tlSvc.projectTimeline(funder, "proj-golden");
-  const amEvents = tlS9.events.filter((e) => e.sourceTable === "permit_amendments" && e.sourceRecordId === amS4.id);
+  const amEvents = tlS9.events.filter((e) => /AM-2026-014/.test(e.title));
   assert(amEvents.some((e) => e.type === "PERMIT_AMENDMENT_RECORDED") &&
     amEvents.some((e) => e.type === "AMENDMENT_EFFECT_DETERMINED") &&
     amEvents.some((e) => e.type === "PERMIT_AMENDMENT_RESOLVED"),
     "S9: the amendment lifecycle appears on the governed timeline");
+  assert(amEvents.length > 0 && amEvents.every((e) => e.sourceTable === "config_audit"),
+    "S9: every amendment history event cites an immutable audit record, never the mutable row");
   assert(amEvents.every((e) => e.spatial === null),
     "S9: amendment events are NON-SPATIAL — no invented coordinates");
   assert(amEvents.every((e) => e.truthClass === "GOVERNED_FACT" || e.truthClass === "HISTORICAL_EVENT"),
     "S9: amendment events carry the central truth classification, never advisory");
   void drawPackage; void foreignFunderS8;
+
+  // ---- S10 · historical truth: the timeline narrates each amendment
+  // event from the immutable record written AT THAT MOMENT — later
+  // lifecycle changes never rewrite what an earlier event says ----------
+  const amHist = permitsSvc.recordPermitAmendment(funder, pS4.id, {
+    amendmentReference: "AM-HIST-1", description: "History regression (fixture)",
+  });
+  permitsSvc.determineAmendmentInspectionEffect(funder, amHist.id, {
+    effect: "BLOCKED", effectBasis: "Initial recorded jurisdictional determination (fixture).",
+  });
+  const tlAfterBlocked = tlSvc.projectTimeline(funder, "proj-golden");
+  const blockedEvent = tlAfterBlocked.events.find(
+    (e) => e.type === "AMENDMENT_EFFECT_DETERMINED" && /AM-HIST-1/.test(e.title)
+  );
+  assert(blockedEvent && /BLOCKED/.test(blockedEvent.change?.current ?? "") && blockedEvent.severity === "MEDIUM",
+    "S10: the first determination appears as its own BLOCKED event");
+  const blockedFrozen = JSON.stringify(blockedEvent);
+  permitsSvc.determineAmendmentInspectionEffect(funder, amHist.id, {
+    effect: "ALLOWED", effectBasis: "Jurisdiction confirmed scheduling may proceed (fixture).",
+    reason: "Recorded determination superseded by the authority's confirmation (fixture).",
+  });
+  const tlAfterAllowed = tlSvc.projectTimeline(funder, "proj-golden");
+  const detEvents = tlAfterAllowed.events.filter(
+    (e) => e.type === "AMENDMENT_EFFECT_DETERMINED" && /AM-HIST-1/.test(e.title)
+  );
+  assert(detEvents.length === 2,
+    "S10: BOTH determinations remain on the timeline — a redetermination adds, never replaces");
+  assert(detEvents.some((e) => JSON.stringify(e) === blockedFrozen),
+    "S10: the original BLOCKED event is byte-identical after the change — history is never rewritten");
+  const changedEvent = detEvents.find((e) => /BLOCKED/.test(e.change?.previous ?? "") && /ALLOWED/.test(e.change?.current ?? ""));
+  assert(changedEvent && /changed/.test(changedEvent.title),
+    "S10: the second event states the real transition BLOCKED → ALLOWED from its own immutable record");
+  permitsSvc.updatePermitAmendment(funder, amHist.id, {
+    status: "APPROVED", reason: "County approved the amendment (fixture).",
+  });
+  const tlAfterApproved = tlSvc.projectTimeline(funder, "proj-golden");
+  const createdEvent = tlAfterApproved.events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_RECORDED" && /AM-HIST-1/.test(e.title)
+  );
+  assert(createdEvent && /recorded as PENDING/.test(createdEvent.explanation) && !/APPROVED/.test(createdEvent.explanation),
+    "S10: after approval, the record-created event STILL says PENDING — the initial status comes from the immutable creation record, never today's row");
+  const resolvedEvent = tlAfterApproved.events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_RESOLVED" && /AM-HIST-1/.test(e.title)
+  );
+  assert(resolvedEvent && /PENDING/.test(resolvedEvent.change?.previous ?? "") && /APPROVED/.test(resolvedEvent.change?.current ?? ""),
+    "S10: the resolution event carries the real before/after transition");
+  // A transition whose prior state is NOT pending: UNKNOWN → WITHDRAWN.
+  const amHist2 = permitsSvc.recordPermitAmendment(funder, pS4.id, {
+    amendmentReference: "AM-HIST-2", status: "UNKNOWN",
+  });
+  permitsSvc.updatePermitAmendment(funder, amHist2.id, {
+    status: "WITHDRAWN", reason: "Applicant withdrew the amendment (fixture).",
+  });
+  const resolved2 = tlSvc.projectTimeline(funder, "proj-golden").events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_RESOLVED" && /AM-HIST-2/.test(e.title)
+  );
+  assert(resolved2 && /UNKNOWN/.test(resolved2.change?.previous ?? "") && !/PENDING/.test(resolved2.change?.previous ?? ""),
+    "S10: a non-PENDING transition shows its REAL prior state — the timeline never assumes PENDING");
 
   console.log(`\nDRAW READINESS TESTS PASSED — ${passed} checkpoints.`);
   console.log("DETERMINISTIC. EXPLAINED. NEVER AN APPROVAL.");

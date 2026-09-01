@@ -813,12 +813,29 @@ const AMENDMENT_STATUSES: PermitAmendmentStatus[] = [
 ];
 const AMENDMENT_EFFECTS: AmendmentInspectionEffect[] = ["BLOCKED", "ALLOWED", "UNKNOWN"];
 
+/** THE central lifecycle contract — every rule about amendment state
+ *  shape derives from these two sets, never from restated string checks.
+ *  Invariant, enforced by the governed service on every write:
+ *    OPEN     (PENDING, UNKNOWN)            ⇒ resolvedAt = null
+ *    TERMINAL (APPROVED/REJECTED/WITHDRAWN) ⇒ resolvedAt ≠ null
+ *  Contradictory shapes cannot be persisted through the service. */
+const OPEN_AMENDMENT_STATUSES: ReadonlySet<PermitAmendmentStatus> = new Set(["PENDING", "UNKNOWN"]);
+const TERMINAL_AMENDMENT_STATUSES: ReadonlySet<PermitAmendmentStatus> = new Set([
+  "APPROVED", "REJECTED", "WITHDRAWN",
+]);
+
 /** An amendment is OPEN while its recorded lifecycle has not resolved:
  *  PENDING, or UNKNOWN (an unresolved state that cannot be established).
  *  APPROVED / REJECTED / WITHDRAWN are resolved — closed history. THE
  *  shared predicate: gates and views import it, never restate it. */
 export function isOpenAmendment(a: PermitAmendment): boolean {
-  return a.status === "PENDING" || a.status === "UNKNOWN";
+  return OPEN_AMENDMENT_STATUSES.has(a.status);
+}
+
+/** One shared renderer for the immutable audit summaries so before/after
+ *  state strings stay comparable across the record's whole history. */
+function amendmentStateSummary(reference: string, status: PermitAmendmentStatus, resolvedAt: string | null): string {
+  return `${reference} — ${status}${resolvedAt ? ` (resolved ${resolvedAt.slice(0, 10)})` : ""}`;
 }
 
 export function getAmendmentFor(
@@ -871,6 +888,16 @@ export function recordPermitAmendment(
       403
     );
   }
+  // An amendment is recorded OPEN. A terminal state at creation would
+  // have to invent its own resolution history (APPROVED with no honest
+  // resolvedAt) — formal resolution is reached only through the governed
+  // lifecycle update, where the resolution time is recorded.
+  if (TERMINAL_AMENDMENT_STATUSES.has(status)) {
+    throw new PermitError(
+      `An amendment is recorded OPEN (PENDING or UNKNOWN) — ${status} is reached through the governed lifecycle update, which records the resolution`,
+      400
+    );
+  }
   const now = new Date().toISOString();
   const amendment: PermitAmendment = {
     id: repo.newId(),
@@ -900,11 +927,15 @@ export function recordPermitAmendment(
     }
     throw e;
   }
+  // The amendment itself is the governed subject of its history; the
+  // permit/project linkage lives in the audit context (projectId + text).
+  // This immutable record is what preserves the INITIAL status — the
+  // timeline reads it, never today's mutable row.
   audit({
     projectId: project.id, actorUserId: user.id, action: "PERMIT_AMENDMENT_RECORDED",
-    entityType: "PERMIT", entityId: permitId, reason: null,
+    entityType: "PERMIT_AMENDMENT", entityId: amendment.id, reason: null,
     beforeSummary: null,
-    afterSummary: `Amendment ${reference} on ${permit.permitNumber} — ${status}; inspection-scheduling effect UNKNOWN (not yet determined)`,
+    afterSummary: `Amendment ${reference} on permit ${permit.permitNumber} recorded as ${status}; inspection-scheduling effect UNKNOWN (not yet determined)`,
   });
   return amendment;
 }
@@ -941,8 +972,11 @@ export function determineAmendmentInspectionEffect(
     throw new PermitError("A reason is required to change a recorded effect determination after launch");
   }
   const now = new Date().toISOString();
+  // Stable state-summary format: `NOT DETERMINED` or `${effect} — ${basis}`.
+  // Each determination writes its OWN immutable record with the actual
+  // prior state; a later redetermination never rewrites an earlier one.
   const before = amendment.effectDeterminedAt
-    ? `${amendment.inspectionSchedulingEffect} (${amendment.effectBasis ?? "—"})`
+    ? `${amendment.inspectionSchedulingEffect} — ${amendment.effectBasis ?? "—"}`
     : "NOT DETERMINED";
   repo.updatePermitAmendment(amendmentId, {
     inspectionSchedulingEffect: effect,
@@ -952,9 +986,9 @@ export function determineAmendmentInspectionEffect(
   });
   audit({
     projectId: project.id, actorUserId: user.id, action: "AMENDMENT_EFFECT_DETERMINED",
-    entityType: "PERMIT", entityId: permit.id, reason: reason || null,
+    entityType: "PERMIT_AMENDMENT", entityId: amendment.id, reason: reason || null,
     beforeSummary: before,
-    afterSummary: `Amendment ${amendment.amendmentReference}: inspection scheduling ${effect} — ${basis}`,
+    afterSummary: `${effect} — ${basis}`,
   });
   if (project.status !== "DRAFT") {
     snapshotProject(project.id, `Amendment ${amendment.amendmentReference} inspection effect determined: ${effect}`, user);
@@ -967,6 +1001,14 @@ export function determineAmendmentInspectionEffect(
  * only for formal states; post-launch changes require a reason. Resolving
  * an amendment NEVER touches inspection records: the required inspection
  * remains its own governed fact and readiness recomputes from it.
+ *
+ * Lifecycle contract (see OPEN_/TERMINAL_AMENDMENT_STATUSES):
+ *  - open → terminal: resolvedAt supplied or automatically recorded now.
+ *  - terminal → open: refused 409. Reopening is not a pilot requirement —
+ *    a new jurisdictional action is a NEW amendment record.
+ *  - resolvedAt is historical time: correcting it alone is a governed
+ *    change (reason after launch) and is always audited.
+ *  - a true no-op returns the stored record untouched — updatedAt included.
  */
 export function updatePermitAmendment(
   user: User,
@@ -983,42 +1025,79 @@ export function updatePermitAmendment(
   }
   if (
     user.role === "PROJECT_MANAGER" &&
-    status !== undefined &&
-    (status !== "PENDING" || amendment.status !== "PENDING")
+    ((status !== undefined && (status !== "PENDING" || amendment.status !== "PENDING")) ||
+      input.resolvedAt !== undefined)
   ) {
     throw new PermitError(
       "Formal amendment status determination requires a funder representative or compliance reviewer",
       403
     );
   }
-  const material = status !== undefined && status !== amendment.status;
-  const reason = (input.reason ?? "").trim();
-  if (material && project.status !== "DRAFT" && !reason) {
-    throw new PermitError("A reason is required for material amendment changes after launch");
+  const finalStatus = status ?? amendment.status;
+  const statusChanged = finalStatus !== amendment.status;
+  if (statusChanged && TERMINAL_AMENDMENT_STATUSES.has(amendment.status) && OPEN_AMENDMENT_STATUSES.has(finalStatus)) {
+    throw new PermitError(
+      "A resolved amendment is closed history and cannot be reopened — record a new amendment for a new jurisdictional action",
+      409
+    );
   }
-  const resolvedAt =
-    input.resolvedAt !== undefined
-      ? parseIsoDate(input.resolvedAt, "resolvedAt")
-      : status !== undefined && ["APPROVED", "REJECTED", "WITHDRAWN"].includes(status) && !amendment.resolvedAt
-        ? new Date().toISOString()
-        : amendment.resolvedAt;
-  const before = `${amendment.amendmentReference} — ${amendment.status}`;
-  repo.updatePermitAmendment(amendmentId, {
-    status: status ?? amendment.status,
-    resolvedAt,
-    notes: input.notes !== undefined ? input.notes?.trim() || null : amendment.notes,
-  });
-  const after = repo.getPermitAmendment(amendmentId)!;
-  if (material) {
-    audit({
-      projectId: project.id, actorUserId: user.id, action: "PERMIT_AMENDMENT_UPDATED",
-      entityType: "PERMIT", entityId: permit.id, reason: reason || null,
-      beforeSummary: before,
-      afterSummary: `${after.amendmentReference} — ${after.status}${after.resolvedAt ? ` (resolved ${after.resolvedAt.slice(0, 10)})` : ""}`,
-    });
-    if (project.status !== "DRAFT") {
-      snapshotProject(project.id, `Permit amendment ${after.amendmentReference} updated: ${reason}`, user);
+  // Central shape invariant: open ⇒ no resolution time; terminal ⇒ one.
+  let finalResolvedAt: string | null;
+  if (OPEN_AMENDMENT_STATUSES.has(finalStatus)) {
+    if (input.resolvedAt !== undefined && parseIsoDate(input.resolvedAt, "resolvedAt") !== null) {
+      throw new PermitError("An OPEN amendment cannot carry a resolution time — resolvedAt belongs to APPROVED/REJECTED/WITHDRAWN");
+    }
+    finalResolvedAt = null;
+  } else {
+    finalResolvedAt =
+      input.resolvedAt !== undefined
+        ? parseIsoDate(input.resolvedAt, "resolvedAt")
+        : OPEN_AMENDMENT_STATUSES.has(amendment.status)
+          ? new Date().toISOString()
+          : amendment.resolvedAt;
+    if (!finalResolvedAt) {
+      throw new PermitError(`A ${finalStatus} amendment must carry its resolution time`);
     }
   }
+  const finalNotes = input.notes !== undefined ? input.notes?.trim() || null : amendment.notes;
+  const resolvedAtChanged = finalResolvedAt !== amendment.resolvedAt;
+  const notesChanged = finalNotes !== amendment.notes;
+  // A true no-op writes nothing — not even updatedAt.
+  if (!statusChanged && !resolvedAtChanged && !notesChanged) {
+    return amendment;
+  }
+  // status and resolvedAt are governed history; notes are operational.
+  const material = statusChanged || resolvedAtChanged;
+  const reason = (input.reason ?? "").trim();
+  if (material && project.status !== "DRAFT" && !reason) {
+    throw new PermitError(
+      "A reason is required to change an amendment's status or resolution time after launch"
+    );
+  }
+  const before = amendmentStateSummary(amendment.amendmentReference, amendment.status, amendment.resolvedAt);
+  repo.updatePermitAmendment(amendmentId, {
+    status: finalStatus,
+    resolvedAt: finalResolvedAt,
+    notes: finalNotes,
+  });
+  const after = repo.getPermitAmendment(amendmentId)!;
+  // Every actual mutation writes its immutable record — the resolution
+  // transition under its own action, with the REAL before/after states
+  // (never a hard-coded prior status). Note content stays out of
+  // summaries per audit doctrine; the change of notes is still recorded.
+  const resolvedNow = statusChanged && OPEN_AMENDMENT_STATUSES.has(amendment.status) && TERMINAL_AMENDMENT_STATUSES.has(finalStatus);
+  audit({
+    projectId: project.id, actorUserId: user.id,
+    action: resolvedNow ? "PERMIT_AMENDMENT_RESOLVED" : "PERMIT_AMENDMENT_UPDATED",
+    entityType: "PERMIT_AMENDMENT", entityId: amendment.id, reason: reason || null,
+    beforeSummary: material ? before : null,
+    afterSummary: material
+      ? `${amendmentStateSummary(after.amendmentReference, after.status, after.resolvedAt)}${notesChanged ? "; notes updated" : ""}`
+      : "notes updated (content not repeated in the audit summary)",
+  });
+  if (material && project.status !== "DRAFT") {
+    snapshotProject(project.id, `Permit amendment ${after.amendmentReference} updated: ${reason}`, user);
+  }
+  void permit;
   return after;
 }

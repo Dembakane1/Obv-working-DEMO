@@ -94,6 +94,10 @@ export function collectGovernance(ctx: CollectorContext): void {
     noteCap(`config_audit: showing the most recent ${AUDIT_READ_CAP} entries`);
   }
   for (const e of entries) {
+    // Amendment mutation records surface as PERMIT-category events with
+    // amendment identity via collectPermits — skip to avoid emitting the
+    // same immutable record twice.
+    if (e.entityType === "PERMIT_AMENDMENT") continue;
     push({
       at: e.createdAt,
       category: "GOVERNANCE",
@@ -196,7 +200,18 @@ export function collectMilestones(ctx: CollectorContext): void {
 // ------------------------------------------------------------ permits / DMV
 
 export function collectPermits(ctx: CollectorContext): void {
-  const { project, push } = ctx;
+  const { project, push, noteCap } = ctx;
+  // Amendment HISTORY comes from the immutable config_audit mutation
+  // records (entityType PERMIT_AMENDMENT) — never from the current
+  // mutable permit_amendments row, which only knows its LATEST state.
+  const amendmentAudit = safe(
+    () => repo.listConfigAudit(project.id, AUDIT_READ_CAP),
+    [] as ReturnType<typeof repo.listConfigAudit>
+  );
+  if (amendmentAudit.length >= AUDIT_READ_CAP) {
+    noteCap(`permit amendment history: derived from the most recent ${AUDIT_READ_CAP} audit entries`);
+  }
+  const amendmentHistory = amendmentAudit.filter((e) => e.entityType === "PERMIT_AMENDMENT");
   for (const p of safe(() => repo.listPermitsForProject(project.id), [])) {
     push({
       at: p.createdAt,
@@ -263,64 +278,85 @@ export function collectPermits(ctx: CollectorContext): void {
         recordStatus: "AUTHORITATIVE",
       });
     }
-    // Permit amendments — NON-SPATIAL governed records: the amendment's
-    // recording and, separately, the reviewed determination of its
-    // inspection-scheduling effect. Never a site marker; never inferred.
+    // Permit amendments — NON-SPATIAL governed records. Every historical
+    // event is derived from the amendment's OWN immutable mutation record
+    // in config_audit: actual timestamp, actual actor, actual before/after
+    // state at that moment. The current permit_amendments row describes
+    // only CURRENT state and is never used to narrate an earlier event —
+    // the same doctrine as READINESS_TRANSITION and decision snapshots.
+    // Only immutable identity (the reference) is read from the row.
     for (const a of safe(() => repo.listPermitAmendmentsForPermit(p.id), [])) {
-      push({
-        at: a.createdAt,
-        category: "PERMIT",
-        type: "PERMIT_AMENDMENT_RECORDED",
-        title: `Permit amendment recorded — ${a.amendmentReference}`,
-        explanation:
-          `Amendment ${a.amendmentReference} on permit ${p.permitNumber} was recorded as ${a.status}. ` +
-          "Whether it affects required-inspection scheduling is a separate reviewed determination.",
-        actorUserId: a.recordedByUserId,
-        projectId: project.id,
-        organizationId: project.organizationId,
-        sourceTable: "permit_amendments",
-        sourceRecordId: a.id,
-        href: `/permits`,
-        recordStatus: "AUTHORITATIVE",
-      });
-      if (a.effectDeterminedAt) {
-        push({
-          at: a.effectDeterminedAt,
-          category: "PERMIT",
-          type: "AMENDMENT_EFFECT_DETERMINED",
-          title: `Amendment inspection effect determined — ${a.amendmentReference}`,
-          explanation:
-            `An authorized reviewer recorded the jurisdictional determination for amendment ${a.amendmentReference}: ` +
-            `required-inspection scheduling ${a.inspectionSchedulingEffect}${a.effectBasis ? ` (${a.effectBasis})` : ""}. ` +
-            "OBV records the determination — it never interprets law.",
-          actorUserId: a.effectDeterminedBy,
-          projectId: project.id,
-          organizationId: project.organizationId,
-          sourceTable: "permit_amendments",
-          sourceRecordId: a.id,
-          href: `/permits`,
-          recordStatus: "AUTHORITATIVE",
-          severity: a.inspectionSchedulingEffect === "BLOCKED" ? "MEDIUM" : "INFO",
-          change: { field: "inspection scheduling", previous: null, current: a.inspectionSchedulingEffect },
-        });
-      }
-      if (a.resolvedAt) {
-        push({
-          at: a.resolvedAt,
-          category: "PERMIT",
-          type: "PERMIT_AMENDMENT_RESOLVED",
-          title: `Permit amendment ${a.status.toLowerCase()} — ${a.amendmentReference}`,
-          explanation:
-            `Amendment ${a.amendmentReference} reached ${a.status}. Resolution never passes an inspection — ` +
-            "the required inspection remains its own governed record.",
-          projectId: project.id,
-          organizationId: project.organizationId,
-          sourceTable: "permit_amendments",
-          sourceRecordId: a.id,
-          href: `/permits`,
-          recordStatus: "AUTHORITATIVE",
-          change: { field: "status", previous: "PENDING", current: a.status },
-        });
+      for (const e of amendmentHistory.filter((h) => h.entityId === a.id)) {
+        if (e.action === "PERMIT_AMENDMENT_RECORDED") {
+          push({
+            at: e.createdAt,
+            category: "PERMIT",
+            type: "PERMIT_AMENDMENT_RECORDED",
+            title: `Permit amendment recorded — ${a.amendmentReference}`,
+            // The initial status comes from the immutable creation record.
+            // If that record carries no summary, say only that it was
+            // recorded — never attach today's status to createdAt.
+            explanation:
+              `${e.afterSummary ?? `Amendment ${a.amendmentReference} on permit ${p.permitNumber} was recorded`}. ` +
+              "Whether it affects required-inspection scheduling is a separate reviewed determination.",
+            actorUserId: e.actorUserId,
+            projectId: project.id,
+            organizationId: project.organizationId,
+            sourceTable: "config_audit",
+            sourceRecordId: e.id,
+            href: `/permits`,
+            recordStatus: "AUTHORITATIVE",
+          });
+        } else if (e.action === "AMENDMENT_EFFECT_DETERMINED") {
+          const isChange = e.beforeSummary !== null && e.beforeSummary !== "NOT DETERMINED";
+          push({
+            at: e.createdAt,
+            category: "PERMIT",
+            type: "AMENDMENT_EFFECT_DETERMINED",
+            title: `Amendment inspection effect ${isChange ? "changed" : "determined"} — ${a.amendmentReference}`,
+            explanation:
+              `An authorized reviewer recorded the jurisdictional determination for amendment ${a.amendmentReference}: ` +
+              `required-inspection scheduling ${e.afterSummary ?? "(recorded)"}` +
+              `${isChange ? ` — previously ${e.beforeSummary}` : ""}. ` +
+              "OBV records the determination — it never interprets law.",
+            actorUserId: e.actorUserId,
+            projectId: project.id,
+            organizationId: project.organizationId,
+            sourceTable: "config_audit",
+            sourceRecordId: e.id,
+            href: `/permits`,
+            recordStatus: "AUTHORITATIVE",
+            severity: e.afterSummary?.startsWith("BLOCKED") ? "MEDIUM" : "INFO",
+            change: {
+              field: "inspection scheduling",
+              previous: isChange ? e.beforeSummary : null,
+              current: e.afterSummary ?? null,
+            },
+          });
+        } else if (e.action === "PERMIT_AMENDMENT_RESOLVED" || e.action === "PERMIT_AMENDMENT_UPDATED") {
+          push({
+            at: e.createdAt,
+            category: "PERMIT",
+            type: e.action,
+            title: `Permit amendment ${e.action === "PERMIT_AMENDMENT_RESOLVED" ? "resolved" : "updated"} — ${a.amendmentReference}`,
+            explanation:
+              `${e.afterSummary ?? `Amendment ${a.amendmentReference} was updated`}` +
+              `${e.reason ? ` — reason: ${e.reason}` : ""}. ` +
+              (e.action === "PERMIT_AMENDMENT_RESOLVED"
+                ? "Resolution never passes an inspection — the required inspection remains its own governed record."
+                : "Recorded by the governed amendment service."),
+            actorUserId: e.actorUserId,
+            projectId: project.id,
+            organizationId: project.organizationId,
+            sourceTable: "config_audit",
+            sourceRecordId: e.id,
+            href: `/permits`,
+            recordStatus: "AUTHORITATIVE",
+            change: e.beforeSummary || e.afterSummary
+              ? { field: "status", previous: e.beforeSummary ?? null, current: e.afterSummary ?? null }
+              : null,
+          });
+        }
       }
     }
   }

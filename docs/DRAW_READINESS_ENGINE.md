@@ -154,7 +154,14 @@ JurisdictionProfile (DC / MD / VA template keys, authority, portal)
       waivable). Resolving an amendment clears ONLY these reasons: the
       required inspection remains its own governed record — resolution
       never passes an inspection, and no historical transition, snapshot
-      or audit row is rewritten.)
+      or audit row is rewritten. Lifecycle contract, enforced centrally:
+      amendments are CREATED open (PENDING/UNKNOWN, resolvedAt null) and
+      resolve only through the governed update (terminal states carry a
+      recorded resolvedAt; reopening is refused; a resolvedAt correction
+      is a reasoned, audited change). Every mutation writes an immutable
+      config_audit record with the amendment as its governed subject —
+      the timeline narrates amendment history from those records, never
+      from the current mutable row.)
     → InspectionRequirement per milestone (REQUIRED / NOT_REQUIRED / UNKNOWN,
       reviewed determination with basis + attribution,
       gates: mustPassBeforeDrawReview / mustPassBeforeGovernance,

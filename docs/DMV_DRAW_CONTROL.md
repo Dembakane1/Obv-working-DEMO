@@ -348,8 +348,30 @@ model; no new engine):
 - effect `ALLOWED`, or amendment resolved, or inspection already PASSED →
   no amendment reason; the inspection gates carry the rest.
 
+**Lifecycle contract** (enforced centrally by the governed service; a
+contradictory shape cannot be persisted):
+
+- OPEN (`PENDING`, `UNKNOWN`) ⇒ `resolvedAt` is null; TERMINAL
+  (`APPROVED / REJECTED / WITHDRAWN`) ⇒ `resolvedAt` is recorded.
+- An amendment is always **created OPEN** — a terminal state is reached
+  only through the governed lifecycle update, which records the
+  resolution. Reopening (terminal → open) is refused: a resolved
+  amendment is closed history; a new jurisdictional action is a new
+  amendment record.
+- `resolvedAt` is historical time: correcting it alone is a governed
+  change (post-launch reason required) and is always audited. Every
+  actual mutation — status, resolution time, or notes — writes its own
+  audit entry (note content stays out of summaries); a true no-op writes
+  nothing, `updatedAt` included.
+
 Historical truth is untouched: amendment changes rewrite no
-`READINESS_TRANSITION`, no decision-time snapshot, and no audit row; each
-mutation writes its own audit entry and appears on the governed timeline
-as non-spatial events (`PERMIT_AMENDMENT_RECORDED`,
-`AMENDMENT_EFFECT_DETERMINED`, `PERMIT_AMENDMENT_RESOLVED`).
+`READINESS_TRANSITION`, no decision-time snapshot, and no audit row. Each
+mutation writes its own **immutable** `config_audit` record with the
+amendment itself as the governed subject (`entityType PERMIT_AMENDMENT`),
+carrying the actual actor, timestamp, and before/after states — and the
+governed timeline narrates amendment history **from those immutable
+records only** (`PERMIT_AMENDMENT_RECORDED`, `AMENDMENT_EFFECT_DETERMINED`,
+`PERMIT_AMENDMENT_RESOLVED` / `PERMIT_AMENDMENT_UPDATED`), never from the
+current mutable row. A later change can never rewrite what an earlier
+event says: the creation event keeps its recorded initial status, and
+every effect redetermination remains beside the one it superseded.
