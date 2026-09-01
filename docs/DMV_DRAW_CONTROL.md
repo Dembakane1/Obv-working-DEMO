@@ -370,8 +370,14 @@ mutation writes its own **immutable** `config_audit` record with the
 amendment itself as the governed subject (`entityType PERMIT_AMENDMENT`),
 carrying the actual actor, timestamp, and before/after states — and the
 governed timeline narrates amendment history **from those immutable
-records only** (`PERMIT_AMENDMENT_RECORDED`, `AMENDMENT_EFFECT_DETERMINED`,
-`PERMIT_AMENDMENT_RESOLVED` / `PERMIT_AMENDMENT_UPDATED`), never from the
-current mutable row. A later change can never rewrite what an earlier
+records only**, never from the current mutable row. The audit actions are
+semantically explicit so presentation classifies each change from the
+record itself: `PERMIT_AMENDMENT_RECORDED`, `AMENDMENT_EFFECT_DETERMINED`,
+`PERMIT_AMENDMENT_RESOLVED` (open → terminal, a status change),
+`PERMIT_AMENDMENT_UPDATED` (any other real status change),
+`PERMIT_AMENDMENT_RESOLUTION_TIME_CORRECTED` (status unchanged — the
+corrected fact is the resolution time, both times preserved), and
+`PERMIT_AMENDMENT_NOTES_UPDATED` (notes only — never presented as a
+status change, note content never repeated). A later change can never rewrite what an earlier
 event says: the creation event keeps its recorded initial status, and
 every effect redetermination remains beside the one it superseded.

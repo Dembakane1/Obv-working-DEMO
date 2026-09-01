@@ -803,9 +803,11 @@ function readZip(buf) {
     assert(amCorrected.resolvedAt !== beforeCorrection && amCorrected.status === "APPROVED",
       "a reasoned resolvedAt correction is a governed change");
     const corrAudit = q1(
-      "SELECT COUNT(*) c FROM config_audit WHERE entity_id = ? AND action = 'PERMIT_AMENDMENT_UPDATED'", am1.id
+      "SELECT before_summary b, after_summary a FROM config_audit WHERE entity_id = ? AND action = 'PERMIT_AMENDMENT_RESOLUTION_TIME_CORRECTED'",
+      am1.id
     );
-    assert(Number(corrAudit.c) === 1, "the resolvedAt correction wrote its own audit entry");
+    assert(corrAudit && /resolved/.test(corrAudit.b) && /2026-08-01/.test(corrAudit.a),
+      "the correction wrote its own RESOLUTION_TIME_CORRECTED entry preserving both times — never labeled a status change");
     const am2 = (await j("funder", "POST", `/api/permits/${pAm.id}/amendments`, {
       amendmentReference: "REV-2026-08",
     })).amendment;
@@ -820,10 +822,10 @@ function readZip(buf) {
     })).amendment;
     assert(notesRow.notes !== null, "a notes-only update persists the notes");
     const notesAudit = q1(
-      "SELECT after_summary a FROM config_audit WHERE entity_id = ? AND action = 'PERMIT_AMENDMENT_UPDATED'", am2.id
+      "SELECT after_summary a FROM config_audit WHERE entity_id = ? AND action = 'PERMIT_AMENDMENT_NOTES_UPDATED'", am2.id
     );
     assert(notesAudit && /notes updated/.test(notesAudit.a) && !/clerk/.test(notesAudit.a),
-      "the notes change is audited without repeating note content in the summary");
+      "the notes change is audited under its own NOTES_UPDATED action without repeating note content");
     const rowBeforeNoop = JSON.stringify(q1("SELECT * FROM permit_amendments WHERE id = ?", am2.id));
     await j("funder", "POST", `/api/permit-amendments/${am2.id}`, {});
     assert(JSON.stringify(q1("SELECT * FROM permit_amendments WHERE id = ?", am2.id)) === rowBeforeNoop,

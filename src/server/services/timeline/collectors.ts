@@ -333,6 +333,47 @@ export function collectPermits(ctx: CollectorContext): void {
               current: e.afterSummary ?? null,
             },
           });
+        } else if (e.action === "PERMIT_AMENDMENT_RESOLUTION_TIME_CORRECTED") {
+          // Status unchanged — the corrected fact is the resolution TIME.
+          // Never present this as a status change; both times come from
+          // the immutable record.
+          push({
+            at: e.createdAt,
+            category: "PERMIT",
+            type: e.action,
+            title: `Permit amendment resolution time corrected — ${a.amendmentReference}`,
+            explanation:
+              `The recorded resolution time for amendment ${a.amendmentReference} was corrected` +
+              `${e.reason ? ` — reason: ${e.reason}` : ""}. The amendment's status did not change; ` +
+              "both times remain in the immutable audit record.",
+            actorUserId: e.actorUserId,
+            projectId: project.id,
+            organizationId: project.organizationId,
+            sourceTable: "config_audit",
+            sourceRecordId: e.id,
+            href: `/permits`,
+            recordStatus: "AUTHORITATIVE",
+            change: { field: "resolution time", previous: e.beforeSummary ?? null, current: e.afterSummary ?? null },
+          });
+        } else if (e.action === "PERMIT_AMENDMENT_NOTES_UPDATED") {
+          // Notes are operational: record THAT they changed, never their
+          // content, and never claim the status changed.
+          push({
+            at: e.createdAt,
+            category: "PERMIT",
+            type: e.action,
+            title: `Permit amendment notes updated — ${a.amendmentReference}`,
+            explanation:
+              `Operational notes on amendment ${a.amendmentReference} were updated. Note content is not ` +
+              "repeated on the timeline; the amendment's status did not change.",
+            actorUserId: e.actorUserId,
+            projectId: project.id,
+            organizationId: project.organizationId,
+            sourceTable: "config_audit",
+            sourceRecordId: e.id,
+            href: `/permits`,
+            recordStatus: "AUTHORITATIVE",
+          });
         } else if (e.action === "PERMIT_AMENDMENT_RESOLVED" || e.action === "PERMIT_AMENDMENT_UPDATED") {
           push({
             at: e.createdAt,

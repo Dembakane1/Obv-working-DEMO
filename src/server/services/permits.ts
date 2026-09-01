@@ -1081,19 +1081,39 @@ export function updatePermitAmendment(
     notes: finalNotes,
   });
   const after = repo.getPermitAmendment(amendmentId)!;
-  // Every actual mutation writes its immutable record — the resolution
-  // transition under its own action, with the REAL before/after states
-  // (never a hard-coded prior status). Note content stays out of
-  // summaries per audit doctrine; the change of notes is still recorded.
+  // Every actual mutation writes its immutable record under a
+  // SEMANTICALLY EXPLICIT action, so presentation classifies the change
+  // from the record itself — never by parsing prose:
+  //   PERMIT_AMENDMENT_RESOLVED                — open → terminal (status)
+  //   PERMIT_AMENDMENT_UPDATED                 — any other real status change
+  //   PERMIT_AMENDMENT_RESOLUTION_TIME_CORRECTED — status unchanged,
+  //     resolvedAt corrected (both times preserved in before/after)
+  //   PERMIT_AMENDMENT_NOTES_UPDATED           — notes only (content
+  //     never repeated in summaries per audit doctrine)
+  // One atomic mutation writes ONE row: when status/time and notes change
+  // together, the governed change is the action and the summary notes
+  // that notes were also updated.
   const resolvedNow = statusChanged && OPEN_AMENDMENT_STATUSES.has(amendment.status) && TERMINAL_AMENDMENT_STATUSES.has(finalStatus);
+  let action: string;
+  let beforeSummary: string | null;
+  let afterSummary: string;
+  if (statusChanged) {
+    action = resolvedNow ? "PERMIT_AMENDMENT_RESOLVED" : "PERMIT_AMENDMENT_UPDATED";
+    beforeSummary = before;
+    afterSummary = `${amendmentStateSummary(after.amendmentReference, after.status, after.resolvedAt)}${notesChanged ? "; notes updated" : ""}`;
+  } else if (resolvedAtChanged) {
+    action = "PERMIT_AMENDMENT_RESOLUTION_TIME_CORRECTED";
+    beforeSummary = `resolved ${amendment.resolvedAt ?? "—"}`;
+    afterSummary = `resolved ${after.resolvedAt ?? "—"}${notesChanged ? "; notes updated" : ""}`;
+  } else {
+    action = "PERMIT_AMENDMENT_NOTES_UPDATED";
+    beforeSummary = null;
+    afterSummary = "notes updated (content not repeated in the audit summary)";
+  }
   audit({
-    projectId: project.id, actorUserId: user.id,
-    action: resolvedNow ? "PERMIT_AMENDMENT_RESOLVED" : "PERMIT_AMENDMENT_UPDATED",
+    projectId: project.id, actorUserId: user.id, action,
     entityType: "PERMIT_AMENDMENT", entityId: amendment.id, reason: reason || null,
-    beforeSummary: material ? before : null,
-    afterSummary: material
-      ? `${amendmentStateSummary(after.amendmentReference, after.status, after.resolvedAt)}${notesChanged ? "; notes updated" : ""}`
-      : "notes updated (content not repeated in the audit summary)",
+    beforeSummary, afterSummary,
   });
   if (material && project.status !== "DRAFT") {
     snapshotProject(project.id, `Permit amendment ${after.amendmentReference} updated: ${reason}`, user);

@@ -1557,6 +1557,56 @@ async function main() {
   );
   assert(resolved2 && /UNKNOWN/.test(resolved2.change?.previous ?? "") && !/PENDING/.test(resolved2.change?.previous ?? ""),
     "S10: a non-PENDING transition shows its REAL prior state — the timeline never assumes PENDING");
+  assert(resolved2.change?.field === "status",
+    "S10/B: a real lifecycle resolution is presented as a STATUS change");
+
+  // ---- S10 A/C/D/E · the presentation classifies each change from its
+  // immutable record's OWN action — never a blanket "status" label ------
+  const amHist3 = permitsSvc.recordPermitAmendment(funder, pS4.id, {
+    amendmentReference: "AM-HIST-3", description: "Presentation regression (fixture)",
+  });
+  permitsSvc.updatePermitAmendment(funder, amHist3.id, {
+    status: "UNKNOWN", reason: "The county's amendment state could not be established (fixture).",
+  });
+  const openChange = tlSvc.projectTimeline(funder, "proj-golden").events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_UPDATED" && /AM-HIST-3/.test(e.title)
+  );
+  assert(openChange && openChange.change?.field === "status" &&
+    /PENDING/.test(openChange.change?.previous ?? "") && /UNKNOWN/.test(openChange.change?.current ?? ""),
+    "S10/A: an open-state lifecycle change (PENDING → UNKNOWN) is a status change with the real states");
+  const t1Withdrawn = db.prepare("SELECT resolved_at r FROM permit_amendments WHERE id = ?").get(amHist2.id).r;
+  permitsSvc.updatePermitAmendment(funder, amHist2.id, {
+    resolvedAt: "2026-08-15", reason: "Correcting the recorded withdrawal date from the county record (fixture).",
+  });
+  const tlC = tlSvc.projectTimeline(funder, "proj-golden");
+  const corrEv = tlC.events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_RESOLUTION_TIME_CORRECTED" && /AM-HIST-2/.test(e.title)
+  );
+  assert(corrEv && corrEv.change?.field === "resolution time" &&
+    (corrEv.change?.previous ?? "").includes(t1Withdrawn) && /2026-08-15/.test(corrEv.change?.current ?? ""),
+    "S10/C: a resolution-time correction is presented as RESOLUTION TIME with both times from the immutable record");
+  const statusEvents2 = tlC.events.filter((e) => /AM-HIST-2/.test(e.title) && e.change?.field === "status");
+  assert(statusEvents2.length === 1 && /WITHDRAWN/.test(statusEvents2[0].change?.current ?? ""),
+    "S10/C: the correction never claims a status change — the sole status event remains the real resolution");
+  permitsSvc.updatePermitAmendment(funder, amHist3.id, { notes: "Clerk reference 88-431 (fixture)." });
+  const tlD = tlSvc.projectTimeline(funder, "proj-golden");
+  const notesEv = tlD.events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_NOTES_UPDATED" && /AM-HIST-3/.test(e.title)
+  );
+  assert(notesEv && !notesEv.change,
+    "S10/D: a notes-only change appears as its own historical event with NO change-of-state claim");
+  assert(tlD.events.every((e) =>
+    !(e.change?.field === "status" && /notes updated/.test(e.change?.current ?? "")) &&
+    !/88-431/.test(e.explanation ?? "") && !/88-431/.test(JSON.stringify(e.change ?? null))),
+    "S10/D: no 'status: notes updated' presentation exists and note content never leaks onto the timeline");
+  const rowE = JSON.stringify(db.prepare("SELECT * FROM permit_amendments WHERE id = ?").get(amHist3.id));
+  const auditCountE = db.prepare("SELECT COUNT(*) c FROM config_audit WHERE entity_type = 'PERMIT_AMENDMENT'").get().c;
+  const evCountE = tlD.events.filter((e) => /AM-HIST-/.test(e.title)).length;
+  permitsSvc.updatePermitAmendment(funder, amHist3.id, {});
+  assert(JSON.stringify(db.prepare("SELECT * FROM permit_amendments WHERE id = ?").get(amHist3.id)) === rowE &&
+    db.prepare("SELECT COUNT(*) c FROM config_audit WHERE entity_type = 'PERMIT_AMENDMENT'").get().c === auditCountE &&
+    tlSvc.projectTimeline(funder, "proj-golden").events.filter((e) => /AM-HIST-/.test(e.title)).length === evCountE,
+    "S10/E: a no-op writes nothing — row, audit trail and timeline all unchanged");
 
   console.log(`\nDRAW READINESS TESTS PASSED — ${passed} checkpoints.`);
   console.log("DETERMINISTIC. EXPLAINED. NEVER AN APPROVAL.");
