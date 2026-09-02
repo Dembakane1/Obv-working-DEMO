@@ -203,12 +203,10 @@ export interface DrawRegisterRow {
   /** Live OBV readiness — computed for open draws only; closed draws show their terminal state instead. */
   readiness: DrawReadinessResult | null;
   next: NextAction;
+  /** Open for lender control (the lender pilot's one predicate): review
+   *  statuses, plus governance-released draws awaiting the lender decision. */
+  open: boolean;
 }
-
-const OPEN_DRAW_STATUSES: DrawRequestStatus[] = [
-  "DRAFT", "SUBMITTED", "UNDER_REVIEW", "CLARIFICATION_REQUIRED",
-  "READY_FOR_GOVERNANCE", "PARTIALLY_APPROVED", "APPROVED", "RETURNED",
-];
 
 export function renderDrawRegister(input: {
   nav: NavContext;
@@ -218,7 +216,7 @@ export function renderDrawRegister(input: {
   /** Readiness filter from the query string: READY | HOLD | EXCEPTION_REVIEW | INCOMPLETE | "". */
   filter: string;
 }): string {
-  const open = input.rows.filter((r) => OPEN_DRAW_STATUSES.includes(r.draw.status));
+  const open = input.rows.filter((r) => r.open);
   const byReadiness = (s: DrawReadinessResult["status"]) => open.filter((r) => r.readiness?.status === s);
   const ready = byReadiness("READY");
   const hold = byReadiness("HOLD");
@@ -1446,8 +1444,9 @@ export function renderDrawDetail(d: DrawDetailData): string {
                 </div>
                 {d.alreadyDecided ? (
                   <p className="dr-gate-note">
-                    A decision is already recorded for this draw by this reviewer. Superseding it is
-                    a governed action in the lender workspace.
+                    This reviewer's <b>formal governance approval</b> is already recorded for this draw.
+                    The lender decision is a separate governed act — governance approval never implies
+                    it, and a recorded decision is superseded only in the lender workspace.
                   </p>
                 ) : null}
               </DensePanel>

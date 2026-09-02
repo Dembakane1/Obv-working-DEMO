@@ -60,7 +60,7 @@ export type {
   SourceFreshness,
   TurnaroundMetrics,
 } from "./control";
-export { OPEN_DRAW_STATUSES, CAPITAL_INCLUSION_RULE, aggregateCapital } from "./control";
+export { OPEN_DRAW_STATUSES, CAPITAL_INCLUSION_RULE, aggregateCapital, isOpenDraw } from "./control";
 export { governmentFoundationStatus, governmentModuleEnabled, assertGovernmentEnabled } from "./government";
 export { recordSnapshot, listSnapshots } from "./snapshots";
 

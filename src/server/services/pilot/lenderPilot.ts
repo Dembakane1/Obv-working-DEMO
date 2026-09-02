@@ -14,7 +14,7 @@ import * as repo from "../../db/repo";
 import * as authz from "../authz";
 import * as draws from "../draws";
 import * as lenderDecisions from "../lenderDecisions";
-import type { DrawRequest, Project, User } from "../../../shared/types";
+import type { DrawRequest, LenderDrawDecision, Project, User } from "../../../shared/types";
 
 // ------------------------------------------------------------ next action
 
@@ -23,7 +23,7 @@ export interface NextAction {
     | "COMPLETE_DRAFT" | "UPLOAD_MISSING_DOCUMENTS" | "BEGIN_REVIEW"
     | "CONTINUE_LINE_REVIEW" | "AWAITING_REQUESTER" | "RESOLVE_EXCEPTIONS"
     | "INSPECTION_RESULT_REQUIRED" | "LENDER_REVIEW_READY"
-    | "AWAITING_APPROVALS" | "RESOLVE_DECISION_CONDITIONS"
+    | "AWAITING_APPROVALS" | "LENDER_DECISION_REQUIRED" | "RESOLVE_DECISION_CONDITIONS"
     | "RELEASE_TRANSITION_PENDING" | "REVISE_AND_RESUBMIT"
     | "NO_ACTION_REQUIRED";
   /** Human-readable, specific, and honest about who acts. */
@@ -148,8 +148,31 @@ export function drawNextAction(drawRequestId: string, precomputed?: draws.DrawHe
       "Governance approved the draw; the release/funding transition is the next recorded step.");
   }
 
+  // Formal governance ≠ the lender decision. A governance-released draw
+  // whose lender decision has not been recorded is still awaiting the
+  // lender's own governed act — never "complete".
+  if (awaitingLenderDecision(draw)) {
+    return done("LENDER_DECISION_REQUIRED", "Governance complete — lender decision required", "LENDER",
+      "Formal governance recorded release eligibility; the lender's decision is a separate governed act and has " +
+      "not been recorded. OBV readiness informs that decision — governance alone funds nothing.");
+  }
+
   return done("NO_ACTION_REQUIRED", "Complete — no action required", "NONE",
     "The draw has reached a terminal recorded state.");
+}
+
+/** The decision register owns the predicate; re-exported for callers
+ *  that already depend on this module. */
+export const awaitingLenderDecision = lenderDecisions.awaitingLenderDecision;
+
+/** Open for lender control: the review statuses, plus governance-released
+ *  draws whose lender decision has not been recorded (a draw awaiting the
+ *  lender is open, keeps transitioning and keeps notifying; once the
+ *  decision is recorded it is disposed of and leaves the set). Command
+ *  centre, Executive capital control, the Draws register and the twin's
+ *  CURRENT strip all consume this one predicate. */
+export function isOpenForLenderControl(draw: { id: string; status: string }): boolean {
+  return (OPEN_STATUSES as string[]).includes(draw.status) || lenderDecisions.awaitingLenderDecision(draw);
 }
 
 // ------------------------------------------------------ command center
@@ -168,14 +191,40 @@ export interface PilotDrawRow {
   nextAction: NextAction;
 }
 
+/** A recorded lender decision, for the decision-history bucket. Membership
+ *  comes from the lender decision register — never from draw workflow
+ *  status (formal governance ≠ the lender decision). */
+export interface LenderDecisionRow extends PilotDrawRow {
+  decision: LenderDrawDecision["decision"];
+  decisionAt: string;
+  decidedAmount: number | null;
+}
+
+/** Real recorded lender dispositions — the only things a decision-history
+ *  bucket may show. PENDING is a placeholder, not a decision. */
+const RECORDED_LENDER_DECISIONS: ReadonlySet<LenderDrawDecision["decision"]> = new Set([
+  "APPROVED", "CONDITIONALLY_APPROVED", "REDUCED", "REJECTED", "WITHDRAWN", "FUNDED",
+]);
+
 export interface PilotCommandCenter {
   /** Buckets, each a real state grouping with real timestamps. */
-  readyForDecision: PilotDrawRow[];
+  /** The lender's control queue — every open draw whose NEXT ACTOR is the
+   *  lender side: review not yet begun (BEGIN_REVIEW), line review in
+   *  progress (CONTINUE_LINE_REVIEW), recommendation to finalize
+   *  (LENDER_REVIEW_READY), formal approvals outstanding
+   *  (AWAITING_APPROVALS), and governance complete awaiting the lender's
+   *  decision (LENDER_DECISION_REQUIRED). Only the last is literally
+   *  "ready for the lender decision" — presentation must never label the
+   *  whole queue that way. */
+  lenderControlQueue: PilotDrawRow[];
   waitingOnContractor: PilotDrawRow[];
   waitingOnInspection: PilotDrawRow[];
   complianceExceptions: PilotDrawRow[];
   aging: PilotDrawRow[];
-  recentlyApproved: PilotDrawRow[];
+  /** Standing lender decisions, most recently DECIDED first (decisionAt —
+   *  never submittedAt). Formal governance completion alone never creates
+   *  an entry here. */
+  recentLenderDecisions: LenderDecisionRow[];
   metrics: {
     activeProjects: number;
     openDraws: number;
@@ -235,17 +284,32 @@ export function pilotCommandCenter(user: User): PilotCommandCenter {
     };
   });
 
-  const open = rows.filter((r) => OPEN_STATUSES.includes(r.status));
+  const open = rows.filter((r) => isOpenForLenderControl({ id: r.drawRequestId, status: r.status }));
   const byCode = (...codes: NextAction["code"][]) => open.filter((r) => codes.includes(r.nextAction.code));
 
-  const readyForDecision = byCode("BEGIN_REVIEW", "CONTINUE_LINE_REVIEW", "LENDER_REVIEW_READY", "AWAITING_APPROVALS");
+  const lenderControlQueue = byCode(
+    "BEGIN_REVIEW", "CONTINUE_LINE_REVIEW", "LENDER_REVIEW_READY", "AWAITING_APPROVALS", "LENDER_DECISION_REQUIRED"
+  );
   const waitingOnContractor = byCode("UPLOAD_MISSING_DOCUMENTS", "AWAITING_REQUESTER", "REVISE_AND_RESUBMIT");
   const waitingOnInspection = byCode("INSPECTION_RESULT_REQUIRED");
   const complianceExceptions = byCode("RESOLVE_EXCEPTIONS");
   const aging = open.filter((r) => r.ageDays >= AGING_THRESHOLD_DAYS);
-  const recentlyApproved = rows
-    .filter((r) => ["APPROVED", "PARTIALLY_APPROVED", "RELEASED"].includes(r.status))
-    .sort((a, b) => (a.submittedAt ?? "") < (b.submittedAt ?? "") ? 1 : -1)
+  // Decision history comes from the lender decision register: a standing
+  // (non-superseded) recorded disposition with its own decision time.
+  // Workflow bookkeeping (APPROVED / RELEASED) is formal governance and is
+  // never mistaken for a lender decision here.
+  const recentLenderDecisions: LenderDecisionRow[] = rows
+    .flatMap((r) => {
+      const decision = lenderDecisions.currentDecision(r.drawRequestId);
+      if (!decision || !decision.decisionAt || !RECORDED_LENDER_DECISIONS.has(decision.decision)) return [];
+      return [{
+        ...r,
+        decision: decision.decision,
+        decisionAt: decision.decisionAt,
+        decidedAmount: decision.approvedAmount ?? decision.reducedAmount ?? null,
+      }];
+    })
+    .sort((a, b) => (a.decisionAt < b.decisionAt ? 1 : a.decisionAt > b.decisionAt ? -1 : 0))
     .slice(0, 6);
 
   // Median submission→decision time over draws that HAVE a decision —
@@ -268,12 +332,12 @@ export function pilotCommandCenter(user: User): PilotCommandCenter {
     .filter((x) => !["RESOLVED", "CLOSED", "WAIVED"].includes(x.status)).length;
 
   return {
-    readyForDecision,
+    lenderControlQueue,
     waitingOnContractor,
     waitingOnInspection,
     complianceExceptions,
     aging,
-    recentlyApproved,
+    recentLenderDecisions,
     metrics: {
       activeProjects: projects.filter((p) => p.status === "ACTIVE").length,
       openDraws: open.length,

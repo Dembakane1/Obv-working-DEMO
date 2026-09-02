@@ -128,19 +128,24 @@ async function main() {
   console.log("\n== 2. Pilot command center ==");
   const center = pilot.pilotCommandCenter(funder);
   const inBucket = (bucket, n) => bucket.some((r) => r.projectId === "proj-golden" && r.drawNumber === n);
-  assert(inBucket(center.readyForDecision, 2), "draw #2 sits in Ready for lender decision");
+  assert(inBucket(center.lenderControlQueue, 2) && pilot.drawNextAction(byNumber.get(2).id).code === "AWAITING_APPROVALS",
+    "A. draw #2 (AWAITING_APPROVALS — governance incomplete) sits in the lender control queue");
   assert(inBucket(center.waitingOnContractor, 3) && inBucket(center.waitingOnContractor, 4),
     "draws #3 and #4 sit in Waiting on contractor");
   assert(inBucket(center.waitingOnInspection, 6), "draw #6 sits in Waiting on inspection");
   assert(inBucket(center.complianceExceptions, 5), "draw #5 sits in Compliance exceptions");
-  assert(center.recentlyApproved.some((r) => r.drawNumber === 1 && r.projectId === "proj-golden"),
-    "draw #1 shows under Recently approved");
+  const g1Decision = lenderDecisions.currentDecision(byNumber.get(1).id);
+  const g1Row = center.recentLenderDecisions.find((r) => r.drawNumber === 1 && r.projectId === "proj-golden");
+  assert(g1Row && g1Row.decision === g1Decision.decision && g1Row.decisionAt === g1Decision.decisionAt,
+    "draw #1 shows under Recent lender decisions with ITS recorded disposition and decision time");
+  assert(center.recentLenderDecisions.every((r) => lenderDecisions.currentDecision(r.drawRequestId)?.decisionAt === r.decisionAt),
+    "every decision-history row is backed by a standing lender decision from the register");
   assert(center.metrics.medianReviewDays !== null, "median review time is measured from recorded decisions");
   assert(center.metrics.openDraws > 0 && center.metrics.totalRequestedOpen > 0, "operational metrics are populated");
   const pmCenter = pilot.pilotCommandCenter(r47Pm);
   assert(
-    [...pmCenter.readyForDecision, ...pmCenter.waitingOnContractor, ...pmCenter.waitingOnInspection,
-     ...pmCenter.complianceExceptions, ...pmCenter.aging, ...pmCenter.recentlyApproved]
+    [...pmCenter.lenderControlQueue, ...pmCenter.waitingOnContractor, ...pmCenter.waitingOnInspection,
+     ...pmCenter.complianceExceptions, ...pmCenter.aging, ...pmCenter.recentLenderDecisions]
       .every((r) => r.projectId !== "proj-golden"),
     "a foreign-tenant PM's command center contains NO golden-project draws"
   );
@@ -199,6 +204,8 @@ async function main() {
   assert(draws.missingRequiredDocuments(draw.id).length === 0, "corrected evidence clears the missing list");
   action = pilot.drawNextAction(draw.id);
   assert(action.code === "BEGIN_REVIEW", "the draw becomes lender-review ready");
+  assert(pilot.pilotCommandCenter(funder).lenderControlQueue.some((r) => r.drawRequestId === draw.id),
+    "BEGIN_REVIEW (review not begun) sits in the lender control queue");
 
   const line = repo.listDrawLines(draw.id)[0];
   draws.reviewLine(funder, line.id, { decision: "SUPPORTED" });
@@ -208,6 +215,12 @@ async function main() {
   const { approvalRequest } = await draws.sendToGovernance(funder, draw.id, null);
   action = pilot.drawNextAction(draw.id);
   assert(action.code === "AWAITING_APPROVALS", "governance opened → awaiting formal approvals");
+  {
+    const c = pilot.pilotCommandCenter(funder);
+    assert(c.lenderControlQueue.some((r) => r.drawRequestId === draw.id) &&
+      !c.recentLenderDecisions.some((r) => r.drawRequestId === draw.id),
+      "A/E. AWAITING_APPROVALS sits in the lender control queue and creates no lender-decision-history entry");
+  }
   const roles = approvalRequest.requiredRoles;
   assert(roles.length >= 2, `approval matrix requires ${roles.length} roles (dual control)`);
   await draws.processDrawApprovalDecision(approvalRequest.id, "user-funder", "APPROVED");
@@ -218,12 +231,63 @@ async function main() {
   const approved = repo.getDrawRequest(draw.id);
   assert(["APPROVED", "PARTIALLY_APPROVED", "RELEASED"].includes(approved.status),
     `dual approval recorded → draw ${approved.status} (release eligibility exists only after both approvals)`);
+  // Governance ≠ the lender decision: a governance-released draw with no
+  // recorded lender decision is still OPEN for lender control — it keeps
+  // its place in the command centre and names the lender as next actor.
+  const awaiting = pilot.drawNextAction(draw.id);
+  assert(awaiting.code === "LENDER_DECISION_REQUIRED" && awaiting.actor === "LENDER",
+    `released + undecided → next action LENDER_DECISION_REQUIRED ("${awaiting.label}"), never "complete"`);
+  assert(pilot.awaitingLenderDecision(approved) && pilot.isOpenForLenderControl(approved),
+    "the shared predicate reports the draw as awaiting the lender decision / open for lender control");
+  const centreAwaiting = pilot.pilotCommandCenter(funder);
+  assert(centreAwaiting.lenderControlQueue.some((r) => r.drawRequestId === draw.id) &&
+    centreAwaiting.metrics.openDraws >= 1 && centreAwaiting.metrics.totalRequestedOpen >= 150_000,
+    "B. the command centre keeps the undecided draw in the lender control queue and in open capital");
+  assert(!centreAwaiting.recentLenderDecisions.some((r) => r.drawRequestId === draw.id),
+    "B/E. governance-RELEASED with no lender decision NEVER appears under Recent lender decisions");
 
   lenderDecisions.recordLenderDecision(funder, {
     drawRequestId: draw.id, decision: "APPROVED", approvedAmount: 150_000,
     decisionReason: "Golden-path test decision (fictional).",
   });
   pass("lender decision recorded through the governed service");
+  const decided = repo.getDrawRequest(draw.id);
+  const centreDecided = pilot.pilotCommandCenter(funder);
+  assert(!pilot.awaitingLenderDecision(decided) && !pilot.isOpenForLenderControl(decided) &&
+    pilot.drawNextAction(draw.id).code === "NO_ACTION_REQUIRED" &&
+    !centreDecided.lenderControlQueue.some((r) => r.drawRequestId === draw.id),
+    "C. once the lender decision is recorded the draw is disposed of — it leaves the open set (NO_ACTION_REQUIRED)");
+  const liveDecision = lenderDecisions.currentDecision(draw.id);
+  const liveRow = centreDecided.recentLenderDecisions.find((r) => r.drawRequestId === draw.id);
+  assert(liveRow && liveRow.decision === "APPROVED" && liveRow.decisionAt === liveDecision.decisionAt && liveRow.decidedAmount === 150_000,
+    "C. the decided draw appears under Recent lender decisions with the register's disposition, time and amount");
+  assert(centreDecided.recentLenderDecisions.every((r, i, a) => i === 0 || a[i - 1].decisionAt >= r.decisionAt),
+    "C. decision history is ordered by decisionAt, newest decision first");
+  // D. submission order opposite to decision order: golden draw #2 was
+  // submitted weeks before the live draw; completing its governance and
+  // deciding it NOW makes it the most recent DECISION — "recent" is grounded
+  // in the decision event, never in submission time.
+  const gDraw2 = byNumber.get(2);
+  const g2Approval = repo.getApprovalRequestForDraw(gDraw2.id);
+  const approverFor = { FUNDER_REP: "user-funder", COMPLIANCE_REVIEWER: "user-compliance", PROJECT_MANAGER: "user-dmv-pm" };
+  for (const role of g2Approval.requiredRoles) {
+    if (repo.getApprovalRequest(g2Approval.id).status !== "PENDING") break;
+    await draws.processDrawApprovalDecision(g2Approval.id, approverFor[role], "APPROVED");
+  }
+  assert(pilot.drawNextAction(gDraw2.id).code === "LENDER_DECISION_REQUIRED" &&
+    !pilot.pilotCommandCenter(funder).recentLenderDecisions.some((r) => r.drawRequestId === gDraw2.id),
+    "E. formal governance approval alone never creates a lender-decision-history entry");
+  lenderDecisions.recordLenderDecision(funder, {
+    drawRequestId: gDraw2.id, decision: "APPROVED", approvedAmount: gDraw2.requestedAmount,
+    decisionReason: "Golden-path test decision on the earlier-submitted draw (fictional).",
+  });
+  const centreD = pilot.pilotCommandCenter(funder);
+  assert((gDraw2.submittedAt ?? "") < (repo.getDrawRequest(draw.id).submittedAt ?? ""),
+    "D. fixture: draw #2 was submitted before the live draw");
+  assert(centreD.recentLenderDecisions[0].drawRequestId === gDraw2.id &&
+    centreD.recentLenderDecisions.findIndex((r) => r.drawRequestId === draw.id) > 0 &&
+    centreD.recentLenderDecisions[0].decisionAt > liveDecision.decisionAt,
+    "D. Recent lender decisions sorts by decisionAt — the earlier-submitted but later-decided draw leads");
 
   const pkgData = await drawPackage.assembleDrawPackageData(funder, draw.id);
   const pkg = drawPackage.buildDrawPackageFiles(pkgData);
@@ -308,10 +372,18 @@ async function main() {
   };
   const overview = await page("/overview", cookie);
   assert(/What needs attention today/.test(overview.html), "the funder landing opens on the command center");
-  for (const s of ["Ready for lender decision", "Waiting on contractor", "Waiting on inspection", "Compliance exceptions", "Recently approved"]) {
+  // The queue mixes BEGIN_REVIEW / AWAITING_APPROVALS / LENDER_DECISION_REQUIRED
+  // members over the test's life; the heading must never claim they are all
+  // "ready for lender decision", and nothing may be called "recently approved"
+  // on the strength of governance bookkeeping alone.
+  assert(!/Ready for lender decision/i.test(overview.html) && !/Recently approved/i.test(overview.html),
+    "no command-center heading claims a mixed queue is ready for decision or calls governance bookkeeping an approval");
+  for (const s of ["Lender control queue", "Waiting on contractor", "Waiting on inspection", "Compliance exceptions", "Recent lender decisions"]) {
     if (!overview.html.includes(s)) fail(`command center section missing: ${s}`);
   }
   pass("all command-center sections render");
+  assert(/decided \d{4}-\d{2}-\d{2}/.test(overview.html),
+    "decision-history rows show the recorded disposition with its own decision date");
   // The pilot rule is "the lender's surfaces lead; everything else stays one
   // group away, nothing deleted". The workstation shell keeps that promise
   // with named groups instead of one "Advanced & intelligence" bucket, so

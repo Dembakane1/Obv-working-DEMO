@@ -451,8 +451,13 @@ async function main() {
 
   // ================= M · advisory AI issue → warning only =============
   console.log("\n== M · advisory intelligence never sets HOLD ==");
-  assert(g1.status === "READY" && warnCodes(g1).includes("ADVISORY_SIGNAL"),
+  assert(g1.status === "READY" && !g1.blockingReasons.length,
     "a draw with only advisory signals stays READY — advisory output warns, never blocks");
+  // The recommendation's POSITIVE draw-level summary ("all lines supported
+  // … no blocking issues") is not an advisory concern: it never becomes an
+  // EVIDENCE warning, so a clean draw's PHYSICAL domain reads PASS.
+  assert(!g1.warnings.some((w) => w.code === "ADVISORY_SIGNAL" && /no blocking issues/i.test(w.message)),
+    "the recommendation's positive draw-level summary is never presented as an advisory 'warning'");
   const rM = dr.evaluateDrawReadiness(synInput([], {
     advisoryNotes: ["Financial progress is ahead of verified physical progress on one line (advisory)."],
   }));
@@ -1355,6 +1360,19 @@ async function main() {
   gatesSvc.recordInspectionResult(compliance, inspS5.id, { result: "PASSED", resultRecordedAt: "2026-10-10T15:00:00Z" });
   assert(dr.drawReadiness(dS4.id).status === "READY",
     "S5/§26: after the REAL inspection passes through the normal API, readiness recomputes READY");
+  // dS4 completed formal governance (RELEASED) but has NO lender decision:
+  // the milestone fan-out must still reach it — governance is not the
+  // lender decision — so the READY transition and its notification fire now,
+  // not only when the lender happens to open the decision route.
+  const readyNotifBefore = db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE type = 'DRAW_READY_FOR_REVIEW' AND recipient_user_id IS NULL").get().n;
+  dr.recordReadinessTransitionsForMilestone("ms-jch-s4", "user-compliance");
+  const transReady = db.prepare(
+    "SELECT detail FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_TRANSITION' ORDER BY rowid"
+  ).all(dS4.id);
+  assert(repo.getDrawRequest(dS4.id).status === "RELEASED" && /"status":"READY"/.test(transReady[transReady.length - 1].detail),
+    "S5/PG2: the fan-out reaches a governance-released draw awaiting the lender decision — the READY transition is recorded");
+  assert(db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE type = 'DRAW_READY_FOR_REVIEW' AND recipient_user_id IS NULL").get().n === readyNotifBefore + 1,
+    "S5/PG2: exactly one DRAW_READY_FOR_REVIEW governed event fires for the undecided released draw");
   const transS5After = db.prepare(
     "SELECT id, detail FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_TRANSITION' ORDER BY rowid"
   ).all(dS4.id).map((r) => `${r.id}:${r.detail}`);

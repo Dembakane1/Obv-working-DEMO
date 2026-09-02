@@ -463,6 +463,22 @@ async function main() {
   const a2 = await api("compliance", "POST", `/api/approvals/${drawApproval.id}/decision`, { decision: "APPROVED" });
   if (a2.status !== 200) fail(`draw approval 2 -> ${a2.status}: ${(await a2.text()).slice(0, 250)}`);
   pass("draw governance completed under the configured dual-control matrix");
+  // Governance ≠ the lender decision: with the decision still unrecorded
+  // the draw stays visible as open lender work on the register and the
+  // Executive — never captioned "complete".
+  {
+    const register = await (await fetch(BASE + "/draws", { headers: { cookie: jars.compliance, accept: "text/html" } })).text();
+    const exec = await (await fetch(BASE + "/executive", { headers: { cookie: jars.funder, accept: "text/html" } })).text();
+    assert(/lender decision required/i.test(register) && !/Complete — no action required/.test(register),
+      "released + undecided draw: the Draws register names the lender decision as the next action");
+    assert(/120,000/.test(exec) && /lender decision required/i.test(exec),
+      "released + undecided draw: the Executive keeps its requested capital in the open set");
+    // The reviewer who approved formal governance has NOT recorded a lender
+    // decision — Draw Review must never tell them one is already recorded.
+    const review = await (await fetch(BASE + `/draw/${draw.id}`, { headers: { cookie: jars.compliance, accept: "text/html" } })).text();
+    assert(!/A decision is already recorded for this draw/.test(review) && /formal governance approval/i.test(review),
+      "Draw Review distinguishes the reviewer's governance approval from a lender decision");
+  }
 
   const decision = await api("compliance", "POST", `/api/draws/${draw.id}/lender-decision`, {
     decision: "APPROVED", approvedAmount: 120_000,
