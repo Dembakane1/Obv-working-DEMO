@@ -187,6 +187,27 @@ after the decision the draw is terminal for transitions.
   is already recorded … The lender decision is a separate governed act").
   Regression: `pilot-acceptance-test`.
 
+### PG2-12 · Pilot command centre labelled a mixed queue "Ready for lender decision" and governance bookkeeping "Recently approved" — **P2 · FIXED**
+
+- **Surface:** Pilot command centre (`/overview`, funder landing).
+- **Repro:** the "Ready for lender decision" bucket held BEGIN_REVIEW,
+  CONTINUE_LINE_REVIEW, LENDER_REVIEW_READY and AWAITING_APPROVALS draws
+  (review not begun / incomplete / governance incomplete) beside the only
+  literally decision-ready code, LENDER_DECISION_REQUIRED; "Recently
+  approved" listed draws by workflow status (APPROVED / PARTIALLY_APPROVED
+  / RELEASED) sorted by `submittedAt`, so a governance-released draw with
+  NO lender decision showed as "recently approved" while also reading
+  "Governance complete — lender decision required".
+- **Disposition:** fixed. The queue is the **Lender control queue** (same
+  five codes — every open draw whose next actor is the lender side);
+  **Recent lender decisions** is derived from the lender decision register
+  (standing recorded dispositions APPROVED / CONDITIONALLY_APPROVED /
+  REDUCED / REJECTED / WITHDRAWN / FUNDED, never PENDING, never workflow
+  status), sorted by `decisionAt`, showing the disposition and its own
+  decision date. Formal governance completion alone never creates an
+  entry. Regression: `lender-pilot-test` A–E; bites (heading restored /
+  status-based list restored) fail before restoration.
+
 ### PG2-04 · "Released" precedes the lender decision; evidence approval releases milestone tranches — **P3 · CONDITION (training)**
 
 - Draw Review shows "✓ Released" beside "READINESS HOLD"; the lender

@@ -14,7 +14,7 @@ import * as repo from "../../db/repo";
 import * as authz from "../authz";
 import * as draws from "../draws";
 import * as lenderDecisions from "../lenderDecisions";
-import type { DrawRequest, Project, User } from "../../../shared/types";
+import type { DrawRequest, LenderDrawDecision, Project, User } from "../../../shared/types";
 
 // ------------------------------------------------------------ next action
 
@@ -191,14 +191,40 @@ export interface PilotDrawRow {
   nextAction: NextAction;
 }
 
+/** A recorded lender decision, for the decision-history bucket. Membership
+ *  comes from the lender decision register — never from draw workflow
+ *  status (formal governance ≠ the lender decision). */
+export interface LenderDecisionRow extends PilotDrawRow {
+  decision: LenderDrawDecision["decision"];
+  decisionAt: string;
+  decidedAmount: number | null;
+}
+
+/** Real recorded lender dispositions — the only things a decision-history
+ *  bucket may show. PENDING is a placeholder, not a decision. */
+const RECORDED_LENDER_DECISIONS: ReadonlySet<LenderDrawDecision["decision"]> = new Set([
+  "APPROVED", "CONDITIONALLY_APPROVED", "REDUCED", "REJECTED", "WITHDRAWN", "FUNDED",
+]);
+
 export interface PilotCommandCenter {
   /** Buckets, each a real state grouping with real timestamps. */
-  readyForDecision: PilotDrawRow[];
+  /** The lender's control queue — every open draw whose NEXT ACTOR is the
+   *  lender side: review not yet begun (BEGIN_REVIEW), line review in
+   *  progress (CONTINUE_LINE_REVIEW), recommendation to finalize
+   *  (LENDER_REVIEW_READY), formal approvals outstanding
+   *  (AWAITING_APPROVALS), and governance complete awaiting the lender's
+   *  decision (LENDER_DECISION_REQUIRED). Only the last is literally
+   *  "ready for the lender decision" — presentation must never label the
+   *  whole queue that way. */
+  lenderControlQueue: PilotDrawRow[];
   waitingOnContractor: PilotDrawRow[];
   waitingOnInspection: PilotDrawRow[];
   complianceExceptions: PilotDrawRow[];
   aging: PilotDrawRow[];
-  recentlyApproved: PilotDrawRow[];
+  /** Standing lender decisions, most recently DECIDED first (decisionAt —
+   *  never submittedAt). Formal governance completion alone never creates
+   *  an entry here. */
+  recentLenderDecisions: LenderDecisionRow[];
   metrics: {
     activeProjects: number;
     openDraws: number;
@@ -261,16 +287,29 @@ export function pilotCommandCenter(user: User): PilotCommandCenter {
   const open = rows.filter((r) => isOpenForLenderControl({ id: r.drawRequestId, status: r.status }));
   const byCode = (...codes: NextAction["code"][]) => open.filter((r) => codes.includes(r.nextAction.code));
 
-  const readyForDecision = byCode(
+  const lenderControlQueue = byCode(
     "BEGIN_REVIEW", "CONTINUE_LINE_REVIEW", "LENDER_REVIEW_READY", "AWAITING_APPROVALS", "LENDER_DECISION_REQUIRED"
   );
   const waitingOnContractor = byCode("UPLOAD_MISSING_DOCUMENTS", "AWAITING_REQUESTER", "REVISE_AND_RESUBMIT");
   const waitingOnInspection = byCode("INSPECTION_RESULT_REQUIRED");
   const complianceExceptions = byCode("RESOLVE_EXCEPTIONS");
   const aging = open.filter((r) => r.ageDays >= AGING_THRESHOLD_DAYS);
-  const recentlyApproved = rows
-    .filter((r) => ["APPROVED", "PARTIALLY_APPROVED", "RELEASED"].includes(r.status))
-    .sort((a, b) => (a.submittedAt ?? "") < (b.submittedAt ?? "") ? 1 : -1)
+  // Decision history comes from the lender decision register: a standing
+  // (non-superseded) recorded disposition with its own decision time.
+  // Workflow bookkeeping (APPROVED / RELEASED) is formal governance and is
+  // never mistaken for a lender decision here.
+  const recentLenderDecisions: LenderDecisionRow[] = rows
+    .flatMap((r) => {
+      const decision = lenderDecisions.currentDecision(r.drawRequestId);
+      if (!decision || !decision.decisionAt || !RECORDED_LENDER_DECISIONS.has(decision.decision)) return [];
+      return [{
+        ...r,
+        decision: decision.decision,
+        decisionAt: decision.decisionAt,
+        decidedAmount: decision.approvedAmount ?? decision.reducedAmount ?? null,
+      }];
+    })
+    .sort((a, b) => (a.decisionAt < b.decisionAt ? 1 : a.decisionAt > b.decisionAt ? -1 : 0))
     .slice(0, 6);
 
   // Median submission→decision time over draws that HAVE a decision —
@@ -293,12 +332,12 @@ export function pilotCommandCenter(user: User): PilotCommandCenter {
     .filter((x) => !["RESOLVED", "CLOSED", "WAIVED"].includes(x.status)).length;
 
   return {
-    readyForDecision,
+    lenderControlQueue,
     waitingOnContractor,
     waitingOnInspection,
     complianceExceptions,
     aging,
-    recentlyApproved,
+    recentLenderDecisions,
     metrics: {
       activeProjects: projects.filter((p) => p.status === "ACTIVE").length,
       openDraws: open.length,

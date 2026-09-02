@@ -424,8 +424,11 @@ export interface OverviewQueue {
 function PilotBucket(props: {
   title: string;
   tone: "ok" | "warn" | "bad" | "neutral";
-  rows: import("../services/pilot/lenderPilot").PilotDrawRow[];
+  rows: Array<import("../services/pilot/lenderPilot").PilotDrawRow & { decision?: string; decisionAt?: string }>;
   empty: string;
+  /** Decision-history rows show the recorded disposition and its own
+   *  decision time — never a workflow label. */
+  decisions?: boolean;
 }): VNode {
   return (
     <div className={`pilot-bucket pilot-${props.tone}`}>
@@ -446,7 +449,11 @@ function PilotBucket(props: {
                 </span>
                 <span className="pilot-row-facts">
                   <span className="num">{money(r.requested)}</span>
-                  <span className="sub">{r.ageDays}d · {r.nextAction.label}</span>
+                  <span className="sub">
+                    {props.decisions && r.decision && r.decisionAt
+                      ? `${r.decision.replace(/_/g, " ")} · decided ${r.decisionAt.slice(0, 10)}`
+                      : `${r.ageDays}d · ${r.nextAction.label}`}
+                  </span>
                 </span>
               </a>
             </li>
@@ -474,12 +481,12 @@ function PilotCenter(props: { pilot: import("../services/pilot/lenderPilot").Pil
         <div className="metric-card"><span className="mc-head">Approvals awaiting</span><span className="mc-v">{String(m.approvalsAwaiting)}</span><span className="mc-sub">{m.unresolvedExceptions} unresolved exception{m.unresolvedExceptions === 1 ? "" : "s"}</span></div>
       </div>
       <div className="pilot-buckets">
-        <PilotBucket title="Ready for lender decision" tone="ok" rows={p.readyForDecision} empty="Nothing is waiting on you right now." />
+        <PilotBucket title="Lender control queue" tone="ok" rows={p.lenderControlQueue} empty="No open draw is waiting on the lender side — review, approvals or decision." />
         <PilotBucket title="Waiting on contractor" tone="warn" rows={p.waitingOnContractor} empty="No draws are waiting on the contractor." />
         <PilotBucket title="Waiting on inspection" tone="warn" rows={p.waitingOnInspection} empty="No required inspections are outstanding." />
         <PilotBucket title="Compliance exceptions" tone="bad" rows={p.complianceExceptions} empty="No open exceptions on draws." />
         <PilotBucket title={`Aging beyond ${p.agingThresholdDays} days`} tone="bad" rows={p.aging} empty="No open draw has aged past target." />
-        <PilotBucket title="Recently approved" tone="neutral" rows={p.recentlyApproved} empty="No approvals recorded yet." />
+        <PilotBucket title="Recent lender decisions" tone="neutral" rows={p.recentLenderDecisions} empty="No lender decision recorded yet — formal governance alone is not a decision." decisions />
       </div>
     </section>
   );
