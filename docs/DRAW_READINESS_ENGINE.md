@@ -251,6 +251,13 @@ capability, submitter excluded, governance truth table intact):
   `DRAW_READINESS_HOLD` when a READY draw moves to HOLD or
   EXCEPTION_REVIEW (one policy, no new kinds). HOLD→HOLD blocker-wording
   changes produce nothing.
+  **Terminal rule (Pilot Gate #2):** a fan-out skips only CANCELLED draws
+  and RELEASED draws whose lender decision **has been recorded**. Formal
+  governance (release eligibility) is not the lender decision — the
+  decision can only follow governance — so a released draw still awaiting
+  it keeps transitioning and keeps notifying
+  (`lenderDecisions.awaitingLenderDecision`, the one shared predicate, also
+  drives the command centre / Executive / register open set).
 
 ### Transition coverage — mutation-point audit
 

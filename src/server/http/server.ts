@@ -6013,10 +6013,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   // ---- draw request pages ----
   if (method === "GET" && pathname === "/draws") {
-    const TERMINAL_DRAW = new Set(["RELEASED", "CANCELLED"]);
     const rows: DrawRegisterRow[] = draws.listDrawsForUser(user!).map((draw) => {
       const summary = draws.drawHeaderSummary(draw.id);
       const project = repo.getProject(draw.projectId);
+      // Open for lender control — the ONE predicate the command centre,
+      // Executive and twin use (governance ≠ the lender decision).
+      const open = lenderPilot.isOpenForLenderControl(draw);
       return {
         draw,
         project,
@@ -6027,10 +6029,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         summary,
         // Live readiness is bounded to open draws; closed draws keep their
         // terminal status and any decision-time snapshot instead.
-        readiness: TERMINAL_DRAW.has(draw.status)
+        readiness: !open
           ? null
           : (() => { try { return drawReadinessSvc.drawReadiness(draw.id); } catch { return null; } })(),
         next: lenderPilot.drawNextAction(draw.id, summary),
+        open,
       };
     });
     const filterParam = url.searchParams.get("readiness") ?? "";

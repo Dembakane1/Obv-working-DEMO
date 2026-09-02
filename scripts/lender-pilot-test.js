@@ -218,12 +218,29 @@ async function main() {
   const approved = repo.getDrawRequest(draw.id);
   assert(["APPROVED", "PARTIALLY_APPROVED", "RELEASED"].includes(approved.status),
     `dual approval recorded → draw ${approved.status} (release eligibility exists only after both approvals)`);
+  // Governance ≠ the lender decision: a governance-released draw with no
+  // recorded lender decision is still OPEN for lender control — it keeps
+  // its place in the command centre and names the lender as next actor.
+  const awaiting = pilot.drawNextAction(draw.id);
+  assert(awaiting.code === "LENDER_DECISION_REQUIRED" && awaiting.actor === "LENDER",
+    `released + undecided → next action LENDER_DECISION_REQUIRED ("${awaiting.label}"), never "complete"`);
+  assert(pilot.awaitingLenderDecision(approved) && pilot.isOpenForLenderControl(approved),
+    "the shared predicate reports the draw as awaiting the lender decision / open for lender control");
+  const centreAwaiting = pilot.pilotCommandCenter(funder);
+  assert(centreAwaiting.readyForDecision.some((r) => r.drawRequestId === draw.id) &&
+    centreAwaiting.metrics.openDraws >= 1 && centreAwaiting.metrics.totalRequestedOpen >= 150_000,
+    "the command centre keeps the undecided draw in the ready-for-decision bucket and in open capital");
 
   lenderDecisions.recordLenderDecision(funder, {
     drawRequestId: draw.id, decision: "APPROVED", approvedAmount: 150_000,
     decisionReason: "Golden-path test decision (fictional).",
   });
   pass("lender decision recorded through the governed service");
+  const decided = repo.getDrawRequest(draw.id);
+  assert(!pilot.awaitingLenderDecision(decided) && !pilot.isOpenForLenderControl(decided) &&
+    pilot.drawNextAction(draw.id).code === "NO_ACTION_REQUIRED" &&
+    !pilot.pilotCommandCenter(funder).readyForDecision.some((r) => r.drawRequestId === draw.id),
+    "once the lender decision is recorded the draw is disposed of — it leaves the open set (NO_ACTION_REQUIRED)");
 
   const pkgData = await drawPackage.assembleDrawPackageData(funder, draw.id);
   const pkg = drawPackage.buildDrawPackageFiles(pkgData);

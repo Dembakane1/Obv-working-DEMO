@@ -140,9 +140,13 @@ reasons that describe missing information rather than a failed requirement:
 gate, UI, snapshots, tests and docs. What the evaluator marks
 non-exceptionable, no decision path may waive.
 
-(An unknown-status **permit** is different: the gates record it as
-`PERMIT_NOT_ACTIVE`, a substantive blocker where configuration gates it —
-UNKNOWN never behaves as ACTIVE.)
+(Since PR #32 an unknown-status **permit** is unknown information too: the
+gates emit `PERMIT_STATUS_UNKNOWN`, a member of `UNKNOWN_INFO_CODES` →
+INCOMPLETE, never exception-eligible. DRAFT / APPLIED / CLOSED remain the
+KNOWN `PERMIT_NOT_ACTIVE` HOLD. Permit amendments carry the same split:
+`PERMIT_AMENDMENT_BLOCKS_INSPECTION` is a known HOLD,
+`AMENDMENT_INSPECTION_EFFECT_UNKNOWN` is unknown information. See
+`docs/DRAW_READINESS_ENGINE.md` §2.)
 
 ---
 
@@ -254,7 +258,12 @@ The underlying blocker **remains outstanding**, and the lender disposition
   with the last `READINESS_TRANSITION` event and no-ops when unchanged.
   Scope fan-outs (`…ForMilestone` / `…ForPermit` / `…ForProject` /
   `…ForException`) route non-draw-addressed mutations to only the relevant
-  active draws of the mutated record's **own project**.
+  active draws of the mutated record's **own project**. "Active" excludes
+  only CANCELLED draws and RELEASED draws whose lender decision is
+  recorded — formal governance is not the lender decision, so a released
+  draw awaiting it keeps transitioning, keeps notifying, and stays in the
+  command-centre / Executive / register open set
+  (`lenderDecisions.awaitingLenderDecision`; Pilot Gate #2).
 
 Notification pattern:
 
@@ -365,7 +374,10 @@ reason.**
 | #21 | `5e699e6` | **Navigation consolidation** |
 | #22 | `7fa85f8` | **Cloud-portability hardening** |
 | #23 | `7b0b6ad` | **Workstation completion** |
-| #24 | `d95fd3f` | **Draw Readiness Engine** (latest merged) |
+| #24 | `d95fd3f` | **Draw Readiness Engine** |
+| #25–#30 | (see `git log --merges`) | Pilot corrective pass · field/draw-review refresh · Draw Control Scorecard · Executive Command Center |
+| #31 | `8348e03` | **Timeline & Site Evidence** |
+| #32 | `cc06038` | **Jurisdictional control hardening** — unknown states & permit amendments (latest merged) |
 
 (PRs #2 and #7 have no merge commit in this history.)
 

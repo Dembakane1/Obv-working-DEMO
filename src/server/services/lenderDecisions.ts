@@ -41,6 +41,22 @@ export function currentDecision(drawRequestId: string): LenderDrawDecision | nul
   return active.length > 0 ? active[active.length - 1] : null;
 }
 
+/**
+ * THE shared predicate for "governance is complete but the lender has not
+ * decided". Formal governance (the approval matrix, release eligibility on
+ * the virtual account) is NOT the lender decision: a final decision can
+ * only be recorded AFTER governance completes, so a RELEASED draw with no
+ * standing final decision is still awaiting the lender's own governed act.
+ * Consumed by the command centre, Executive capital control, the Draws
+ * register, the twin's CURRENT strip and the readiness fan-outs — never
+ * restated.
+ */
+export function awaitingLenderDecision(draw: { id: string; status: string }): boolean {
+  if (draw.status !== "RELEASED") return false;
+  const decision = currentDecision(draw.id);
+  return !decision || decision.decision === "PENDING";
+}
+
 /** Conditions that BLOCK funding. A conditional approval is fundable only
  *  when every condition is SATISFIED or formally WAIVED (with a reason, by
  *  an authorized lender role). OPEN, IN_PROGRESS, FAILED and CANCELLED all

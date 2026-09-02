@@ -10,7 +10,7 @@
  * historical truth comes only from the stored events themselves.
  */
 import * as repo from "../../db/repo";
-import { OPEN_STATUSES, drawNextAction } from "../pilot/lenderPilot";
+import { isOpenForLenderControl, drawNextAction } from "../pilot/lenderPilot";
 import { drawReadiness } from "../drawReadiness";
 import { requireVisibleProject } from "../timeline/core";
 import type { User } from "../../../shared/types";
@@ -53,13 +53,14 @@ function stateOf(d: { id: string; drawNumber: number; status: string; requestedA
   };
 }
 
-/** Live state of every OPEN draw on the project (same open-statuses set
- *  the lender pilot uses), ordered by draw number. Same-404 applies. */
+/** Live state of every OPEN draw on the project (the lender pilot's one
+ *  open-for-lender-control predicate — review statuses plus
+ *  governance-released draws awaiting the lender decision), ordered by
+ *  draw number. Same-404 applies. */
 export function currentOpenDrawStates(user: User, projectId: string): CurrentDrawState[] {
   const project = requireVisibleProject(user, projectId);
-  const open = new Set<string>(OPEN_STATUSES as string[]);
   return safe(() => repo.listDrawRequestsForProject(project.id), [])
-    .filter((d) => open.has(d.status))
+    .filter((d) => isOpenForLenderControl(d))
     .sort((a, b) => a.drawNumber - b.drawNumber)
     .map(stateOf);
 }

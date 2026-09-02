@@ -607,6 +607,17 @@ async function main() {
     for (const user of ["user-funder", "user-compliance"]) {
       await api(user, "POST", `/api/approvals/${apRow.id}/decision`, { decision: "APPROVED", note: "Fictional pilot approval." });
     }
+    // Formal governance is complete (the draw is RELEASED for release
+    // eligibility) but the LENDER has not decided: the draw stays in the
+    // open capital set, in the pending-decision queue, and its next action
+    // names the lender — governance is never mistaken for the decision.
+    const governed = portfolio.control(funder);
+    const governedRow = governed.register.find((r) => r.drawRequestId === readyId);
+    assert(governedRow && governed.scope.openDrawCount === before.scope.openDrawCount &&
+      governed.attention.find((g) => g.key === "READY_PENDING_DECISION").items.some((i) => i.drawRequestId === readyId),
+      "9. governance-released + undecided: the draw remains open capital and stays in the pending-decision queue");
+    assert(/lender decision required/i.test(governedRow.nextAction ?? JSON.stringify(governedRow)),
+      "9. its next action says the lender decision is required — not \"complete\"");
     const decision = await api("user-funder", "POST", `/api/draws/${readyId}/lender-decision`, {
       decision: "APPROVED", approvedAmount: 40000, decisionReason: "Fictional pilot decision.",
     });

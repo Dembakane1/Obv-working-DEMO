@@ -132,9 +132,14 @@ reproductions are preserved unchanged below each status.
   "Released" BEFORE any lender decision exists. "Released" is
   virtual-account eligibility (no money moves — verified), and the
   decision + package follow, but the label invites misreading. Also,
-  milestone-scoped readiness fan-outs skip RELEASED draws (terminal), so
-  post-release determination/inspection changes update the readiness
-  history only when a draw-scoped hook (e.g. the decision) fires.
+  milestone-scoped readiness fan-outs skipped RELEASED draws (terminal), so
+  post-release determination/inspection changes updated the readiness
+  history only when a draw-scoped hook (e.g. the decision) fired.
+  **Pilot Gate #2 correction:** a released draw whose lender decision is
+  not yet recorded is no longer terminal — it keeps transitioning and
+  notifying, stays in the command-centre / Executive / register open set,
+  and its next action reads "Governance complete — lender decision
+  required" (see `docs/PILOT_GATE_2_REHEARSAL.md`).
 - **Expected:** lenders read "Released" as funds/decision done.
 - **Recommended:** onboarding must explain the term ("release eligibility
   recorded on the virtual project account — the lender decision is a

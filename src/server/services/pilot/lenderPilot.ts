@@ -23,7 +23,7 @@ export interface NextAction {
     | "COMPLETE_DRAFT" | "UPLOAD_MISSING_DOCUMENTS" | "BEGIN_REVIEW"
     | "CONTINUE_LINE_REVIEW" | "AWAITING_REQUESTER" | "RESOLVE_EXCEPTIONS"
     | "INSPECTION_RESULT_REQUIRED" | "LENDER_REVIEW_READY"
-    | "AWAITING_APPROVALS" | "RESOLVE_DECISION_CONDITIONS"
+    | "AWAITING_APPROVALS" | "LENDER_DECISION_REQUIRED" | "RESOLVE_DECISION_CONDITIONS"
     | "RELEASE_TRANSITION_PENDING" | "REVISE_AND_RESUBMIT"
     | "NO_ACTION_REQUIRED";
   /** Human-readable, specific, and honest about who acts. */
@@ -148,8 +148,31 @@ export function drawNextAction(drawRequestId: string, precomputed?: draws.DrawHe
       "Governance approved the draw; the release/funding transition is the next recorded step.");
   }
 
+  // Formal governance ≠ the lender decision. A governance-released draw
+  // whose lender decision has not been recorded is still awaiting the
+  // lender's own governed act — never "complete".
+  if (awaitingLenderDecision(draw)) {
+    return done("LENDER_DECISION_REQUIRED", "Governance complete — lender decision required", "LENDER",
+      "Formal governance recorded release eligibility; the lender's decision is a separate governed act and has " +
+      "not been recorded. OBV readiness informs that decision — governance alone funds nothing.");
+  }
+
   return done("NO_ACTION_REQUIRED", "Complete — no action required", "NONE",
     "The draw has reached a terminal recorded state.");
+}
+
+/** The decision register owns the predicate; re-exported for callers
+ *  that already depend on this module. */
+export const awaitingLenderDecision = lenderDecisions.awaitingLenderDecision;
+
+/** Open for lender control: the review statuses, plus governance-released
+ *  draws whose lender decision has not been recorded (a draw awaiting the
+ *  lender is open, keeps transitioning and keeps notifying; once the
+ *  decision is recorded it is disposed of and leaves the set). Command
+ *  centre, Executive capital control, the Draws register and the twin's
+ *  CURRENT strip all consume this one predicate. */
+export function isOpenForLenderControl(draw: { id: string; status: string }): boolean {
+  return (OPEN_STATUSES as string[]).includes(draw.status) || lenderDecisions.awaitingLenderDecision(draw);
 }
 
 // ------------------------------------------------------ command center
@@ -235,10 +258,12 @@ export function pilotCommandCenter(user: User): PilotCommandCenter {
     };
   });
 
-  const open = rows.filter((r) => OPEN_STATUSES.includes(r.status));
+  const open = rows.filter((r) => isOpenForLenderControl({ id: r.drawRequestId, status: r.status }));
   const byCode = (...codes: NextAction["code"][]) => open.filter((r) => codes.includes(r.nextAction.code));
 
-  const readyForDecision = byCode("BEGIN_REVIEW", "CONTINUE_LINE_REVIEW", "LENDER_REVIEW_READY", "AWAITING_APPROVALS");
+  const readyForDecision = byCode(
+    "BEGIN_REVIEW", "CONTINUE_LINE_REVIEW", "LENDER_REVIEW_READY", "AWAITING_APPROVALS", "LENDER_DECISION_REQUIRED"
+  );
   const waitingOnContractor = byCode("UPLOAD_MISSING_DOCUMENTS", "AWAITING_REQUESTER", "REVISE_AND_RESUBMIT");
   const waitingOnInspection = byCode("INSPECTION_RESULT_REQUIRED");
   const complianceExceptions = byCode("RESOLVE_EXCEPTIONS");

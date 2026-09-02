@@ -48,16 +48,23 @@ import * as prepo from "../../db/portfolioRepo";
  *   READY_FOR_GOVERNANCE · RETURNED
  *
  * DRAFT is excluded: an unsubmitted draft is not a request against the
- * lender. APPROVED / PARTIALLY_APPROVED / RELEASED / CANCELLED are
- * excluded: the lender has already recorded a disposition, so the capital
- * is no longer awaiting control. Every capital figure, the readiness
- * distribution, domain pressure and the attention queue all run over this
- * one set, so the totals reconcile with each other by construction.
+ * lender. CANCELLED is excluded. A governance-RELEASED draw is excluded
+ * ONLY once the lender has recorded their decision: formal governance
+ * (the approval matrix, release eligibility on the virtual account) is
+ * NOT the lender decision — the decision can only follow governance, so a
+ * released draw still awaiting it is capital still under the lender's
+ * control (`lenderPilot.isOpenForLenderControl`, the one shared predicate).
+ * Every capital figure, the readiness distribution, domain pressure and
+ * the attention queue all run over this one set, so the totals reconcile
+ * with each other by construction.
  */
 export const OPEN_DRAW_STATUSES: readonly string[] = lenderPilot.OPEN_STATUSES;
+/** The open set: `OPEN_DRAW_STATUSES`, plus governance-released draws
+ *  whose lender decision has not been recorded. */
+export const isOpenDraw = lenderPilot.isOpenForLenderControl;
 
 export const CAPITAL_INCLUSION_RULE =
-  "Open draws only — submitted, under review, awaiting clarification, ready for governance, or returned. " +
+  "Open draws only — submitted, under review, awaiting clarification, ready for governance, returned, or governance-released and awaiting the lender decision. " +
   "Drafts are not yet requests; draws with a recorded lender decision have left review.";
 
 // ------------------------------------------------------------------- types
@@ -331,7 +338,7 @@ const READINESS_ORDER: readiness.ReadinessStatus[] = [
  *  WORKFLOW state, not readiness, and are derived from the existing
  *  deterministic Next Action codes — no new workflow engine. */
 const PIPELINE_BUCKETS: Array<{ key: string; label: string; codes: string[] }> = [
-  { key: "READY_FOR_LENDER_REVIEW", label: "Ready for lender review", codes: ["LENDER_REVIEW_READY", "BEGIN_REVIEW"] },
+  { key: "READY_FOR_LENDER_REVIEW", label: "Awaiting lender review / decision", codes: ["LENDER_REVIEW_READY", "BEGIN_REVIEW", "LENDER_DECISION_REQUIRED"] },
   {
     key: "WAITING_ON_CONTRACTOR",
     label: "Waiting on contractor / documents",
@@ -414,7 +421,7 @@ function evaluateOpenDraws(ctx: PortfolioContext): {
   const open: Array<{ row: prepo.DrawRow; projectName: string }> = [];
   for (const project of ctx.projects) {
     for (const row of ctx.drawsByProject().get(project.id) ?? []) {
-      if (OPEN_DRAW_STATUSES.includes(row.status)) open.push({ row, projectName: project.name });
+      if (isOpenDraw({ id: row.id, status: row.status })) open.push({ row, projectName: project.name });
     }
   }
 

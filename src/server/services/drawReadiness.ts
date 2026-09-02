@@ -549,9 +549,13 @@ export function assembleReadinessInput(drawRequestId: string, evaluatedAt?: stri
     : null;
   // Advisory INFO reasons (grounded-progress cross-checks) come from the
   // existing recommendation engine — consumed as prose warnings only.
+  // Only LINE-SCOPED notes are concerns: the recommendation's draw-level
+  // INFO summary ("all lines supported … no blocking issues") is a
+  // positive statement, and rendering it as an EVIDENCE warning would
+  // downgrade a clean draw's PHYSICAL domain to WARNING for ever.
   const advisoryNotes = draws
     .computeRecommendation(drawRequestId)
-    .reasons.filter((r) => r.kind === "INFO")
+    .reasons.filter((r) => r.kind === "INFO" && r.lineItemId !== null)
     .map((r) => r.detail);
   // DMV per-line eligibility, read-only (no basis pin, no writes). Only
   // the eligibility facts are extracted — generation timestamps stay out
@@ -1429,8 +1433,17 @@ export function recordReadinessTransition(drawRequestId: string, actorUserId: st
 // same-state dedup, so repeated or overlapping fan-outs never duplicate
 // an event or a notification. None of these run from page reads.
 
-/** Terminal draws' readiness no longer transitions. */
-const TRANSITION_TERMINAL = new Set<DrawRequest["status"]>(["RELEASED", "CANCELLED"]);
+/** Terminal draws' readiness no longer transitions: cancelled draws, and
+ *  released draws whose lender decision HAS been recorded. A released
+ *  draw still awaiting the lender's decision is NOT terminal — formal
+ *  governance is not the lender decision, and the lender must keep
+ *  seeing (and being notified of) readiness changes until they decide
+ *  (`lenderDecisions.awaitingLenderDecision`, the one shared predicate). */
+function transitionTerminal(draw: DrawRequest): boolean {
+  if (draw.status === "CANCELLED") return true;
+  if (draw.status !== "RELEASED") return false;
+  return !lenderDecisions.awaitingLenderDecision(draw);
+}
 
 /** Fan-out for milestone-scoped mutations (evidence verdicts,
  *  jurisdictional inspections, requirement determinations, permit links,
@@ -1440,7 +1453,7 @@ export function recordReadinessTransitionsForMilestone(milestoneId: string, acto
   const milestone = repo.getMilestone(milestoneId);
   if (!milestone) return;
   for (const draw of repo.listDrawRequestsForProject(milestone.projectId)) {
-    if (TRANSITION_TERMINAL.has(draw.status)) continue;
+    if (transitionTerminal(draw)) continue;
     if (!repo.listDrawLines(draw.id).some((l) => l.milestoneId === milestoneId)) continue;
     try { recordReadinessTransition(draw.id, actorUserId); } catch { /* advisory — never fails the mutation */ }
   }
@@ -1457,7 +1470,7 @@ export function recordReadinessTransitionsForPermit(permitId: string, actorUserI
  *  budget-line-scoped records): every active draw of THAT project. */
 export function recordReadinessTransitionsForProject(projectId: string, actorUserId: string | null): void {
   for (const draw of repo.listDrawRequestsForProject(projectId)) {
-    if (TRANSITION_TERMINAL.has(draw.status)) continue;
+    if (transitionTerminal(draw)) continue;
     try { recordReadinessTransition(draw.id, actorUserId); } catch { /* advisory */ }
   }
 }
