@@ -56,6 +56,9 @@ const draws = require(path.join(ROOT, "dist/server/services/draws"));
 const dr = require(path.join(ROOT, "dist/server/services/drawReadiness"));
 const lenderDecisions = require(path.join(ROOT, "dist/server/services/lenderDecisions"));
 const drawPackage = require(path.join(ROOT, "dist/server/services/drawPackage"));
+const permitsSvc = require(path.join(ROOT, "dist/server/services/permits"));
+const gatesSvc = require(path.join(ROOT, "dist/server/services/completionGates"));
+const tlSvc = require(path.join(ROOT, "dist/server/services/timeline"));
 const { DatabaseSync } = require("node:sqlite");
 
 const funder = repo.getUser("user-funder");
@@ -222,10 +225,22 @@ async function main() {
   const rE1 = dr.evaluateDrawReadiness(incompleteInput);
   assert(rE1.status === "INCOMPLETE", "missing draw-structure information → INCOMPLETE, never READY");
   const rE2 = dr.evaluateDrawReadiness(synInput([
-    { code: "PERMIT_NOT_ACTIVE", detail: "Linked permit DCRA-000 is UNKNOWN — not an active permit. Blocks: governance.", blocking: true },
+    { code: "PERMIT_NOT_ACTIVE", detail: "Linked permit DCRA-000 is APPLIED — not an active permit. Blocks: governance.", blocking: true },
   ]));
   assert(rE2.status === "HOLD" && rE2.primaryBlocker.category === "PERMIT",
-    "an unknown-status permit where configuration gates it → HOLD (UNKNOWN never behaves as ACTIVE)");
+    "a KNOWN non-active permit (APPLIED) where configuration gates it → HOLD");
+  // An UNKNOWN-status permit is DIFFERENT: missing information, not a
+  // known non-active condition — the gates emit PERMIT_STATUS_UNKNOWN
+  // and readiness resolves INCOMPLETE, never a waivable pseudo-HOLD.
+  const rE2u = dr.evaluateDrawReadiness(synInput([
+    { code: "PERMIT_STATUS_UNKNOWN", detail: "Linked permit DCRA-000 has no established current status. Blocks: governance.", blocking: true },
+  ]));
+  assert(rE2u.status === "INCOMPLETE" && rE2u.primaryBlocker.code === "PERMIT_STATUS_UNKNOWN",
+    "an UNKNOWN-status permit where configuration gates it → INCOMPLETE (missing information, never a known failure)");
+  assert(rE2u.primaryBlocker.category === "PERMIT" && rE2u.primaryBlocker.exceptionAllowed === false,
+    "PERMIT_STATUS_UNKNOWN stays in the PERMIT category and is never exception-eligible");
+  assert(rE2u.categories.find((c) => c.category === "PERMIT").state === "UNKNOWN",
+    "the PERMIT category rolls up UNKNOWN, never PASS or HOLD, for an unknown-status permit");
   // Stage semantics are owned by completionGates.reasonBlocksDrawReview:
   // a draw-review-only permit rule arrives with blocking=false (the flag
   // encodes governance) plus permitBlocksDrawReview=true on eligibility.
@@ -1141,6 +1156,458 @@ async function main() {
     "F: a cross-tenant mutation attempt is refused and records nothing");
 
   stopServer();
+
+  // ============ S · jurisdictional control hardening ============
+  // KNOWN FAILURE → HOLD. MISSING/UNKNOWN GOVERNED INFORMATION →
+  // INCOMPLETE, never approvable by exception. Permit amendments block
+  // required-inspection scheduling only through a RECORDED jurisdictional
+  // determination; resolution never passes an inspection.
+  console.log("\n== S · jurisdictional control hardening ==");
+
+  // Shared governed fixture builder: fresh draw on a clean milestone with
+  // a full document checklist and completed formal governance, so ONLY
+  // the readiness gate stands between the lender and a decision.
+  const buildDecisionReadyDraw = async (amount, milestoneId) => {
+    const d = draws.createDraw(dmvPm, {
+      projectId: "proj-golden", requestedAmount: amount,
+      periodStart: "2026-10-01", periodEnd: "2026-10-31",
+    });
+    draws.addLine(dmvPm, d.id, {
+      description: "JCH fixture line", budgetLineId: null, milestoneId,
+      changeOrderId: null, exceptionAcknowledged: false,
+      scheduledValue: amount + 5000, previouslyPaid: 0, currentRequested: amount,
+      materialsStored: null, retainageAmount: null, percentCompleteClaimed: 90,
+    });
+    await draws.submitDraw(dmvPm, d.id);
+    draws.reviewLine(funder, repo.listDrawLines(d.id)[0].id, { decision: "SUPPORTED" });
+    for (const m of draws.missingRequiredDocuments(d.id)) {
+      draws.recordDocument(dmvPm, d.id, {
+        requirementId: m.id, lineItemId: null, docType: m.docType,
+        title: `${m.title} (fictional)`, note: null, expiresAt: null,
+        vendor: null, invoiceNumber: m.docType === "CONTRACTOR_INVOICE" ? "JCH-1" : null,
+        amount: m.docType === "CONTRACTOR_INVOICE" ? amount : null,
+        waiverKind: /LIEN_WAIVER/.test(m.docType) ? "CONDITIONAL" : null,
+        waiverScope: /LIEN_WAIVER/.test(m.docType) ? "PROGRESS" : null,
+        coveredThrough: /LIEN_WAIVER/.test(m.docType) ? "2026-10-31" : null,
+        issuingAuthority: null, referenceNumber: null, inspectionDate: null, inspectionResult: null,
+      });
+    }
+    const { approvalRequest } = await draws.sendToGovernance(funder, d.id, null);
+    await draws.processDrawApprovalDecision(approvalRequest.id, "user-funder", "APPROVED");
+    await draws.processDrawApprovalDecision(approvalRequest.id, "user-compliance", "APPROVED");
+    return d;
+  };
+  const decisionRows = (id) =>
+    Number(db.prepare("SELECT COUNT(*) c FROM lender_draw_decisions WHERE draw_request_id = ?").get(id).c);
+  const snapshotRows = (id) =>
+    Number(db.prepare("SELECT COUNT(*) c FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_SNAPSHOT'").get(id).c);
+
+  // ---- S1 · §23 regression: required permit status UNKNOWN → INCOMPLETE,
+  //      non-exceptionable, 422 with AND without justification, nothing
+  //      persisted. Everything else on the draw is satisfied.
+  const dS1 = await buildDecisionReadyDraw(25_000, "ms-g1");
+  const pS1 = permitsSvc.createPermit(compliance, "proj-golden", {
+    permitNumber: "JCH-S1", permitType: "BUILDING", status: "UNKNOWN",
+  });
+  permitsSvc.linkMilestone(compliance, pS1.id, "ms-g1", "S1 fixture");
+  gatesSvc.determineInspectionRequirement(compliance, "ms-g1", {
+    requirement: "NOT_REQUIRED", requirementBasis: "No inspection for this scope (fixture); permit must be active.",
+    permitRequired: true, permitMustBeActiveBeforeDrawReview: true,
+  });
+  const rS1 = dr.drawReadiness(dS1.id);
+  assert(rS1.status === "INCOMPLETE", "S1: required permit with UNKNOWN status → INCOMPLETE (all else satisfied)");
+  const bS1 = rS1.blockingReasons.find((b) => b.code === "PERMIT_STATUS_UNKNOWN");
+  assert(Boolean(bS1) && bS1.category === "PERMIT" && bS1.exceptionAllowed === false,
+    "S1: the blocker is PERMIT_STATUS_UNKNOWN — PERMIT category, never exception-eligible");
+  assert(dr.isUnknownInformation("PERMIT_STATUS_UNKNOWN") === true,
+    "S1: the central classifier marks PERMIT_STATUS_UNKNOWN as missing information");
+  const domS1 = dr.controlDomains(rS1).find((x) => x.domain === "COMPLIANCE");
+  assert(domS1.state === "UNKNOWN" && domS1.hasUnknown === true,
+    "S1: the Compliance domain reads UNKNOWN with hasUnknown — never healthy");
+  for (const justification of [null, "Documented exception: county portal outage (fixture)."]) {
+    let refusedS1 = null;
+    try {
+      dr.recordDecisionWithReadiness(funder, dS1.id, {
+        decision: "APPROVED", approvedAmount: 25_000,
+        ...(justification ? { exceptionsAccepted: justification } : {}),
+      });
+    } catch (e) { refusedS1 = e; }
+    assert(refusedS1 && refusedS1.statusCode === 422 && /INCOMPLETE/.test(refusedS1.message),
+      `S1: APPROVED over the unknown permit is refused 422 ${justification ? "WITH" : "without"} justification`);
+  }
+  assert(decisionRows(dS1.id) === 0 && snapshotRows(dS1.id) === 0,
+    "S1: the refusals persisted ZERO decisions and ZERO snapshots");
+
+  // ---- S2 · §24 regression: KNOWN SUSPENDED permit → HOLD (never
+  //      relabelled INCOMPLETE); eligibility follows known-permit policy.
+  permitsSvc.updatePermit(compliance, pS1.id, { status: "SUSPENDED", reason: "S2 fixture: county suspension recorded." });
+  const rS2 = dr.drawReadiness(dS1.id);
+  assert(rS2.status === "HOLD", "S2: a KNOWN suspended permit → HOLD, not INCOMPLETE");
+  const bS2 = rS2.blockingReasons.find((b) => b.code === "PERMIT_SUSPENDED");
+  assert(Boolean(bS2) && !rS2.blockingReasons.some((b) => b.code === "PERMIT_STATUS_UNKNOWN"),
+    "S2: the blocker is PERMIT_SUSPENDED — the unknown-status code never fires for a recorded status");
+  assert(bS2.exceptionAllowed === dr.DEFAULT_READINESS_POLICY.exceptionEligible.PERMIT,
+    "S2: a known non-active permit keeps the existing known-permit exception policy");
+  assert(dr.isUnknownInformation("PERMIT_SUSPENDED") === false && dr.isUnknownInformation("PERMIT_NOT_ACTIVE") === false,
+    "S2: known non-active codes are never classified as missing information");
+
+  // ---- S3 · §5 regression: NO PERMIT vs UNKNOWN STATUS are different
+  //      facts — a missing required permit is a KNOWN missing control.
+  const rS3 = dr.evaluateDrawReadiness(synInput([
+    { code: "REQUIRED_PERMIT_MISSING", detail: "A BUILDING permit is required but no permit record is linked. Blocks: governance.", blocking: true },
+  ]));
+  assert(rS3.status === "HOLD" && rS3.primaryBlocker.code === "REQUIRED_PERMIT_MISSING",
+    "S3: a missing required permit is a substantive HOLD — never collapsed into unknown-status");
+  assert(dr.isUnknownInformation("REQUIRED_PERMIT_MISSING") === false,
+    "S3: REQUIRED_PERMIT_MISSING is a known condition, not missing information");
+
+  // ---- S4 · §22 regression: FULLY SUPPORTED DOLLARS ≠ READY. Active
+  //      permit, recorded amendment, recorded BLOCKED scheduling effect.
+  // A FRESH milestone fixture: prior scenarios left ms-g6 with a PASSED
+  // inspection chain, which would (correctly) make a scheduling
+  // constraint moot — S4 needs a not-yet-passed required inspection.
+  repo.insertMilestone({
+    id: "ms-jch-s4", projectId: "proj-golden", seq: 97, title: "JCH S4 stage",
+    requirement: "Fixture stage for the amendment regression.",
+    trancheAmount: 0, status: "UNDER_REVIEW", accountStatus: "HELD",
+    plannedStart: null, plannedEnd: null, weight: null, spatialLabel: null, archived: false,
+  });
+  const dS4 = await buildDecisionReadyDraw(71_500, "ms-jch-s4");
+  const pS4 = permitsSvc.createPermit(compliance, "proj-golden", {
+    permitNumber: "JCH-S4", permitType: "BUILDING", status: "ACTIVE",
+  });
+  permitsSvc.linkMilestone(compliance, pS4.id, "ms-jch-s4", "S4 fixture");
+  gatesSvc.determineInspectionRequirement(compliance, "ms-jch-s4", {
+    requirement: "REQUIRED", requirementBasis: "Final inspection required before draw review (fixture).",
+    inspectionType: "FINAL", mustPassBeforeDrawReview: true, mustPassBeforeGovernance: false,
+    permitRequired: true, permitMustBeActiveBeforeDrawReview: true,
+  });
+  const amS4 = permitsSvc.recordPermitAmendment(compliance, pS4.id, {
+    amendmentReference: "AM-2026-014", description: "Scope revision (fixture)", status: "PENDING", submittedAt: "2026-08-20",
+  });
+  assert(amS4.inspectionSchedulingEffect === "UNKNOWN",
+    "S4: recording an amendment NEVER infers its scheduling effect — it starts UNKNOWN");
+  // §25 first — effect UNKNOWN, isolated at the evaluator: INCOMPLETE.
+  const rS4u = dr.evaluateDrawReadiness(synInput([
+    { code: "AMENDMENT_INSPECTION_EFFECT_UNKNOWN", detail: "Permit JCH-S4 amendment AM-2026-014 is open and whether it prevents the required inspection from being scheduled has not been determined.", blocking: false },
+  ], { requirementValue: "REQUIRED", inspectionGate: "REQUIRED_UNSCHEDULED" }));
+  assert(rS4u.status === "INCOMPLETE" && rS4u.primaryBlocker.code === "AMENDMENT_INSPECTION_EFFECT_UNKNOWN",
+    "S4/§25: an undetermined amendment effect ALONE → INCOMPLETE, never a hold-by-assumption");
+  assert(rS4u.primaryBlocker.exceptionAllowed === false &&
+    dr.controlDomains(rS4u).find((x) => x.domain === "COMPLIANCE").state === "UNKNOWN",
+    "S4/§25: the undetermined effect is non-exceptionable and the Compliance domain reads UNKNOWN");
+  // Governed end-to-end: with the required inspection also outstanding,
+  // the draw HOLDs and the unknown stays visible + non-waivable (§9).
+  const rS4g = dr.drawReadiness(dS4.id);
+  assert(rS4g.status === "HOLD" &&
+    rS4g.blockingReasons.some((b) => b.code === "AMENDMENT_INSPECTION_EFFECT_UNKNOWN" && !b.exceptionAllowed),
+    "S4/§9: beside the substantive inspection blockers the unknown effect stays visible and non-exceptionable");
+  let refusedS4 = null;
+  try {
+    dr.recordDecisionWithReadiness(funder, dS4.id, {
+      decision: "APPROVED", approvedAmount: 71_500,
+      exceptionsAccepted: "Documented exception attempt over missing information (must be refused).",
+    });
+  } catch (e) { refusedS4 = e; }
+  assert(refusedS4 && refusedS4.statusCode === 422,
+    "S4/§9: a justified APPROVED cannot proceed while ANY blocker is missing information — even on a HOLD draw");
+  assert(decisionRows(dS4.id) === 0 && snapshotRows(dS4.id) === 0, "S4: nothing persisted by the refusal");
+  // Now the recorded jurisdictional determination: scheduling BLOCKED.
+  permitsSvc.determineAmendmentInspectionEffect(compliance, amS4.id, {
+    effect: "BLOCKED",
+    effectBasis: "Recorded jurisdictional determination: required inspections cannot be scheduled while the amendment is open (fixture).",
+  });
+  const rS4 = dr.drawReadiness(dS4.id);
+  assert(rS4.supportableAmount === 71_500 && rS4.unsupportedAmount === 0 &&
+    dr.formatSupportCoverage(dr.supportCoverage(rS4)) === "100%",
+    "S4/§22: support coverage is exactly 100% — $71,500 of $71,500");
+  assert(rS4.status === "HOLD", "S4/§22: 100% supported dollars ≠ READY — the draw HOLDs");
+  assert(rS4.primaryBlocker.code === "PERMIT_AMENDMENT_BLOCKS_INSPECTION",
+    "S4/§22: the deterministic primary blocker is the amendment scheduling condition");
+  assert(rS4.primaryBlocker.category === "GOVERNMENT_INSPECTION",
+    "S4: the blocked control is the required inspection — GOVERNMENT_INSPECTION category (permit remains valid)");
+  assert(/Resolve the permit amendment, then complete the required inspection/.test(rS4.nextActions[0]),
+    "S4/§13: the next action states the true order — resolve the amendment, then the inspection");
+  assert(!/contacted|checked with|queried/.test(rS4.primaryBlocker.message),
+    "S4: the message never implies OBV itself contacted the county");
+  assert(dr.controlDomains(rS4).find((x) => x.domain === "COMPLIANCE").state === "HOLD",
+    "S4/§22: Compliance HOLD; the other domains carry no blocker from this condition");
+
+  // ---- S5 · §26 regression: amendment resolves → blocker clears, but
+  //      the inspection remains its own governed fact; history immutable.
+  dr.recordReadinessTransition(dS4.id, "user-compliance"); // record the HOLD (governed mutation point)
+  const transS5Before = db.prepare(
+    "SELECT id, detail FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_TRANSITION' ORDER BY rowid"
+  ).all(dS4.id).map((r) => `${r.id}:${r.detail}`);
+  permitsSvc.updatePermitAmendment(compliance, amS4.id, {
+    status: "APPROVED", reason: "County approved the amendment (fixture).",
+  });
+  const rS5 = dr.drawReadiness(dS4.id);
+  assert(!rS5.blockingReasons.some((b) => b.code.startsWith("PERMIT_AMENDMENT") || b.code.startsWith("AMENDMENT_")),
+    "S5/§26: resolving the amendment clears the amendment blockers");
+  assert(rS5.status === "HOLD" &&
+    rS5.blockingReasons.some((b) => ["INSPECTION_NOT_SCHEDULED", "JURISDICTIONAL_INSPECTION_NOT_PASSED"].includes(b.code)),
+    "S5/§15: amendment resolution NEVER passes the inspection — the required inspection still gates");
+  assert(!rS5.satisfiedRequirements.some((s) => s.code === "REQUIRED_INSPECTION_PASSED"),
+    "S5: no satisfied-inspection claim appears from an amendment approval");
+  const inspS5 = gatesSvc.createInspection(compliance, "ms-jch-s4", { inspectionType: "FINAL", permitRefId: pS4.id });
+  gatesSvc.scheduleInspection(compliance, inspS5.id, "2026-10-10T10:00:00Z");
+  gatesSvc.recordInspectionResult(compliance, inspS5.id, { result: "PASSED", resultRecordedAt: "2026-10-10T15:00:00Z" });
+  assert(dr.drawReadiness(dS4.id).status === "READY",
+    "S5/§26: after the REAL inspection passes through the normal API, readiness recomputes READY");
+  const transS5After = db.prepare(
+    "SELECT id, detail FROM draw_events WHERE draw_request_id = ? AND type = 'READINESS_TRANSITION' ORDER BY rowid"
+  ).all(dS4.id).map((r) => `${r.id}:${r.detail}`);
+  assert(transS5Before.every((row, i) => transS5After[i] === row),
+    "S5/§16: no historical READINESS_TRANSITION row was rewritten by the amendment change");
+
+  // ---- S6 · §27 regression: each project's recorded governing basis is
+  //      preserved; editing the newer basis never rewrites the older one.
+  const pS6a = permitsSvc.createPermit(compliance, "proj-golden", {
+    permitNumber: "JCH-S6A", permitType: "BUILDING", status: "ACTIVE", jurisdiction: "Test County",
+  });
+  const pS6b = permitsSvc.createPermit(compliance, "proj-dmv", {
+    permitNumber: "JCH-S6B", permitType: "BUILDING", status: "ACTIVE", jurisdiction: "Test County",
+  });
+  permitsSvc.recordCodeBasis(compliance, pS6a.id, {
+    applicableCodeEdition: "2015 Building Code",
+    codeEffectiveDate: "2016-01-01",
+    codeBasis: "Reviewer determination: plan accepted before the newer edition's effective date — project remains under the prior rule (fixture).",
+  });
+  permitsSvc.recordCodeBasis(compliance, pS6b.id, {
+    applicableCodeEdition: "2021 Building Code",
+    codeEffectiveDate: "2022-07-01",
+    codeBasis: "Reviewer determination: plan accepted under the current edition (fixture).",
+  });
+  const aBefore = repo.getPermit(pS6a.id);
+  permitsSvc.recordCodeBasis(compliance, pS6b.id, {
+    applicableCodeEdition: "2024 Building Code",
+    codeEffectiveDate: "2025-01-01",
+    codeBasis: "Newer rule recorded for project B (fixture).",
+    reason: "Jurisdiction adopted a newer edition (fixture).",
+  });
+  const aAfter = repo.getPermit(pS6a.id);
+  assert(
+    aAfter.applicableCodeEdition === "2015 Building Code" &&
+      aAfter.codeBasis === aBefore.codeBasis &&
+      aAfter.codeDeterminedAt === aBefore.codeDeterminedAt &&
+      aAfter.codeDeterminedBy === aBefore.codeDeterminedBy,
+    "S6/§27: project A's recorded governing basis (incl. provenance) survives project B's newer-rule update"
+  );
+  assert(repo.getPermit(pS6b.id).applicableCodeEdition === "2024 Building Code",
+    "S6: project B carries its own updated recorded basis");
+  assert(/prior rule/.test(aAfter.codeBasis),
+    "S6/§17: the transition/grandfather determination is expressible in the existing codeBasis field");
+  const s6Audit = db.prepare(
+    "SELECT COUNT(*) c FROM config_audit WHERE action = 'CODE_BASIS_RECORDED' AND entity_id = ?"
+  ).get(pS6b.id).c;
+  assert(Number(s6Audit) === 2, "S6: every basis determination is a separate attributable audit entry");
+
+  // ---- S7 · §28 exception matrix: every jurisdiction-related readiness
+  //      reason, isolated. FORBIDDEN: missing-information classification
+  //      with exceptionAllowed=true.
+  const MATRIX = [
+    // [code, blockingFlag, expected isolated status, expected unknown-info]
+    ["REQUIRED_PERMIT_MISSING", true, "HOLD", false],
+    ["PERMIT_EXPIRED", true, "HOLD", false],
+    ["PERMIT_REVOKED", true, "HOLD", false],
+    ["PERMIT_SUSPENDED", true, "HOLD", false],
+    ["PERMIT_NOT_ACTIVE", true, "HOLD", false],
+    ["PERMIT_STATUS_UNKNOWN", true, "INCOMPLETE", true],
+    ["CODE_BASIS_MISSING", true, "HOLD", false],
+    ["OFFICIAL_SOURCE_MISSING", true, "HOLD", false],
+    ["INSPECTION_NOT_SCHEDULED", true, "HOLD", false],
+    ["INSPECTION_PENDING", true, "HOLD", false],
+    ["INSPECTION_FAILED", true, "HOLD", false],
+    ["REINSPECTION_REQUIRED", true, "HOLD", false],
+    ["REINSPECTION_FAILED", true, "HOLD", false],
+    ["REINSPECTION_PENDING", true, "HOLD", false],
+    ["REINSPECTION_NOT_SCHEDULED", true, "HOLD", false],
+    ["INSPECTION_CORRECTIONS_REQUIRED", true, "HOLD", false],
+    ["INSPECTION_EXPIRED", true, "HOLD", false],
+    ["JURISDICTIONAL_INSPECTION_NOT_PASSED", true, "HOLD", false],
+    ["INSPECTION_REQUIREMENT_UNKNOWN", false, "INCOMPLETE", true],
+    ["PERMIT_AMENDMENT_BLOCKS_INSPECTION", true, "HOLD", false],
+    ["AMENDMENT_INSPECTION_EFFECT_UNKNOWN", false, "INCOMPLETE", true],
+  ];
+  console.log("  code · known/unknown · isolated · exceptionAllowed");
+  for (const [code, blockingFlag, expectedStatus, expectedUnknown] of MATRIX) {
+    const over = expectedUnknown && code !== "PERMIT_STATUS_UNKNOWN"
+      ? { requirementValue: code === "INSPECTION_REQUIREMENT_UNKNOWN" ? "UNKNOWN" : "REQUIRED",
+          inspectionGate: code === "INSPECTION_REQUIREMENT_UNKNOWN" ? "REQUIREMENT_UNKNOWN" : "REQUIRED_UNSCHEDULED" }
+      : {};
+    const rM = dr.evaluateDrawReadiness(synInput([
+      { code, detail: `${code} (matrix fixture). Blocks: governance.`, blocking: blockingFlag },
+    ], over));
+    const bM = rM.blockingReasons.find((b) => b.code === code);
+    if (!bM) fail(`matrix: ${code} did not surface as a blocker`);
+    if (rM.status !== expectedStatus) fail(`matrix: ${code} isolated → ${rM.status}, expected ${expectedStatus}`);
+    if (dr.isUnknownInformation(code) !== expectedUnknown) {
+      fail(`matrix: ${code} unknown-info classification mismatch`);
+    }
+    // THE FORBIDDEN COMBINATION: missing information + exceptionAllowed.
+    if (dr.isUnknownInformation(code) && bM.exceptionAllowed) {
+      fail(`matrix FORBIDDEN: ${code} is missing information yet exceptionAllowed=true`);
+    }
+    console.log(`    ${code} · ${expectedUnknown ? "UNKNOWN-INFO" : "known"} · ${rM.status} · exceptionAllowed=${bM.exceptionAllowed}`);
+  }
+  pass("S7/§28: full jurisdiction reason matrix — no missing-information reason is ever exception-eligible");
+  assert([...["DRAW_IN_DRAFT","DRAW_CANCELLED","NO_LINE_ITEMS","DRAW_STRUCTURE_INCOMPLETE","INSPECTION_REQUIREMENT_UNKNOWN","LINE_WITHOUT_MILESTONE","PERMIT_STATUS_UNKNOWN","AMENDMENT_INSPECTION_EFFECT_UNKNOWN"]]
+    .every((c) => dr.isUnknownInformation(c)),
+    "S7: the central unknown-information set carries every unknown code exactly once — one classifier, no side lists");
+
+  // ---- S8 · §31 adversarial: tenancy, read-only, roles ----------------
+  const foreignFunderS8 = repo.getUser("user-funder") && repo.getUser("user-pm"); // org-crra
+  let deniedS8 = null;
+  try { permitsSvc.recordPermitAmendment(repo.getUser("user-pm"), pS4.id, { amendmentReference: "X-1" }); }
+  catch (e) { deniedS8 = e; }
+  assert(deniedS8 && deniedS8.statusCode === 404,
+    "S8/G: a foreign tenant recording an amendment on this tenant's permit gets the same 404");
+  deniedS8 = null;
+  try { permitsSvc.getAmendmentFor(repo.getUser("user-pm"), amS4.id); } catch (e) { deniedS8 = e; }
+  assert(deniedS8 && deniedS8.statusCode === 404, "S8/G: a foreign tenant cannot read the amendment (same 404)");
+  deniedS8 = null;
+  try {
+    permitsSvc.determineAmendmentInspectionEffect(dmvPm, amS4.id, { effect: "ALLOWED", effectBasis: "PM attempt (must be refused)." });
+  } catch (e) { deniedS8 = e; }
+  assert(deniedS8 && deniedS8.statusCode === 403,
+    "S8: a project manager cannot determine the inspection-scheduling effect (lender-side determination)");
+  deniedS8 = null;
+  try { permitsSvc.recordPermitAmendment(dmvPm, pS4.id, { amendmentReference: "X-2", status: "APPROVED" }); }
+  catch (e) { deniedS8 = e; }
+  assert(deniedS8 && deniedS8.statusCode === 403,
+    "S8: a project manager may record PENDING only — formal amendment states are lender-side");
+  const rowsBeforeS8 = JSON.stringify(db.prepare("SELECT * FROM permit_amendments ORDER BY id").all());
+  dr.drawReadiness(dS4.id);
+  gatesSvc.drawReviewSurface("ms-g6");
+  tlSvc.projectTimeline(funder, "proj-golden");
+  assert(JSON.stringify(db.prepare("SELECT * FROM permit_amendments ORDER BY id").all()) === rowsBeforeS8,
+    "S8/H: readiness, gate and timeline READS leave every amendment row byte-identical");
+
+  // ---- S9 · §19 timeline integration: non-spatial governed events,
+  // every one derived from the amendment's IMMUTABLE audit records ------
+  const tlS9 = tlSvc.projectTimeline(funder, "proj-golden");
+  const amEvents = tlS9.events.filter((e) => /AM-2026-014/.test(e.title));
+  assert(amEvents.some((e) => e.type === "PERMIT_AMENDMENT_RECORDED") &&
+    amEvents.some((e) => e.type === "AMENDMENT_EFFECT_DETERMINED") &&
+    amEvents.some((e) => e.type === "PERMIT_AMENDMENT_RESOLVED"),
+    "S9: the amendment lifecycle appears on the governed timeline");
+  assert(amEvents.length > 0 && amEvents.every((e) => e.sourceTable === "config_audit"),
+    "S9: every amendment history event cites an immutable audit record, never the mutable row");
+  assert(amEvents.every((e) => e.spatial === null),
+    "S9: amendment events are NON-SPATIAL — no invented coordinates");
+  assert(amEvents.every((e) => e.truthClass === "GOVERNED_FACT" || e.truthClass === "HISTORICAL_EVENT"),
+    "S9: amendment events carry the central truth classification, never advisory");
+  void drawPackage; void foreignFunderS8;
+
+  // ---- S10 · historical truth: the timeline narrates each amendment
+  // event from the immutable record written AT THAT MOMENT — later
+  // lifecycle changes never rewrite what an earlier event says ----------
+  const amHist = permitsSvc.recordPermitAmendment(funder, pS4.id, {
+    amendmentReference: "AM-HIST-1", description: "History regression (fixture)",
+  });
+  permitsSvc.determineAmendmentInspectionEffect(funder, amHist.id, {
+    effect: "BLOCKED", effectBasis: "Initial recorded jurisdictional determination (fixture).",
+  });
+  const tlAfterBlocked = tlSvc.projectTimeline(funder, "proj-golden");
+  const blockedEvent = tlAfterBlocked.events.find(
+    (e) => e.type === "AMENDMENT_EFFECT_DETERMINED" && /AM-HIST-1/.test(e.title)
+  );
+  assert(blockedEvent && /BLOCKED/.test(blockedEvent.change?.current ?? "") && blockedEvent.severity === "MEDIUM",
+    "S10: the first determination appears as its own BLOCKED event");
+  const blockedFrozen = JSON.stringify(blockedEvent);
+  permitsSvc.determineAmendmentInspectionEffect(funder, amHist.id, {
+    effect: "ALLOWED", effectBasis: "Jurisdiction confirmed scheduling may proceed (fixture).",
+    reason: "Recorded determination superseded by the authority's confirmation (fixture).",
+  });
+  const tlAfterAllowed = tlSvc.projectTimeline(funder, "proj-golden");
+  const detEvents = tlAfterAllowed.events.filter(
+    (e) => e.type === "AMENDMENT_EFFECT_DETERMINED" && /AM-HIST-1/.test(e.title)
+  );
+  assert(detEvents.length === 2,
+    "S10: BOTH determinations remain on the timeline — a redetermination adds, never replaces");
+  assert(detEvents.some((e) => JSON.stringify(e) === blockedFrozen),
+    "S10: the original BLOCKED event is byte-identical after the change — history is never rewritten");
+  const changedEvent = detEvents.find((e) => /BLOCKED/.test(e.change?.previous ?? "") && /ALLOWED/.test(e.change?.current ?? ""));
+  assert(changedEvent && /changed/.test(changedEvent.title),
+    "S10: the second event states the real transition BLOCKED → ALLOWED from its own immutable record");
+  permitsSvc.updatePermitAmendment(funder, amHist.id, {
+    status: "APPROVED", reason: "County approved the amendment (fixture).",
+  });
+  const tlAfterApproved = tlSvc.projectTimeline(funder, "proj-golden");
+  const createdEvent = tlAfterApproved.events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_RECORDED" && /AM-HIST-1/.test(e.title)
+  );
+  assert(createdEvent && /recorded as PENDING/.test(createdEvent.explanation) && !/APPROVED/.test(createdEvent.explanation),
+    "S10: after approval, the record-created event STILL says PENDING — the initial status comes from the immutable creation record, never today's row");
+  const resolvedEvent = tlAfterApproved.events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_RESOLVED" && /AM-HIST-1/.test(e.title)
+  );
+  assert(resolvedEvent && /PENDING/.test(resolvedEvent.change?.previous ?? "") && /APPROVED/.test(resolvedEvent.change?.current ?? ""),
+    "S10: the resolution event carries the real before/after transition");
+  // A transition whose prior state is NOT pending: UNKNOWN → WITHDRAWN.
+  const amHist2 = permitsSvc.recordPermitAmendment(funder, pS4.id, {
+    amendmentReference: "AM-HIST-2", status: "UNKNOWN",
+  });
+  permitsSvc.updatePermitAmendment(funder, amHist2.id, {
+    status: "WITHDRAWN", reason: "Applicant withdrew the amendment (fixture).",
+  });
+  const resolved2 = tlSvc.projectTimeline(funder, "proj-golden").events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_RESOLVED" && /AM-HIST-2/.test(e.title)
+  );
+  assert(resolved2 && /UNKNOWN/.test(resolved2.change?.previous ?? "") && !/PENDING/.test(resolved2.change?.previous ?? ""),
+    "S10: a non-PENDING transition shows its REAL prior state — the timeline never assumes PENDING");
+  assert(resolved2.change?.field === "status",
+    "S10/B: a real lifecycle resolution is presented as a STATUS change");
+
+  // ---- S10 A/C/D/E · the presentation classifies each change from its
+  // immutable record's OWN action — never a blanket "status" label ------
+  const amHist3 = permitsSvc.recordPermitAmendment(funder, pS4.id, {
+    amendmentReference: "AM-HIST-3", description: "Presentation regression (fixture)",
+  });
+  permitsSvc.updatePermitAmendment(funder, amHist3.id, {
+    status: "UNKNOWN", reason: "The county's amendment state could not be established (fixture).",
+  });
+  const openChange = tlSvc.projectTimeline(funder, "proj-golden").events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_UPDATED" && /AM-HIST-3/.test(e.title)
+  );
+  assert(openChange && openChange.change?.field === "status" &&
+    /PENDING/.test(openChange.change?.previous ?? "") && /UNKNOWN/.test(openChange.change?.current ?? ""),
+    "S10/A: an open-state lifecycle change (PENDING → UNKNOWN) is a status change with the real states");
+  const t1Withdrawn = db.prepare("SELECT resolved_at r FROM permit_amendments WHERE id = ?").get(amHist2.id).r;
+  permitsSvc.updatePermitAmendment(funder, amHist2.id, {
+    resolvedAt: "2026-08-15", reason: "Correcting the recorded withdrawal date from the county record (fixture).",
+  });
+  const tlC = tlSvc.projectTimeline(funder, "proj-golden");
+  const corrEv = tlC.events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_RESOLUTION_TIME_CORRECTED" && /AM-HIST-2/.test(e.title)
+  );
+  assert(corrEv && corrEv.change?.field === "resolution time" &&
+    (corrEv.change?.previous ?? "").includes(t1Withdrawn) && /2026-08-15/.test(corrEv.change?.current ?? ""),
+    "S10/C: a resolution-time correction is presented as RESOLUTION TIME with both times from the immutable record");
+  const statusEvents2 = tlC.events.filter((e) => /AM-HIST-2/.test(e.title) && e.change?.field === "status");
+  assert(statusEvents2.length === 1 && /WITHDRAWN/.test(statusEvents2[0].change?.current ?? ""),
+    "S10/C: the correction never claims a status change — the sole status event remains the real resolution");
+  permitsSvc.updatePermitAmendment(funder, amHist3.id, { notes: "Clerk reference 88-431 (fixture)." });
+  const tlD = tlSvc.projectTimeline(funder, "proj-golden");
+  const notesEv = tlD.events.find(
+    (e) => e.type === "PERMIT_AMENDMENT_NOTES_UPDATED" && /AM-HIST-3/.test(e.title)
+  );
+  assert(notesEv && !notesEv.change,
+    "S10/D: a notes-only change appears as its own historical event with NO change-of-state claim");
+  assert(tlD.events.every((e) =>
+    !(e.change?.field === "status" && /notes updated/.test(e.change?.current ?? "")) &&
+    !/88-431/.test(e.explanation ?? "") && !/88-431/.test(JSON.stringify(e.change ?? null))),
+    "S10/D: no 'status: notes updated' presentation exists and note content never leaks onto the timeline");
+  const rowE = JSON.stringify(db.prepare("SELECT * FROM permit_amendments WHERE id = ?").get(amHist3.id));
+  const auditCountE = db.prepare("SELECT COUNT(*) c FROM config_audit WHERE entity_type = 'PERMIT_AMENDMENT'").get().c;
+  const evCountE = tlD.events.filter((e) => /AM-HIST-/.test(e.title)).length;
+  permitsSvc.updatePermitAmendment(funder, amHist3.id, {});
+  assert(JSON.stringify(db.prepare("SELECT * FROM permit_amendments WHERE id = ?").get(amHist3.id)) === rowE &&
+    db.prepare("SELECT COUNT(*) c FROM config_audit WHERE entity_type = 'PERMIT_AMENDMENT'").get().c === auditCountE &&
+    tlSvc.projectTimeline(funder, "proj-golden").events.filter((e) => /AM-HIST-/.test(e.title)).length === evCountE,
+    "S10/E: a no-op writes nothing — row, audit trail and timeline all unchanged");
+
   console.log(`\nDRAW READINESS TESTS PASSED — ${passed} checkpoints.`);
   console.log("DETERMINISTIC. EXPLAINED. NEVER AN APPROVAL.");
 }

@@ -1564,6 +1564,45 @@ export interface Permit {
   updatedAt: string;
 }
 
+/** The jurisdiction's own amendment lifecycle, as recorded. UNKNOWN is a
+ *  recorded determination that the current state could not be
+ *  established — never a default OBV infers. */
+export type PermitAmendmentStatus =
+  | "PENDING" | "APPROVED" | "REJECTED" | "WITHDRAWN" | "UNKNOWN";
+
+/** Whether required inspections can be scheduled while the amendment
+ *  stands — a REVIEWED JURISDICTIONAL DETERMINATION recorded with basis
+ *  and attribution, deliberately separate from the amendment's own
+ *  status: OBV never infers "pending blocks inspections" from the word
+ *  pending. UNKNOWN means the determination has not been recorded. */
+export type AmendmentInspectionEffect = "BLOCKED" | "ALLOWED" | "UNKNOWN";
+
+/** A permit amendment/revision under the existing permit register.
+ *  Jurisdiction-neutral: no per-jurisdiction fields or rules — the
+ *  reviewer records what the authority determined. */
+export interface PermitAmendment {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  permitId: string;
+  /** The jurisdiction's reference for the amendment/revision. */
+  amendmentReference: string;
+  description: string | null;
+  status: PermitAmendmentStatus;
+  submittedAt: string | null;
+  resolvedAt: string | null;
+  inspectionSchedulingEffect: AmendmentInspectionEffect;
+  /** Basis for the recorded effect determination (source/citation) —
+   *  required whenever the effect is determined. */
+  effectBasis: string | null;
+  effectDeterminedBy: string | null; // user id (attributable)
+  effectDeterminedAt: string | null;
+  recordedByUserId: string;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** Normalized permit ↔ milestone relationship (no comma-separated ids). */
 export interface PermitMilestoneLink {
   id: string;

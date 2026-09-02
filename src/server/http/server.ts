@@ -4447,7 +4447,40 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
   }
 
-  const permitActionMatch = /^\/api\/permits\/([^/]+)(?:\/(code-basis|links))?$/.exec(pathname);
+  // Permit amendment lifecycle + the reviewed inspection-scheduling
+  // effect determination. Every mutation runs the permit-scoped
+  // readiness-transition fan-out: an amendment determination can flip
+  // PERMIT_AMENDMENT_* blockers on every linked milestone's open draws.
+  const amendmentMatch = /^\/api\/permit-amendments\/([^/]+)(?:\/(effect))?$/.exec(pathname);
+  if (amendmentMatch && method === "POST") {
+    const user2 = currentUser(req);
+    if (!user2) {
+      sendJson(res, { error: "Select a demo user first" }, 401);
+      return;
+    }
+    const [, amendmentId, aSub] = amendmentMatch;
+    const p = await gateParams();
+    let amendment;
+    if (aSub === "effect") {
+      amendment = permits.determineAmendmentInspectionEffect(user2, amendmentId, {
+        effect: String(p.effect ?? ""),
+        effectBasis: String(p.effectBasis ?? ""),
+        reason: p.reason ? String(p.reason) : null,
+      });
+    } else {
+      amendment = permits.updatePermitAmendment(user2, amendmentId, {
+        status: p.status !== undefined ? String(p.status) : undefined,
+        resolvedAt: p.resolvedAt !== undefined ? (p.resolvedAt ? String(p.resolvedAt) : null) : undefined,
+        notes: p.notes !== undefined ? (p.notes ? String(p.notes) : null) : undefined,
+        reason: p.reason ? String(p.reason) : null,
+      });
+    }
+    try { drawReadinessSvc.recordReadinessTransitionsForPermit(amendment.permitId, user2.id); } catch { /* advisory */ }
+    sendJson(res, { amendment });
+    return;
+  }
+
+  const permitActionMatch = /^\/api\/permits\/([^/]+)(?:\/(code-basis|links|amendments))?$/.exec(pathname);
   if (permitActionMatch && (method === "GET" || method === "POST")) {
     const user2 = currentUser(req);
     if (!user2) {
@@ -4462,11 +4495,24 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         effectiveStatus: permits.effectiveStatus(permit),
         links: repo.listPermitLinksForPermit(permitId),
         officialSources: repo.listOfficialSourcesForPermit(permitId),
+        amendments: repo.listPermitAmendmentsForPermit(permitId),
       });
       return;
     }
     if (method === "POST") {
       const p = await gateParams();
+      if (sub === "amendments") {
+        const amendment = permits.recordPermitAmendment(user2, permitId, {
+          amendmentReference: String(p.amendmentReference ?? ""),
+          description: p.description ? String(p.description) : null,
+          status: p.status ? String(p.status) : null,
+          submittedAt: p.submittedAt ? String(p.submittedAt) : null,
+          notes: p.notes ? String(p.notes) : null,
+        });
+        try { drawReadinessSvc.recordReadinessTransitionsForPermit(permitId, user2.id); } catch { /* advisory */ }
+        sendJson(res, { amendment }, 201);
+        return;
+      }
       if (sub === "code-basis") {
         const permit = permits.recordCodeBasis(user2, permitId, {
           applicableCodeEdition: String(p.applicableCodeEdition ?? ""),

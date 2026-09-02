@@ -306,20 +306,78 @@ clears).
 - `line_inspection_requirements.external_identifier` carries the
   jurisdiction's record key for future reconciliation.
 
-## Smallest future extension — permit amendments (not built)
+## Permit amendments (built — jurisdiction-neutral)
 
-The August 2026 Fairfax use case (physical work complete and verified while
-a permit **amendment** is pending, making the required jurisdictional
-inspection unavailable) is representable today only indirectly: the permit's
-`status` (e.g. not ACTIVE, where configuration gates it) or a REQUIRED
-inspection with no passed result — both already block draw review, and the
-readiness doctrine (physical strength never outruns the jurisdictional
-surface) is pinned by regression in `scripts/draw-review-ui-test.js` (SC.9).
+The August 2026 pilot use case — physical work complete and verified, every
+requested dollar supportable, the permit otherwise valid, yet the required
+jurisdictional inspection cannot proceed while a permit **amendment** is
+open — is now a first-class governed record: one `permit_amendments` table
+under the existing permit register, exactly the smallest extension this
+document previously reserved.
 
-What is NOT representable is the amendment itself as a governed record. The
-smallest extension, when a pilot lender needs it: one `permit_amendments`
-table under the existing permit (status lifecycle APPLIED → ISSUED/DENIED,
-scope description, official-source reference, reviewed-by attribution) plus
-one gate reason ("permit amendment pending") wired through the existing
-`completionGates` reason model — no new engine, no per-jurisdiction code.
-Do not build it speculatively.
+**What the record answers.** Which permit; the jurisdiction's own recorded
+amendment lifecycle (`PENDING / APPROVED / REJECTED / WITHDRAWN / UNKNOWN`,
+with submitted/resolved dates); and — SEPARATELY — whether the authority's
+determination says required inspections cannot be scheduled while it stands
+(`inspectionSchedulingEffect: BLOCKED / ALLOWED / UNKNOWN`, with a required
+`effectBasis` and reviewer attribution). The two are never inferred from
+each other: **OBV does not conclude law from the word "pending"** — a
+lender-side reviewer records what the jurisdiction actually determined.
+
+**Purpose and limitations.** The model exists to make one honest readiness
+statement — "the recorded jurisdictional determination says the required
+inspection cannot be scheduled while this amendment remains open" — and its
+unknown-information counterpart. It is deliberately jurisdiction-neutral:
+no authority-specific fields, no county branches, no effective-date rules
+engine (Fairfax / Montgomery / Prince George's remain validation examples,
+never code paths). It performs no lookups, contacts no portal, and never
+touches inspection records: resolving an amendment clears only the
+amendment reasons, and the required inspection remains its own governed
+record with its own result lifecycle.
+
+**Readiness semantics** (through the existing `completionGates` reason
+model; no new engine):
+
+- open amendment + gated REQUIRED inspection not yet passed + recorded
+  effect `BLOCKED` → `PERMIT_AMENDMENT_BLOCKS_INSPECTION`, a KNOWN
+  condition: **HOLD**, the deterministic primary blocker, next action
+  "Resolve the permit amendment, then complete the required inspection";
+- same shape with the effect **not determined** →
+  `AMENDMENT_INSPECTION_EFFECT_UNKNOWN`, missing information:
+  **INCOMPLETE**-side, never exception-eligible;
+- effect `ALLOWED`, or amendment resolved, or inspection already PASSED →
+  no amendment reason; the inspection gates carry the rest.
+
+**Lifecycle contract** (enforced centrally by the governed service; a
+contradictory shape cannot be persisted):
+
+- OPEN (`PENDING`, `UNKNOWN`) ⇒ `resolvedAt` is null; TERMINAL
+  (`APPROVED / REJECTED / WITHDRAWN`) ⇒ `resolvedAt` is recorded.
+- An amendment is always **created OPEN** — a terminal state is reached
+  only through the governed lifecycle update, which records the
+  resolution. Reopening (terminal → open) is refused: a resolved
+  amendment is closed history; a new jurisdictional action is a new
+  amendment record.
+- `resolvedAt` is historical time: correcting it alone is a governed
+  change (post-launch reason required) and is always audited. Every
+  actual mutation — status, resolution time, or notes — writes its own
+  audit entry (note content stays out of summaries); a true no-op writes
+  nothing, `updatedAt` included.
+
+Historical truth is untouched: amendment changes rewrite no
+`READINESS_TRANSITION`, no decision-time snapshot, and no audit row. Each
+mutation writes its own **immutable** `config_audit` record with the
+amendment itself as the governed subject (`entityType PERMIT_AMENDMENT`),
+carrying the actual actor, timestamp, and before/after states — and the
+governed timeline narrates amendment history **from those immutable
+records only**, never from the current mutable row. The audit actions are
+semantically explicit so presentation classifies each change from the
+record itself: `PERMIT_AMENDMENT_RECORDED`, `AMENDMENT_EFFECT_DETERMINED`,
+`PERMIT_AMENDMENT_RESOLVED` (open → terminal, a status change),
+`PERMIT_AMENDMENT_UPDATED` (any other real status change),
+`PERMIT_AMENDMENT_RESOLUTION_TIME_CORRECTED` (status unchanged — the
+corrected fact is the resolution time, both times preserved), and
+`PERMIT_AMENDMENT_NOTES_UPDATED` (notes only — never presented as a
+status change, note content never repeated). A later change can never rewrite what an earlier
+event says: the creation event keeps its recorded initial status, and
+every effect redetermination remains beside the one it superseded.

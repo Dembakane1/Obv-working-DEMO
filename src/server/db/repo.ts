@@ -748,7 +748,7 @@ import type {
   RetainagePolicy, RetainageReleaseRequest, RetainageCondition, RetainageEvent,
   AuditPackage,
   InspectionRequirement, JurisdictionalInspection,
-  Permit, PermitMilestoneLink, OfficialSourceRecord,
+  Permit, PermitAmendment, PermitMilestoneLink, OfficialSourceRecord,
 } from "../../shared/types";
 
 function toReport(r: Row): Report {
@@ -3638,6 +3638,86 @@ export function listPermitLinksForProject(projectId: string): PermitMilestoneLin
        WHERE p.project_id = ? ORDER BY pml.created_at`
     )
     .all(projectId) as Row[]).map(toPermitLink);
+}
+
+// ================================================== permit amendments
+
+function toPermitAmendment(r: Row): PermitAmendment {
+  return {
+    id: r.id as string,
+    organizationId: r.organization_id as string,
+    projectId: r.project_id as string,
+    permitId: r.permit_id as string,
+    amendmentReference: r.amendment_reference as string,
+    description: (r.description as string) ?? null,
+    status: r.status as PermitAmendment["status"],
+    submittedAt: (r.submitted_at as string) ?? null,
+    resolvedAt: (r.resolved_at as string) ?? null,
+    inspectionSchedulingEffect: r.inspection_scheduling_effect as PermitAmendment["inspectionSchedulingEffect"],
+    effectBasis: (r.effect_basis as string) ?? null,
+    effectDeterminedBy: (r.effect_determined_by as string) ?? null,
+    effectDeterminedAt: (r.effect_determined_at as string) ?? null,
+    recordedByUserId: r.recorded_by_user_id as string,
+    notes: (r.notes as string) ?? null,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export function insertPermitAmendment(a: PermitAmendment): void {
+  getDb()
+    .prepare(
+      `INSERT INTO permit_amendments (id, organization_id, project_id, permit_id,
+         amendment_reference, description, status, submitted_at, resolved_at,
+         inspection_scheduling_effect, effect_basis, effect_determined_by,
+         effect_determined_at, recorded_by_user_id, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      a.id, a.organizationId, a.projectId, a.permitId, a.amendmentReference,
+      a.description, a.status, a.submittedAt, a.resolvedAt,
+      a.inspectionSchedulingEffect, a.effectBasis, a.effectDeterminedBy,
+      a.effectDeterminedAt, a.recordedByUserId, a.notes, a.createdAt, a.updatedAt
+    );
+}
+
+export function updatePermitAmendment(
+  id: string,
+  patch: Partial<Omit<PermitAmendment, "id" | "organizationId" | "projectId" | "permitId" | "recordedByUserId" | "createdAt">>
+): void {
+  const cur = getPermitAmendment(id);
+  if (!cur) return;
+  const next = { ...cur, ...patch, updatedAt: new Date().toISOString() };
+  getDb()
+    .prepare(
+      `UPDATE permit_amendments SET amendment_reference = ?, description = ?, status = ?,
+         submitted_at = ?, resolved_at = ?, inspection_scheduling_effect = ?,
+         effect_basis = ?, effect_determined_by = ?, effect_determined_at = ?,
+         notes = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      next.amendmentReference, next.description, next.status, next.submittedAt,
+      next.resolvedAt, next.inspectionSchedulingEffect, next.effectBasis,
+      next.effectDeterminedBy, next.effectDeterminedAt, next.notes, next.updatedAt, id
+    );
+}
+
+export function getPermitAmendment(id: string): PermitAmendment | null {
+  const r = getDb().prepare("SELECT * FROM permit_amendments WHERE id = ?").get(id) as Row | undefined;
+  return r ? toPermitAmendment(r) : null;
+}
+
+export function listPermitAmendmentsForPermit(permitId: string): PermitAmendment[] {
+  return (getDb()
+    .prepare("SELECT * FROM permit_amendments WHERE permit_id = ? ORDER BY created_at")
+    .all(permitId) as Row[]).map(toPermitAmendment);
+}
+
+export function listPermitAmendmentsForProject(projectId: string): PermitAmendment[] {
+  return (getDb()
+    .prepare("SELECT * FROM permit_amendments WHERE project_id = ? ORDER BY created_at")
+    .all(projectId) as Row[]).map(toPermitAmendment);
 }
 
 // ================================================ official source records

@@ -732,6 +732,125 @@ function readZip(buf) {
       "permit and gate services have no route to VirtualAccountService or financial mutations"
     );
 
+    // ============ permit amendments — the governed service contract ====
+    console.log("\n== permit amendments ==");
+    const pAm = (await j("funder", "POST", "/api/projects/proj-r47/permits", {
+      permitNumber: "AMD-1", permitType: "BUILDING", status: "ACTIVE",
+    })).permit;
+    const am1 = (await j("funder", "POST", `/api/permits/${pAm.id}/amendments`, {
+      amendmentReference: "REV-2026-07", description: "Scope revision (fixture)", submittedAt: "2026-08-20",
+    })).amendment;
+    assert(am1.status === "PENDING" && am1.inspectionSchedulingEffect === "UNKNOWN",
+      "recording an amendment defaults PENDING with effect UNKNOWN — the effect is never inferred");
+    const dupAm = await api("funder", "POST", `/api/permits/${pAm.id}/amendments`, { amendmentReference: "REV-2026-07" });
+    assert(dupAm.status === 409, "a duplicate amendment reference on the same permit is 409");
+    const noBasis = await api("funder", "POST", `/api/permit-amendments/${am1.id}/effect`, { effect: "BLOCKED" });
+    assert(noBasis.status === 400, "an effect determination without a basis is refused — determinations are attributable");
+    const badEffect = await api("funder", "POST", `/api/permit-amendments/${am1.id}/effect`, { effect: "MAYBE", effectBasis: "x" });
+    assert(badEffect.status === 400, "an unknown effect value is refused");
+    const det = (await j("funder", "POST", `/api/permit-amendments/${am1.id}/effect`, {
+      effect: "BLOCKED", effectBasis: "Recorded jurisdictional determination (fixture).",
+    })).amendment;
+    assert(det.inspectionSchedulingEffect === "BLOCKED" && det.effectBasis !== null &&
+      det.effectDeterminedBy !== null && det.effectDeterminedAt !== null,
+      "the determination records effect, basis and attribution");
+    const pmEffect = await api("pm", "POST", `/api/permit-amendments/${am1.id}/effect`, { effect: "ALLOWED", effectBasis: "pm attempt" });
+    assert(pmEffect.status === 403, "a project manager cannot determine the scheduling effect (lender-side)");
+    const pmFormalAm = await api("pm", "POST", `/api/permits/${pAm.id}/amendments`, { amendmentReference: "REV-X", status: "APPROVED" });
+    assert(pmFormalAm.status === 403, "a project manager may record PENDING amendments only");
+    const foreignAm = await api("outsider", "POST", `/api/permits/${pAm.id}/amendments`, { amendmentReference: "REV-F" });
+    assert(foreignAm.status === 404, "a foreign tenant recording an amendment gets the same 404");
+    const terminalCreate = await api("funder", "POST", `/api/permits/${pAm.id}/amendments`, {
+      amendmentReference: "REV-T", status: "APPROVED",
+    });
+    assert(terminalCreate.status === 400,
+      "an amendment cannot be CREATED terminal — APPROVED with no honest resolution history is impossible");
+    const resolved = (await j("funder", "POST", `/api/permit-amendments/${am1.id}`, {
+      status: "APPROVED", reason: "County approved the revision (fixture).",
+    })).amendment;
+    assert(resolved.status === "APPROVED" && resolved.resolvedAt !== null,
+      "resolving an amendment records the resolution timestamp");
+    assert(resolved.inspectionSchedulingEffect === "BLOCKED" && resolved.effectBasis !== null,
+      "resolution preserves the recorded determination history — nothing is erased");
+    // The amendment is the governed subject of its own immutable history.
+    const amAudit = q1(
+      "SELECT COUNT(*) c FROM config_audit WHERE entity_type = 'PERMIT_AMENDMENT' AND entity_id = ? AND action IN ('PERMIT_AMENDMENT_RECORDED','AMENDMENT_EFFECT_DETERMINED','PERMIT_AMENDMENT_RESOLVED')",
+      am1.id
+    );
+    assert(Number(amAudit.c) === 3,
+      "every amendment mutation writes its own audit entry with the AMENDMENT as the entity");
+    const resAudit = q1(
+      "SELECT before_summary b, after_summary a FROM config_audit WHERE entity_id = ? AND action = 'PERMIT_AMENDMENT_RESOLVED'",
+      am1.id
+    );
+    assert(/PENDING/.test(resAudit.b) && /APPROVED/.test(resAudit.a),
+      "the immutable resolution record carries the REAL before/after states");
+    // ---- lifecycle invariants: contradictory shapes cannot persist ----
+    const reopen = await api("funder", "POST", `/api/permit-amendments/${am1.id}`, {
+      status: "PENDING", reason: "attempted reopen (fixture)",
+    });
+    assert(reopen.status === 409,
+      "terminal → open is refused 409 — a resolved amendment is closed history, not reopenable");
+    const silentTime = await api("funder", "POST", `/api/permit-amendments/${am1.id}`, {
+      resolvedAt: "2026-08-01",
+    });
+    assert(silentTime.status === 400,
+      "a resolvedAt-only change without a reason is refused — historical time is never silently rewritten");
+    const beforeCorrection = q1("SELECT resolved_at r FROM permit_amendments WHERE id = ?", am1.id).r;
+    const amCorrected = (await j("funder", "POST", `/api/permit-amendments/${am1.id}`, {
+      resolvedAt: "2026-08-01", reason: "Correcting the recorded county resolution date (fixture).",
+    })).amendment;
+    assert(amCorrected.resolvedAt !== beforeCorrection && amCorrected.status === "APPROVED",
+      "a reasoned resolvedAt correction is a governed change");
+    const corrAudit = q1(
+      "SELECT before_summary b, after_summary a FROM config_audit WHERE entity_id = ? AND action = 'PERMIT_AMENDMENT_RESOLUTION_TIME_CORRECTED'",
+      am1.id
+    );
+    assert(corrAudit && /resolved/.test(corrAudit.b) && /2026-08-01/.test(corrAudit.a),
+      "the correction wrote its own RESOLUTION_TIME_CORRECTED entry preserving both times — never labeled a status change");
+    const am2 = (await j("funder", "POST", `/api/permits/${pAm.id}/amendments`, {
+      amendmentReference: "REV-2026-08",
+    })).amendment;
+    const openTime = await api("funder", "POST", `/api/permit-amendments/${am2.id}`, {
+      resolvedAt: "2026-08-30", reason: "fixture",
+    });
+    assert(openTime.status === 400,
+      "an OPEN amendment cannot carry a resolution time — the shape invariant holds");
+    // ---- notes are operational but still audited; no-ops write nothing ----
+    const notesRow = (await j("funder", "POST", `/api/permit-amendments/${am2.id}`, {
+      notes: "County clerk confirmed receipt (fixture).",
+    })).amendment;
+    assert(notesRow.notes !== null, "a notes-only update persists the notes");
+    const notesAudit = q1(
+      "SELECT after_summary a FROM config_audit WHERE entity_id = ? AND action = 'PERMIT_AMENDMENT_NOTES_UPDATED'", am2.id
+    );
+    assert(notesAudit && /notes updated/.test(notesAudit.a) && !/clerk/.test(notesAudit.a),
+      "the notes change is audited under its own NOTES_UPDATED action without repeating note content");
+    const rowBeforeNoop = JSON.stringify(q1("SELECT * FROM permit_amendments WHERE id = ?", am2.id));
+    await j("funder", "POST", `/api/permit-amendments/${am2.id}`, {});
+    assert(JSON.stringify(q1("SELECT * FROM permit_amendments WHERE id = ?", am2.id)) === rowBeforeNoop,
+      "a true no-op update leaves the stored row byte-identical — updatedAt included");
+    // ---- non-PENDING prior state: UNKNOWN → WITHDRAWN ----
+    const am3 = (await j("funder", "POST", `/api/permits/${pAm.id}/amendments`, {
+      amendmentReference: "REV-2026-09", status: "UNKNOWN",
+    })).amendment;
+    assert(am3.status === "UNKNOWN" && am3.resolvedAt === null,
+      "a lender may record an amendment whose jurisdictional state is UNKNOWN — open, unresolved");
+    await j("funder", "POST", `/api/permit-amendments/${am3.id}`, {
+      status: "WITHDRAWN", reason: "Applicant withdrew the amendment (fixture).",
+    });
+    const wAudit = q1(
+      "SELECT before_summary b, after_summary a FROM config_audit WHERE entity_id = ? AND action = 'PERMIT_AMENDMENT_RESOLVED'",
+      am3.id
+    );
+    assert(/UNKNOWN/.test(wAudit.b) && /WITHDRAWN/.test(wAudit.a),
+      "a non-PENDING transition records its REAL prior state — never a hard-coded PENDING");
+    const detail = await j("funder", "GET", `/api/permits/${pAm.id}`);
+    assert(Array.isArray(detail.amendments) && detail.amendments.length === 3,
+      "the permit detail read lists its amendments");
+    const foreignRead = await api("outsider", "POST", `/api/permit-amendments/${am1.id}`, { notes: "x" });
+    assert(foreignRead.status === 404, "a foreign tenant cannot touch the amendment (same 404)");
+
     console.log(`\nPERMIT / CODE-BASIS / REINSPECTION TESTS PASSED — ${n} checkpoints.`);
   } finally {
     srv.kill();

@@ -979,6 +979,37 @@ CREATE TABLE IF NOT EXISTS permit_milestone_links (
   UNIQUE (permit_id, milestone_id)
 );
 
+-- Permit amendments/revisions under the existing permit register.
+-- Jurisdiction-neutral: the AMENDMENT STATUS (the jurisdiction's own
+-- lifecycle) and the INSPECTION SCHEDULING EFFECT (whether required
+-- inspections can be scheduled while it stands) are SEPARATE recorded
+-- facts — the effect is a reviewed jurisdictional determination with a
+-- basis and attribution, never inferred from the word "pending". OBV
+-- records determinations; it does not interpret law.
+CREATE TABLE IF NOT EXISTS permit_amendments (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  permit_id TEXT NOT NULL REFERENCES permits(id),
+  amendment_reference TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN
+    ('PENDING','APPROVED','REJECTED','WITHDRAWN','UNKNOWN')),
+  submitted_at TEXT,
+  resolved_at TEXT,
+  inspection_scheduling_effect TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK
+    (inspection_scheduling_effect IN ('BLOCKED','ALLOWED','UNKNOWN')),
+  effect_basis TEXT,
+  effect_determined_by TEXT REFERENCES users(id),
+  effect_determined_at TEXT,
+  recorded_by_user_id TEXT NOT NULL REFERENCES users(id),
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (permit_id, amendment_reference)
+);
+CREATE INDEX IF NOT EXISTS idx_permit_amendments_permit ON permit_amendments(permit_id, created_at);
+
 -- Official-source provenance. Supports reviewed results; never creates
 -- them. The official system's status text is preserved verbatim,
 -- separate from OBV's normalized statuses.
