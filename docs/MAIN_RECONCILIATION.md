@@ -358,9 +358,12 @@ both became STRONGER.
 
 Unchanged by this milestone and deliberately NOT claimed fixed:
 
-1. **Production email delivery** — sign-in/invitation links use the
-   file outbox (`OBV_AUTH_LINK_DELIVERY=file`) or off; no SMTP/provider
-   integration exists.
+1. **Production email delivery** — RESOLVED after this document was
+   written: `OBV_AUTH_LINK_DELIVERY=email` with the live Postmark adapter
+   (`OBV_EMAIL_PROVIDER=postmark`) delivers sign-in and invitation links;
+   see `docs/EXTERNAL_PILOT_READINESS.md` and
+   `docs/FIRST_LENDER_RUNBOOK.md`. (Original text: links used the file
+   outbox or off; no provider integration existed.)
 2. **Per-user notification routing** — integrations deliver to
    configured seams (Teams webhook, outbox), not per-user channels.
 3. **Persistent storage on the demo host** — the free-plan disk is

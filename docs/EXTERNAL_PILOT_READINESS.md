@@ -39,7 +39,7 @@ whole configuration.
 | Backups | **READY** (was **NEEDS_IMPLEMENTATION**) | `VACUUM INTO` snapshots with provenance records (env, size, sha256, source schema version, deploy commit, retention metadata); manual audited route + `npm run backup` for schedulers; read-only verification; tamper detection; automated restore drill (`backup-restore-test.js`); NO in-app restore by design. |
 | Health checks | **READY** (was liveness-only) | `/api/health` = liveness; `/api/ready` = readiness (terse pass/fail); `/api/ops/status` = authenticated operator detail (storage, db safety, email/webhook queues, backup freshness, routing records). |
 | Logging / supportability | **READY** | X-Request-Id correlation on every response, stamped into error logs, quoted in generic 500s. Operator status view exposes sanitized failure classes only. Severity levels: docs/FIRST_LENDER_RUNBOOK.md. |
-| Deployments | **NEEDS_CONFIGURATION** | render.yaml carries a commented obv-pilot service (paid disk, pilot env, readiness health check, dashboard-entered secrets). Deployment has NOT been executed from this environment — the runbook's provisioning steps and `pilot:check` remain to be run on the real host. |
+| Deployments | **NEEDS_CONFIGURATION** | render.yaml carries a commented obv-pilot service (paid disk, `numInstances: 1`, pilot env, readiness health check, dashboard-entered secrets, mock banking stated explicitly). The runtime image ships the operator commands the runbook runs in the container (`npm run pilot:check`, `npm run backup`, the restore drill) and never runs the demo seed in pilot/production posture. Deployment has NOT been executed from this environment — the runbook's provisioning steps and `pilot:check` remain to be run on the real host. |
 
 ## Remaining blockers before a real external lender
 
@@ -48,9 +48,18 @@ whole configuration.
    verified from the development environment and is honestly NOT claimed
    done.
 2. **Postmark account**: server token + verified sender signature.
-3. **Operational cadence**: schedule `npm run backup` (external
-   scheduler) and check `/api/ops/status` backup freshness.
+3. **Operational cadence**: schedule `npm run backup` INSIDE the pilot
+   service (an external scheduler over Render SSH, or the dashboard Shell
+   daily — a Render Cron Job is a separate service that cannot mount the
+   pilot's disk) and check `/api/ops/status` backup freshness. The
+   sequence is deploy → initialize → `npm run backup` →
+   `npm run pilot:check` → READY (docs/FIRST_LENDER_RUNBOOK.md §2).
 4. Everything else in the definition of done is implemented and covered
-   by `pilot-production-test.js` (41 checkpoints), `pilot-acceptance-test.js`
+   by `pilot-production-test.js` (53 checkpoints, including the
+   fully-configured READY verdict, demo-fixture detection, the optional
+   access gate in pilot posture and public-URL sign-in links),
+   `pilot-acceptance-test.js`
    (32 checkpoints — the full first-lender lifecycle with no demo
-   shortcuts) and `backup-restore-test.js` (14 checkpoints).
+   shortcuts) and `backup-restore-test.js` (16 checkpoints; self-contained
+   so it runs inside the pilot container without inheriting its posture
+   or touching the live backup directory).

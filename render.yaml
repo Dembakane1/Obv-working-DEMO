@@ -68,9 +68,12 @@ services:
   #   name: obv-pilot
   #   runtime: docker
   #   plan: starter               # any PAID plan — required for the disk
+  #   numInstances: 1             # ONE writer. SQLite on one disk: never scale this service.
+  #   autoDeploy: false           # the pilot deploys ONLY via Manual Deploy, never on every push to main
   #   branch: main
   #   dockerfilePath: ./Dockerfile
-  #   healthCheckPath: /api/ready # readiness, not liveness: deploys gate on it
+  #   healthCheckPath: /api/ready # readiness, not liveness: deploys gate on it (configuration valid);
+  #                               # `npm run pilot:check` gates TRAFFIC (posture, delivery, backups)
   #   disk:
   #     name: obv-pilot-data
   #     mountPath: /var/data
@@ -79,20 +82,26 @@ services:
   #     - key: OBV_ENVIRONMENT
   #       value: pilot            # disables every demo surface at startup
   #     - key: OBV_DATA_DIR
-  #       value: /var/data
+  #       value: /var/data        # must equal disk.mountPath
   #     - key: OBV_SESSION_SECRET
-  #       generateValue: true
+  #       generateValue: true     # required at boot (refusal without it); minted once, kept stable
   #     - key: OBV_AUTH_LINK_DELIVERY
-  #       value: email
+  #       value: email            # real magic-link delivery (no outbox fallback)
   #     - key: OBV_EMAIL_PROVIDER
   #       value: postmark
   #     - key: OBV_INTEGRATIONS_PRODUCTION_ENABLE
-  #       value: "true"
+  #       value: "true"           # second explicit consent for a live vendor
   #     - key: OBV_POSTMARK_SERVER_TOKEN
   #       sync: false             # entered in the dashboard, never committed
   #     - key: OBV_EMAIL_FROM
   #       sync: false             # verified Postmark sender signature
   #     - key: OBV_BOOTSTRAP_ADMIN_EMAIL
   #       sync: false             # the OBV operator's real address
+  #     - key: OBV_BOOTSTRAP_ORG_NAME
+  #       sync: false             # optional; default "OBV Operations"
   #     - key: OBV_PUBLIC_BASE_URL
-  #       sync: false             # e.g. https://obv-pilot.onrender.com
+  #       sync: false             # e.g. https://obv-pilot.onrender.com (custom domain → set it)
+  #     - key: OBV_BANKING_PROVIDER
+  #       value: mock             # the default, stated explicitly: no real money moves through OBV
+  #     - key: OBV_ACCESS_CODE
+  #       sync: false             # OPTIONAL defense-in-depth; leave empty. Identity is the access boundary.

@@ -39,7 +39,7 @@ reproductions are preserved unchanged below each status.
 
 ## P-02 · Unauthenticated public homepage exposes pilot project data — HIGH
 
-**Status: FIXED** — in pilot/production posture `/` never queries `homeSnapshot()`: the marketing page renders a tenant-safe generic preview ("Illustrative product preview — no live project data") and every CTA routes to `/signin`. Demo posture keeps the seeded demonstration snapshot. `OBV_ACCESS_CODE` remains a temporary operational defense-in-depth, no longer the only boundary.
+**Status: FIXED** — in pilot/production posture `/` never queries `homeSnapshot()`: the marketing page renders a tenant-safe generic preview ("Illustrative product preview — no live project data") and every CTA routes to `/signin`. Demo posture keeps the seeded demonstration snapshot. `OBV_ACCESS_CODE` is therefore OPTIONAL for the pilot — defense-in-depth only, never the user-access boundary (production identity is); the "mandatory" operational condition below applied only while this finding was open. One source of truth: `docs/FIRST_LENDER_RUNBOOK.md`, "Environment matrix".
 
 - **Step:** public `/` of a pilot deployment.
 - **Observed:** the homepage renders the largest ACTIVE project's real
@@ -194,7 +194,10 @@ reproductions are preserved unchanged below each status.
 
 ## P-10 · pilot:check email-reachability WARN prints a raw config error — LOW
 
-**Status: OPEN** — cosmetic checker copy, unchanged in this pass.
+**Status: FIXED** (external pilot deployment enablement) — the probe now
+runs only when the resolved provider is Postmark; with any other provider
+the control reads "not applicable — resolved provider is outbox, not a
+live provider" (the `email provider` FAIL above it names the real problem).
 
 - **Observed:** with the outbox provider active, the WARN line prints a
   truncated internal refusal string ("provider endpoint not reachable from
@@ -204,6 +207,24 @@ reproductions are preserved unchanged below each status.
 - **Recommended:** clearer message when the resolved provider is the
   outbox.
 - **Requires code:** yes (cosmetic).
+
+## P-11 · Unauthenticated API calls answer "Select a demo user first" in pilot posture — LOW
+
+**Status: OPEN** — found by the external-pilot deployment audit; not
+changed in that (operations-only) pass.
+
+- **Step:** any unauthenticated `/api/*` call on a pilot deployment.
+- **Observed:** the 401 body reads "Select a demo user first" — demo
+  vocabulary in a deployment whose demo switcher answers 404. The string
+  is repeated at ~60 call sites in `src/server/http/server.ts` and a few
+  services, so it is a sweep, not a one-line fix.
+- **Impact:** cosmetic (no security impact; browsers never render this
+  body — page GETs redirect to `/signin`). API clients and support
+  transcripts see the demo wording.
+- **Recommended:** one posture-aware helper ("Sign in first" when the
+  demo switcher is disabled) applied across the call sites, with a
+  regression that greps the pilot server's 401 bodies.
+- **Requires code:** yes (cosmetic sweep).
 
 ---
 

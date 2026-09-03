@@ -8,12 +8,16 @@ govern everything here:
 1. **Integrations observe the system of record; they never author it.**
    No integration writes to evidence, verification, ledger, approval,
    banking, or package tables (statically asserted by the test battery).
-2. **External vendor adapters are disabled boundaries.** They exist so a
-   production deployment configures credentials in exactly one place, but
-   in this build every vendor call refuses. Selecting a vendor requires
-   both the provider env var and `OBV_INTEGRATIONS_PRODUCTION_ENABLE=true`
-   (the banking registry's double-consent pattern) — and startup refuses
-   otherwise.
+2. **External vendor adapters are disabled boundaries — with one live
+   exception.** Postmark (`OBV_EMAIL_PROVIDER=postmark`) is the pilot's
+   live transactional email adapter: it sends real mail, validates its
+   token and sender at startup, redacts credential-bearing bodies at
+   rest and never falls back to the outbox. Every other vendor adapter
+   exists so a production deployment configures credentials in exactly
+   one place, but refuses every call in this build. Selecting any vendor
+   requires both the provider env var and
+   `OBV_INTEGRATIONS_PRODUCTION_ENABLE=true` (the banking registry's
+   double-consent pattern) — and startup refuses otherwise.
 
 ## Architecture
 
@@ -161,19 +165,25 @@ FIELD is refused, tenants are isolated with same-404.
 | `OBV_ESIGN_PROVIDER` | `internal` | internal · docusign · dropbox_sign · adobe_sign |
 | `OBV_ACCOUNTING_PROVIDER` | `csv` | csv · quickbooks · xero · sage |
 | `OBV_INTEGRATIONS_PRODUCTION_ENABLE` | unset | Required `true` before any vendor provider may even be selected |
+| `OBV_POSTMARK_SERVER_TOKEN` | unset | Postmark server API token (secret, env-only); required at startup when the provider is `postmark` |
+| `OBV_EMAIL_FROM` | unset | Verified Postmark sender signature; required with `postmark` |
+| `OBV_POSTMARK_MESSAGE_STREAM` | `outbound` | Postmark transactional message stream |
+| `OBV_EMAIL_TIMEOUT_MS` | 10000 | Provider request timeout |
+| `OBV_PILOT_NOTIFY_EMAIL` | unset in pilot/production (demo alias only) | Optional ops mailbox copied on every governed-event notification |
 | `OBV_WEBHOOK_MAX_ATTEMPTS` | 5 | Attempts before dead-letter |
 | `OBV_WEBHOOK_DISPATCH_INTERVAL_MS` | 0 (off) | Optional periodic dispatch |
 
-No credentials exist in this build; `.env.example` documents names only.
+No credentials are committed; `.env.example` documents names only.
 
 ## Known limitations
 
-- Vendor adapters are deliberate refusal boundaries — production use
-  requires implementing each adapter body against real credentials.
-- Draw/dispute/inspection webhook + email emission points are not yet
-  wired into the governed workflows (kept untouched this milestone);
-  e-sign and calendar events emit today, and the payload builders for
-  everything else are ready and tested.
+- Apart from Postmark, vendor adapters are deliberate refusal boundaries —
+  production use requires implementing each adapter body against real
+  credentials.
+- Governed-event email fan-out (draw submitted / released / decided,
+  exceptions, disputes, inspection attention) is wired through
+  `services/pilot/notify.ts` with deterministic tenant-scoped recipient
+  routing; e-sign and calendar events emit as before.
 - Accounting synchronization is one-way by design; an import path is a
   policy decision deliberately not taken.
 - Webhook dispatch is single-process; a multi-instance deployment would

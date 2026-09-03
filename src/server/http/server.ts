@@ -254,10 +254,13 @@ import type { EvidenceSubmission, FieldIssue, Report, User } from "../../shared/
 const PORT = Number(process.env.PORT ?? 3000);
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 
-// Optional deployment-level access protection. When OBV_ACCESS_CODE is set,
-// pages and APIs require a one-time code entry (cookie stores a hash of the
-// code, never the code itself). /api/health stays open for platform health
-// checks and /report-cache keeps its own single-use token gate. Static
+// OPTIONAL deployment-level access protection (defense-in-depth, never the
+// user-access boundary — production identity is). When OBV_ACCESS_CODE is
+// set, pages and APIs require a one-time code entry (cookie stores a hash
+// of the code, never the code itself). /api/health and /api/ready stay open
+// for platform health checks (both are answered before the gate), the
+// sign-in / magic-link / invitation routes carry their own one-time secret
+// tokens, and /report-cache keeps its own single-use token gate. Static
 // assets are served before the gate (demo assets only — nothing sensitive).
 const ACCESS_CODE = process.env.OBV_ACCESS_CODE ?? "";
 const ACCESS_COOKIE_VALUE = ACCESS_CODE
@@ -1323,6 +1326,13 @@ function money(amount: number): string {
  * Self-contained (inline styles) so it renders even before any asset loads.
  */
 function renderAccessGate(failed: boolean): string {
+  // Posture-aware copy: a lender on a pilot deployment must never be told
+  // they are in a demo (the same rule every other surface follows).
+  const production = productionPosture();
+  const environmentLabel = production ? "Restricted environment" : "Demo environment";
+  const explanation = production
+    ? "This deployment is protected by an access code in addition to your sign-in. Ask your OBV operator for it."
+    : "This demo deployment is protected by an access code. Ask the person who shared the link.";
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -1331,9 +1341,9 @@ function renderAccessGate(failed: boolean): string {
 </head>
 <body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#F7F8FA;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0d1626">
 <form method="POST" action="/api/access" style="width:min(340px,88vw);border:1px solid #d9d6cd;background:#fff;padding:28px 26px 26px">
-  <div style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#5b6b7f;margin-bottom:6px">OpenBuild Verify · Demo environment</div>
+  <div style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#5b6b7f;margin-bottom:6px">OpenBuild Verify · ${environmentLabel}</div>
   <div style="font-size:19px;font-weight:600;letter-spacing:-.01em;margin-bottom:14px">Enter access code</div>
-  <p style="font-size:12.5px;line-height:1.5;color:#3c4657;margin:0 0 16px">This demo deployment is protected by an access code. Ask the person who shared the link.</p>
+  <p style="font-size:12.5px;line-height:1.5;color:#3c4657;margin:0 0 16px">${explanation}</p>
   ${failed ? `<p style="font-size:12.5px;color:#a03123;margin:0 0 10px">Incorrect code — try again.</p>` : ""}
   <input name="code" type="password" autocomplete="off" autofocus required
     style="width:100%;box-sizing:border-box;height:40px;border:1px solid #b9b5a9;background:#fbfaf7;padding:0 10px;font-size:15px;margin-bottom:12px">
@@ -1541,9 +1551,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const body = (await readBody(req, 4 * 1024)).toString("utf8");
       const code = new URLSearchParams(body).get("code") ?? "";
       if (safeEqual(code, ACCESS_CODE)) {
+        // Secure over HTTPS, like every identity/session cookie — the gate
+        // must not be the one cookie a downgraded connection could carry.
         res.setHeader(
           "Set-Cookie",
-          `obv_access=${ACCESS_COOKIE_VALUE}; Path=/; SameSite=Lax; HttpOnly; Max-Age=604800`
+          `obv_access=${ACCESS_COOKIE_VALUE}; Path=/; SameSite=Lax; HttpOnly; Max-Age=604800` +
+            `${requestIsSecure(req) ? "; Secure" : ""}`
         );
         redirect(res, "/");
       } else {
@@ -3069,7 +3082,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sendJson: (data, status) => sendJson(res, data, status ?? 200),
       sendHtml: (html, status) => sendHtml(res, html, status ?? 200),
       secure: requestIsSecure(req),
-      origin: `${requestIsSecure(req) ? "https" : "http"}://${req.headers.host ?? `localhost:${PORT}`}`,
+      // Emailed sign-in links are credentials: they are built from the
+      // configured public URL (OBV_PUBLIC_BASE_URL → platform URL), exactly
+      // like invitation links, and fall back to the request host only when
+      // no public URL is configured (development).
+      origin: invitationBaseUrl(req) || `http://localhost:${PORT}`,
       demoAvailable: demoAuthEnabled(),
     })
   ) {

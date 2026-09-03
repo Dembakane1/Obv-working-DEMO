@@ -367,7 +367,13 @@ async function main() {
     backups.verifyBackup(rec.id).verificationStatus === "MISMATCH",
     "a tampered backup file is detected as MISMATCH (stored sha256 no longer matches)"
   );
-  assert(Number.isFinite(backups.hoursSinceLastBackup()), "backup freshness is measurable for readiness checks");
+  assert(
+    !Number.isFinite(backups.hoursSinceLastBackup()),
+    "a tampered (MISMATCH) backup no longer counts toward freshness — readiness measures VERIFIED backups only"
+  );
+  const rec2 = backups.createBackup(null);
+  backups.verifyBackup(rec2.id);
+  assert(Number.isFinite(backups.hoursSinceLastBackup()), "backup freshness is measurable again once a verified backup exists");
 
   // ============ 5. pilot:check verdicts ============
   {
@@ -386,6 +392,146 @@ async function main() {
       "pilot:check FAILS (exit 1) when development delivery is active in a pilot environment"
     );
     assert(!/test-token-never-logged|0123456789abcdef/.test(r.stdout + r.stderr), "pilot:check never prints secret values");
+  }
+
+  // ============ 6. pilot:check READY on a fully configured pilot ============
+  // The deployment contract's scenario B: the SAME environment shape the
+  // render.yaml obv-pilot service declares, with safe fixtures — a token
+  // that never reaches a network (the reachability probe is skipped) and
+  // the pilot database the live server above created and bootstrapped.
+  {
+    const PILOT_CHECK = path.join(__dirname, "pilot-check.js");
+    const readyEnv = {
+      ...process.env,
+      OBV_ENVIRONMENT: "pilot", OBV_DATA_DIR: DIR_PILOT, OBV_SESSION_SECRET: SECRET,
+      OBV_AUTH_LINK_DELIVERY: "email", OBV_EMAIL_PROVIDER: "postmark",
+      OBV_INTEGRATIONS_PRODUCTION_ENABLE: "true",
+      OBV_POSTMARK_SERVER_TOKEN: "test-token-never-logged", OBV_EMAIL_FROM: "obv@pilot-test.example",
+      OBV_POSTMARK_API_BASE_URL: "", OBV_PUBLIC_BASE_URL: "https://obv-pilot-test.example",
+      OBV_BOOTSTRAP_ADMIN_EMAIL: "operator@lender-pilot.example", OBV_BANKING_PROVIDER: "mock",
+      OBV_PILOT_CHECK_SKIP_NET: "1",
+    };
+    const run = (env) => spawnSync(process.execPath, [PILOT_CHECK], { env, timeout: 30000, encoding: "utf8" });
+
+    // The READY sequence is deploy → initialize → backup → pilot:check, in
+    // that order: a database with no verified backup is NOT READY.
+    const beforeBackup = run(readyEnv);
+    assert(
+      beforeBackup.status === 1 && /FAIL\s+latest backup verified\s+no verified backup exists/.test(beforeBackup.stdout),
+      "a fully configured pilot is NOT READY until its first verified backup exists (backup precedes pilot:check)"
+    );
+    const backup = spawnSync(process.execPath, [path.join(__dirname, "backup.js")], { env: readyEnv, timeout: 30000, encoding: "utf8" });
+    assert(
+      backup.status === 0 && /verification VERIFIED/.test(backup.stdout),
+      "npm run backup against the pilot data root creates AND verifies a backup (exit 0)"
+    );
+
+    const ready = run(readyEnv);
+    const failLines = ready.stdout.split("\n").filter((l) => l.startsWith("FAIL"));
+    assert(
+      ready.status === 0 && /^READY — /m.test(ready.stdout) && failLines.length === 0,
+      `pilot:check is READY (exit 0) on a fully configured pilot${failLines.length ? " — " + failLines.join(" | ") : ""}`
+    );
+    const expectPass = [
+      "environment", "posture flags", "session secret", "demo switcher", "auth link delivery",
+      "email provider", "public base URL", "runtime platform", "persistent data root", "storage writable",
+      "database integrity", "no demo data", "golden seed", "backup directory", "latest backup verified",
+      "banking simulation", "banking provider", "admin identity",
+    ];
+    const notPassing = expectPass.filter((c) => !new RegExp(`^PASS\\s+${c}\\s`, "m").test(ready.stdout));
+    const byDesignWarns = ["email reachability", "instance constraint"].filter(
+      (c) => !new RegExp(`^WARN\\s+${c}\\s`, "m").test(ready.stdout)
+    );
+    assert(
+      notPassing.length === 0 && byDesignWarns.length === 0,
+      `READY run: every pilot control PASSES and only the two by-design WARNs remain` +
+        `${notPassing.length ? " — not passing: " + notPassing.join(", ") : ""}` +
+        `${byDesignWarns.length ? " — not WARN: " + byDesignWarns.join(", ") : ""}`
+    );
+    assert(!/test-token-never-logged|0123456789abcdef/.test(ready.stdout + ready.stderr), "the READY run never prints secret values");
+
+    // Demo fixtures inside the pilot database defeat the separation: a
+    // project row carrying the golden seed's fixture id flips the verdict
+    // to NOT READY with the control named — nothing else changed.
+    const db = new DatabaseSync(path.join(DIR_PILOT, "obv.db"));
+    const org = db.prepare("SELECT id FROM organizations LIMIT 1").get();
+    db.prepare(
+      "INSERT INTO projects (id, organization_id, name, description, location, site_boundary, total_budget) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run("proj-golden", org.id, "Golden fixture", "demo", "demo", "[]", 1);
+    db.close();
+    const tainted = run(readyEnv);
+    assert(
+      tainted.status === 1 && /FAIL\s+no demo data\s+demo project\(s\) present: proj-golden/.test(tainted.stdout),
+      "a demo fixture (proj-golden) inside the pilot database makes pilot:check NOT READY"
+    );
+  }
+
+  // ============ 7. optional access gate + public base URL in pilot posture ============
+  // OBV_ACCESS_CODE is OPTIONAL defense-in-depth. When an operator does set
+  // it on a pilot: platform probes and the sign-in routes stay open, the
+  // gate page never calls the deployment a demo, the cookie is Secure over
+  // HTTPS, and emailed sign-in links come from OBV_PUBLIC_BASE_URL — never
+  // from whatever Host header a request carried.
+  {
+    const DIR_GATE = fs.mkdtempSync(path.join(os.tmpdir(), "obv-pp-gate-"));
+    const GATE_PORT = 3347;
+    const GATE = `http://localhost:${GATE_PORT}`;
+    const CODE = "pilot-gate-fixture-code";
+    const gateServer = spawn(process.execPath, [SERVER], {
+      env: {
+        ...process.env, ...pilotBase, OBV_DATA_DIR: DIR_GATE, PORT: String(GATE_PORT),
+        OBV_EMAIL_PROVIDER: "outbox", OBV_INTEGRATIONS_PRODUCTION_ENABLE: "",
+        OBV_POSTMARK_SERVER_TOKEN: "", OBV_EMAIL_FROM: "", OBV_POSTMARK_API_BASE_URL: "",
+        OBV_BOOTSTRAP_ADMIN_EMAIL: "operator@lender-pilot.example",
+        OBV_PUBLIC_BASE_URL: "https://obv-pilot-test.example",
+        OBV_ACCESS_CODE: CODE,
+      },
+      stdio: "ignore",
+    });
+    try {
+      await waitUp(GATE);
+      const health = await fetch(GATE + "/api/health");
+      const ready = await fetch(GATE + "/api/ready");
+      assert(
+        health.status === 200 && ready.status === 200,
+        "with OBV_ACCESS_CODE set, /api/health and /api/ready answer without the code (platform probes never meet the gate)"
+      );
+      const home = await fetch(GATE + "/", { headers: { accept: "text/html" } });
+      const homeHtml = await home.text();
+      assert(
+        home.status === 401 && /Enter access code/.test(homeHtml) && !/demo/i.test(homeHtml),
+        "the pilot access-gate page never calls the deployment a demo (posture-aware copy)"
+      );
+      const signin = await fetch(GATE + "/signin", { headers: { accept: "text/html" } });
+      assert(signin.status === 200, "the sign-in page stays reachable without the code (emailed links need somewhere to start)");
+      const wrong = await fetch(GATE + "/api/access", {
+        method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "code=nope", redirect: "manual",
+      });
+      const right = await fetch(GATE + "/api/access", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", "x-forwarded-proto": "https" },
+        body: `code=${CODE}`,
+        redirect: "manual",
+      });
+      const gateCookie = (right.headers.getSetCookie() ?? []).find((c) => c.startsWith("obv_access="));
+      assert(
+        wrong.status === 401 && right.status === 303 && gateCookie && /HttpOnly/.test(gateCookie) && /Secure/.test(gateCookie) && !gateCookie.includes(CODE),
+        "the access cookie is HttpOnly + Secure over HTTPS and stores a hash, never the code"
+      );
+      const link = await fetch(GATE + "/api/auth/magic-link", {
+        method: "POST",
+        headers: { "content-type": "application/json", host: "evil.example" },
+        body: JSON.stringify({ email: "operator@lender-pilot.example" }),
+      });
+      const outbox = fs.readFileSync(path.join(DIR_GATE, "auth-outbox.jsonl"), "utf8").trim().split("\n");
+      const emailed = JSON.parse(outbox[outbox.length - 1]).link;
+      assert(
+        link.ok && /^https:\/\/obv-pilot-test\.example\/auth\/complete\?token=[0-9a-f]{64}$/.test(emailed),
+        "emailed sign-in links are built from OBV_PUBLIC_BASE_URL, never from the request Host header"
+      );
+    } finally {
+      try { gateServer.kill(); } catch {}
+    }
   }
 
   capture.close();

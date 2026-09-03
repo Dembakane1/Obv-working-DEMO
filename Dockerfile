@@ -10,8 +10,12 @@
 # Playwright/Chromium renderer. No secrets are baked into any layer —
 # all configuration is injected via environment variables at run time.
 
+# Base image pinned to the exact release in .node-version — the repo's single
+# Node source of truth (CI runs the same patch release; node:sqlite behaviour
+# has changed between 22.x patches). scripts/toolchain-test.js asserts the
+# two agree.
 # ---------- stage 1: compile TypeScript + generate PWA icons ----------
-FROM node:22-bookworm-slim AS build
+FROM node:22.16.0-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
 # Lockfile-exact install of the build toolchain (typescript, @types/node,
@@ -25,7 +29,7 @@ COPY public ./public
 RUN npm run build
 
 # ---------- stage 2: runtime with Chromium for PDF rendering ----------
-FROM node:22-bookworm-slim
+FROM node:22.16.0-bookworm-slim
 ENV NODE_ENV=production \
     # Browsers in a fixed, cache-friendly location owned by the image.
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
@@ -41,9 +45,16 @@ WORKDIR /app
 # renderer this stage exists for. --with-deps pulls in Chromium's required
 # system libraries via apt. Every command must fail the build if it fails:
 # no `|| true` anywhere in this chain.
+#
+# --include=dev is NOT optional: NODE_ENV=production is set above for the
+# application, and npm reads that variable as `--omit=dev` — a bare
+# `npm ci` here installs NOTHING (verified: 0 packages), so the image would
+# ship no Playwright module and every report would silently degrade to
+# the HTML fallback. The explicit flag makes the install independent of
+# NODE_ENV.
 COPY package.json package-lock.json .npmrc ./
 RUN set -eux \
- && npm ci \
+ && npm ci --include=dev \
  && npx playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/* /root/.npm
 
@@ -51,6 +62,13 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/public ./public
 COPY scripts/render-pdf.js ./scripts/render-pdf.js
 COPY scripts/lib ./scripts/lib
+# Operator commands the pilot runbook runs INSIDE the deployed container
+# (`npm run pilot:check`, `npm run backup`, the restore drill). They are
+# plain Node scripts over dist/ and must ship with the image — package.json
+# advertises them, so a missing file would be a silent runbook failure.
+COPY scripts/pilot-check.js ./scripts/pilot-check.js
+COPY scripts/backup.js ./scripts/backup.js
+COPY scripts/backup-restore-test.js ./scripts/backup-restore-test.js
 
 # Default (ephemeral) data location. For persistence, mount a volume and
 # set OBV_DATA_DIR to its mount path (e.g. /var/data) — see render.yaml.
@@ -62,5 +80,10 @@ RUN mkdir -p /app/data
 EXPOSE 10000
 
 # Seed only when the database is missing, so a mounted volume keeps its
-# state across restarts/redeploys while a fresh container self-seeds.
-CMD ["sh", "-c", "[ -f \"${OBV_DATA_DIR:-data}/obv.db\" ] || node dist/server/db/seed.js; exec node dist/server/http/server.js"]
+# state across restarts/redeploys while a fresh DEMO container self-seeds.
+# A declared pilot/production environment never seeds: its cold start is
+# an empty schema plus the OBV_BOOTSTRAP_ADMIN_EMAIL administrator, both
+# created by the server itself. (seedDemo() also refuses at the service
+# level in that posture — this guard just keeps the refusal out of the
+# first-boot log, where it would read as a failed boot.)
+CMD ["sh", "-c", "case \"${OBV_ENVIRONMENT:-demo}\" in pilot|production) ;; *) [ -f \"${OBV_DATA_DIR:-data}/obv.db\" ] || node dist/server/db/seed.js ;; esac; exec node dist/server/http/server.js"]

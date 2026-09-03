@@ -29,8 +29,14 @@ to run the product.
 
 - **Exactly one instance.** Not a recommendation — a correctness
   constraint. See `CLOUD_PORTABILITY.md` §4.
-- Requires: a container host, a persistent volume, `OBV_DATA_DIR`, a
-  Postmark token and sender, `OBV_SESSION_SECRET`, `OBV_ENVIRONMENT`.
+- Requires: a container host, a persistent volume, and the pilot
+  variable set — `OBV_ENVIRONMENT=pilot`, `OBV_DATA_DIR`,
+  `OBV_SESSION_SECRET`, `OBV_AUTH_LINK_DELIVERY=email`,
+  `OBV_EMAIL_PROVIDER=postmark`, `OBV_INTEGRATIONS_PRODUCTION_ENABLE=true`,
+  the Postmark token and verified sender, `OBV_BOOTSTRAP_ADMIN_EMAIL`,
+  `OBV_PUBLIC_BASE_URL`. The authoritative matrix is
+  `docs/FIRST_LENDER_RUNBOOK.md` §1.3, mirrored by `render.yaml`'s
+  `obv-pilot` service.
 - Requires **no** cloud account, managed database, object store or secret
   manager.
 

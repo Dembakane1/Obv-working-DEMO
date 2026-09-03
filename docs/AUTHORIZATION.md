@@ -117,8 +117,10 @@ returns `null`, never a partially trusted session.
 committed. `render.yaml` uses `generateValue: true`, so Render mints a
 random one per service.
 
-**Posture.** Production is declared explicitly via `OBV_BANKING_MODE=production`
-or `OBV_SESSION_REQUIRE_SECRET=1` — deliberately **not** `NODE_ENV`, which
+**Posture.** Production is declared explicitly via `OBV_ENVIRONMENT=pilot`
+or `OBV_ENVIRONMENT=production` (the legacy `OBV_BANKING_MODE=production` /
+`OBV_SESSION_REQUIRE_SECRET=1` flags remain a compatibility inference) —
+deliberately **not** `NODE_ENV`, which
 the Dockerfile sets for Node's own runtime behaviour. Keying on `NODE_ENV`
 would have made every container refuse to start unless a secret happened to
 be present, turning a hardening change into a deploy outage.

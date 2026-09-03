@@ -78,11 +78,13 @@ async function main() {
 
   // ---------- email provider ----------
   let emailMod = null;
+  let emailProviderName = null;
   try {
     emailMod = require(path.join(DIST, "services", "integrations", "email.js"));
     require(path.join(DIST, "services", "integrations", "core.js")).integrationsConfig();
     emailMod.assertEmailProviderConfig();
     const provider = emailMod.resolveEmailProvider();
+    emailProviderName = provider.name;
     if (provider.name === "outbox") {
       (production ? fail : pass)(
         "email provider",
@@ -97,7 +99,11 @@ async function main() {
     fail("email provider", e.message);
   }
   if (emailMod && production) {
-    if (process.env.OBV_PILOT_CHECK_SKIP_NET === "1") {
+    if (emailProviderName !== "postmark") {
+      // The probe only has meaning for the live provider; with the
+      // development outbox the FAIL above already names the real problem.
+      warn("email reachability", `not applicable — resolved provider is ${emailProviderName ?? "unresolved"}, not a live provider`);
+    } else if (process.env.OBV_PILOT_CHECK_SKIP_NET === "1") {
       warn("email reachability", "network probe skipped (OBV_PILOT_CHECK_SKIP_NET=1)");
     } else {
       try {
@@ -133,9 +139,11 @@ async function main() {
   pass("runtime platform", runtime.runtimeStartupNotice());
 
   // ---------- storage / database ----------
+  let databaseExists = false;
   try {
     const storage = require(path.join(DIST, "services", "ops", "storage.js"));
     const sp = storage.storagePosture();
+    databaseExists = sp.databaseExists;
     if (sp.dataDirExplicit) pass("persistent data root", sp.dataDir);
     else (production ? fail : warn)("persistent data root", `cwd-relative ${sp.dataDir} — ephemeral on hosted deploys`);
     const broken = sp.roots.filter((r) => !r.writable);
@@ -151,16 +159,20 @@ async function main() {
       // Demo fixtures inside a pilot database defeat the separation.
       try {
         const repo = require(path.join(DIST, "db", "repo.js"));
-        const demoProjects = ["proj-r47", "proj-dmv"].filter((id) => repo.getProject(id));
+        const demoProjects = ["proj-r47", "proj-dmv", "proj-golden"].filter((id) => repo.getProject(id));
         if (production && demoProjects.length) fail("no demo data", `demo project(s) present: ${demoProjects.join(", ")}`);
         else pass("no demo data", production ? "no demo fixtures in the database" : "demo database (expected in demo)");
       } catch (e) {
         warn("no demo data", `could not inspect: ${String(e.message ?? e).slice(0, 80)}`);
       }
+    } else if (production) {
+      // A pilot verdict on a never-booted deployment would be fiction: the
+      // sequence is deploy → initialize → backup → pilot:check.
+      fail("database", "no database file yet — the server has not completed its first boot (deploy → initialize → npm run backup → npm run pilot:check)");
     } else {
       warn("database", "no database file yet (first boot will create the schema and the bootstrap admin)");
     }
-    if ((process.env.OBV_SEED_GOLDEN ?? "") === "1") {
+    if (/^(1|true)$/i.test(process.env.OBV_SEED_GOLDEN ?? "")) {
       (production ? fail : pass)("golden seed", production ? "OBV_SEED_GOLDEN=1 set in a production posture" : "golden seed enabled (demo)");
     } else {
       pass("golden seed", "not enabled");
@@ -194,10 +206,17 @@ async function main() {
     } else {
       (production ? fail : warn)("banking simulation", "demo banking mode — simulation surfaces are live");
     }
-    if ((process.env.OBV_BANKING_PROVIDER ?? "mock") !== "mock" ) {
+    // Same normalisation as the registry (trim + lower-case), so the
+    // checker and the server agree on what "mock" means.
+    if ((process.env.OBV_BANKING_PROVIDER ?? "mock").trim().toLowerCase() !== "mock") {
       fail("banking provider", "a non-mock provider is configured — real banking is out of scope for the pilot");
     } else {
       pass("banking provider", "mock (no real money can move through OBV)");
+    }
+    if (/^(1|true)$/i.test(process.env.OBV_BANKING_PRODUCTION_ENABLE ?? "")) {
+      // Inert while the provider is mock, but it has no business in a
+      // pilot environment: an operator should know it is set.
+      warn("banking production switch", "OBV_BANKING_PRODUCTION_ENABLE is set — inert with the mock provider, but out of the pilot's scope; unset it");
     }
   } catch (e) {
     fail("banking", e.message);
@@ -205,15 +224,21 @@ async function main() {
 
   // ---------- bootstrap ----------
   const bootstrap = (process.env.OBV_BOOTSTRAP_ADMIN_EMAIL ?? "").trim();
-  try {
-    const identityRepo = require(path.join(DIST, "db", "identityRepo.js"));
-    const identities = identityRepo.countIdentities();
-    if (identities > 0) pass("admin identity", `${identities} identit${identities === 1 ? "y" : "ies"} exist`);
-    else if (bootstrap) pass("admin identity", "none yet; OBV_BOOTSTRAP_ADMIN_EMAIL set for first boot");
-    else (production ? fail : warn)("admin identity", "no identities and no OBV_BOOTSTRAP_ADMIN_EMAIL — nobody can ever sign in");
-  } catch {
-    if (bootstrap) pass("admin identity", "OBV_BOOTSTRAP_ADMIN_EMAIL set for first boot");
-    else (production ? fail : warn)("admin identity", "no database and no OBV_BOOTSTRAP_ADMIN_EMAIL");
+  // A read-only check must not CREATE the database as a side effect: the
+  // identity count is only consulted when a database file already exists.
+  if (!databaseExists) {
+    if (bootstrap) pass("admin identity", "no database yet; OBV_BOOTSTRAP_ADMIN_EMAIL set for first boot");
+    else (production ? fail : warn)("admin identity", "no database and no OBV_BOOTSTRAP_ADMIN_EMAIL — nobody can ever sign in");
+  } else {
+    try {
+      const identityRepo = require(path.join(DIST, "db", "identityRepo.js"));
+      const identities = identityRepo.countIdentities();
+      if (identities > 0) pass("admin identity", `${identities} identit${identities === 1 ? "y" : "ies"} exist`);
+      else if (bootstrap) pass("admin identity", "none yet; OBV_BOOTSTRAP_ADMIN_EMAIL set for first boot");
+      else (production ? fail : warn)("admin identity", "no identities and no OBV_BOOTSTRAP_ADMIN_EMAIL — nobody can ever sign in");
+    } catch (e) {
+      fail("admin identity", `could not inspect identities: ${String(e.message ?? e).slice(0, 80)}`);
+    }
   }
 
   finish();
