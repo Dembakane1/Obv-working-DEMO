@@ -143,13 +143,15 @@ are additionally mirrored into the existing `config_audit` register.
 | Magic-link sign-in (`/signin`) | Active alongside the switcher | The only sign-in |
 | Unauthenticated page GETs | Redirect to `/demo` | Redirect to `/signin` |
 | Session cookies | `obv_user` (signed) or `obv_auth` | **`obv_auth` only** — the legacy signed cookie is rejected even when correctly signed, because it is a bearer statement no revocation can reach |
-| Link delivery | `file` outbox by default | `OBV_AUTH_LINK_DELIVERY` must be set **explicitly** or startup refuses |
+| Link delivery | `file` outbox by default | `OBV_AUTH_LINK_DELIVERY` must be set **explicitly** (`email` for the pilot) or startup refuses |
 
 Logout and logout-everywhere also expire the legacy `obv_user` cookie in
 the browser, so signing out never leaves a second working credential.
 
-Production posture is declared with `OBV_BANKING_MODE=production` or
-`OBV_SESSION_REQUIRE_SECRET=1`, exactly as before.
+Production posture is declared with `OBV_ENVIRONMENT=pilot` or
+`OBV_ENVIRONMENT=production` (`src/server/services/posture.ts`); the
+legacy `OBV_BANKING_MODE=production` / `OBV_SESSION_REQUIRE_SECRET=1`
+flags remain a compatibility inference only.
 
 ### First-admin bootstrap
 
@@ -163,12 +165,16 @@ duplicate anything.
 ### Link delivery seam
 
 `deliverSignInLink` (src/server/services/identity/core.ts) is the single
-place a sign-in link leaves the process. `OBV_AUTH_LINK_DELIVERY=file`
-(default) appends to `auth-outbox.jsonl` under the data directory — a
-development outbox; `off` mints without delivering. A real deployment
-replaces the body of that one function with its email provider; nothing
-else in the platform knows how links travel. Raw tokens are never
-logged, never stored, and never appear in audit events.
+place a sign-in link leaves the process. `OBV_AUTH_LINK_DELIVERY=email`
+hands it to the configured `OBV_EMAIL_PROVIDER` (Postmark is the live
+adapter; the development outbox is refused for this mode — there is no
+silent fallback); `file` appends to `auth-outbox.jsonl` under the data
+directory — the development outbox, and the default only in demo
+posture; `off` mints without delivering. Nothing else in the platform
+knows how links travel. Emailed links are built from the configured
+public URL (`OBV_PUBLIC_BASE_URL`, then the platform's injected URL),
+falling back to the request host only when neither is set. Raw tokens
+are never logged, never stored, and never appear in audit events.
 
 ## Passwords, SSO, MFA — architectural readiness only
 
@@ -191,7 +197,7 @@ Enabling any of these is a future code change, not a configuration flag.
 |---|---|---|
 | `OBV_BOOTSTRAP_ADMIN_EMAIL` | unset | First-admin bootstrap (empty table only) |
 | `OBV_BOOTSTRAP_ORG_NAME` | `OBV Operations` | Bootstrap organization name |
-| `OBV_AUTH_LINK_DELIVERY` | `file` | `file` (dev outbox) or `off` |
+| `OBV_AUTH_LINK_DELIVERY` | `file` in demo; no default under production posture | `email` (configured provider — the pilot setting), `file` (dev outbox) or `off` |
 | `OBV_AUTH_LINK_TTL_MINUTES` | 15 | Magic-link lifetime |
 | `OBV_AUTH_LINK_MAX_PER_WINDOW` | 5 | Links per identity per window |
 | `OBV_AUTH_LINK_WINDOW_MINUTES` | 15 | Issuance-throttle window |

@@ -33,10 +33,12 @@ happens in the product (Pilot Setup at `/setup`) — no database editing.
    country, timezone, reporting currency, primary contact) and each
    counterparty — implementing agency, contractor, engineer/consultant.
 2. **Team**: invite users by email with organization + role. The
-   activation link is surfaced once to the administrator (the pilot demo
-   build uses safe preview delivery — no real email is sent; hand the
-   link to the user directly). Tokens are one-time, hashed at rest, and
-   expire in 14 days; revoke and reissue from the same panel.
+   activation link is emailed to the invitee through the configured
+   provider (Postmark in the pilot; the development outbox in demo
+   posture, where no real email leaves) and is also shown once to the
+   administrator as a fallback to hand over directly. Tokens are
+   one-time, hashed at rest, and expire in 14 days; revoke and reissue
+   from the same panel.
 3. **Project**: create the draft project — name, code, type, counterparty
    organizations, total value, OBV-controlled amount, currency, dates,
    timezone. The project stays DRAFT (invisible to operations) until launch.

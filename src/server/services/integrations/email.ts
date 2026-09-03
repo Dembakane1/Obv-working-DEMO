@@ -39,9 +39,10 @@ export interface EmailMessage {
   containsCredential?: boolean;
   /**
    * Duplicate-send protection: when set, a second send with the same key
-   * within the dedupe window is recorded as SKIPPED_DUPLICATE and never
-   * reaches the provider. Use for governed-event notifications where a
-   * retried workflow call must not double-mail a recipient.
+   * within the dedupe window returns the ORIGINAL outbox row — nothing new
+   * is recorded and nothing reaches the provider. Use for governed-event
+   * notifications where a retried workflow call must not double-mail a
+   * recipient.
    */
   dedupeKey?: string | null;
 }

@@ -224,11 +224,18 @@ export function verifyBackup(id: string): BackupRecord {
   return getBackup(id)!;
 }
 
-/** Freshness for readiness checks: hours since the last COMPLETED backup
- *  (Infinity when none exists). */
+/** Freshness for readiness checks: hours since the last backup that is
+ *  COMPLETED **and VERIFIED** (Infinity when none exists). An unverified or
+ *  mismatched snapshot is not a backup an operator can restore from, so it
+ *  must never make a deployment look fresh — every consumer (/api/ready,
+ *  pilot:check, the setup checklist) shares this one definition. */
 export function hoursSinceLastBackup(): number {
   const r = getDb()
-    .prepare("SELECT created_at FROM backup_records WHERE status = 'COMPLETED' ORDER BY created_at DESC LIMIT 1")
+    .prepare(
+      `SELECT created_at FROM backup_records
+        WHERE status = 'COMPLETED' AND verification_status = 'VERIFIED'
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`
+    )
     .get() as Row | undefined;
   if (!r) return Number.POSITIVE_INFINITY;
   return (Date.now() - Date.parse(r.created_at as string)) / 3_600_000;

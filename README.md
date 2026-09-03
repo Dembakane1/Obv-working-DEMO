@@ -1089,9 +1089,9 @@ One-click, audit-grade PDF built entirely from live application data:
 1. Open **https://render.com** and sign in (**Sign in with GitHub** is fastest).
 2. Tap **New → Blueprint**.
 3. Connect the **Dembakane1/Obv-working-DEMO** repository (grant access if asked).
-4. Choose the branch **claude/obv-demo-repo-structure-t0hjsc** — the included
+4. Choose the branch **main** (the branch `render.yaml` pins) — the included
    `render.yaml` + `Dockerfile` configure everything (Docker build, health
-   check at `/api/health`, seed-on-first-boot).
+   check at `/api/health`, seed-on-first-boot for the demo).
 5. When prompted for **OBV_ACCESS_CODE**, either type a code (visitors must
    enter it once per browser) or leave it blank for an open demo.
 6. Tap **Apply / Deploy**. The first Docker build takes ~5–8 min (it installs
@@ -1123,13 +1123,26 @@ in the Render dashboard (or platform equivalent), **never in the repo**.
 | | `WHATSAPP_API_VERSION`, `WHATSAPP_SYNC_TIMEOUT_MS`, `OBV_WHATSAPP_API_BASE_URL` | Provider overrides (defaults `v21.0`, 8000 ms, Meta Graph; base URL override is for the contract-stub tests). |
 | OPTIONAL — STORAGE | `OBV_DATA_DIR` | Root for ALL runtime data. Point at a persistent volume (e.g. `/var/data`) for restart-safe state. Default `./data` (ephemeral in containers). |
 | | `OBV_REPORT_STORAGE_PATH` | Relocates generated report PDFs only (default `<OBV_DATA_DIR>/reports`). |
-| OPTIONAL — DEPLOYMENT | `OBV_ACCESS_CODE` | Simple access gate for the public demo. Everything except `/api/health` requires the code once per browser; the cookie stores only a hash. |
+| OPTIONAL — DEPLOYMENT | `OBV_ACCESS_CODE` | Optional access gate (defense-in-depth, also optional for the pilot — identity is the access boundary). Everything except the health probes (`/api/health`, `/api/ready`), static assets, the sign-in / magic-link / invitation routes and the webhook endpoints requires the code once per browser; the cookie stores only a hash. |
 | | `OBV_PLAYWRIGHT_NODE_PATH` | Where the PDF child process resolves `playwright` (Docker image sets `/app/node_modules`). |
+
+### External pilot (a real lender)
+
+The pilot is a SEPARATE Render service from the public demo: the commented
+`obv-pilot` block in `render.yaml` (paid instance, persistent disk, one
+instance, `/api/ready` health check, `OBV_ENVIRONMENT=pilot`, Postmark
+magic-link delivery, mock banking only, no demo data). In that posture
+several variables become mandatory — the server refuses to start without
+them — and `npm run pilot:check` verdicts the configuration. The complete
+provisioning sequence, environment matrix, first-boot description, backup
+requirement and hosted controlled test live in
+`docs/FIRST_LENDER_RUNBOOK.md`.
 
 ### Persistence & demo reset
 
-- The start command seeds **only when `obv.db` is missing**, so restarts
-  never wipe a persistent volume — verified restart-safe.
+- The start command seeds **only when `obv.db` is missing AND the posture
+  is demo** (a pilot/production container never seeds), so restarts never
+  wipe a persistent volume — verified restart-safe.
 - Free plan: the filesystem is ephemeral; a restart/redeploy returns the demo
   to its seeded state (often desirable). **More → Reset demo data** does the
   same on demand at any time.

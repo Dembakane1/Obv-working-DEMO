@@ -46,9 +46,13 @@ export function integrationsDashboard(actor: User): IntegrationsDashboard {
       provider: email.name,
       displayName: email.displayName,
       status: email.active ? "ACTIVE" : "DISABLED_BOUNDARY",
-      detail: email.active
-        ? "Outbound mail is recorded in the outbox (development delivery)."
-        : "Adapter present; refuses every call until production credentials exist.",
+      // The detail must describe the RESOLVED provider: a pilot running
+      // Postmark is live transactional delivery, not development delivery.
+      detail: !email.active
+        ? "Adapter present; refuses every call until production credentials exist."
+        : email.name === "outbox"
+          ? "Outbound mail is recorded in the outbox (development delivery)."
+          : `Live transactional delivery through ${email.displayName}; every message's outcome is recorded in the outbox (credentials env-only, never stored).`,
       alternatives: EMAIL_PROVIDER_CATALOG.filter((p) => p.name !== email.name).map((p) => p.displayName),
     },
     {

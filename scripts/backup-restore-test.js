@@ -17,6 +17,16 @@
  *   9. confirm post-backup changes are correctly ABSENT
  *  10. verify evidence/WORM references still resolve alongside the
  *      restored database
+ *
+ * SELF-CONTAINED BY DESIGN. The runbook runs this drill inside the
+ * deployed PILOT container, whose environment declares
+ * OBV_ENVIRONMENT=pilot, the live OBV_DATA_DIR / OBV_BACKUP_DIR and a live
+ * email provider. The drill must neither inherit that posture (the demo
+ * seed it relies on is refused in pilot posture, and a demo banking mode
+ * would contradict it) nor touch the live volume (a drill backup must
+ * never land in the live backup directory). So it strips every posture,
+ * volume and delivery variable from the environment it uses and declares
+ * its own throwaway demo posture in temp directories.
  */
 const { spawn, spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
@@ -30,6 +40,23 @@ const PORT = 3341;
 const BASE = `http://localhost:${PORT}`;
 const SOURCE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "obv-drill-src-"));
 const RESTORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "obv-drill-rst-"));
+
+// Variables the drill must NOT inherit from a deployed (pilot) container.
+for (const name of [
+  "OBV_ENVIRONMENT", "OBV_DATA_DIR", "OBV_BACKUP_DIR", "OBV_BACKUP_RETENTION_DAYS",
+  "OBV_BANKING_MODE", "OBV_BANKING_PRODUCTION_ENABLE", "OBV_DEMO_AUTH", "OBV_SEED_GOLDEN",
+  "OBV_ACCESS_CODE", "OBV_AUTH_LINK_DELIVERY", "OBV_EMAIL_PROVIDER", "OBV_INTEGRATIONS_PRODUCTION_ENABLE",
+  "OBV_POSTMARK_SERVER_TOKEN", "OBV_EMAIL_FROM", "OBV_POSTMARK_MESSAGE_STREAM", "OBV_POSTMARK_API_BASE_URL",
+  "OBV_PILOT_NOTIFY_EMAIL", "OBV_BOOTSTRAP_ADMIN_EMAIL", "OBV_BOOTSTRAP_ORG_NAME",
+]) {
+  delete process.env[name];
+}
+// The drill's own posture: throwaway demo data, mock banking, no delivery.
+process.env.OBV_ENVIRONMENT = "demo";
+process.env.OBV_BANKING_PROVIDER = "mock";
+process.env.OBV_BANKING_MODE = "demo";
+process.env.OBV_AUTH_LINK_DELIVERY = "off";
+process.env.OBV_EMAIL_PROVIDER = "outbox";
 
 let passed = 0;
 const pass = (m) => {
@@ -57,10 +84,11 @@ async function main() {
   process.env.OBV_DATA_DIR = SOURCE_DIR;
 
   // ---- 1. realistic state ----
-  spawnSync(process.execPath, [path.join(ROOT, "dist", "server", "db", "seed.js")], {
+  const seed = spawnSync(process.execPath, [path.join(ROOT, "dist", "server", "db", "seed.js")], {
     env: { ...process.env, OBV_DATA_DIR: SOURCE_DIR },
-    stdio: "ignore",
+    encoding: "utf8",
   });
+  assert(seed.status === 0, "drill seed ran in the drill's own demo posture (never the container's)");
   const repo = require(path.join(ROOT, "dist", "server", "db", "repo.js"));
   const preProjects = repo.listProjects().length;
   const preLedger = repo.listLedgerEntries().length;
@@ -82,26 +110,25 @@ async function main() {
 
   // ---- 5. restore into an ISOLATED directory (documented procedure:
   //         verify checksum, copy to a NEW location, never in place) ----
-  const backupFile = path.join(
-    process.env.OBV_BACKUP_DIR || path.join(SOURCE_DIR, "backups"),
-    verified.fileName
-  );
+  const backupFile = path.join(SOURCE_DIR, "backups", verified.fileName);
+  assert(fs.existsSync(backupFile), "the drill backup landed under the drill's own temp data root (never a live backup directory)");
   const bytes = fs.readFileSync(backupFile);
   const hashNow = createHash("sha256").update(bytes).digest("hex");
   assert(hashNow === storedHash, "restore step 1: backup checksum re-verified before any use");
   fs.mkdirSync(RESTORE_DIR, { recursive: true });
   fs.writeFileSync(path.join(RESTORE_DIR, "obv.db"), bytes);
-  // WORM evidence and uploads are files beside the DB: the documented
-  // procedure copies them with the database so references resolve.
-  for (const dir of ["worm", "uploads", "reports"]) {
+  // WORM evidence, uploads, reports and audit packages are files beside
+  // the DB: the documented procedure copies them with the database so
+  // references resolve.
+  for (const dir of ["worm", "uploads", "reports", "audit-packages"]) {
     const src = path.join(SOURCE_DIR, dir);
     if (fs.existsSync(src)) fs.cpSync(src, path.join(RESTORE_DIR, dir), { recursive: true });
   }
-  pass("restore step 2: backup + artifact directories copied to an isolated location");
+  pass("restore step 2: backup + artifact directories (worm, uploads, reports, audit-packages) copied to an isolated location");
 
   // ---- 6. start OBV against the restored copy ----
   const server = spawn(process.execPath, [path.join(ROOT, "dist", "server", "http", "server.js")], {
-    env: { ...process.env, OBV_DATA_DIR: RESTORE_DIR, PORT: String(PORT), OBV_BANKING_PROVIDER: "mock", OBV_BANKING_MODE: "demo" },
+    env: { ...process.env, OBV_DATA_DIR: RESTORE_DIR, PORT: String(PORT) },
     stdio: "ignore",
   });
   try {

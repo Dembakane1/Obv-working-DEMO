@@ -191,6 +191,39 @@ const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
     /COPY scripts\/lib/.test(dockerfile),
     "the runtime image ships scripts/lib (the PDF renderer requires the browser helper)"
   );
+  // ---- 6d. the runtime image must ship the pilot operator commands ----
+  // docs/FIRST_LENDER_RUNBOOK.md runs `npm run pilot:check`, `npm run backup`
+  // and the restore drill INSIDE the deployed container; package.json
+  // advertises them, so the files must exist in the image.
+  for (const f of ["scripts/pilot-check.js", "scripts/backup.js", "scripts/backup-restore-test.js"]) {
+    assert(new RegExp(`COPY ${f.replace("/", "\\/")}`).test(dockerfile),
+      `the runtime image ships ${f} (pilot operator command)`);
+  }
+  // ---- 6e. the start command never runs the demo seed in pilot/production ----
+  const cmd = dockerfile.split("\n").find((l) => /^CMD\s/.test(l)) ?? "";
+  assert(/pilot\|production\)\s*;;/.test(cmd) && /seed\.js/.test(cmd),
+    "the container start command skips the demo seed when OBV_ENVIRONMENT is pilot/production");
+  // ---- 6f. NODE_ENV=production must not starve the runtime stage of Playwright ----
+  // npm reads NODE_ENV=production as `--omit=dev`. The runtime stage sets
+  // NODE_ENV=production for the application, so its install must say
+  // `--include=dev` explicitly — otherwise `npm ci` installs nothing and
+  // the image ships no renderer while every doc claims it does.
+  const runtimeStage = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+  if (/NODE_ENV=production/.test(runtimeStage)) {
+    assert(
+      /npm ci --include=dev/.test(runtimeStage),
+      "the runtime stage installs with `npm ci --include=dev` (NODE_ENV=production would otherwise omit Playwright)"
+    );
+  } else {
+    pass("the runtime stage does not set NODE_ENV=production before installing");
+  }
+  // ---- 6g. the image runs the Node release .node-version declares ----
+  const nodeVersion = read(".node-version").trim();
+  const froms = dockerfile.split("\n").filter((l) => /^FROM\s/.test(l));
+  assert(
+    froms.length >= 2 && froms.every((l) => l.includes(`node:${nodeVersion}-`)),
+    `every Dockerfile base image is pinned to node:${nodeVersion} (.node-version is the single source of truth)`
+  );
 
   // ---- 7. CI parity and the mock-banking guarantee ----
   // Negative assertions must look at EXECUTED yaml only: a comment that

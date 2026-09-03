@@ -230,8 +230,11 @@ after the decision the draw is terminal for transitions.
 - `auth link delivery` (file outbox), `email provider` (development
   outbox), `public base URL` unset — expected in a test-provider
   rehearsal, but each is a hard precondition for external traffic
-  (`docs/FIRST_LENDER_RUNBOOK.md` §1–2). Also set `OBV_ACCESS_CODE` for any
-  externally reachable pilot (P-02 condition).
+  (`docs/FIRST_LENDER_RUNBOOK.md` §1–2). `OBV_ACCESS_CODE` is NOT a
+  precondition: it is optional defense-in-depth (the P-02 "mandatory"
+  wording applied only until the public homepage was posture-gated, which
+  is done). Production identity is the user-access boundary —
+  `docs/FIRST_LENDER_RUNBOOK.md`, "Environment matrix".
 
 ### PG2-07 · Static assets resolve from `process.cwd()` — **P4 · DOCUMENTED**
 
@@ -280,5 +283,5 @@ after the decision the draw is terminal for transitions.
 - Tenant isolation, persistence, backup/restore, notification behaviour:
   proven.
 - Deployment posture: NOT READY until PG2-06 is satisfied (real magic-link
-  delivery, real email provider, public base URL, access code) and the
-  lender accepts PG2-05.
+  delivery, real email provider, public base URL) and the lender accepts
+  PG2-05. The access code stays optional.

@@ -5,9 +5,12 @@
  *   npm run backup            create a backup and verify it
  *   npm run backup -- --list  list recorded backups (newest first)
  *
- * Designed for an EXTERNAL scheduler (cron, Render cron job, systemd
- * timer): exit code 0 only when the backup completed AND verified, so a
- * scheduler alert fires on anything less. Runs against the SAME data
+ * Designed for a scheduler: exit code 0 only when the backup completed
+ * AND verified, so a scheduler alert fires on anything less. It must run
+ * WHERE THE DATA DIRECTORY IS MOUNTED — inside the deployed service (a
+ * shell, or an external scheduler over the platform's SSH), never from a
+ * separate container that cannot see the disk (a Render Cron Job, for
+ * example, runs on its own filesystem). Runs against the SAME data
  * directory as the server (OBV_DATA_DIR); VACUUM INTO from a second
  * connection is safe under WAL while the server stays up.
  *
