@@ -30,7 +30,8 @@ lives inside the authoritative service:
 | Sink | Where the check lives |
 |---|---|
 | Milestone release | `workflow/orchestrator.ts` `processApprovalDecision` — the only path to `releaseTranche` |
-| Evidence → ledger → approval request | `workflow/orchestrator.ts` `processEvidenceSubmission` — also reached internally by `fieldOps.submitDraft` |
+| Evidence → ledger → approval request | `workflow/orchestrator.ts` `processEvidenceSubmission` — also reached internally by `fieldOps.submitDraft` and by reviewer acceptance of an external field observation (`services/interop/fieldObservations/review.ts` `acceptObservation`) |
+| OC4IDS export, observation import and review | `services/interop/core.ts` `requireVisibleProject` (role gate first, then same-404) plus `authz.requireMilestoneInProject` on acceptance |
 | Threads and messages | `services/chat.ts` (`participatesInProject`, `getThreadForUser`, `ensure*Thread`) |
 | Field issues, clarifications, drafts | `services/fieldOps.ts` (every exported mutation and query) |
 | Pilot configuration | `services/pilot/onboarding.ts` `assertPilotProjectAccess` |

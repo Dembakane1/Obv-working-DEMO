@@ -18,6 +18,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   AUDIT_PACKAGES_DIR,
   DATA_DIR,
+  INTEROP_DIR,
   REPORTS_DIR,
   UPLOADS_DIR,
   WORM_DIR,
@@ -76,6 +77,7 @@ export function storagePosture(): StoragePosture {
     ["worm evidence", WORM_DIR],
     ["reports", REPORTS_DIR],
     ["audit packages", AUDIT_PACKAGES_DIR],
+    ["interoperability", INTEROP_DIR],
     ["backups", BACKUPS_DIR],
   ].map(([name, dir]) => ({
     name,

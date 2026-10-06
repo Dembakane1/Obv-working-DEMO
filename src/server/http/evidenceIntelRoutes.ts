@@ -11,6 +11,7 @@
  */
 import type * as http from "node:http";
 import * as ei from "../services/evidenceIntel";
+import { evidenceSourceLabel } from "../services/interop/fieldObservations/provenance";
 import * as repo from "../db/repo";
 import {
   renderEvidenceIntelDashboard,
@@ -170,6 +171,8 @@ export async function handleEvidenceIntelRoutes(ctx: EvidenceIntelRouteContext):
         twinHref: twinProjectId
           ? `/timeline/twin/${twinProjectId}?pin=${encodeURIComponent(evidence.id)}`
           : null,
+        // Capture provenance, read from the insert-only provenance link.
+        source: evidenceSourceLabel(evidence.id),
       })
     );
     return true;

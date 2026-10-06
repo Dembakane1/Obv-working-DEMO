@@ -173,6 +173,8 @@ import { handleOfficialSourceRoutes } from "./officialSourceRoutes";
 import * as officialSourcesSvc from "../services/officialSources";
 import { handleTimelineRoutes } from "./timelineRoutes";
 import { handleTwinRoutes } from "./twinRoutes";
+import { handleInteropRoutes } from "./interopRoutes";
+import * as interopSvc from "../services/interop";
 import { TimelineError } from "../services/timeline";
 import * as timelineSvc from "../services/timeline";
 import { EvidenceIntelError } from "../services/evidenceIntel";
@@ -585,6 +587,8 @@ function evidenceBundlesForMilestone(milestoneId: string): EvidenceBundle[] {
     milestone,
     submittedBy: repo.getUser(evidence.userId),
     approval,
+    // Capture provenance, read from the insert-only provenance link.
+    source: interopSvc.evidenceSourceLabel(evidence.id),
   }));
 }
 
@@ -3229,6 +3233,52 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
+  // ============== Infrastructure Interoperability (OC4IDS + field observations) ==============
+  if (
+    await handleInteropRoutes({
+      pathname,
+      method,
+      req,
+      res,
+      searchParams: url.searchParams,
+      getUser: () => {
+        const u = currentUser(req);
+        if (!u) throw new interopSvc.InteropError("Select a demo user first", 401);
+        return u;
+      },
+      signInLocation: signInPath(),
+      navFor,
+      readParams,
+      readBody: (limit) => readBody(req, limit),
+      isForm: () => isFormPost(req),
+      // The CONFIGURED public base URL only — never the request's Host
+      // header, which a client controls and which would be written into a
+      // permanent, hashed export package.
+      publicBaseUrl: () => publicBaseUrl() || null,
+      redirect: (location) => redirect(res, location),
+      sendJson: (data, status) => sendJson(res, data, status ?? 200),
+      sendHtml: (html, status) => sendHtml(res, html, status ?? 200),
+      sendBytes: (bytes, contentType, filename, extra) => {
+        const headers: Record<string, string> = {
+          "Content-Type": contentType,
+          "Content-Length": String(bytes.length),
+          "X-Content-Type-Options": "nosniff",
+          ...(extra ?? {}),
+        };
+        if (filename) headers["Content-Disposition"] = `attachment; filename="${filename.replace(/[^A-Za-z0-9._-]/g, "_")}"`;
+        res.writeHead(200, headers);
+        res.end(bytes);
+      },
+      afterEvidenceSubmitted: (milestoneId, userId) => {
+        try {
+          drawReadinessSvc.recordReadinessTransitionsForMilestone(milestoneId, userId);
+        } catch { /* advisory */ }
+      },
+    })
+  ) {
+    return;
+  }
+
   const loanApi = /^\/api\/projects\/([^/]+)\/(loan|parties|jurisdiction|memberships|lender-policy)$/.exec(pathname);
   if (loanApi) {
     const user = lenderUser();
@@ -5797,6 +5847,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         accountEvents: repo.listAccountEventsForProject(data.project.id),
         notifications: repo.listBroadcastNotifications(30),
         users: usersById(),
+        showInfrastructureData: interopSvc.canViewInterop(user!),
         threads: listThreadsForUser(user!)
           .filter((t) => t.projectId === data.project.id)
           .map((t) => ({
@@ -6916,7 +6967,7 @@ const server = http.createServer((req, res) => {
     // "Internal server error", which is both a worse experience and a weak
     // existence oracle — 500 here, 404 there, tells an attacker they hit
     // something real. ComplianceError is the DMV layer's typed error.
-    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError || err instanceof IdentityError || err instanceof IntegrationError || err instanceof EvidenceIntelError || err instanceof OfficialSourceError || err instanceof TimelineError;
+    const known = err instanceof SubmissionError || err instanceof DrawError || err instanceof BudgetError || err instanceof ExceptionError || err instanceof ChangeOrderError || err instanceof RetainageError || err instanceof AuditPackageError || err instanceof GateError || err instanceof PermitError || err instanceof LenderError || err instanceof BankingError || err instanceof BankingProviderError || err instanceof DisputeError || err instanceof AccessError || err instanceof ComplianceError || err instanceof PortfolioError || err instanceof IdentityError || err instanceof IntegrationError || err instanceof EvidenceIntelError || err instanceof OfficialSourceError || err instanceof TimelineError || err instanceof interopSvc.InteropError;
     const status = known ? err.statusCode : 500;
     console.error(`[error] [rid=${requestId}] ${req.method} ${req.url}:`, err.stack ?? err.message ?? err);
     // Unknown failures surface the correlation id so a lender can quote a
@@ -6934,6 +6985,14 @@ const server = http.createServer((req, res) => {
       const refDraw = /\/draw\/([^/?#]+)[^"]*tab=lender/.exec(ref);
       if (known && req.method === "POST" && refDraw) {
         res.writeHead(303, { Location: `/draw/${refDraw[1]}?tab=lender&err=${encodeURIComponent(message).slice(0, 400)}` });
+        res.end();
+        return;
+      }
+      // Infrastructure Data workspace and observation review forms bounce
+      // back the same way (export, import, reviewer decisions).
+      const refInterop = /(\/project\/[^/?#]+\/infrastructure-data(?:\/[a-z]+)?|\/interop\/field-observations\/[^/?#]+)/.exec(ref);
+      if (known && req.method === "POST" && refInterop) {
+        res.writeHead(303, { Location: `${refInterop[1]}?err=${encodeURIComponent(message).slice(0, 400)}` });
         res.end();
         return;
       }
@@ -7098,6 +7157,7 @@ server.listen(PORT, () => {
   console.log(integrationsSvc.integrationsStartupNotice());
   console.log(evidenceIntelSvc.evidenceIntelStartupNotice());
   console.log(officialSourcesSvc.officialSourcesStartupNotice());
+  console.log(interopSvc.interopStartupNotice());
   if (demoAuthEnabled()) {
     console.log(`Demo sign-in: http://localhost:${PORT}/  (pick a seeded role)`);
   } else {

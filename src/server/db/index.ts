@@ -30,6 +30,9 @@ export const REPORTS_DIR = process.env.OBV_REPORT_STORAGE_PATH
   : path.join(DATA_DIR, "reports");
 // Generated audit-package ZIPs (immutable once READY; write-once files).
 export const AUDIT_PACKAGES_DIR = path.join(DATA_DIR, "audit-packages");
+// Interoperability artifacts: write-once OC4IDS export packages and
+// external field-data import snapshots (never served as static files).
+export const INTEROP_DIR = path.join(DATA_DIR, "interop");
 const DB_PATH = path.join(DATA_DIR, "obv.db");
 
 /** Current schema version stamped into PRAGMA user_version at open. The
@@ -2752,6 +2755,151 @@ CREATE TABLE IF NOT EXISTS source_dead_letters (
 );
 CREATE INDEX IF NOT EXISTS idx_srcdlq_source ON source_dead_letters(source_id, status);
 
+-- ============== Infrastructure Interoperability v1 (additive) ==============
+-- OC4IDS export provenance. APPEND-ONLY: an export row is never updated
+-- or deleted and its payload file is write-once, so a historical export
+-- stays reproducible and auditable byte for byte.
+CREATE TABLE IF NOT EXISTS interop_exports (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  standard TEXT NOT NULL CHECK (standard IN ('OC4IDS')),
+  schema_version TEXT NOT NULL,
+  mapping_version TEXT NOT NULL,
+  exported_at TEXT NOT NULL,
+  exported_by_user_id TEXT NOT NULL REFERENCES users(id),
+  project_config_version INTEGER NOT NULL,
+  project_sha256 TEXT NOT NULL,              -- canonical project object
+  payload_sha256 TEXT NOT NULL,              -- exact package bytes on disk
+  payload_bytes INTEGER NOT NULL,
+  payload_path TEXT NOT NULL,
+  source_records TEXT NOT NULL,              -- JSON [{table,id,version}]
+  populated_fields INTEGER NOT NULL,
+  omitted_fields INTEGER NOT NULL,
+  validation_errors INTEGER NOT NULL,
+  validation_warnings INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('VALID','INVALID'))
+);
+CREATE INDEX IF NOT EXISTS idx_interop_exports_project ON interop_exports(project_id, exported_at);
+
+-- Immutable external field-data import snapshots (one per batch). The
+-- verbatim payload is written once under the interop data root; this row
+-- is never updated.
+CREATE TABLE IF NOT EXISTS field_observation_imports (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  declared_project_id TEXT REFERENCES projects(id),
+  source_system TEXT NOT NULL CHECK (source_system IN ('KOBOTOOLBOX','ODK','GEMS_STYLE','GENERIC')),
+  provider_label TEXT,
+  adapter_id TEXT NOT NULL,
+  format_version TEXT NOT NULL,
+  imported_at TEXT NOT NULL,
+  imported_by_user_id TEXT NOT NULL REFERENCES users(id),
+  payload_path TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL,
+  payload_bytes INTEGER NOT NULL,
+  observation_count INTEGER NOT NULL,
+  duplicate_count INTEGER NOT NULL DEFAULT 0,
+  source_metadata TEXT,                      -- JSON, bounded, sanitized
+  notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fo_imports_org ON field_observation_imports(organization_id, imported_at);
+
+-- Normalized external observation candidates. UNVERIFIED until a human
+-- reviewer decides; a decision happens exactly once (guarded update).
+CREATE TABLE IF NOT EXISTS field_observations (
+  id TEXT PRIMARY KEY,
+  import_id TEXT NOT NULL REFERENCES field_observation_imports(id),
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  source_system TEXT NOT NULL,
+  provider_label TEXT,
+  external_observation_id TEXT NOT NULL,
+  project_reference TEXT,                    -- verbatim reference from the source
+  matched_project_id TEXT REFERENCES projects(id),
+  match_verdict TEXT NOT NULL CHECK (match_verdict IN
+    ('DECLARED_PROJECT','REFERENCE_MATCH','REVIEWER_ASSIGNED','NO_MATCH','AMBIGUOUS')),
+  match_reasons TEXT NOT NULL,               -- JSON array of reason strings
+  milestone_reference TEXT,                  -- verbatim milestone reference from the source
+  -- Resolved suggestion only; the reviewer decides. Deliberately NOT a
+  -- foreign key: an advisory hint must never block deleting a draft
+  -- milestone or re-applying a template (a stale hint simply matches none).
+  suggested_milestone_id TEXT,
+  collector TEXT,
+  observed_at TEXT,                          -- normalized ISO; null when absent
+  observed_at_verbatim TEXT,
+  latitude REAL,
+  longitude REAL,
+  accuracy_m REAL,
+  form_fields TEXT NOT NULL,                 -- JSON object (bounded)
+  comments TEXT,
+  photo_count INTEGER NOT NULL DEFAULT 0,
+  source_metadata TEXT,                      -- JSON
+  source_record_sha256 TEXT NOT NULL,        -- hash of the verbatim observation
+  ingested_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'UNVERIFIED' CHECK (status IN
+    ('UNVERIFIED','ACCEPTED','REJECTED','DEFERRED')),
+  milestone_id TEXT REFERENCES milestones(id),
+  accepted_evidence_id TEXT REFERENCES evidence_items(id),
+  reviewed_by_user_id TEXT REFERENCES users(id),
+  reviewed_at TEXT,
+  review_note TEXT,
+  dedupe_key TEXT NOT NULL UNIQUE            -- org + source + external id + record hash
+);
+CREATE INDEX IF NOT EXISTS idx_fo_project ON field_observations(matched_project_id, status, ingested_at);
+CREATE INDEX IF NOT EXISTS idx_fo_org ON field_observations(organization_id, status, ingested_at);
+CREATE INDEX IF NOT EXISTS idx_fo_import ON field_observations(import_id);
+
+-- Photos carried by an observation. Bytes are written once under the
+-- interop data root after content-type sniffing; a source URL is recorded
+-- verbatim and NEVER retrieved by OBV.
+CREATE TABLE IF NOT EXISTS field_observation_photos (
+  id TEXT PRIMARY KEY,
+  observation_id TEXT NOT NULL REFERENCES field_observations(id),
+  seq INTEGER NOT NULL,
+  file_name TEXT,
+  content_type TEXT,
+  sha256 TEXT,
+  bytes INTEGER,
+  stored_path TEXT,
+  source_url TEXT,
+  caption TEXT,
+  transferred INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_fo_photos ON field_observation_photos(observation_id, seq);
+
+-- Append-only audit of every event on an observation.
+CREATE TABLE IF NOT EXISTS field_observation_events (
+  id TEXT PRIMARY KEY,
+  observation_id TEXT NOT NULL REFERENCES field_observations(id),
+  occurred_at TEXT NOT NULL,
+  actor_user_id TEXT REFERENCES users(id),
+  kind TEXT NOT NULL CHECK (kind IN
+    ('RECEIVED','MATCHED','ACCEPTED','REJECTED','DEFERRED','EVIDENCE_CREATED','NOTE')),
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fo_events ON field_observation_events(observation_id, occurred_at);
+
+-- Immutable evidence provenance: which external observation an evidence
+-- item was accepted from. No row = captured directly in OBV. Insert-only.
+CREATE TABLE IF NOT EXISTS evidence_provenance (
+  evidence_item_id TEXT PRIMARY KEY REFERENCES evidence_items(id),
+  origin TEXT NOT NULL CHECK (origin IN ('EXTERNAL_FIELD_OBSERVATION')),
+  observation_id TEXT NOT NULL REFERENCES field_observations(id),
+  import_id TEXT NOT NULL REFERENCES field_observation_imports(id),
+  source_system TEXT NOT NULL,
+  provider_label TEXT,
+  external_observation_id TEXT NOT NULL,
+  collector TEXT,
+  source_observed_at TEXT,
+  source_latitude REAL,
+  source_longitude REAL,
+  source_accuracy_m REAL,
+  source_record_sha256 TEXT NOT NULL,
+  accepted_by_user_id TEXT NOT NULL REFERENCES users(id),
+  accepted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_provenance_obs ON evidence_provenance(observation_id);
+
 `;
 
 export function getDb(): DatabaseSync {
@@ -2760,6 +2908,7 @@ export function getDb(): DatabaseSync {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
     fs.mkdirSync(WORM_DIR, { recursive: true });
     fs.mkdirSync(REPORTS_DIR, { recursive: true });
+    fs.mkdirSync(INTEROP_DIR, { recursive: true });
     db = new DatabaseSync(DB_PATH);
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec("PRAGMA foreign_keys = ON;");
@@ -3229,5 +3378,6 @@ export function resetDb(): void {
   fs.rmSync(WORM_DIR, { recursive: true, force: true });
   fs.rmSync(REPORTS_DIR, { recursive: true, force: true });
   fs.rmSync(AUDIT_PACKAGES_DIR, { recursive: true, force: true });
+  fs.rmSync(INTEROP_DIR, { recursive: true, force: true });
   getDb();
 }

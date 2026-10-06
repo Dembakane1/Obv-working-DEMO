@@ -3922,6 +3922,9 @@ export interface TwinPinDetail {
     latitude: number | null;
     longitude: number | null;
     isDemoFallback: boolean;
+    /** Where the photo came from: captured directly in OBV, or accepted
+     *  from an external field-data system (with the provider named). */
+    source: EvidenceSourceLabel;
   };
   verification: {
     verdict: Verdict;
@@ -4007,4 +4010,195 @@ export interface TwinSnapshot {
   stages: Array<{ seq: number; status: MilestoneStatus; points: TwinPoint[] }>;
   completionPct: number;
   evidencePinCount: number;
+}
+
+// =====================================================================
+// Infrastructure Interoperability v1 (additive)
+//
+// OC4IDS = standardized infrastructure DISCLOSURE (what a project is, who
+// is involved, what it costs, where it is). OBV = verification,
+// provenance, review and financial control. The two never merge: an
+// export carries only authoritative disclosure data, and OBV's
+// intelligence stays in OBV records beside it.
+// =====================================================================
+
+export type InteropStandard = "OC4IDS";
+export type InteropExportStatus = "VALID" | "INVALID";
+
+/** A reference to one authoritative OBV record an export was built from. */
+export interface InteropSourceRecordRef {
+  table: string;
+  id: string;
+  /** A version marker where the record carries one (configuration
+   *  version, updated timestamp); null when the record has none. */
+  version: string | null;
+}
+
+/** Immutable provenance of one OC4IDS export. Append-only. */
+export interface InteropExportRecord {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  standard: InteropStandard;
+  schemaVersion: string;
+  mappingVersion: string;
+  exportedAt: string;
+  exportedByUserId: string;
+  projectConfigVersion: number;
+  /** sha256 of the canonical (sorted-key) project object — reproducible
+   *  across exports of unchanged records. */
+  projectSha256: string;
+  /** sha256 of the exact package bytes written to disk. */
+  payloadSha256: string;
+  payloadBytes: number;
+  payloadPath: string;
+  sourceRecords: InteropSourceRecordRef[];
+  populatedFields: number;
+  omittedFields: number;
+  validationErrors: number;
+  validationWarnings: number;
+  status: InteropExportStatus;
+}
+
+export type FieldObservationSourceSystem = "KOBOTOOLBOX" | "ODK" | "GEMS_STYLE" | "GENERIC";
+/** External observations are UNVERIFIED until a reviewer decides. */
+export type FieldObservationStatus = "UNVERIFIED" | "ACCEPTED" | "REJECTED" | "DEFERRED";
+export type FieldObservationMatchVerdict =
+  | "DECLARED_PROJECT"   // the import declared the target project
+  | "REFERENCE_MATCH"    // the observation's reference equals a project id or code
+  | "REVIEWER_ASSIGNED"  // a reviewer assigned the project by hand
+  | "NO_MATCH"
+  | "AMBIGUOUS";
+
+/** One immutable import snapshot (a batch of external observations). */
+export interface FieldObservationImport {
+  id: string;
+  organizationId: string;
+  declaredProjectId: string | null;
+  sourceSystem: FieldObservationSourceSystem;
+  providerLabel: string | null;
+  adapterId: string;
+  formatVersion: string;
+  importedAt: string;
+  importedByUserId: string;
+  payloadPath: string;
+  payloadSha256: string;
+  payloadBytes: number;
+  observationCount: number;
+  duplicateCount: number;
+  sourceMetadata: Record<string, unknown> | null;
+  notes: string | null;
+}
+
+/** A normalized external observation candidate. The verbatim source
+ *  record stays in the import snapshot; this row never replaces it. */
+export interface FieldObservation {
+  id: string;
+  importId: string;
+  organizationId: string;
+  sourceSystem: FieldObservationSourceSystem;
+  providerLabel: string | null;
+  externalObservationId: string;
+  projectReference: string | null;
+  matchedProjectId: string | null;
+  matchVerdict: FieldObservationMatchVerdict;
+  matchReasons: string[];
+  /** Verbatim milestone reference from the source and the milestone it
+   *  resolves to in the matched project — a suggestion the reviewer
+   *  confirms or overrides, never an assignment. */
+  milestoneReference: string | null;
+  suggestedMilestoneId: string | null;
+  collector: string | null;
+  /** Source-provided timestamp normalized to ISO 8601 (null when absent
+   *  or unparseable — never invented). */
+  observedAt: string | null;
+  observedAtVerbatim: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  accuracyMeters: number | null;
+  formFields: Record<string, unknown>;
+  comments: string | null;
+  photoCount: number;
+  sourceMetadata: Record<string, unknown> | null;
+  /** sha256 of the verbatim observation object inside the snapshot. */
+  sourceRecordSha256: string;
+  ingestedAt: string;
+  status: FieldObservationStatus;
+  milestoneId: string | null;
+  acceptedEvidenceId: string | null;
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+  dedupeKey: string;
+}
+
+export interface FieldObservationPhoto {
+  id: string;
+  observationId: string;
+  seq: number;
+  fileName: string | null;
+  contentType: string | null;
+  sha256: string | null;
+  bytes: number | null;
+  /** Write-once file under the interop data root; null when only a
+   *  source URL was supplied (never retrieved by OBV). */
+  storedPath: string | null;
+  sourceUrl: string | null;
+  caption: string | null;
+  transferred: boolean;
+}
+
+export type FieldObservationEventKind =
+  | "RECEIVED" | "MATCHED" | "ACCEPTED" | "REJECTED" | "DEFERRED" | "EVIDENCE_CREATED" | "NOTE";
+
+export interface FieldObservationEvent {
+  id: string;
+  observationId: string;
+  occurredAt: string;
+  actorUserId: string | null;
+  kind: FieldObservationEventKind;
+  detail: string | null;
+}
+
+export type EvidenceOrigin = "OBV_CAPTURE" | "EXTERNAL_FIELD_OBSERVATION";
+
+/** Immutable link from an evidence item back to the external observation
+ *  it was accepted from. Absence of a row means the evidence was captured
+ *  directly in OBV. */
+export interface EvidenceProvenance {
+  evidenceItemId: string;
+  origin: "EXTERNAL_FIELD_OBSERVATION";
+  observationId: string;
+  importId: string;
+  sourceSystem: FieldObservationSourceSystem;
+  providerLabel: string | null;
+  externalObservationId: string;
+  collector: string | null;
+  sourceObservedAt: string | null;
+  sourceLatitude: number | null;
+  sourceLongitude: number | null;
+  sourceAccuracyMeters: number | null;
+  sourceRecordSha256: string;
+  acceptedByUserId: string;
+  acceptedAt: string;
+}
+
+/** Plain-language source line for any evidence item. */
+export interface EvidenceSourceLabel {
+  origin: EvidenceOrigin;
+  label: string;
+  providerLabel: string | null;
+  externalObservationId: string | null;
+  collector: string | null;
+  sourceObservedAt: string | null;
+}
+
+/** A declared-but-not-connected external provider boundary. */
+export interface InteropProviderSpec {
+  key: string;
+  displayName: string;
+  category: "FIELD_DATA" | "PROCUREMENT_PORTAL" | "PROJECT_MONITORING";
+  status: "NOT_CONNECTED";
+  description: string;
+  requires: string[];
 }

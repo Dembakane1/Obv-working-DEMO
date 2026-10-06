@@ -90,6 +90,7 @@ import type {
   User,
   Verification,
   VirtualAccountEvent,
+  EvidenceSourceLabel,
 } from "../../shared/types";
 import type { ProjectAccountSummary } from "../services/VirtualAccountService";
 import { ATTENTION_RULES, type IntelligenceData } from "../services/intelligence";
@@ -166,6 +167,9 @@ export interface EvidenceBundle {
   milestone: Milestone;
   submittedBy: User | null;
   approval: ApprovalRequest | null;
+  /** Capture provenance (OBV Capture vs an external field-data system);
+   *  optional so legacy constructors keep working. */
+  source?: EvidenceSourceLabel | null;
 }
 
 export interface ProjectCardData {
@@ -1034,6 +1038,8 @@ export function renderProjectDetail(input: {
   notifications: Notification[];
   users: Map<string, User>;
   threads: Array<{ thread: ConversationThread; latest: ChatMessage | null; milestone: Milestone | null }>;
+  /** Show the Infrastructure Data tab only to roles that may use it. */
+  showInfrastructureData?: boolean;
 }): string {
   const { data, tab } = input;
   const { project } = data;
@@ -1124,6 +1130,9 @@ export function renderProjectDetail(input: {
               active: tab === t.key,
             })),
             { href: `/project/${project.id}/budget`, label: "Budget & Progress" },
+            ...(input.showInfrastructureData
+              ? [{ href: `/project/${project.id}/infrastructure-data`, label: "Infrastructure Data" }]
+              : []),
           ]}
         />
 
@@ -1205,6 +1214,7 @@ export function renderProjectDetail(input: {
                   ledgerEntry={b.ledgerEntry}
                   requirement={b.milestone.requirement}
                   submittedBy={b.submittedBy}
+                  source={b.source}
                   approval={b.approval}
                   accountStatus={b.milestone.accountStatus}
                 />
@@ -1815,6 +1825,7 @@ export function renderMilestoneDetail(input: {
               ledgerEntry={b.ledgerEntry}
               requirement={milestone.requirement}
               submittedBy={b.submittedBy}
+              source={b.source}
               approval={approval}
               accountStatus={milestone.accountStatus}
             />
@@ -2990,6 +3001,7 @@ export function renderCompliance(input: {
                     ledgerEntry={selected.ledgerEntry}
                     requirement={selected.milestone.requirement}
                     submittedBy={selected.submittedBy}
+                    source={selected.source}
                     accountStatus={selected.milestone.accountStatus}
                   />
                 </DensePanel>

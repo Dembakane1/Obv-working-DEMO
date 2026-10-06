@@ -19,6 +19,7 @@
  * from their owning modules so there is one source of truth per gate.
  */
 import * as repo from "../../db/repo";
+import * as interopRepo from "../../db/interopRepo";
 import { canViewEvidenceIntel } from "../evidenceIntel/core";
 import { canViewSources } from "../officialSources/core";
 import { hasBankingCapability } from "../banking/bankingAccess";
@@ -251,6 +252,11 @@ export function twinScene(user: User, projectId: string): TwinScene {
   }
 
   // Evidence pins — ONLY items with a real GPS fix; capped and reported.
+  // One batched provenance read names externally-sourced items on the pin
+  // itself (no row = captured directly in OBV).
+  const externalSource = new Map(
+    safe(() => interopRepo.listEvidenceProvenanceForProject(project.id), []).map((p) => [p.evidenceItemId, p] as const)
+  );
   let pinCount = 0;
   let skippedNoGps = 0;
   if (frame) {
@@ -275,7 +281,11 @@ export function twinScene(user: User, projectId: string): TwinScene {
           severity: null,
           recordStatus: "AUTHORITATIVE",
           href: `/timeline/twin/${project.id}?pin=${encodeURIComponent(e.id)}`,
-          detail: `Captured ${e.capturedAt.slice(0, 16).replace("T", " ")} UTC`,
+          detail:
+            `Captured ${e.capturedAt.slice(0, 16).replace("T", " ")} UTC` +
+            (externalSource.has(e.id)
+              ? ` · Source: External Field Observation · Provider: ${externalSource.get(e.id)!.providerLabel ?? externalSource.get(e.id)!.sourceSystem}`
+              : " · Source: OBV Capture"),
         });
       }
     }

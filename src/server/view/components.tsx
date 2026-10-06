@@ -20,6 +20,7 @@ import type {
   UserRole,
   Verdict,
   Verification,
+  EvidenceSourceLabel,
 } from "../../shared/types";
 
 // ------------------------------------------------------------ helpers
@@ -82,6 +83,21 @@ const ENUM_LABELS: Record<string, string> = {
   LOW: "Low",
   CRITICAL: "Critical",
   INFO: "Info",
+  // Interoperability vocabulary — plain language, never developer terms.
+  UNVERIFIED: "Unverified",
+  KOBOTOOLBOX: "KoBoToolbox",
+  ODK: "ODK",
+  GEMS_STYLE: "GEMS-style field platform",
+  GENERIC: "External field-data system",
+  OC4IDS: "OC4IDS",
+  DECLARED_PROJECT: "Declared project",
+  REFERENCE_MATCH: "Reference match",
+  REVIEWER_ASSIGNED: "Assigned by reviewer",
+  NO_MATCH: "No project match",
+  AMBIGUOUS: "Ambiguous match",
+  EVIDENCE_CREATED: "Evidence created",
+  NOT_CONNECTED: "Not connected",
+  NOT_CONFIGURED: "Not configured",
 };
 export function enumLabel(value: string | null | undefined): string {
   if (!value) return "—";
@@ -977,12 +993,26 @@ export function EvidenceFacts(props: {
   evidence: EvidenceItem;
   requirement: string;
   submittedBy?: User | null;
+  /** Where the photo came from (OBV Capture vs an external field-data
+   *  system). Shown whenever the caller resolved it. */
+  source?: EvidenceSourceLabel | null;
 }): VNode {
   const { evidence } = props;
   return (
     <dl className="kv">
       <dt>Requirement</dt>
       <dd>{props.requirement}</dd>
+      {props.source ? (
+        <>
+          <dt>Source</dt>
+          <dd>
+            {props.source.origin === "EXTERNAL_FIELD_OBSERVATION" ? "External Field Observation" : "OBV Capture"}
+            {props.source.providerLabel ? ` · Provider: ${props.source.providerLabel}` : ""}
+            {props.source.externalObservationId ? ` · external record ${props.source.externalObservationId}` : ""}
+            {props.source.collector ? ` · collector ${props.source.collector}` : ""}
+          </dd>
+        </>
+      ) : null}
       <dt>Captured</dt>
       <dd className="mono">{fmtDate(evidence.capturedAt)}</dd>
       <dt>Uploaded</dt>
@@ -1091,6 +1121,7 @@ export function EvidencePanel(props: {
   submittedBy?: User | null;
   approval?: ApprovalRequest | null;
   accountStatus?: AccountStatus;
+  source?: EvidenceSourceLabel | null;
 }): VNode {
   const { evidence, verification, ledgerEntry } = props;
   return (
@@ -1102,7 +1133,7 @@ export function EvidencePanel(props: {
         <div className="facts">
           <div className="ev-sec">Original evidence</div>
           <EvidenceStatusChips verification={verification} isDemoFallback={evidence.isDemoFallback} />
-          <EvidenceFacts evidence={evidence} requirement={props.requirement} submittedBy={props.submittedBy} />
+          <EvidenceFacts evidence={evidence} requirement={props.requirement} submittedBy={props.submittedBy} source={props.source} />
           {verification ? (
             <>
               <div className="ev-sec">Verification checks</div>

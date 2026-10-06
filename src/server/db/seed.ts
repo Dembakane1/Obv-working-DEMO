@@ -1972,6 +1972,41 @@ function purgeDemoScopedRows(): void {
   db.prepare("DELETE FROM organizations WHERE id = 'org-dmv-borrower'").run();
   db.prepare(`DELETE FROM users WHERE id IN (${inList(DEMO_USERS)})`).run(...DEMO_USERS);
   db.prepare(`DELETE FROM organizations WHERE id IN (${inList(DEMO_ORGS)})`).run(...DEMO_ORGS);
+  // ---- interoperability rows scoped to the demo projects (additive) ----
+  // Observations matched to a demo project, their photos/events, imports
+  // that declared a demo project and hold nothing else, OC4IDS export
+  // provenance of the demo projects, and provenance links whose evidence
+  // was purged above. Pilot-project rows are never touched.
+  const demoProjects = [DEMO_PROJECT, DMV_PROJECT];
+  const dph = inList(demoProjects);
+  db.prepare(
+    `DELETE FROM field_observation_events WHERE observation_id IN
+       (SELECT id FROM field_observations WHERE matched_project_id IN (${dph}))`
+  ).run(...demoProjects);
+  db.prepare(
+    `DELETE FROM field_observation_photos WHERE observation_id IN
+       (SELECT id FROM field_observations WHERE matched_project_id IN (${dph}))`
+  ).run(...demoProjects);
+  db.prepare("DELETE FROM evidence_provenance WHERE evidence_item_id NOT IN (SELECT id FROM evidence_items)").run();
+  db.prepare(`DELETE FROM field_observations WHERE matched_project_id IN (${dph})`).run(...demoProjects);
+  db.prepare(
+    `DELETE FROM field_observation_imports WHERE declared_project_id IN (${dph})
+       AND id NOT IN (SELECT import_id FROM field_observations)`
+  ).run(...demoProjects);
+  // Observations imported BY a demo organization that were never matched
+  // to any project (nothing else references them; matched ones were
+  // handled above, and provenance on surviving evidence is never touched).
+  const demoOrgs = [...DEMO_ORGS, "org-dmv-borrower"];
+  const doh = inList(demoOrgs);
+  const unmatched = `SELECT id FROM field_observations WHERE organization_id IN (${doh}) AND matched_project_id IS NULL`;
+  db.prepare(`DELETE FROM field_observation_events WHERE observation_id IN (${unmatched})`).run(...demoOrgs);
+  db.prepare(`DELETE FROM field_observation_photos WHERE observation_id IN (${unmatched})`).run(...demoOrgs);
+  db.prepare(`DELETE FROM field_observations WHERE id IN (${unmatched})`).run(...demoOrgs);
+  db.prepare(
+    `DELETE FROM field_observation_imports WHERE organization_id IN (${doh})
+       AND id NOT IN (SELECT import_id FROM field_observations)`
+  ).run(...demoOrgs);
+  db.prepare(`DELETE FROM interop_exports WHERE project_id IN (${dph})`).run(...demoProjects);
   db.exec("PRAGMA foreign_keys = ON;");
 }
 

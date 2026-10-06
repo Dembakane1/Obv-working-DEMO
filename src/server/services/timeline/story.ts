@@ -42,6 +42,7 @@ const STORY_TYPES = new Set([
   "PERMIT_BASIS_FINALIZED", "PERMIT_BASIS_CORRECTED",
   "INSPECTION_SCHEDULED", "INSPECTION_RESULT",
   "EVIDENCE_UPLOADED", "EVIDENCE_VERIFIED",
+  "EXTERNAL_OBSERVATION_ACCEPTED",
   "DRAW_SUBMITTED", "APPROVAL_REQUESTED",
   "DISPUTE_OPENED", "DISPUTE_RESOLVED",
   "EXCEPTION_RAISED", "EXCEPTION_RESOLVED",
@@ -116,7 +117,11 @@ function narrate(e: TimelineEvent): { headline: string; detail: string } {
         detail: e.explanation,
       };
     case "EVIDENCE_UPLOADED":
-      return { headline: "Evidence submitted", detail: `Field evidence was uploaded and hash-anchored into the ledger${who}.` };
+      return /External Field Observation/.test(e.explanation)
+        ? { headline: "Evidence submitted", detail: `An accepted external field observation entered the evidence pipeline and was hash-anchored into the ledger${who}. ${e.explanation.slice(e.explanation.indexOf("Source:"))}`.trim() }
+        : { headline: "Evidence submitted", detail: `Field evidence was uploaded and hash-anchored into the ledger${who}.` };
+    case "EXTERNAL_OBSERVATION_ACCEPTED":
+      return { headline: "External field observation accepted as evidence", detail: e.explanation };
     case "EVIDENCE_VERIFIED":
       return { headline: `Evidence reviewed`, detail: e.explanation };
     case "DRAW_SUBMITTED":

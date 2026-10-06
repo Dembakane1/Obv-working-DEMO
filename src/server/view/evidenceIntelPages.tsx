@@ -13,6 +13,7 @@ import type {
   EvidenceMetadataFacts,
   EvidenceReviewItem,
   EvidenceSignal,
+  EvidenceSourceLabel,
 } from "../../shared/types";
 import type { EvidenceIntelDashboard } from "../services/evidenceIntel/dashboard";
 import type { EvidenceAnalytics } from "../services/evidenceIntel/analytics";
@@ -259,6 +260,8 @@ export function renderDuplicateViewer(input: {
   metadata: EvidenceMetadataFacts | null;
   score: { quality: number; confidence: number; hasGps: boolean };
   twinHref?: string | null;
+  /** Capture provenance: OBV Capture vs an external field-data system. */
+  source?: EvidenceSourceLabel | null;
 }): string {
   const { evidence, metadata, score } = input;
   const dupSignals = input.signals.filter((s) => s.category.includes("DUPLICATE") || s.category.includes("CROSS"));
@@ -306,6 +309,17 @@ export function renderDuplicateViewer(input: {
           <h2>Metadata panel</h2>
           <table className="evi-table">
             <tbody>
+              {input.source ? (
+                <tr>
+                  <td>Source</td>
+                  <td>
+                    {input.source.origin === "EXTERNAL_FIELD_OBSERVATION" ? "External Field Observation" : "OBV Capture"}
+                    {input.source.providerLabel ? ` · Provider: ${input.source.providerLabel}` : ""}
+                    {input.source.externalObservationId ? ` · external record ${input.source.externalObservationId}` : ""}
+                    {input.source.collector ? ` · collector ${input.source.collector}` : ""}
+                  </td>
+                </tr>
+              ) : null}
               <tr><td>Captured</td><td>{when(metadata?.capturedAt ?? evidence.capturedAt)}</td></tr>
               <tr><td>Uploaded</td><td>{when(metadata?.uploadedAt ?? evidence.uploadedAt)}</td></tr>
               <tr><td>Upload delay</td><td>{metadata?.uploadDelaySeconds != null ? `${metadata.uploadDelaySeconds}s` : "—"}</td></tr>
@@ -357,7 +371,7 @@ export function renderEvidenceTimeline(input: {
   evidence: EvidenceItem;
   entries: TimelineEntry[];
 }): string {
-  const KIND_TONE: Record<string, string> = { UPLOAD: "neutral", REVIEW: "warn", LEDGER: "ok", DRAW: "neutral", ADVISORY: "warn" };
+  const KIND_TONE: Record<string, string> = { UPLOAD: "neutral", REVIEW: "warn", LEDGER: "ok", DRAW: "neutral", ADVISORY: "warn", SOURCE: "info" };
   return renderDocument(
     <AppShell title="Evidence timeline" nav={input.nav} context="Evidence Intelligence">
       <PageHeader title="Evidence timeline" sub="Every recorded moment for this evidence item, in order — capture, verification, ledger, draw references, and advisory review activity.">

@@ -11,6 +11,7 @@ import * as repo from "../../db/repo";
 import * as evidenceIntel from "../evidenceIntel";
 import { canViewEvidenceIntel } from "../evidenceIntel/core";
 import { TimelineError, requireVisibleProject } from "../timeline/core";
+import { evidenceSourceLabel } from "../interop/fieldObservations/provenance";
 import type { TwinPinDetail, User } from "../../../shared/types";
 import {
   distanceToPolylineM,
@@ -123,6 +124,9 @@ export function twinPinDetail(user: User, projectId: string, evidenceId: string)
       latitude: evidence.latitude,
       longitude: evidence.longitude,
       isDemoFallback: evidence.isDemoFallback,
+      // Captured directly in OBV, or accepted from an external field-data
+      // system — stated from the provenance record, never inferred.
+      source: evidenceSourceLabel(evidence.id),
     },
     verification: verification
       ? {

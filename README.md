@@ -197,6 +197,32 @@ every piece of verification, ledger and financial-control logic:
 - **Demo reset** — "Reset demo data" on Overview (POST /api/demo/reset)
   restores the seeded state without restarting the server.
 
+## Infrastructure Interoperability (v31)
+
+**OC4IDS = standardized infrastructure disclosure. OBV = verification,
+provenance, review and financial control.** A strictly additive module,
+reached from a new *Infrastructure Data* tab in the project workspace.
+The OC4IDS export maps a project to the OC4IDS 0.9.5 project schema using
+only authoritative OBV records: every populated value names its OBV
+source record, every unsupported field is omitted with a reason, and no
+OBV intelligence (integrity scores, signals, hashes, readiness, lender
+decisions, release or payment controls, twin state) is ever disclosed.
+Status reads Ready, Incomplete, Not configured or Invalid, and an export
+is called valid only when it validates against the implemented (vendored)
+schema subset. Each export is an immutable provenance record with the
+exporting user, versions, source records and a payload hash that is
+re-checked on every download. The External Field Observation adapter
+imports deterministic KoBoToolbox/ODK/GEMS-style datasets into an
+immutable snapshot; every observation enters as *External Observation —
+Unverified*, source URLs are never fetched, and only a reviewer's
+acceptance sends it through the existing evidence pipeline, with the
+original timestamp, coordinates and provider preserved and shown as
+"Source: External Field Observation" across evidence panels, Evidence
+Intelligence, the Timeline and the Digital Twin. Nothing in the module
+approves, releases or authorizes anything. Live providers report *Not
+Connected*. 194-checkpoint suite (`scripts/interop-test.js`) — see
+`docs/INFRASTRUCTURE_INTEROPERABILITY.md`.
+
 ## Lender Pilot RC1 (v30)
 
 **One workflow. Every safeguard. Lender-readable.** The composition
