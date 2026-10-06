@@ -1038,6 +1038,8 @@ export function renderProjectDetail(input: {
   notifications: Notification[];
   users: Map<string, User>;
   threads: Array<{ thread: ConversationThread; latest: ChatMessage | null; milestone: Milestone | null }>;
+  /** Show the Infrastructure Data tab only to roles that may use it. */
+  showInfrastructureData?: boolean;
 }): string {
   const { data, tab } = input;
   const { project } = data;
@@ -1128,7 +1130,9 @@ export function renderProjectDetail(input: {
               active: tab === t.key,
             })),
             { href: `/project/${project.id}/budget`, label: "Budget & Progress" },
-            { href: `/project/${project.id}/infrastructure-data`, label: "Infrastructure Data" },
+            ...(input.showInfrastructureData
+              ? [{ href: `/project/${project.id}/infrastructure-data`, label: "Infrastructure Data" }]
+              : []),
           ]}
         />
 

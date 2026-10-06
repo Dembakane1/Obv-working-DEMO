@@ -37,7 +37,7 @@ Status values shown for the OC4IDS export:
 |---|---|
 | Ready | Validates against the implemented schema and every core disclosure field is populated from OBV records |
 | Incomplete | Validates, but one or more core fields have no authoritative OBV source and are omitted |
-| Not configured | The deployment has no registered OC4IDS project-id prefix; nothing can be published |
+| Not configured | No registered OC4IDS project-id prefix or no configured public base URL; nothing can be published |
 | Invalid | The mapped record fails validation; export is refused |
 
 An export is never called valid unless the validator returned no errors.
@@ -73,15 +73,15 @@ Every populated value records its OBV source (`table`, `recordId`,
 | `id` | `projects.id` | Registered prefix (`OBV_OC4IDS_PROJECT_ID_PREFIX`) + OBV id; omitted when not configured |
 | `title`, `description` | `projects.name`, `projects.description` | Verbatim |
 | `status` | `projects.status` | DRAFT→preparation, ACTIVE→implementation, COMPLETED→completed; SUSPENDED omitted (no code) |
-| `updated` | latest `config_audit` row for the project, else `launched_at` | Interoperability's own audit rows are excluded |
-| `period.startDate/endDate` | `planned_start`, `planned_end` | Calendar date stated at 00:00:00Z |
+| `updated` | latest `config_audit` row for the project, else `launched_at` | Interoperability's own audit rows are excluded in SQL, so exports never change a later export |
+| `period.startDate/endDate` | `planned_start`, `planned_end` | A real calendar date is stated at 00:00:00Z; an RFC 3339 timestamp with offset is normalized to UTC; anything else is omitted as not representable |
 | `sector` | pilot `category` | ROAD→transport.road, BRIDGE→transport, SCHOOL→education, CLINIC→health, WATER→waterAndWaste, ENERGY→energy; BUILDING / OTHER omitted |
-| `locations` | `location`, `site_boundary`, country/region/locality, ROUTE spatial feature | Polygon only for a closed ring; LineString for a recorded route |
-| `budget.amount` | `total_budget` + project (or owner) currency | Omitted when zero |
+| `locations` | `location`, `site_boundary`, country/region/locality, ROUTE spatial feature | Polygon only for a boundary entered as a polygon (a POINT or CORRIDOR project's derived geofence box is never published); LineString for a recorded route |
+| `budget.amount` | `total_budget` + the project's own currency | Omitted when zero; currency never borrowed from an organization profile |
 | `parties` | owner org, implementing agency, contractor, funder, party assignments, loan lender/contractor | Roles: publicAuthority, procuringEntity, supplier, funder only |
-| `publicAuthority` | party with the publicAuthority role | A public-sector owner, or a recorded GOVERNMENT_AUTHORITY party. An implementing agency is the procuring entity, not automatically the owner |
+| `publicAuthority` | party with the publicAuthority role | A public-sector owner (government agency or implementing agency kind), else the single recorded GOVERNMENT_AUTHORITY party; several candidates without the owner among them are omitted as ambiguous. An implementing agency is the procuring entity, not automatically the owner |
 | `milestones` | `milestones` | id, title, requirement as description, planned end as due date; status `met` only after human approval (VERIFIED stays `scheduled`); `dateMet` from the final approval record |
-| `contractingProcesses[0]` | contractor organization(s), approved change orders | Suppliers and modifications (id, date applied, description, rationale, type) |
+| `contractingProcesses[0]` | contractor organization(s), approved change orders | Suppliers and modifications (id, date applied, description, rationale); type `value` for an amount change, `duration` for a schedule change, otherwise omitted |
 
 **Omitted because OBV holds no authoritative record:** `type`, `purpose`,
 `additionalClassifications`, `completion`, `relatedProjects`,
@@ -186,13 +186,20 @@ payment or release funds. The static guards in the test suite assert the
 module references none of those commands and writes no authoritative
 table.
 
-Acceptance (funder representative or compliance reviewer) calls the
+Acceptance (funder representative or compliance reviewer) first claims
+the observation, so a concurrent accept, reject, defer or assign is
+refused with 409 while the pipeline runs. It then calls the
 existing `processEvidenceSubmission` with the source photo, the source
 coordinates (or none), the **source** observation time as `capturedAt`
 and device metadata that names the external source. The pipeline issues
 its own verdict. The accepting reviewer is recorded as the evidence
 submitter, so separation of duties bars them from approving that
-milestone. After the pipeline, the existing draw-readiness hook runs and
+milestone. If the pipeline's idempotency returns evidence this
+acceptance did not create (an identical photo, position and time already
+on file), the acceptance is refused and the observation stays undecided;
+provenance is never attached to someone else's evidence. Provenance is
+written before the status changes, so external evidence can never be
+labelled an OBV capture. After the pipeline, the existing draw-readiness hook runs and
 Evidence Intelligence analyzes the new item (advisory, failure-tolerant).
 
 Assigning a project to an unmatched observation is a matching step that
@@ -270,6 +277,7 @@ Include this directory with `worm/`, `uploads/`, `reports/` and
 OBV_OC4IDS_PROJECT_ID_PREFIX=oc4ids-xxxxxx   # registered prefix; unset = Not configured
 OBV_OC4IDS_LICENSE_URL=                      # optional, published in the package
 OBV_OC4IDS_PUBLICATION_POLICY_URL=           # optional, published in the package
+OBV_PUBLIC_BASE_URL=https://obv.example.org  # required for the package URI; never taken from a request's Host header
 ```
 
 ## 7. Known limitations

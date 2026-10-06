@@ -39,6 +39,11 @@ export const IMPORT_LIMITS = {
   maxUrl: 2000,
 } as const;
 
+/** Verbatim KoBo rows travel beside the translated envelope under a
+ *  module-private symbol key; JSON input can never set it, so a caller
+ *  cannot substitute the record that is hashed and deduplicated. */
+const VERBATIM_ROWS = Symbol("verbatimRows");
+
 const SOURCE_SYSTEMS: readonly FieldObservationSourceSystem[] = ["KOBOTOOLBOX", "ODK", "GEMS_STYLE", "GENERIC"];
 
 export interface ImportPhotoInput {
@@ -217,7 +222,8 @@ export function parseImportEnvelope(body: unknown): ImportEnvelope {
   if (body.observations.length > IMPORT_LIMITS.maxObservations) {
     throw new InteropError(`at most ${IMPORT_LIMITS.maxObservations} observations per import`, 413);
   }
-  const verbatimList: unknown[] = Array.isArray(body.__verbatim) ? (body.__verbatim as unknown[]) : body.observations;
+  const carried = (body as Record<symbol, unknown>)[VERBATIM_ROWS];
+  const verbatimList: unknown[] = Array.isArray(carried) ? (carried as unknown[]) : body.observations;
   const observations = body.observations.map((o, i) => parseObservation(o, i, verbatimList[i] ?? o));
   const ids = new Set<string>();
   for (const o of observations) {
@@ -331,6 +337,6 @@ export function fromKoboSubmissions(body: Record<string, unknown>): Record<strin
     projectReference: typeof body.projectReference === "string" ? body.projectReference : null,
     sourceMetadata: isObject(body.sourceMetadata) ? body.sourceMetadata : { translatedFrom: KOBO_SUBMISSIONS_FORMAT },
     observations,
-    __verbatim: rows,
+    [VERBATIM_ROWS]: rows,
   };
 }

@@ -47,8 +47,22 @@ function typeMatches(declared: string | string[], value: unknown): boolean {
   return allowed.some((t) => t === actual || (t === "number" && actual === "integer"));
 }
 
+/** True only for a real calendar instant: every component is range-checked
+ *  by round-tripping through Date.UTC (2025-02-30 or 24:00 fail). */
+export function isRealDateTime(value: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+  if (!m) return false;
+  const [y, mo, d, h, mi, s] = [m[1], m[2], m[3], m[4], m[5], m[6]].map(Number);
+  const t = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+  if (t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d || t.getUTCHours() !== h || t.getUTCMinutes() !== mi || t.getUTCSeconds() !== s) {
+    return false;
+  }
+  if (m[7] !== "Z" && (Number(m[8]) > 23 || Number(m[9]) > 59)) return false;
+  return true;
+}
+
 function formatOk(format: JsonSchema["format"], value: string): boolean {
-  if (format === "date-time") return RFC3339.test(value) && Number.isFinite(Date.parse(value));
+  if (format === "date-time") return RFC3339.test(value) && isRealDateTime(value);
   if (format === "email") return EMAIL.test(value);
   if (format === "uri") {
     try {

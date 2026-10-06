@@ -19,6 +19,7 @@
  */
 import * as repo from "../../../db/repo";
 import * as lenderRepo from "../../../db/lenderRepo";
+import * as interopRepo from "../../../db/interopRepo";
 import type {
   ChangeOrder,
   InteropSourceRecordRef,
@@ -26,6 +27,7 @@ import type {
   Organization,
   Project,
 } from "../../../../shared/types";
+import { isRealDateTime } from "./validate";
 import { OC4IDS_VERSION } from "./schema";
 import { oc4idsPublisherConfig } from "../core";
 
@@ -102,7 +104,7 @@ const SECTOR_BY_CATEGORY: Record<string, string | null> = {
 };
 
 /** Public-sector organization kinds (OBV OrganizationKind). */
-const PUBLIC_SECTOR_KINDS = new Set(["GOVERNMENT_AGENCY", "GOVERNMENT", "PROJECT_OWNER", "IMPLEMENTING_AGENCY"]);
+const PUBLIC_SECTOR_KINDS = new Set(["GOVERNMENT_AGENCY", "GOVERNMENT", "IMPLEMENTING_AGENCY"]);
 /** Funding organization kinds. */
 const FUNDER_KINDS = new Set(["LENDER", "FUNDER", "DEVELOPMENT_INSTITUTION", "DEVELOPMENT_FINANCE"]);
 
@@ -121,14 +123,29 @@ const CO_REASON_LABEL: Record<string, string> = {
 
 // ------------------------------------------------------------ helpers
 
-/** Calendar dates are rendered at 00:00:00Z in the date-time format the
- *  schema requires; no time of day is asserted. Unparseable -> null. */
+/** Strict date conversion. A real calendar date (YYYY-MM-DD) is stated at
+ *  00:00:00Z — the date-time format the schema requires, no time of day
+ *  asserted. A full RFC 3339 timestamp with an explicit offset is
+ *  normalized to UTC. Anything else (free text, timezone-less times,
+ *  impossible dates) is NOT parsed: null, and the caller omits it. Never
+ *  depends on the server's timezone. */
 export function toDateTime(value: string | null | undefined): string | null {
   if (!value) return null;
   const raw = String(value).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T00:00:00Z`;
-  const ms = Date.parse(raw);
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const candidate = `${raw}T00:00:00Z`;
+    return isRealDateTime(candidate) ? candidate : null;
+  }
+  if (isRealDateTime(raw)) return new Date(Date.parse(raw)).toISOString().replace(".000Z", "Z");
+  return null;
+}
+
+/** Put a date, or omit it saying WHY: absent vs present-but-not-a-date. */
+function putDate(b: Builder, path: string, raw: string | null | undefined, source: { table: string; recordId: string; field: string; note?: string }, absentDetail: string): void {
+  const value = toDateTime(raw ?? null);
+  if (value) b.put(path, value, source);
+  else if (raw && String(raw).trim()) b.omit(path, "NOT_REPRESENTABLE", `the recorded value "${String(raw).slice(0, 40)}" is not a calendar date or an RFC 3339 timestamp with an offset`);
+  else b.omit(path, "VALUE_ABSENT", absentDetail);
 }
 
 function nonEmpty(value: string | null | undefined): string | null {
@@ -200,15 +217,11 @@ function setByPointer(root: Record<string, unknown>, pointer: string, value: unk
 interface Party {
   org: Organization;
   roles: Set<string>;
-  sources: Array<{ table: string; recordId: string; field: string; note?: string }>;
+  /** Source of each role, keyed by role (first recording wins). */
+  sources: Map<string, { table: string; recordId: string; field: string; note?: string }>;
 }
 
 // ------------------------------------------------------------ mapping
-
-/** Audit actions written by the interoperability module itself. */
-export function isInteropAuditAction(action: string): boolean {
-  return action.startsWith("OC4IDS_") || action.startsWith("FIELD_OBSERVATION");
-}
 
 export function mapProjectToOc4ids(project: Project): MappingResult {
   const b = new Builder();
@@ -239,7 +252,7 @@ export function mapProjectToOc4ids(project: Project): MappingResult {
   // Interoperability's own audit rows (exports, observation imports and
   // decisions) are NOT changes to the project and never move "updated" —
   // otherwise publishing a disclosure would alter the next disclosure.
-  const audit = repo.listConfigAudit(project.id, 500).find((a) => !isInteropAuditAction(a.action)) ?? null;
+  const audit = interopRepo.latestProjectChangeAudit(project.id);
   const launched = toDateTime(pilot?.launchedAt ?? null);
   const auditAt = audit ? toDateTime(audit.createdAt) : null;
   if (auditAt && (!launched || auditAt >= launched)) {
@@ -252,12 +265,8 @@ export function mapProjectToOc4ids(project: Project): MappingResult {
   }
 
   // ---- period ----
-  const start = toDateTime(pilot?.plannedStart ?? null);
-  const end = toDateTime(pilot?.plannedEnd ?? null);
-  if (start) b.put("/period/startDate", start, src("planned_start", "calendar date rendered at 00:00:00Z"));
-  else b.omit("/period/startDate", "VALUE_ABSENT", "no planned start date is recorded");
-  if (end) b.put("/period/endDate", end, src("planned_end", "calendar date rendered at 00:00:00Z"));
-  else b.omit("/period/endDate", "VALUE_ABSENT", "no planned end date is recorded");
+  putDate(b, "/period/startDate", pilot?.plannedStart, src("planned_start", "calendar date rendered at 00:00:00Z"), "no planned start date is recorded");
+  putDate(b, "/period/endDate", pilot?.plannedEnd, src("planned_end", "calendar date rendered at 00:00:00Z"), "no planned end date is recorded");
 
   // ---- sector ----
   const sector = pilot?.category ? SECTOR_BY_CATEGORY[pilot.category] ?? null : null;
@@ -277,7 +286,12 @@ export function mapProjectToOc4ids(project: Project): MappingResult {
   // ---- locations ----
   let locIndex = 0;
   const locDescription = nonEmpty(project.location);
-  const boundaryOk = Array.isArray(project.siteBoundary) && closedRing(project.siteBoundary);
+  // Only a boundary ENTERED as a polygon is the site's shape. For POINT and
+  // CORRIDOR projects OBV stores a derived geofence box around the point /
+  // line; that box is a verification tolerance, not the asset's location.
+  const geometryKind = pilot?.geometryKind ?? null;
+  const boundaryIsSiteShape = geometryKind === null || geometryKind === "POLYGON";
+  const boundaryOk = boundaryIsSiteShape && Array.isArray(project.siteBoundary) && closedRing(project.siteBoundary);
   if (locDescription || boundaryOk || pilot?.country || pilot?.region || pilot?.locality) {
     const base = `/locations/${locIndex}`;
     b.put(`${base}/id`, "site", src("id", "local location identifier for the recorded site"));
@@ -285,6 +299,8 @@ export function mapProjectToOc4ids(project: Project): MappingResult {
     if (boundaryOk) {
       b.put(`${base}/geometry/type`, "Polygon", src("site_boundary", "stored closed ring, [longitude, latitude] order"));
       b.put(`${base}/geometry/coordinates`, [project.siteBoundary.map((p) => [p[0], p[1]])], src("site_boundary"));
+    } else if (!boundaryIsSiteShape) {
+      b.omit(`${base}/geometry`, "NOT_REPRESENTABLE", `the project was configured as a ${geometryKind}; OBV stores only a derived geofence box for it, which is not the asset's shape${geometryKind === "CORRIDOR" ? " (a recorded route, if any, is published as a LineString)" : ""}`);
     } else if (Array.isArray(project.siteBoundary) && project.siteBoundary.length > 0) {
       b.omit(`${base}/geometry`, "NOT_REPRESENTABLE", "the stored site boundary is not a closed ring of at least four vertices");
     } else {
@@ -294,10 +310,15 @@ export function mapProjectToOc4ids(project: Project): MappingResult {
     if (pilot?.region) b.put(`${base}/address/region`, pilot.region, src("region"));
     if (pilot?.country) b.put(`${base}/address/countryName`, pilot.country, src("country"));
     locIndex++;
-  } else {
-    b.omit("/locations", "VALUE_ABSENT", "no location text, boundary or address is recorded");
   }
   const route = repo.listSpatialFeatures(project.id).find((f) => f.kind === "ROUTE" && f.geometry.length >= 2);
+  if (locIndex === 0) {
+    if (!boundaryIsSiteShape && Array.isArray(project.siteBoundary) && project.siteBoundary.length > 0) {
+      b.omit("/locations (site geometry)", "NOT_REPRESENTABLE", `the project was configured as a ${geometryKind}; OBV stores only a derived geofence box for it, which is not the asset's shape${route ? " — the recorded route is published as a LineString" : ""}`);
+    } else if (!route) {
+      b.omit("/locations", "VALUE_ABSENT", "no location text, boundary or address is recorded");
+    }
+  }
   if (route) {
     const base = `/locations/${locIndex}`;
     b.record("spatial_features", route.id);
@@ -312,25 +333,18 @@ export function mapProjectToOc4ids(project: Project): MappingResult {
   // ---- budget ----
   if (project.totalBudget > 0) {
     b.put("/budget/amount/amount", project.totalBudget, src("total_budget", "whole currency units"));
-    const owner = repo.getOrganization(project.organizationId);
-    const currency = nonEmpty(pilot?.currency ?? null) ?? nonEmpty(owner?.profile?.currency ?? null);
-    if (currency) {
-      const fromProject = Boolean(nonEmpty(pilot?.currency ?? null));
-      if (fromProject) b.put("/budget/amount/currency", currency.toUpperCase(), src("currency"));
-      else {
-        b.record("organizations", project.organizationId);
-        b.put("/budget/amount/currency", currency.toUpperCase(), { table: "organizations", recordId: project.organizationId, field: "currency", note: "owning organization's reporting currency" });
-      }
-    } else {
-      b.omit("/budget/amount/currency", "VALUE_ABSENT", "no currency is recorded on the project or its owning organization");
-    }
+    // The project's own currency only: an organization's reporting
+    // currency does not state the currency of this project's budget.
+    const currency = nonEmpty(pilot?.currency ?? null);
+    if (currency) b.put("/budget/amount/currency", currency.toUpperCase(), src("currency"));
+    else b.omit("/budget/amount/currency", "VALUE_ABSENT", "no currency is recorded on the project");
   } else {
     b.omit("/budget", "VALUE_ABSENT", "no total budget is recorded (zero)");
   }
 
   // ---- parties ----
   const parties = new Map<string, Party>();
-  const addParty = (orgId: string | null | undefined, role: string | null, source: Party["sources"][number], omitPath: string, omitDetail: string) => {
+  const addParty = (orgId: string | null | undefined, role: string | null, source: { table: string; recordId: string; field: string; note?: string }, omitPath: string, omitDetail: string) => {
     if (!orgId) return;
     const org = repo.getOrganization(orgId);
     if (!org) {
@@ -341,9 +355,9 @@ export function mapProjectToOc4ids(project: Project): MappingResult {
       b.omit(omitPath, "NOT_REPRESENTABLE", omitDetail);
       return;
     }
-    const party = parties.get(org.id) ?? { org, roles: new Set<string>(), sources: [] };
+    const party = parties.get(org.id) ?? { org, roles: new Set<string>(), sources: new Map() };
     party.roles.add(role);
-    party.sources.push(source);
+    if (!party.sources.has(role)) party.sources.set(role, source);
     parties.set(org.id, party);
   };
 
@@ -386,14 +400,20 @@ export function mapProjectToOc4ids(project: Project): MappingResult {
     b.put(`${base}/id`, party.org.id, os("id"));
     b.put(`${base}/name`, party.org.name, os("name"));
     const roles = [...party.roles].sort();
-    roles.forEach((r, j) => b.put(`${base}/roles/${j}`, r, party.sources[Math.min(j, party.sources.length - 1)]));
+    roles.forEach((r, j) => b.put(`${base}/roles/${j}`, r, party.sources.get(r)!));
     if (party.org.profile?.region) b.put(`${base}/address/region`, party.org.profile.region, os("region"));
     if (party.org.profile?.country) b.put(`${base}/address/countryName`, party.org.profile.country, os("country"));
   });
   if (partyList.length === 0) b.omit("/parties", "VALUE_ABSENT", "no organization with an OC4IDS party role is recorded for this project");
 
-  const publicAuthority = partyList.find((p) => p.roles.has("publicAuthority"));
-  if (publicAuthority) {
+  // Precedence, never UUID order: a public-sector OWNER is the authority;
+  // otherwise exactly one recorded authority. Several distinct candidates
+  // without an owner among them is ambiguous and omitted.
+  const authorities = partyList.filter((p) => p.roles.has("publicAuthority"));
+  const publicAuthority = authorities.find((p) => p.org.id === project.organizationId) ?? (authorities.length === 1 ? authorities[0] : null);
+  if (!publicAuthority && authorities.length > 1) {
+    b.omit("/publicAuthority", "NOT_REPRESENTABLE", `${authorities.length} organizations hold the public-authority role and none is the project owner; OBV does not choose between them`);
+  } else if (publicAuthority) {
     b.put("/publicAuthority/id", publicAuthority.org.id, { table: "organizations", recordId: publicAuthority.org.id, field: "id", note: "party with the publicAuthority role" });
     b.put("/publicAuthority/name", publicAuthority.org.name, { table: "organizations", recordId: publicAuthority.org.id, field: "name" });
   } else {
@@ -451,9 +471,7 @@ function mapMilestone(b: Builder, project: Project, m: Milestone, i: number): vo
   b.put(`${base}/id`, m.id, ms("id"));
   b.put(`${base}/title`, m.title, ms("title"));
   if (nonEmpty(m.requirement)) b.put(`${base}/description`, m.requirement, ms("requirement", "the evidence requirement describes the milestone"));
-  const due = toDateTime(m.plannedEnd ?? null);
-  if (due) b.put(`${base}/dueDate`, due, ms("planned_end", "calendar date rendered at 00:00:00Z"));
-  else b.omit(`${base}/dueDate`, "VALUE_ABSENT", `milestone ${m.seq} has no planned end date`);
+  putDate(b, `${base}/dueDate`, m.plannedEnd, ms("planned_end", "calendar date rendered at 00:00:00Z"), `milestone ${m.seq} has no planned end date`);
   // Only a HUMAN governance approval states that a milestone was met.
   // VERIFIED (automated verdict awaiting approval) stays "scheduled".
   const met = m.status === "APPROVED" || m.status === "RELEASED";
@@ -464,7 +482,7 @@ function mapMilestone(b: Builder, project: Project, m: Milestone, i: number): vo
     const lastApproval = records.length ? records[records.length - 1] : null;
     if (lastApproval) {
       b.record("approval_records", lastApproval.id);
-      b.put(`${base}/dateMet`, toDateTime(lastApproval.createdAt), { table: "approval_records", recordId: lastApproval.id, field: "created_at", note: "final governance approval" });
+      putDate(b, `${base}/dateMet`, lastApproval.createdAt, { table: "approval_records", recordId: lastApproval.id, field: "created_at", note: "final governance approval" }, `milestone ${m.seq} approval record has no timestamp`);
     } else {
       b.omit(`${base}/dateMet`, "VALUE_ABSENT", `milestone ${m.seq} is ${m.status} but no approval record timestamp is held (seeded or legacy state)`);
     }
@@ -482,7 +500,8 @@ function mapModification(b: Builder, co: ChangeOrder, base: string): void {
   b.put(`${base}/description`, co.description ? `${co.title} — ${co.description}` : co.title, cs("title"));
   b.put(`${base}/rationale`, CO_REASON_LABEL[co.reasonCategory] ?? co.reasonCategory, cs("reason_category"));
   const amount = co.approvedAmount ?? co.requestedAmount;
-  const type = amount !== 0 ? "price" : co.scheduleImpactDays ? "duration" : "other";
-  b.put(`${base}/type`, type, cs(amount !== 0 ? "approved_amount" : co.scheduleImpactDays ? "schedule_impact_days" : "status", `${type}: ${amount !== 0 ? "the change carries an amount" : co.scheduleImpactDays ? "the change carries a schedule impact" : "neither amount nor schedule impact is recorded"}`));
+  if (amount !== 0) b.put(`${base}/type`, "value", cs(co.approvedAmount !== null && co.approvedAmount !== undefined ? "approved_amount" : "requested_amount", "the change carries an amount"));
+  else if (co.scheduleImpactDays) b.put(`${base}/type`, "duration", cs("schedule_impact_days", "the change carries a schedule impact"));
+  else b.omit(`${base}/type`, "NOT_REPRESENTABLE", "the change records neither an amount nor a schedule impact; OBV does not classify it as a scope change");
   b.omit(`${base}/newContractValue`, "NO_AUTHORITATIVE_SOURCE", "OBV records the change amount, not the resulting contract value");
 }

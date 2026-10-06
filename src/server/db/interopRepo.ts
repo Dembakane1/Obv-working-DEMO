@@ -490,3 +490,23 @@ export function listEvidenceProvenanceForProject(projectId: string): EvidencePro
     .all(projectId)
     .map((r) => toProvenance(r as Row));
 }
+
+/**
+ * The latest audited change to the PROJECT itself. Interoperability's own
+ * audit rows (OC4IDS exports, observation imports and decisions) are not
+ * project changes and are excluded in SQL, so no number of exports can
+ * push the real change out of view.
+ */
+export function latestProjectChangeAudit(projectId: string): { id: string; action: string; createdAt: string } | null {
+  const row = getDb()
+    .prepare(
+      `SELECT id, action, created_at FROM config_audit
+        WHERE project_id = ?
+          AND action NOT LIKE 'OC4IDS\\_%' ESCAPE '\\'
+          AND action NOT LIKE 'FIELD\\_OBSERVATION%' ESCAPE '\\'
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1`
+    )
+    .get(projectId) as Row | undefined;
+  return row ? { id: row.id as string, action: row.action as string, createdAt: row.created_at as string } : null;
+}

@@ -220,7 +220,7 @@ original timestamp, coordinates and provider preserved and shown as
 "Source: External Field Observation" across evidence panels, Evidence
 Intelligence, the Timeline and the Digital Twin. Nothing in the module
 approves, releases or authorizes anything. Live providers report *Not
-Connected*. 173-checkpoint suite (`scripts/interop-test.js`) — see
+Connected*. 194-checkpoint suite (`scripts/interop-test.js`) — see
 `docs/INFRASTRUCTURE_INTEROPERABILITY.md`.
 
 ## Lender Pilot RC1 (v30)

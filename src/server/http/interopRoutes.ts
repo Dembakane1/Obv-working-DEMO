@@ -42,7 +42,8 @@ export interface InteropRouteContext {
   /** Raw body with an explicit limit (imports carry photos). */
   readBody: (limitBytes: number) => Promise<Buffer>;
   isForm: () => boolean;
-  publicBaseUrl: () => string;
+  /** The configured public base URL, or null when none is configured. */
+  publicBaseUrl: () => string | null;
   redirect: (location: string) => void;
   sendJson: (data: unknown, status?: number) => void;
   sendHtml: (html: string, status?: number) => void;

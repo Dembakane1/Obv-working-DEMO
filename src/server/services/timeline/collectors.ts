@@ -1094,17 +1094,26 @@ export function collectFieldObservations(ctx: CollectorContext): void {
   const { project, push } = ctx;
   const rows = safe(() => interopRepo.listObservationEventsForProject(project.id, OBSERVATION_READ_CAP), []);
   if (rows.length >= OBSERVATION_READ_CAP) ctx.noteCap(`external field observations: showing the first ${OBSERVATION_READ_CAP} events`);
+  // Prior intake state per observation, derived from its own decision
+  // events (rows are in occurrence order), never assumed.
+  const stateOf = new Map<string, string>();
   for (const { event, observation: o } of rows) {
     const provider = o.providerLabel ?? o.sourceSystem;
+    const previous = stateOf.get(o.id) ?? "UNVERIFIED";
     const base = {
       projectId: project.id,
-      milestoneId: o.milestoneId ?? o.suggestedMilestoneId ?? null,
+      // Only an ACCEPTED observation is attributed to a milestone (the one
+      // its evidence was filed under); an importer's suggestion never is.
+      milestoneId: event.kind === "ACCEPTED" ? o.milestoneId ?? null : null,
       organizationId: o.organizationId,
-      sourceTable: "field_observations",
-      sourceRecordId: o.id,
+      // One event row = one timeline event, so repeated decisions on the
+      // same observation (deferred, then rejected) never share an id.
+      sourceTable: "field_observation_events",
+      sourceRecordId: event.id,
       href: `/interop/field-observations/${o.id}`,
       actorUserId: event.actorUserId,
     };
+    if (event.kind === "ACCEPTED" || event.kind === "REJECTED" || event.kind === "DEFERRED") stateOf.set(o.id, event.kind);
     if (event.kind === "RECEIVED") {
       push({
         ...base,
@@ -1131,7 +1140,7 @@ export function collectFieldObservations(ctx: CollectorContext): void {
           `A reviewer accepted external observation ${o.externalObservationId} (${provider}) as evidence; it entered ` +
           `the governed evidence pipeline, which issued its own verification verdict. Source: External Field Observation.`,
         recordStatus: "AUTHORITATIVE",
-        change: { field: "status", previous: "UNVERIFIED", current: "ACCEPTED" },
+        change: { field: "status", previous, current: "ACCEPTED" },
       });
     } else if (event.kind === "REJECTED" || event.kind === "DEFERRED") {
       push({
@@ -1144,7 +1153,7 @@ export function collectFieldObservations(ctx: CollectorContext): void {
           `A reviewer ${event.kind === "REJECTED" ? "rejected" : "deferred"} external observation ${o.externalObservationId} (${provider}).` +
           `${event.detail ? ` Note: ${event.detail}` : ""}`,
         recordStatus: "AUTHORITATIVE",
-        change: { field: "status", previous: "UNVERIFIED", current: event.kind },
+        change: { field: "status", previous, current: event.kind },
       });
     }
   }

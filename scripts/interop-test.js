@@ -252,6 +252,13 @@ function validatorUnits() {
   const pkgBad = validateAgainst(schema.OC4IDS_PACKAGE_SCHEMA, { projects: [good] });
   assert(!pkgBad.valid, "a package missing its required metadata fails package validation");
   assert(canonicalJson({ b: 1, a: [2, { d: 3, c: 4 }] }) === canonicalJson({ a: [2, { c: 4, d: 3 }], b: 1 }), "canonical JSON is key-order independent (stable hashing)");
+  const r6 = validateAgainst(schema.OC4IDS_PROJECT_SCHEMA, { ...good, period: { startDate: "2025-02-30T00:00:00Z" } });
+  assert(!r6.valid, "an impossible calendar date (2025-02-30) fails the date-time format");
+  const { toDateTime } = require(path.join(ROOT, "dist/server/services/interop/oc4ids/mapping.js"));
+  assert(toDateTime("2026-09-01") === "2026-09-01T00:00:00Z" && toDateTime("2026-02-30") === null && toDateTime("March 2026") === null && toDateTime("2026-09-01T10:00:00") === null && toDateTime("2026-09-01T10:00:00+02:00") === "2026-09-01T08:00:00Z",
+    "dates are converted strictly: real calendar dates or offset timestamps only, never free text or zone-less times");
+  const mod = (type) => validateAgainst(schema.OC4IDS_PROJECT_SCHEMA, { ...good, contractingProcesses: [{ id: "cp", summary: { modifications: [{ id: "m1", type }] } }] });
+  assert(mod("value").valid && mod("duration").valid && !mod("price").valid && !mod("other").valid, "modification types follow the closed OC4IDS codelist (duration, value, scope)");
   assert(Array.isArray(schema.OC4IDS_SCHEMA_COVERAGE.notImplemented) && schema.OC4IDS_SCHEMA_COVERAGE.notImplemented.length > 0 && /subset/i.test(schema.OC4IDS_SCHEMA_COVERAGE.statement),
     "the schema coverage statement declares the implemented subset and what is not implemented");
 }
@@ -297,7 +304,7 @@ async function main() {
 
   // ================================================== 3. mapping correctness
   console.log("\n== 3. OC4IDS mapping on a fully configured project ==");
-  await startServer({ OBV_OC4IDS_PROJECT_ID_PREFIX: PREFIX, OBV_OC4IDS_LICENSE_URL: "https://example.org/license" });
+  await startServer({ OBV_OC4IDS_PROJECT_ID_PREFIX: PREFIX, OBV_OC4IDS_LICENSE_URL: "https://example.org/license", OBV_PUBLIC_BASE_URL: "https://obv.example.org" });
   const mkOrg = async (name, kind) => {
     const r = await api("pm", "POST", "/api/pilot/orgs", { name, kind });
     if (r.status !== 201) fail(`org create ${name}: ${r.status} ${r.text.slice(0, 200)}`);
@@ -364,6 +371,19 @@ async function main() {
   const cp = (proj.contractingProcesses || [])[0];
   assert(!cp || (cp.summary && cp.summary.contractValue === undefined), "no contract value is inferred from the OBV-controlled amount");
 
+  const corr = await api("pm", "POST", "/api/pilot/projects", { name: "Corridor Drainage Works", category: "ROAD", organizationId: "org-cdfc", obvControlledAmount: 100000, totalValue: 120000 });
+  const Q = corr.json.project;
+  await api("pm", "POST", `/api/pilot/projects/${Q.id}/geography`, { kind: "CORRIDOR", coordinates: ["33.70, -11.60", "33.72, -11.58", "33.74, -11.57"], label: "Drain line" });
+  const clr = await api("pm", "POST", `/api/pilot/projects/${Q.id}`, { currency: "" });
+  if (clr.status >= 300) fail(`could not clear currency: ${clr.status} ${clr.text.slice(0, 160)}`);
+  exec("UPDATE organizations SET currency = 'EUR' WHERE id = 'org-cdfc'");
+  const qp = (await api("funder", "GET", `/api/interop/oc4ids/${Q.id}/preview`)).json;
+  const qProj = qp.package.projects[0];
+  assert(!(qProj.locations || []).some((l) => l.geometry && l.geometry.type === "Polygon") && qp.omitted.some((o) => /^\/locations/.test(o.path) && /geometry/.test(o.path) && o.reason === "NOT_REPRESENTABLE") && (qProj.locations || []).some((l) => l.geometry?.type === "LineString"),
+    "a CORRIDOR project's derived geofence box is never published as the asset's polygon");
+  assert(qProj.budget?.amount?.currency === undefined && qp.omitted.some((o) => o.path === "/budget/amount/currency"),
+    "a project without its own currency gets none (never borrowed from an organization profile)");
+
   // ================================================== 4. thin project + exclusion
   console.log("\n== 4. Omitted fields are not fabricated; OBV intelligence excluded ==");
   const r47 = (await api("funder", "GET", "/api/interop/oc4ids/proj-r47/preview")).json;
@@ -405,8 +425,10 @@ async function main() {
   const schema = require(path.join(ROOT, "dist/server/services/interop/oc4ids/schema.js"));
   const downloaded = JSON.parse(dl.text);
   assert(validateAgainst(schema.OC4IDS_PACKAGE_SCHEMA, downloaded).valid, "the downloaded package independently validates against the implemented schema");
-  assert(downloaded.uri && downloaded.uri.includes(`/api/interop/oc4ids/exports/${rec.id}`) && downloaded.version === "0.9" && downloaded.publisher?.name,
-    "the package carries its own URI, schema version and publisher");
+  assert(downloaded.uri === `https://obv.example.org/api/interop/oc4ids/exports/${rec.id}` && downloaded.version === "0.9" && downloaded.publisher?.name,
+    "the package carries its own URI (from the CONFIGURED public base URL), schema version and publisher");
+  const spoof = await api("funder", "GET", `/api/interop/oc4ids/${P.id}/preview`, undefined, { host: "attacker.example" });
+  assert(!JSON.stringify(spoof.json.package).includes("attacker.example"), "a client-supplied Host header never reaches the package URI");
   assert(JSON.stringify(q("SELECT * FROM projects WHERE id = ?", P.id)) === projectBefore && JSON.stringify(q("SELECT * FROM milestones WHERE project_id = ? ORDER BY seq", P.id)) === msBefore,
     "exporting does not mutate the project or its milestones");
   const ex2 = await api("funder", "POST", `/api/interop/oc4ids/${P.id}/export`, {});
@@ -422,6 +444,9 @@ async function main() {
   fs.writeFileSync(tamperFile, fs.readFileSync(tamperFile, "utf8").replace("Lakeshore", "Lakeshorx"));
   const t2 = await api("funder", "GET", `/api/interop/oc4ids/exports/${rows[1].id}`);
   assert(t2.status === 409 && t2.json?.expectedSha256 === rows[1].payload_sha256, "a stored export that no longer matches its hash is refused (409), never served");
+  const fieldReal = await api("field", "GET", `/api/interop/oc4ids/exports/${rec.id}`);
+  const fieldGhost = await api("field", "GET", "/api/interop/oc4ids/exports/00000000-0000-0000-0000-000000000000");
+  assert(fieldReal.status === 403 && fieldGhost.status === 403, "the role gate runs before the export lookup (no existence oracle by id)");
   const list = await api("funder", "GET", `/api/interop/oc4ids/${P.id}/exports`);
   assert(list.status === 200 && list.json.exports.length === 2, "the export history lists both exports");
   const vr = await api("funder", "GET", `/api/interop/oc4ids/${P.id}/validation-report`);
@@ -575,6 +600,41 @@ async function main() {
   assert((await api("funder", "POST", `/api/interop/field-observations/${A}/reject`, { note: "late" })).status === 409, "a decided observation cannot be re-decided");
   const rej = await api("funder", "POST", `/api/interop/field-observations/${B}/reject`, { note: "No photo" });
   assert(rej.status === 201 && rej.json.observation.status === "REJECTED", "a reviewer can reject an observation");
+  // Pipeline idempotency must never let one observation borrow another's
+  // evidence (or a native capture's): an identical submission is refused.
+  const dupEnv = { ...envelope, observations: [{ ...envelope.observations[0], externalObservationId: "kobo-A-resubmitted", comments: "edited upstream" }] };
+  const dupImp = await api("pm", "POST", "/api/interop/field-observations/import", dupEnv);
+  const A2 = dupImp.json.observations[0].id;
+  const evBeforeDup = evidenceFingerprint();
+  const dupAcc = await api("compliance", "POST", `/api/interop/field-observations/${A2}/accept`, { milestoneId: msTarget });
+  assert(dupAcc.status === 409 && /Identical evidence already exists/.test(dupAcc.text), "accepting a duplicate of existing evidence is refused (never attached to evidence it did not create)");
+  assert(q("SELECT status FROM field_observations WHERE id = ?", A2)[0].status === "UNVERIFIED" && q("SELECT observation_id FROM evidence_provenance WHERE evidence_item_id = ?", evidenceId)[0].observation_id === A,
+    "the duplicate stays undecided and the original evidence keeps its own provenance");
+  assert(JSON.stringify(evidenceFingerprint()) === JSON.stringify(evBeforeDup), "a refused duplicate creates no evidence");
+  // Concurrent decisions: acceptance claims the observation before it awaits the pipeline.
+  const raceEnv = { ...envelope, observations: [{ ...envelope.observations[0], externalObservationId: "kobo-race", observedAt: "2026-09-26T07:00:00Z", photos: [{ fileName: "r.png", contentType: "image/png", base64: testPng(41).toString("base64") }] }] };
+  const R = (await api("pm", "POST", "/api/interop/field-observations/import", raceEnv)).json.observations[0].id;
+  const [raceAcc, raceRej] = await Promise.all([
+    api("compliance", "POST", `/api/interop/field-observations/${R}/accept`, { milestoneId: msTarget }),
+    new Promise((r) => setTimeout(r, 5)).then(() => api("funder", "POST", `/api/interop/field-observations/${R}/reject`, { note: "race" })),
+  ]);
+  const raceRow = q("SELECT status, accepted_evidence_id FROM field_observations WHERE id = ?", R)[0];
+  assert([raceAcc.status, raceRej.status].filter((x) => x === 201).length === 1 && [raceAcc.status, raceRej.status].includes(409),
+    `a concurrent accept and reject resolve to exactly one decision (accept ${raceAcc.status}, reject ${raceRej.status})`);
+  if (raceRow.status === "ACCEPTED") {
+    assert(q("SELECT COUNT(*) AS c FROM evidence_provenance WHERE evidence_item_id = ? AND observation_id = ?", raceRow.accepted_evidence_id, R)[0].c === 1, "the winning acceptance's evidence carries its external provenance");
+  } else {
+    assert(count("SELECT COUNT(*) AS c FROM evidence_items e LEFT JOIN evidence_provenance p ON p.evidence_item_id = e.id WHERE p.evidence_item_id IS NULL AND e.device_metadata LIKE '%kobo-race%'") === 0, "no orphaned external evidence exists without provenance");
+  }
+  assert(count("SELECT COUNT(*) AS c FROM evidence_items e LEFT JOIN evidence_provenance p ON p.evidence_item_id = e.id WHERE p.evidence_item_id IS NULL AND e.device_metadata LIKE '%External field observation%'") === 0,
+    "every evidence item created from an external observation carries provenance (none can be mislabelled OBV Capture)");
+  // A caller cannot substitute the hashed/deduplicated record.
+  const { canonicalJson } = require(path.join(ROOT, "dist/server/services/interop/oc4ids/validate.js"));
+  const spoofObs = { externalObservationId: "kobo-spoof", projectReference: "proj-r47", observedAt: "2026-09-27T07:00:00Z", photos: [] };
+  const spoofImp = await api("pm", "POST", "/api/interop/field-observations/import", { ...envelope, __verbatim: [{ fake: true }], observations: [spoofObs] });
+  const spoofRow = q("SELECT source_record_sha256 FROM field_observations WHERE id = ?", spoofImp.json.observations[0].id)[0];
+  assert(spoofRow.source_record_sha256 === sha256(canonicalJson(spoofObs)), "a client-supplied __verbatim field cannot replace the record that is hashed and deduplicated");
+
   const def = await api("funder", "POST", `/api/interop/field-observations/${C}/defer`, { note: "Ask for the photo" });
   assert(def.status === 201 && def.json.observation.status === "DEFERRED", "a reviewer can defer an observation");
   assert((await api("rival", "POST", `/api/interop/field-observations/${E}/assign`, { projectId: rivalProj.json.project.id })).status === 404, "another tenant cannot assign (or even see) our unmatched observation");
@@ -611,7 +671,8 @@ async function main() {
   const tlEvents = tl.json.events || tl.json.items || [];
   const recv = tlEvents.filter((e) => e.type === "EXTERNAL_OBSERVATION_RECEIVED");
   const accEvt = tlEvents.filter((e) => e.type === "EXTERNAL_OBSERVATION_ACCEPTED");
-  assert(recv.length >= 5 && accEvt.length === 2, "the Timeline shows 'External field observation received' and 'accepted as evidence'");
+  const acceptedCount = count("SELECT COUNT(*) AS c FROM field_observations WHERE matched_project_id = 'proj-r47' AND status = 'ACCEPTED'");
+  assert(recv.length >= 5 && accEvt.length === acceptedCount && acceptedCount >= 2, "the Timeline shows 'External field observation received' and 'accepted as evidence'");
   assert(tlEvents.some((e) => e.type === "EXTERNAL_OBSERVATION_REVIEWED"), "the Timeline shows reviewer decisions (reviewed)");
   assert([...recv, ...accEvt].every((e) => e.spatial === null), "observation events carry no map position of their own (only accepted evidence is placed)");
   const capt = tlEvents.find((e) => e.type === "EVIDENCE_CAPTURED" && e.sourceRecordId === evidenceId);
@@ -619,6 +680,15 @@ async function main() {
   assert(/External Field Observation/.test(`${capt.title} ${capt.explanation}`), "the Timeline evidence event states its external source");
   const captD = tlEvents.find((e) => e.type === "EVIDENCE_CAPTURED" && e.sourceRecordId === accD.json.submission.evidence.id);
   assert(!captD || captD.spatial === null, "evidence without source coordinates is never placed on the map");
+  const rejC = await api("funder", "POST", `/api/interop/field-observations/${C}/reject`, { note: "Photo never supplied" });
+  assert(rejC.status === 201, "a deferred observation can later be rejected");
+  const tl2 = (await api("funder", "GET", "/api/timeline/project/proj-r47")).json;
+  const cEvents = (tl2.events || tl2.items || []).filter((e) => e.type === "EXTERNAL_OBSERVATION_REVIEWED" && e.href === `/interop/field-observations/${C}`);
+  assert(cEvents.length === 2 && cEvents[0].id !== cEvents[1].id, "a deferral and a later rejection are two distinct timeline events");
+  const rejEvt = cEvents.find((e) => /rejected/.test(e.title));
+  assert(rejEvt && rejEvt.change && rejEvt.change.previous === "DEFERRED", "the rejection reports its real prior state (DEFERRED)");
+  assert((tl2.events || tl2.items || []).filter((e) => /^EXTERNAL_OBSERVATION_(RECEIVED|REVIEWED)$/.test(e.type)).every((e) => e.milestoneId === null),
+    "unaccepted observations are never attributed to a milestone on the Timeline");
   const fieldTl = await api("field", "GET", "/api/timeline/project/proj-r47");
   assert(fieldTl.status === 200 && !(fieldTl.json.events || fieldTl.json.items || []).some((e) => /^EXTERNAL_OBSERVATION/.test(e.type)),
     "observation review events follow governance: hidden from the FIELD role, which cannot use the area");
@@ -638,6 +708,12 @@ async function main() {
   assert(/OC4IDS/.test(ws.html) && /Schema version/.test(ws.html) && /Last exported/.test(ws.html) && /Field coverage/.test(ws.html), "the overview shows standard, schema version, last export and field coverage");
   assert(/Preview OC4IDS/.test(ws.html) && /Download validation report/.test(ws.html), "Preview and validation-report actions are present");
   assert(/KoBoToolbox API — not connected/i.test(ws.html) && /ODK Central — not connected/i.test(ws.html), "unavailable providers visibly report Not Connected");
+  const fieldProj = await page("field", "/project/proj-r47");
+  assert(fieldProj.status === 200 && !fieldProj.html.includes("/project/proj-r47/infrastructure-data"), "the Infrastructure Data tab is not offered to the FIELD role, which cannot use it");
+  const sugg = await api("pm", "POST", "/api/interop/field-observations/import", { ...envelope, observations: [{ externalObservationId: "kobo-draft", projectReference: P.id, milestoneReference: "1", observedAt: "2026-09-28T07:00:00Z", photos: [] }] });
+  assert(sugg.status === 201 && sugg.json.observations[0].suggestedMilestoneId, "an observation can suggest a milestone of a draft project");
+  const reapply = await api("pm", "POST", `/api/pilot/projects/${P.id}/template`, { templateKey: "road-rehabilitation" });
+  assert(reapply.status === 201, `an advisory milestone suggestion never blocks re-applying a draft project's template (${reapply.status})`);
   const projPage = await page("funder", `/project/${P.id}`);
   assert(projPage.status === 200 && projPage.html.includes(`/project/${P.id}/infrastructure-data`), "the existing project workspace links to Infrastructure Data");
   const ocPage = await page("funder", `/project/${P.id}/infrastructure-data/oc4ids`);

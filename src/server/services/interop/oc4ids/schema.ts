@@ -33,8 +33,8 @@ export const CLOSED_CODELISTS = {
   projectStatus: ["identification", "preparation", "implementation", "completion", "completed", "cancelled"],
   projectType: ["construction", "expansion", "rehabilitation"],
   milestoneStatus: ["scheduled", "met", "notMet", "partiallyMet"],
-  modificationType: ["duration", "price", "scope", "other"],
-  contractingProcessStatus: ["pending", "active", "cancelled", "unsuccessful", "complete", "withdrawn"],
+  modificationType: ["duration", "value", "scope"],
+  contractingProcessStatus: ["pre-award", "active", "closed"],
   procurementMethod: ["open", "selective", "limited", "direct"],
   geometryType: ["Point", "MultiPoint", "LineString", "MultiLineString", "Polygon", "MultiPolygon"],
   /** ISO 4217 — the currency codelist OC4IDS inherits from OCDS. */

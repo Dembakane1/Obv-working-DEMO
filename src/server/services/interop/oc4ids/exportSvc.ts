@@ -20,6 +20,7 @@ import {
   InteropError,
   OC4IDS_NOTICE,
   assertExporter,
+  assertInteropViewer,
   interopKey,
   resolveInteropKey,
   nowIso,
@@ -301,6 +302,9 @@ export interface StoredExport {
 /** Fetch a historical export. Same-404 across tenants; the bytes are
  *  re-hashed against the provenance record on every read. */
 export function getOc4idsExport(user: User, exportId: string): StoredExport {
+  // Role gate BEFORE any lookup, so a role that cannot use the area never
+  // learns which export ids exist (403 vs 404 oracle).
+  assertInteropViewer(user);
   const record = interopRepo.getExport(String(exportId ?? ""));
   if (!record) throw new InteropError("Not found", 404);
   // Resolves the project through the caller's own visibility: a record

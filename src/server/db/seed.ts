@@ -1993,6 +1993,19 @@ function purgeDemoScopedRows(): void {
     `DELETE FROM field_observation_imports WHERE declared_project_id IN (${dph})
        AND id NOT IN (SELECT import_id FROM field_observations)`
   ).run(...demoProjects);
+  // Observations imported BY a demo organization that were never matched
+  // to any project (nothing else references them; matched ones were
+  // handled above, and provenance on surviving evidence is never touched).
+  const demoOrgs = [...DEMO_ORGS, "org-dmv-borrower"];
+  const doh = inList(demoOrgs);
+  const unmatched = `SELECT id FROM field_observations WHERE organization_id IN (${doh}) AND matched_project_id IS NULL`;
+  db.prepare(`DELETE FROM field_observation_events WHERE observation_id IN (${unmatched})`).run(...demoOrgs);
+  db.prepare(`DELETE FROM field_observation_photos WHERE observation_id IN (${unmatched})`).run(...demoOrgs);
+  db.prepare(`DELETE FROM field_observations WHERE id IN (${unmatched})`).run(...demoOrgs);
+  db.prepare(
+    `DELETE FROM field_observation_imports WHERE organization_id IN (${doh})
+       AND id NOT IN (SELECT import_id FROM field_observations)`
+  ).run(...demoOrgs);
   db.prepare(`DELETE FROM interop_exports WHERE project_id IN (${dph})`).run(...demoProjects);
   db.exec("PRAGMA foreign_keys = ON;");
 }

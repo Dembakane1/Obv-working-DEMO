@@ -3251,7 +3251,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       readParams,
       readBody: (limit) => readBody(req, limit),
       isForm: () => isFormPost(req),
-      publicBaseUrl: () => invitationBaseUrl(req),
+      // The CONFIGURED public base URL only — never the request's Host
+      // header, which a client controls and which would be written into a
+      // permanent, hashed export package.
+      publicBaseUrl: () => publicBaseUrl() || null,
       redirect: (location) => redirect(res, location),
       sendJson: (data, status) => sendJson(res, data, status ?? 200),
       sendHtml: (html, status) => sendHtml(res, html, status ?? 200),
@@ -5844,6 +5847,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         accountEvents: repo.listAccountEventsForProject(data.project.id),
         notifications: repo.listBroadcastNotifications(30),
         users: usersById(),
+        showInfrastructureData: interopSvc.canViewInterop(user!),
         threads: listThreadsForUser(user!)
           .filter((t) => t.projectId === data.project.id)
           .map((t) => ({

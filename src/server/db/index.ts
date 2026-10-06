@@ -2820,7 +2820,10 @@ CREATE TABLE IF NOT EXISTS field_observations (
     ('DECLARED_PROJECT','REFERENCE_MATCH','REVIEWER_ASSIGNED','NO_MATCH','AMBIGUOUS')),
   match_reasons TEXT NOT NULL,               -- JSON array of reason strings
   milestone_reference TEXT,                  -- verbatim milestone reference from the source
-  suggested_milestone_id TEXT REFERENCES milestones(id), -- resolved suggestion; the reviewer decides
+  -- Resolved suggestion only; the reviewer decides. Deliberately NOT a
+  -- foreign key: an advisory hint must never block deleting a draft
+  -- milestone or re-applying a template (a stale hint simply matches none).
+  suggested_milestone_id TEXT,
   collector TEXT,
   observed_at TEXT,                          -- normalized ISO; null when absent
   observed_at_verbatim TEXT,

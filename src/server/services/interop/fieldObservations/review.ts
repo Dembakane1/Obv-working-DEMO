@@ -213,6 +213,7 @@ export function assignObservationProject(user: User, id: string, projectId: stri
   if (!(observation.status === "UNVERIFIED" || observation.status === "DEFERRED")) {
     throw new InteropError("This observation has already been decided", 409);
   }
+  refuseInFlight(observation.id);
   const reasons = [`assigned to ${project.id} by ${user.name}`, ...(note ? [`note: ${note}`] : [])];
   if (observation.latitude !== null && observation.longitude !== null && project.siteBoundary.length >= 4) {
     reasons.push(pointInPolygon(observation.longitude, observation.latitude, project.siteBoundary)
@@ -236,6 +237,22 @@ export interface AcceptResult {
   observation: FieldObservation;
   submission: SubmissionResult;
   provenance: EvidenceProvenance;
+}
+
+/**
+ * Observations whose acceptance is in flight. Acceptance awaits the
+ * evidence pipeline, so the observation is CLAIMED before the first await
+ * and every other decision (accept, reject, defer, assign) refuses it until
+ * the claim is released. OBV runs exactly one writer instance against a
+ * data directory (stated at startup), so an in-process claim covers every
+ * concurrent request.
+ */
+const acceptanceInFlight = new Set<string>();
+
+function refuseInFlight(observationId: string): void {
+  if (acceptanceInFlight.has(observationId)) {
+    throw new InteropError("An acceptance of this observation is in progress", 409);
+  }
 }
 
 /**
@@ -276,6 +293,29 @@ export async function acceptObservation(
   const mime = photo.contentType === "image/png" ? "png" : photo.contentType === "image/webp" ? "webp" : "jpeg";
   const provider = providerName(observation);
 
+  // Claim BEFORE the first await (no await between the status check above
+  // and this line, so check-and-claim is atomic on the event loop).
+  refuseInFlight(observation.id);
+  acceptanceInFlight.add(observation.id);
+  try {
+    return await acceptClaimed(user, observation, project, milestone, bytes, mime, provider, input.note);
+  } finally {
+    acceptanceInFlight.delete(observation.id);
+  }
+}
+
+async function acceptClaimed(
+  user: User,
+  observation: FieldObservation,
+  project: Project,
+  milestone: Milestone,
+  bytes: Buffer,
+  mime: string,
+  provider: string,
+  rawNote: string | null | undefined
+): Promise<AcceptResult> {
+  const startedAt = nowIso();
+
   // THE governed pipeline. capturedAt is the SOURCE's observation time —
   // honestly carried, never replaced by the import or acceptance time.
   // deviceMetadata states the external origin in plain words; the real
@@ -286,7 +326,7 @@ export async function acceptObservation(
       photoDataUrl: `data:image/${mime};base64,${bytes.toString("base64")}`,
       latitude: observation.latitude as unknown as number,   // null preserved — geofence handles it
       longitude: observation.longitude as unknown as number,
-      capturedAt: observation.observedAt,
+      capturedAt: observation.observedAt!, // checked non-null before the claim
       deviceMetadata: {
         userAgent: `External field observation (source: ${provider}; external record ${observation.externalObservationId}; no OBV device capture metadata)`,
         platform: provider,
@@ -298,14 +338,21 @@ export async function acceptObservation(
     user.id
   );
 
-  const acceptedAt = nowIso();
-  const note = strOrNull(input.note, 1000);
-  if (!interopRepo.resolveObservation(observation.id, {
-    status: "ACCEPTED", milestoneId: milestone.id, acceptedEvidenceId: submission.evidence.id,
-    reviewedByUserId: user.id, reviewedAt: acceptedAt, reviewNote: note,
-  })) {
-    throw new InteropError("This observation was decided concurrently", 409);
+  // The pipeline is idempotent: an identical submission (same milestone,
+  // photo bytes, coordinates and capture time) returns the EXISTING item,
+  // which this acceptance did not create — possibly a native OBV capture or
+  // another observation's evidence. Never attach this observation's
+  // provenance to it and never mark the observation accepted against it.
+  const createdHere = submission.evidence.userId === user.id && submission.evidence.uploadedAt >= startedAt;
+  if (!createdHere) {
+    throw new InteropError(
+      `Identical evidence already exists (${submission.evidence.id}); this observation was not accepted and remains undecided`,
+      409
+    );
   }
+
+  const acceptedAt = nowIso();
+  const note = strOrNull(rawNote, 1000);
   const provenance: EvidenceProvenance = {
     evidenceItemId: submission.evidence.id,
     origin: "EXTERNAL_FIELD_OBSERVATION",
@@ -323,9 +370,16 @@ export async function acceptObservation(
     acceptedByUserId: user.id,
     acceptedAt,
   };
-  // A replayed identical submission returns the existing evidence item,
-  // which may already carry provenance; never overwrite it.
-  if (!interopRepo.getEvidenceProvenance(submission.evidence.id)) interopRepo.insertEvidenceProvenance(provenance);
+  // The evidence was created by THIS call: record its external origin
+  // first, so it can never be mislabelled an OBV capture even if the
+  // status transition below were to lose.
+  interopRepo.insertEvidenceProvenance(provenance);
+  if (!interopRepo.resolveObservation(observation.id, {
+    status: "ACCEPTED", milestoneId: milestone.id, acceptedEvidenceId: submission.evidence.id,
+    reviewedByUserId: user.id, reviewedAt: acceptedAt, reviewNote: note,
+  })) {
+    throw new InteropError("This observation was decided concurrently; its evidence keeps its external provenance", 409);
+  }
   event(observation.id, user, "ACCEPTED", `accepted for milestone ${milestone.seq} — ${milestone.title}${note ? `; note: ${note}` : ""}`);
   event(observation.id, user, "EVIDENCE_CREATED", `evidence ${submission.evidence.id} created through the governed pipeline; verification verdict ${submission.verification.verdict}`);
   audit(project.id, user, "FIELD_OBSERVATION_ACCEPTED", observation,
@@ -357,6 +411,7 @@ function decide(user: User, id: string, status: "REJECTED" | "DEFERRED", note: s
   if (!(observation.status === "UNVERIFIED" || observation.status === "DEFERRED")) {
     throw new InteropError("This observation has already been decided", 409);
   }
+  refuseInFlight(observation.id);
   if (status === "DEFERRED" && observation.status === "DEFERRED") {
     throw new InteropError("This observation is already deferred", 409);
   }
