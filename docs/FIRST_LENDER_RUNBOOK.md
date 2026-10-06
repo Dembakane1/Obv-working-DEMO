@@ -364,7 +364,8 @@ out of band; identity remains the access boundary either way.
 
 1. **Stop the application** (scale to zero / suspend).
 2. **Preserve the damaged state**: copy the entire current data root
-   (obv.db + -wal/-shm, uploads/, worm/, reports/, audit-packages/) to a
+   (obv.db + -wal/-shm, uploads/, worm/, reports/, audit-packages/,
+   interop/) to a
    quarantine location. Never investigate in place.
 3. **Validate the backup checksum**: compare `sha256sum` of the chosen
    `backups/obv-backup-<id>.db` against its `backup_records.sha256`
@@ -372,7 +373,7 @@ out of band; identity remains the access boundary either way.
    quarantined database read-only).
 4. **Restore to a NEW location**: copy the backup file to
    `<new-root>/obv.db`; copy `worm/`, `uploads/`, `reports/`,
-   `audit-packages/` beside it (file artifacts are not inside the
+   `audit-packages/`, `interop/` beside it (file artifacts are not inside the
    SQLite backup).
 5. **Integrity-check the restored copy**:
    `PRAGMA quick_check` + core-table counts (the drill script's checks).

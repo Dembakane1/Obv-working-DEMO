@@ -9,6 +9,7 @@
  * approves, never rejects, never releases.
  */
 import * as repo from "../../db/repo";
+import * as interopRepo from "../../db/interopRepo";
 import * as evidenceIntelRepo from "../../db/evidenceIntelRepo";
 import * as exceptions from "../exceptions";
 import * as authz from "../authz";
@@ -229,8 +230,19 @@ export function evidenceTimeline(user: User, evidenceItemId: string): { evidence
     if (at) entries.push({ at, kind, label, detail, reference });
   };
 
-  push(evidence.capturedAt, "UPLOAD", "Evidence captured", milestone ? `Milestone: ${milestone.title}` : null, evidence.id);
-  push(evidence.uploadedAt, "UPLOAD", "Evidence uploaded", null, evidence.id);
+  // Capture provenance: an item accepted from an external field-data
+  // system says so first; everything else is OBV capture.
+  const provenance = interopRepo.getEvidenceProvenance(evidence.id);
+  if (provenance) {
+    push(
+      provenance.acceptedAt, "SOURCE", "Accepted from an external field observation",
+      `Source: External Field Observation · Provider: ${provenance.providerLabel ?? provenance.sourceSystem} · external record ${provenance.externalObservationId}` +
+        `${provenance.collector ? ` · collector ${provenance.collector}` : ""}${provenance.sourceObservedAt ? ` · observed ${provenance.sourceObservedAt}` : ""}`,
+      provenance.observationId
+    );
+  }
+  push(evidence.capturedAt, "UPLOAD", provenance ? "Observation captured (source timestamp)" : "Evidence captured", milestone ? `Milestone: ${milestone.title}` : null, evidence.id);
+  push(evidence.uploadedAt, "UPLOAD", provenance ? "Accepted into the evidence pipeline" : "Evidence uploaded", null, evidence.id);
 
   const verification = repo.getVerificationForEvidence(evidence.id);
   if (verification) {

@@ -113,6 +113,7 @@ const STANDALONE = [
   "integrations-test.js",
   "evidence-intel-test.js",
   "official-sources-test.js",
+  "interop-test.js",
   "timeline-test.js",
   "twin-test.js",
   "design-test.js",

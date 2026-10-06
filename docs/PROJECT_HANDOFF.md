@@ -487,6 +487,7 @@ funded** — READY means *ready for lender review*, nothing more.
 | Completion gates / inspection requirements | `docs/COMPLETION_GATES.md` |
 | DMV draw control + permit/code basis | `docs/DMV_DRAW_CONTROL.md` |
 | Official-source connectors + review lifecycle | `docs/OFFICIAL_SOURCES.md` |
+| OC4IDS export + external field observations | `docs/INFRASTRUCTURE_INTEROPERABILITY.md` |
 | Exceptions | `docs/EXCEPTIONS.md` |
 | Draw requests / lender package | `docs/DRAW_REQUESTS.md`, `docs/DRAW_VERIFICATION_PACKAGE.md` |
 | Pilot posture (area-by-area readiness) | `docs/EXTERNAL_PILOT_READINESS.md` |

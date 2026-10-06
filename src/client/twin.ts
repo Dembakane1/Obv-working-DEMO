@@ -141,7 +141,10 @@
     fetch(`/api/twin/pin/${encodeURIComponent(data.projectId)}/${encodeURIComponent(evidenceId)}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d: {
-        evidence: { photoPath: string; capturedAt: string; uploadedAt: string; capturedBy: string | null; hasGps: boolean };
+        evidence: {
+          photoPath: string; capturedAt: string; uploadedAt: string; capturedBy: string | null; hasGps: boolean;
+          source?: { label: string; externalObservationId: string | null; collector: string | null } | null;
+        };
         verification: { verdict: string; confidence: number; checks: Array<{ name: string; passed: boolean; detail: string }> } | null;
         distances: { toPlannedGeometryM: number | null; toSiteCentroidM: number | null; insideBoundary: boolean | null };
         advisorySignals: Array<{ title: string; confidence: number; explanation: string; recommendation: string }> | null;
@@ -155,6 +158,11 @@
         detailBody.appendChild(
           el("p", "sub", `Captured ${d.evidence.capturedAt.replace("T", " ").slice(0, 16)} UTC${d.evidence.capturedBy ? ` by ${d.evidence.capturedBy}` : ""}`)
         );
+        if (d.evidence.source) {
+          detailBody.appendChild(
+            el("p", "sub", `${d.evidence.source.label}${d.evidence.source.externalObservationId ? ` · external record ${d.evidence.source.externalObservationId}` : ""}${d.evidence.source.collector ? ` · collector ${d.evidence.source.collector}` : ""}`)
+          );
+        }
         if (d.stage) detailBody.appendChild(el("p", "sub", `Stage: ${d.stage.title} (${d.stage.status})`));
         if (d.verification) {
           detailBody.appendChild(

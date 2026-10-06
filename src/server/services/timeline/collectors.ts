@@ -16,8 +16,10 @@ import * as disputeRepo from "../../db/disputeRepo";
 import * as lenderRepo from "../../db/lenderRepo";
 import * as bankingRepo from "../../db/bankingRepo";
 import * as dmvRepo from "../../db/dmvRepo";
+import * as interopRepo from "../../db/interopRepo";
 import { canViewEvidenceIntel } from "../evidenceIntel/core";
 import { canViewSources } from "../officialSources/core";
+import { canViewInterop } from "../interop/core";
 import { hasBankingCapability } from "../banking/bankingAccess";
 import type { Project, TimelineEvent, User } from "../../../shared/types";
 import { ActorResolver, makeEvent, type EventDraft } from "./core";
@@ -527,16 +529,29 @@ export function collectInspections(ctx: CollectorContext): void {
 
 export function collectEvidence(ctx: CollectorContext): void {
   const { project, push } = ctx;
+  // One batched read: which evidence items were accepted from an external
+  // field observation (no row = captured directly in OBV).
+  const provenance = new Map(
+    safe(() => interopRepo.listEvidenceProvenanceForProject(project.id), []).map((p) => [p.evidenceItemId, p] as const)
+  );
   for (const m of safe(() => repo.listMilestones(project.id), [])) {
     for (const e of safe(() => repo.listEvidenceForMilestone(m.id), [])) {
+      const prov = provenance.get(e.id) ?? null;
+      const sourceLine = prov
+        ? ` Source: External Field Observation · Provider: ${prov.providerLabel ?? prov.sourceSystem} · external record ${prov.externalObservationId}` +
+          `${prov.collector ? ` · collector ${prov.collector}` : ""}.`
+        : " Source: OBV Capture.";
       push({
         at: e.capturedAt,
         category: "EVIDENCE",
         type: "EVIDENCE_CAPTURED",
         title: `Evidence captured — ${m.title}`,
         explanation:
-          `A field photo was captured for ${m.title}` +
-          `${e.latitude !== null && e.longitude !== null ? " with a GPS fix" : " without a GPS fix"}.`,
+          (prov
+            ? `An external field observation was accepted as evidence for ${m.title}` +
+              `${e.latitude !== null && e.longitude !== null ? " with the source's recorded GPS fix" : " without a GPS fix"}.`
+            : `A field photo was captured for ${m.title}` +
+              `${e.latitude !== null && e.longitude !== null ? " with a GPS fix" : " without a GPS fix"}.`) + sourceLine,
         actorUserId: e.userId,
         projectId: project.id,
         milestoneId: m.id,
@@ -558,7 +573,9 @@ export function collectEvidence(ctx: CollectorContext): void {
         category: "EVIDENCE",
         type: "EVIDENCE_UPLOADED",
         title: `Evidence uploaded — ${m.title}`,
-        explanation: "The captured evidence was uploaded and hash-anchored into the evidence ledger.",
+        explanation: (prov
+          ? "The accepted external observation entered the evidence pipeline and was hash-anchored into the evidence ledger."
+          : "The captured evidence was uploaded and hash-anchored into the evidence ledger.") + sourceLine,
         actorUserId: e.userId,
         projectId: project.id,
         milestoneId: m.id,
@@ -1062,6 +1079,77 @@ export function collectReports(ctx: CollectorContext): void {
   }
 }
 
+// ------------------------------------------------------------ external field observations
+
+export const OBSERVATION_READ_CAP = 2_000;
+
+/** Imported external field observations. Receipt is a historical intake
+ *  fact (the observation itself stays UNVERIFIED and is said to be); a
+ *  reviewer's decision (accepted / rejected / deferred) is a governed
+ *  fact about intake, never about the evidence's verdict. Every event
+ *  names the external source so provenance is visible in the history.
+ *  These events carry NO coordinates: the source fix travels with the
+ *  accepted evidence item, whose own capture event places it. */
+export function collectFieldObservations(ctx: CollectorContext): void {
+  const { project, push } = ctx;
+  const rows = safe(() => interopRepo.listObservationEventsForProject(project.id, OBSERVATION_READ_CAP), []);
+  if (rows.length >= OBSERVATION_READ_CAP) ctx.noteCap(`external field observations: showing the first ${OBSERVATION_READ_CAP} events`);
+  for (const { event, observation: o } of rows) {
+    const provider = o.providerLabel ?? o.sourceSystem;
+    const base = {
+      projectId: project.id,
+      milestoneId: o.milestoneId ?? o.suggestedMilestoneId ?? null,
+      organizationId: o.organizationId,
+      sourceTable: "field_observations",
+      sourceRecordId: o.id,
+      href: `/interop/field-observations/${o.id}`,
+      actorUserId: event.actorUserId,
+    };
+    if (event.kind === "RECEIVED") {
+      push({
+        ...base,
+        at: event.occurredAt,
+        category: "EVIDENCE",
+        type: "EXTERNAL_OBSERVATION_RECEIVED",
+        title: `External field observation received — ${provider}`,
+        explanation:
+          `Observation ${o.externalObservationId} from ${provider}` +
+          `${o.collector ? ` (collector ${o.collector})` : ""}` +
+          `${o.observedAt ? `, observed ${o.observedAt.slice(0, 16).replace("T", " ")} UTC` : ", no source timestamp"}` +
+          `${o.latitude !== null && o.longitude !== null ? `, source coordinates ${o.latitude.toFixed(5)}, ${o.longitude.toFixed(5)}` : ", no source coordinates"}` +
+          `, was imported as External Observation — Unverified. It is not evidence until a reviewer accepts it.`,
+        recordStatus: "AUTHORITATIVE",
+      });
+    } else if (event.kind === "ACCEPTED") {
+      push({
+        ...base,
+        at: event.occurredAt,
+        category: "EVIDENCE",
+        type: "EXTERNAL_OBSERVATION_ACCEPTED",
+        title: `Observation accepted as evidence — ${provider}`,
+        explanation:
+          `A reviewer accepted external observation ${o.externalObservationId} (${provider}) as evidence; it entered ` +
+          `the governed evidence pipeline, which issued its own verification verdict. Source: External Field Observation.`,
+        recordStatus: "AUTHORITATIVE",
+        change: { field: "status", previous: "UNVERIFIED", current: "ACCEPTED" },
+      });
+    } else if (event.kind === "REJECTED" || event.kind === "DEFERRED") {
+      push({
+        ...base,
+        at: event.occurredAt,
+        category: "EVIDENCE",
+        type: "EXTERNAL_OBSERVATION_REVIEWED",
+        title: `External observation reviewed — ${event.kind.toLowerCase()}`,
+        explanation:
+          `A reviewer ${event.kind === "REJECTED" ? "rejected" : "deferred"} external observation ${o.externalObservationId} (${provider}).` +
+          `${event.detail ? ` Note: ${event.detail}` : ""}`,
+        recordStatus: "AUTHORITATIVE",
+        change: { field: "status", previous: "UNVERIFIED", current: event.kind },
+      });
+    }
+  }
+}
+
 /** Collectors whose source records are readable by anyone who can reach
  *  the project itself. */
 export const COLLECTORS: Array<(ctx: CollectorContext) => void> = [
@@ -1092,6 +1180,10 @@ export const GATED_COLLECTORS: Array<{
 }> = [
   { collect: collectEvidenceIntel, allowed: (user) => canViewEvidenceIntel(user) },
   { collect: collectOfficialSources, allowed: (user) => canViewSources(user) },
+  // External field observations are reviewer-layer intake records: the
+  // interoperability view gate (administrators, funder representatives,
+  // compliance reviewers) applies here exactly as on its own pages.
+  { collect: collectFieldObservations, allowed: (user) => canViewInterop(user) },
   {
     // Banking reads require VIEW_PROJECT_ACCOUNT, not merely project
     // access — the governed banking surface shows nothing without it.
